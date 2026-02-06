@@ -52,14 +52,14 @@ pub struct ServerSettings {
     #[serde(default = "default_server_url")]
     pub url: String,
     #[serde(default)]
-    pub team_url: String,
+    pub api_key: String,
 }
 
 impl Default for ServerSettings {
     fn default() -> Self {
         Self {
             url: default_server_url(),
-            team_url: String::new(),
+            api_key: String::new(),
         }
     }
 }

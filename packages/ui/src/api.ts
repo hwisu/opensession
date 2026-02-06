@@ -107,16 +107,7 @@ export async function getSession(id: string): Promise<Session> {
 		throw new ApiError(res.status, body);
 	}
 
-	const contentType = res.headers.get('content-type') || '';
-	const text = await res.text();
-
-	// JSONL format: parse line by line
-	if (contentType.includes('jsonl') || text.trimStart().startsWith('{"type":"header"')) {
-		return parseHailJsonl(text);
-	}
-
-	// Legacy JSON format
-	return JSON.parse(text) as Session;
+	return parseHailJsonl(await res.text());
 }
 
 /** Parse HAIL JSONL text into a Session object */

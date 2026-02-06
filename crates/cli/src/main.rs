@@ -37,6 +37,10 @@ enum Commands {
         /// Set the API key
         #[arg(long)]
         api_key: Option<String>,
+
+        /// Set the team ID for uploads
+        #[arg(long)]
+        team_id: Option<String>,
     },
 
     /// Manage the background daemon
@@ -71,11 +75,11 @@ async fn main() {
         Commands::Discover => discover::run_discover(),
         Commands::Upload { file } => upload::run_upload(&file).await,
         Commands::UploadAll => upload_all::run_upload_all().await,
-        Commands::Config { server, api_key } => {
-            if server.is_none() && api_key.is_none() {
+        Commands::Config { server, api_key, team_id } => {
+            if server.is_none() && api_key.is_none() && team_id.is_none() {
                 config::show_config()
             } else {
-                config::set_config(server, api_key)
+                config::set_config(server, api_key, team_id)
             }
         }
         Commands::Daemon { action } => match action {

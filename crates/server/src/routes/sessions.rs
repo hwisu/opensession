@@ -351,25 +351,13 @@ pub async fn get_session_raw(
             .into_response()
     })?;
 
-    // Detect format from storage key extension
-    let content_type = if storage_key.ends_with(".jsonl") {
-        "application/jsonl"
-    } else {
-        "application/json"
-    };
-    let filename = if storage_key.ends_with(".jsonl") {
-        "session.hail.jsonl"
-    } else {
-        "session.hail.json"
-    };
-
     Ok((
         StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, content_type),
+            (axum::http::header::CONTENT_TYPE, "application/jsonl"),
             (
                 axum::http::header::CONTENT_DISPOSITION,
-                &format!("attachment; filename=\"{filename}\""),
+                "attachment; filename=\"session.hail.jsonl\"",
             ),
         ],
         body,

@@ -10,6 +10,9 @@ pub async fn run_upload_all() -> Result<()> {
     if config.server.api_key.is_empty() {
         bail!("API key not configured. Run: opensession config --api-key <key>");
     }
+    if config.server.team_id.is_empty() {
+        bail!("Team ID not configured. Run: opensession config --team-id <id>");
+    }
 
     let locations = discover_sessions();
     if locations.is_empty() {
@@ -72,7 +75,7 @@ pub async fn run_upload_all() -> Result<()> {
             // Upload
             let upload_body = serde_json::json!({
                 "session": session,
-                "visibility": "public"
+                "team_id": config.server.team_id,
             });
 
             match client

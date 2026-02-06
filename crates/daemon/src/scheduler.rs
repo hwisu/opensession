@@ -165,9 +165,13 @@ async fn process_file(
     });
 
     let client = reqwest::Client::new();
-    let response = client
+    let mut req = client
         .post(&url)
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if !config.server.api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", config.server.api_key));
+    }
+    let response = req
         .json(&upload_body)
         .send()
         .await

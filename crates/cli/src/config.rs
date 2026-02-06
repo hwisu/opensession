@@ -20,6 +20,8 @@ pub struct ServerConfig {
     pub url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub team_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +50,7 @@ impl Default for ServerConfig {
         Self {
             url: default_server_url(),
             api_key: String::new(),
+            team_id: String::new(),
         }
     }
 }
@@ -116,6 +119,14 @@ pub fn show_config() -> Result<()> {
             format!("{}...", &config.server.api_key[..8.min(config.server.api_key.len())])
         }
     );
+    println!(
+        "  team_id = {}",
+        if config.server.team_id.is_empty() {
+            "(not set)".to_string()
+        } else {
+            config.server.team_id.clone()
+        }
+    );
     println!();
     println!("[daemon]");
     println!("  auto_start = {}", config.daemon.auto_start);
@@ -123,7 +134,7 @@ pub fn show_config() -> Result<()> {
 }
 
 /// Update config with provided values
-pub fn set_config(server_url: Option<String>, api_key: Option<String>) -> Result<()> {
+pub fn set_config(server_url: Option<String>, api_key: Option<String>, team_id: Option<String>) -> Result<()> {
     let mut config = load_config()?;
 
     if let Some(url) = server_url {
@@ -131,6 +142,9 @@ pub fn set_config(server_url: Option<String>, api_key: Option<String>) -> Result
     }
     if let Some(key) = api_key {
         config.server.api_key = key;
+    }
+    if let Some(tid) = team_id {
+        config.server.team_id = tid;
     }
 
     save_config(&config)?;

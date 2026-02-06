@@ -12,9 +12,10 @@ pub async fn run_upload(file: &Path) -> Result<()> {
 
     let config = load_config()?;
     if config.server.api_key.is_empty() {
-        bail!(
-            "API key not configured. Run: opensession config --api-key <key>"
-        );
+        bail!("API key not configured. Run: opensession config --api-key <key>");
+    }
+    if config.server.team_id.is_empty() {
+        bail!("Team ID not configured. Run: opensession config --team-id <id>");
     }
 
     // Find a parser that can handle this file
@@ -48,7 +49,7 @@ pub async fn run_upload(file: &Path) -> Result<()> {
 
     let upload_body = serde_json::json!({
         "session": session,
-        "visibility": "public"
+        "team_id": config.server.team_id,
     });
 
     let client = reqwest::Client::new();

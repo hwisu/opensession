@@ -1,0 +1,16 @@
+services:
+  opensession:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - opensession-data:/data
+    environment:
+      - OPENSESSION_DATA_DIR=/data
+      - OPENSESSION_WEB_DIR=/var/www/opensession
+      - OPENSESSION_BASE_URL=http://localhost:3000
+      - RUST_LOG=opensession_server=info,tower_http=info
+    restart: unless-stopped
+
+volumes:
+  opensession-data:

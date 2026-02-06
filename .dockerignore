@@ -1,0 +1,11 @@
+target/
+web/build/
+web/node_modules/
+web/.svelte-kit/
+packages/ui/node_modules/
+.git/
+.claude/
+.playwright-mcp/
+data/
+*.png
+*.jpg

@@ -23,6 +23,7 @@
 		"vite": "^7.3.1"
 	},
 	"dependencies": {
+		"@opensession/ui": "file:../packages/ui",
 		"highlight.js": "^11.11.1",
 		"marked": "^17.0.1"
 	}

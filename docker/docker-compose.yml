@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  opensession:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - data:/data
+    environment:
+      - OPENSESSION_BASE_URL=http://localhost:3000
+      - OPENSESSION_REGISTRATION=open
+      - OPENSESSION_DATA_DIR=/data
+      - OPENSESSION_WEB_DIR=/usr/share/opensession/web
+    restart: unless-stopped
+
+volumes:
+  data:

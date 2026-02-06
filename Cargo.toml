@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/parsers",
+    "crates/daemon",
+    # "crates/worker",  # Requires wasm target - build separately
+    "crates/server",
+    "crates/cli",
+    "crates/tui",
+    "crates/api-types",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/opensession/opensession"
+
+[workspace.dependencies]
+opensession-core = { path = "crates/core" }
+opensession-parsers = { path = "crates/parsers" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json"] }
+notify = "7"
+toml = "0.8"
+regex = "1"
+glob = "0.3"
+shellexpand = "3"
+ts-rs = "12"
+opensession-api-types = { path = "crates/api-types" }

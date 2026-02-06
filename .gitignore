@@ -1,0 +1,39 @@
+# Build artifacts
+/target/
+web/node_modules/
+web/build/
+web/.svelte-kit/
+
+# Data & DB
+/data/
+web/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Screenshots & images (dev artifacts)
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Playwright MCP
+.playwright-mcp/
+
+# Claude Code
+.claude/
+
+# Environment
+.env
+.env.*
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

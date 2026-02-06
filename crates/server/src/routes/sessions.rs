@@ -7,7 +7,7 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api_types::{
-    GroupRef, SessionDetail, SessionListQuery, SessionListResponse, SessionSummary, UploadResponse,
+    SessionDetail, SessionListQuery, SessionListResponse, SessionSummary, UploadResponse,
 };
 
 use crate::routes::auth::AuthUser;
@@ -17,14 +17,11 @@ use crate::storage::Db;
 // Upload session
 // ---------------------------------------------------------------------------
 
-/// Server-side upload request uses the strongly-typed Session (not serde_json::Value).
+/// Server-side upload request uses the strongly-typed Session.
 #[derive(serde::Deserialize)]
 pub struct UploadRequest {
     pub session: opensession_core::Session,
-    #[serde(default)]
-    pub visibility: Option<String>,
-    #[serde(default)]
-    pub group_ids: Vec<String>,
+    pub team_id: String,
 }
 
 pub async fn upload_session(
@@ -33,6 +30,26 @@ pub async fn upload_session(
     Json(req): Json<UploadRequest>,
 ) -> Result<(StatusCode, Json<UploadResponse>), Response> {
     let session = &req.session;
+
+    // Verify user is a member of the team
+    {
+        let conn = db.conn();
+        let is_member: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM team_members WHERE team_id = ?1 AND user_id = ?2",
+                rusqlite::params![&req.team_id, &user.user_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !is_member {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "not a member of this team"})),
+            )
+                .into_response());
+        }
+    }
 
     // Serialize body to JSON
     let body_json = serde_json::to_vec(session).map_err(|e| {
@@ -55,7 +72,6 @@ pub async fn upload_session(
             .into_response()
     })?;
 
-    let visibility = req.visibility.as_deref().unwrap_or("public");
     let tags = if session.context.tags.is_empty() {
         None
     } else {
@@ -71,18 +87,18 @@ pub async fn upload_session(
 
     let conn = db.conn();
     conn.execute(
-        "INSERT INTO sessions (id, user_id, tool, agent_provider, agent_model, title, description, tags, visibility, created_at, message_count, task_count, event_count, duration_seconds, body_storage_key)
+        "INSERT INTO sessions (id, user_id, team_id, tool, agent_provider, agent_model, title, description, tags, created_at, message_count, task_count, event_count, duration_seconds, body_storage_key)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             &session_id,
             &user.user_id,
+            &req.team_id,
             &session.agent.tool,
             &session.agent.provider,
             &session.agent.model,
             &title,
             &description,
             &tags,
-            visibility,
             &created_at,
             session.stats.message_count as i64,
             session.stats.task_count as i64,
@@ -100,14 +116,6 @@ pub async fn upload_session(
             .into_response()
     })?;
 
-    // Link to groups
-    for group_id in &req.group_ids {
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO session_groups (session_id, group_id) VALUES (?1, ?2)",
-            rusqlite::params![&session_id, group_id],
-        );
-    }
-
     // Update FTS
     let _ = conn.execute(
         "INSERT INTO sessions_fts (rowid, title, description, tags)
@@ -123,7 +131,7 @@ pub async fn upload_session(
 }
 
 // ---------------------------------------------------------------------------
-// List sessions
+// List sessions (team-scoped)
 // ---------------------------------------------------------------------------
 
 pub async fn list_sessions(
@@ -136,7 +144,6 @@ pub async fn list_sessions(
 
     // Build dynamic query
     let mut where_clauses = vec![
-        "s.visibility = 'public'".to_string(),
         "(s.event_count > 0 OR s.message_count > 0)".to_string(),
     ];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -148,11 +155,9 @@ pub async fn list_sessions(
         param_idx += 1;
     }
 
-    if let Some(ref group_id) = q.group_id {
-        where_clauses.push(format!(
-            "s.id IN (SELECT session_id FROM session_groups WHERE group_id = ?{param_idx})"
-        ));
-        params.push(Box::new(group_id.clone()));
+    if let Some(ref team_id) = q.team_id {
+        where_clauses.push(format!("s.team_id = ?{param_idx}"));
+        params.push(Box::new(team_id.clone()));
         param_idx += 1;
     }
 
@@ -208,7 +213,7 @@ pub async fn list_sessions(
 
     // Fetch page
     let select_sql = format!(
-        "SELECT s.id, s.user_id, u.nickname, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.visibility, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, u.avatar_url
+        "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds
          FROM sessions s
          LEFT JOIN users u ON u.id = s.user_id
          WHERE {where_str}
@@ -227,20 +232,19 @@ pub async fn list_sessions(
                 id: row.get(0)?,
                 user_id: row.get(1)?,
                 nickname: row.get(2)?,
-                tool: row.get(3)?,
-                agent_provider: row.get(4)?,
-                agent_model: row.get(5)?,
-                title: row.get(6)?,
-                description: row.get(7)?,
-                tags: row.get(8)?,
-                visibility: row.get(9)?,
+                team_id: row.get(3)?,
+                tool: row.get(4)?,
+                agent_provider: row.get(5)?,
+                agent_model: row.get(6)?,
+                title: row.get(7)?,
+                description: row.get(8)?,
+                tags: row.get(9)?,
                 created_at: row.get(10)?,
                 uploaded_at: row.get(11)?,
                 message_count: row.get(12)?,
                 task_count: row.get(13)?,
                 event_count: row.get(14)?,
                 duration_seconds: row.get(15)?,
-                avatar_url: row.get(16)?,
             })
         })
         .map_err(internal_error)?;
@@ -267,7 +271,7 @@ pub async fn get_session(
 
     let summary = conn
         .query_row(
-            "SELECT s.id, s.user_id, u.nickname, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.visibility, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, u.avatar_url
+            "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds
              FROM sessions s
              LEFT JOIN users u ON u.id = s.user_id
              WHERE s.id = ?1",
@@ -277,20 +281,19 @@ pub async fn get_session(
                     id: row.get(0)?,
                     user_id: row.get(1)?,
                     nickname: row.get(2)?,
-                    tool: row.get(3)?,
-                    agent_provider: row.get(4)?,
-                    agent_model: row.get(5)?,
-                    title: row.get(6)?,
-                    description: row.get(7)?,
-                    tags: row.get(8)?,
-                    visibility: row.get(9)?,
+                    team_id: row.get(3)?,
+                    tool: row.get(4)?,
+                    agent_provider: row.get(5)?,
+                    agent_model: row.get(6)?,
+                    title: row.get(7)?,
+                    description: row.get(8)?,
+                    tags: row.get(9)?,
                     created_at: row.get(10)?,
                     uploaded_at: row.get(11)?,
                     message_count: row.get(12)?,
                     task_count: row.get(13)?,
                     event_count: row.get(14)?,
                     duration_seconds: row.get(15)?,
-                    avatar_url: row.get(16)?,
                 })
             },
         )
@@ -302,35 +305,15 @@ pub async fn get_session(
                 .into_response()
         })?;
 
-    // Check visibility
-    if summary.visibility != "public" {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "session not found"})),
+    let team_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM teams WHERE id = ?1",
+            [&summary.team_id],
+            |row| row.get(0),
         )
-            .into_response());
-    }
+        .ok();
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT g.id, g.name FROM groups g
-             INNER JOIN session_groups sg ON sg.group_id = g.id
-             WHERE sg.session_id = ?1",
-        )
-        .map_err(internal_error)?;
-
-    let groups: Vec<GroupRef> = stmt
-        .query_map([&id], |row| {
-            Ok(GroupRef {
-                id: row.get(0)?,
-                name: row.get(1)?,
-            })
-        })
-        .map_err(internal_error)?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(Json(SessionDetail { summary, groups }))
+    Ok(Json(SessionDetail { summary, team_name }))
 }
 
 // ---------------------------------------------------------------------------
@@ -343,11 +326,11 @@ pub async fn get_session_raw(
 ) -> Result<Response, Response> {
     let conn = db.conn();
 
-    let (visibility, storage_key): (String, String) = conn
+    let storage_key: String = conn
         .query_row(
-            "SELECT visibility, body_storage_key FROM sessions WHERE id = ?1",
+            "SELECT body_storage_key FROM sessions WHERE id = ?1",
             [&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .map_err(|_| {
             (
@@ -356,14 +339,6 @@ pub async fn get_session_raw(
             )
                 .into_response()
         })?;
-
-    if visibility != "public" {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "session not found"})),
-        )
-            .into_response());
-    }
 
     drop(conn);
 

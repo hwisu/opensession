@@ -33,17 +33,9 @@
 	<div class="flex items-start gap-3">
 		<!-- User avatar + AI tool badge -->
 		<div class="relative mt-0.5 shrink-0">
-			{#if session.avatar_url}
-				<img
-					src={session.avatar_url}
-					alt={session.nickname ?? 'user'}
-					class="h-8 w-8 rounded-full"
-				/>
-			{:else}
-				<div class="flex h-8 w-8 items-center justify-center rounded-full bg-bg-hover text-xs font-bold text-text-secondary">
+			<div class="flex h-8 w-8 items-center justify-center rounded-full bg-bg-hover text-xs font-bold text-text-secondary">
 					{(session.nickname ?? '?')[0].toUpperCase()}
 				</div>
-			{/if}
 			<!-- AI tool badge -->
 			<div
 				class="absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded text-[9px] font-bold text-white ring-2 ring-bg-secondary"

@@ -89,18 +89,15 @@ export type {
 	SessionSummary,
 	SessionListResponse,
 	SessionDetail,
-	GroupRef,
-	GroupResponse,
-	ListGroupsResponse,
-	GroupDetailResponse,
+	TeamResponse,
+	ListTeamsResponse,
+	TeamDetailResponse,
 	MemberResponse,
 	ListMembersResponse,
 	RegisterResponse,
 	VerifyResponse,
 	UserSettingsResponse,
 	UploadResponse,
-	InviteResponse,
-	JoinResponse,
 	HealthResponse,
 	ApiError as ApiErrorResponse
 } from './api-types.generated';
@@ -111,14 +108,6 @@ export type SessionListItem = import('./api-types.generated').SessionSummary;
 // ─── UI-only types (not from server) ─────────────────────────────────────────
 
 export type UserSettings = import('./api-types.generated').UserSettingsResponse;
-
-export interface InviteInfo {
-	group_id: string;
-	group_name: string;
-	group_description?: string;
-	member_count: number;
-	inviter?: string;
-}
 
 export interface ToolConfig {
 	name: string;

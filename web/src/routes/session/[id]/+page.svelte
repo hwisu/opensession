@@ -123,17 +123,9 @@
 			<div class="mt-2 flex items-center gap-3">
 				<!-- User avatar + AI tool badge -->
 				<div class="relative shrink-0">
-					{#if detail?.avatar_url}
-						<img
-							src={detail.avatar_url}
-							alt={detail.nickname ?? 'user'}
-							class="h-8 w-8 rounded-full"
-						/>
-					{:else}
-						<div class="flex h-8 w-8 items-center justify-center rounded-full bg-bg-hover text-xs font-bold text-text-secondary">
-							{(detail?.nickname ?? '?')[0].toUpperCase()}
-						</div>
-					{/if}
+					<div class="flex h-8 w-8 items-center justify-center rounded-full bg-bg-hover text-xs font-bold text-text-secondary">
+						{(detail?.nickname ?? '?')[0].toUpperCase()}
+					</div>
 					<div
 						class="absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded text-[9px] font-bold text-white ring-2 ring-bg-primary"
 						style="background-color: {tool.color}"
@@ -180,12 +172,12 @@
 				<div class="sticky top-4 space-y-4">
 					<div class="rounded-lg border border-border bg-bg-secondary p-4">
 						<!-- User profile -->
-						{#if detail?.avatar_url || detail?.nickname}
+						{#if detail?.nickname}
 							<div class="mb-3 flex items-center gap-2">
-								{#if detail.avatar_url}
-									<img src={detail.avatar_url} alt={detail.nickname ?? ''} class="h-6 w-6 rounded-full" />
-								{/if}
-								<span class="text-sm font-medium text-text-primary">{detail.nickname ?? 'anonymous'}</span>
+								<div class="flex h-6 w-6 items-center justify-center rounded-full bg-bg-hover text-[10px] font-bold text-text-secondary">
+									{detail.nickname[0].toUpperCase()}
+								</div>
+								<span class="text-sm font-medium text-text-primary">{detail.nickname}</span>
 							</div>
 							<hr class="mb-3 border-border" />
 						{/if}

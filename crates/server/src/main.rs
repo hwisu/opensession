@@ -3,7 +3,7 @@ mod storage;
 
 use axum::{
     extract::{DefaultBodyLimit, FromRef},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::path::PathBuf;
@@ -57,29 +57,23 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))
         .route("/auth/regenerate-key", post(routes::auth::regenerate_key))
-        // GitHub OAuth
-        .route("/auth/github", get(routes::github_oauth::github_login))
-        .route("/auth/github/callback", get(routes::github_oauth::github_callback))
         // Sessions
         .route("/sessions", post(routes::sessions::upload_session))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB for large sessions
         .route("/sessions", get(routes::sessions::list_sessions))
         .route("/sessions/{id}", get(routes::sessions::get_session))
         .route("/sessions/{id}/raw", get(routes::sessions::get_session_raw))
-        // Groups
-        .route("/groups", post(routes::groups::create_group))
-        .route("/groups", get(routes::groups::list_my_groups))
-        .route("/groups/{id}", get(routes::groups::get_group))
-        .route("/groups/{id}", put(routes::groups::update_group))
-        .route("/groups/{id}/members", get(routes::invites::list_members))
-        // Invites
+        // Teams
+        .route("/teams", post(routes::teams::create_team))
+        .route("/teams", get(routes::teams::list_my_teams))
+        .route("/teams/{id}", get(routes::teams::get_team))
+        .route("/teams/{id}", put(routes::teams::update_team))
+        // Team members
+        .route("/teams/{id}/members", get(routes::teams::list_members))
+        .route("/teams/{id}/members", post(routes::teams::add_member))
         .route(
-            "/groups/{id}/invites",
-            post(routes::invites::create_invite),
-        )
-        .route(
-            "/invites/{code}/join",
-            post(routes::invites::join_via_invite),
+            "/teams/{team_id}/members/{user_id}",
+            delete(routes::teams::remove_member),
         );
 
     // Build main router

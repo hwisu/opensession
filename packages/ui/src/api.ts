@@ -1,11 +1,12 @@
 import type {
 	Session,
 	SessionListResponse,
-	GroupResponse,
-	GroupDetailResponse,
-	ListGroupsResponse,
+	TeamResponse,
+	TeamDetailResponse,
+	ListTeamsResponse,
+	ListMembersResponse,
+	MemberResponse,
 	UserSettings,
-	InviteInfo
 } from './types';
 
 function getBaseUrl(): string {
@@ -80,6 +81,7 @@ export async function listSessions(params?: {
 	per_page?: number;
 	sort?: string;
 	time_range?: string;
+	team_id?: string;
 }): Promise<SessionListResponse> {
 	const query = new URLSearchParams();
 	if (params?.tool) query.set('tool', params.tool);
@@ -88,6 +90,7 @@ export async function listSessions(params?: {
 	if (params?.per_page) query.set('per_page', String(params.per_page));
 	if (params?.sort) query.set('sort', params.sort);
 	if (params?.time_range) query.set('time_range', params.time_range);
+	if (params?.team_id) query.set('team_id', params.team_id);
 	const qs = query.toString();
 	return request<SessionListResponse>(`/api/sessions${qs ? `?${qs}` : ''}`);
 }
@@ -96,50 +99,66 @@ export async function getSession(id: string): Promise<Session> {
 	return request<Session>(`/api/sessions/${encodeURIComponent(id)}/raw`);
 }
 
-export async function uploadSession(session: Session): Promise<{ session_id: string }> {
+export async function uploadSession(session: Session, teamId: string): Promise<{ id: string; url: string }> {
 	return request('/api/sessions', {
 		method: 'POST',
-		body: JSON.stringify(session)
+		body: JSON.stringify({ session, team_id: teamId })
 	});
 }
 
-// Groups
+// Teams
 
-export async function listGroups(): Promise<ListGroupsResponse> {
-	return request('/api/groups');
+export async function listTeams(): Promise<ListTeamsResponse> {
+	return request('/api/teams');
 }
 
-export async function getGroup(id: string): Promise<GroupDetailResponse> {
-	return request<GroupDetailResponse>(`/api/groups/${encodeURIComponent(id)}`);
+export async function getTeam(id: string): Promise<TeamDetailResponse> {
+	return request<TeamDetailResponse>(`/api/teams/${encodeURIComponent(id)}`);
 }
 
-export async function createGroup(data: {
+export async function createTeam(data: {
 	name: string;
 	description?: string;
-	is_public: boolean;
-}): Promise<GroupResponse> {
-	return request('/api/groups', {
+}): Promise<TeamResponse> {
+	return request('/api/teams', {
 		method: 'POST',
 		body: JSON.stringify(data)
 	});
 }
 
-// Invites
-
-export async function getInviteInfo(code: string): Promise<InviteInfo> {
-	return request<InviteInfo>(`/api/invite/${encodeURIComponent(code)}`);
+export async function updateTeam(id: string, data: {
+	name?: string;
+	description?: string;
+}): Promise<TeamResponse> {
+	return request(`/api/teams/${encodeURIComponent(id)}`, {
+		method: 'PUT',
+		body: JSON.stringify(data)
+	});
 }
 
-export async function joinInvite(code: string): Promise<{ group_id: string }> {
-	return request(`/api/invite/${encodeURIComponent(code)}/join`, {
-		method: 'POST'
+// Team Members
+
+export async function listMembers(teamId: string): Promise<ListMembersResponse> {
+	return request(`/api/teams/${encodeURIComponent(teamId)}/members`);
+}
+
+export async function addMember(teamId: string, nickname: string): Promise<MemberResponse> {
+	return request(`/api/teams/${encodeURIComponent(teamId)}/members`, {
+		method: 'POST',
+		body: JSON.stringify({ nickname })
+	});
+}
+
+export async function removeMember(teamId: string, userId: string): Promise<void> {
+	await request(`/api/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`, {
+		method: 'DELETE'
 	});
 }
 
 // Auth / Settings
 
 export async function register(nickname: string): Promise<UserSettings> {
-	return request('/api/auth/register', {
+	return request('/api/register', {
 		method: 'POST',
 		body: JSON.stringify({ nickname })
 	});

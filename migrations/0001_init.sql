@@ -1,53 +1,41 @@
--- Users (MVP: nickname-based, API key auth)
+-- Users: nickname + API key auth, first user becomes admin
 CREATE TABLE users (
     id          TEXT PRIMARY KEY,
     nickname    TEXT NOT NULL UNIQUE,
     api_key     TEXT NOT NULL UNIQUE,
+    is_admin    BOOLEAN NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Groups
-CREATE TABLE groups (
+-- Teams
+CREATE TABLE teams (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     description TEXT,
-    is_public   BOOLEAN NOT NULL DEFAULT 0,
-    owner_id    TEXT NOT NULL REFERENCES users(id),
+    created_by  TEXT NOT NULL REFERENCES users(id),
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Group members
-CREATE TABLE group_members (
-    group_id    TEXT NOT NULL REFERENCES groups(id),
+-- Team members
+CREATE TABLE team_members (
+    team_id     TEXT NOT NULL REFERENCES teams(id),
     user_id     TEXT NOT NULL REFERENCES users(id),
     role        TEXT NOT NULL DEFAULT 'member',
     joined_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (group_id, user_id)
+    PRIMARY KEY (team_id, user_id)
 );
 
--- Invites
-CREATE TABLE invites (
-    id          TEXT PRIMARY KEY,
-    group_id    TEXT NOT NULL REFERENCES groups(id),
-    code        TEXT NOT NULL UNIQUE,
-    created_by  TEXT NOT NULL REFERENCES users(id),
-    max_uses    INTEGER,
-    used_count  INTEGER NOT NULL DEFAULT 0,
-    expires_at  TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Sessions
+-- Sessions (scoped to a team)
 CREATE TABLE sessions (
     id                  TEXT PRIMARY KEY,
     user_id             TEXT REFERENCES users(id),
+    team_id             TEXT NOT NULL REFERENCES teams(id),
     tool                TEXT NOT NULL,
     agent_provider      TEXT,
     agent_model         TEXT,
     title               TEXT,
     description         TEXT,
     tags                TEXT,
-    visibility          TEXT NOT NULL DEFAULT 'public',
     created_at          TEXT NOT NULL,
     uploaded_at         TEXT NOT NULL DEFAULT (datetime('now')),
     message_count       INTEGER DEFAULT 0,
@@ -55,13 +43,6 @@ CREATE TABLE sessions (
     event_count         INTEGER DEFAULT 0,
     duration_seconds    INTEGER DEFAULT 0,
     body_storage_key    TEXT NOT NULL
-);
-
--- Session-group link
-CREATE TABLE session_groups (
-    session_id  TEXT NOT NULL REFERENCES sessions(id),
-    group_id    TEXT NOT NULL REFERENCES groups(id),
-    PRIMARY KEY (session_id, group_id)
 );
 
 -- FTS5 search

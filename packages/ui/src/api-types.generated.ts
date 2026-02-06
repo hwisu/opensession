@@ -3,23 +3,23 @@
 
 export interface RegisterRequest { nickname: string, }
 
-export interface RegisterResponse { user_id: string, nickname: string, api_key: string, }
+export interface RegisterResponse { user_id: string, nickname: string, api_key: string, is_admin: boolean, }
 
 export interface VerifyResponse { user_id: string, nickname: string, }
 
-export interface UserSettingsResponse { user_id: string, nickname: string, api_key: string, github_login: string | null, avatar_url: string | null, created_at: string, }
+export interface UserSettingsResponse { user_id: string, nickname: string, api_key: string, is_admin: boolean, created_at: string, }
 
 export interface UploadResponse { id: string, url: string, }
 
-export interface SessionSummary { id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
+export interface SessionSummary { id: string, user_id: string | null, nickname: string | null, team_id: string, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
 /**
  * Comma-separated tags string
  */
-tags: string | null, visibility: string, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, avatar_url: string | null, }
+tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, }
 
 export interface SessionListResponse { sessions: Array<SessionSummary>, total: number, page: number, per_page: number, }
 
-export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, group_id: string | null, 
+export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, team_id: string | null, 
 /**
  * Sort order: "recent" (default), "popular" (message_count desc), "longest"
  */
@@ -29,29 +29,23 @@ sort: string | null,
  */
 time_range: string | null, }
 
-export interface SessionDetail { groups: Array<GroupRef>, id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
+export interface SessionDetail { team_name: string | null, id: string, user_id: string | null, nickname: string | null, team_id: string, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
 /**
  * Comma-separated tags string
  */
-tags: string | null, visibility: string, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, avatar_url: string | null, }
+tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, }
 
-export interface GroupRef { id: string, name: string, }
+export interface CreateTeamRequest { name: string, description: string | null, }
 
-export interface CreateGroupRequest { name: string, description: string | null, is_public: boolean, }
+export interface TeamResponse { id: string, name: string, description: string | null, created_by: string, created_at: string, }
 
-export interface GroupResponse { id: string, name: string, description: string | null, is_public: boolean, owner_id: string, created_at: string, }
+export interface ListTeamsResponse { teams: Array<TeamResponse>, }
 
-export interface ListGroupsResponse { groups: Array<GroupResponse>, }
+export interface TeamDetailResponse { member_count: number, sessions: Array<SessionSummary>, id: string, name: string, description: string | null, created_by: string, created_at: string, }
 
-export interface GroupDetailResponse { member_count: number, sessions: Array<SessionSummary>, id: string, name: string, description: string | null, is_public: boolean, owner_id: string, created_at: string, }
+export interface UpdateTeamRequest { name: string | null, description: string | null, }
 
-export interface UpdateGroupRequest { name: string | null, description: string | null, is_public: boolean | null, }
-
-export interface CreateInviteRequest { max_uses: number | null, expires_at: string | null, }
-
-export interface InviteResponse { id: string, group_id: string, code: string, max_uses: number | null, used_count: number, expires_at: string | null, created_at: string, }
-
-export interface JoinResponse { group_id: string, group_name: string, }
+export interface AddMemberRequest { nickname: string, }
 
 export interface MemberResponse { user_id: string, nickname: string, role: string, joined_at: string, }
 

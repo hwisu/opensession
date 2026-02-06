@@ -18,6 +18,7 @@ use crate::storage::Db;
 pub struct AuthUser {
     pub user_id: String,
     pub nickname: String,
+    pub is_admin: bool,
 }
 
 impl<S> FromRequestParts<S> for AuthUser
@@ -46,12 +47,13 @@ where
 
         let conn = db.conn();
         let result = conn.query_row(
-            "SELECT id, nickname FROM users WHERE api_key = ?1",
+            "SELECT id, nickname, is_admin FROM users WHERE api_key = ?1",
             [&api_key],
             |row| {
                 Ok(AuthUser {
                     user_id: row.get(0)?,
                     nickname: row.get(1)?,
+                    is_admin: row.get(2)?,
                 })
             },
         );
@@ -68,7 +70,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Register
+// Register — first user becomes admin
 // ---------------------------------------------------------------------------
 
 pub async fn register(
@@ -84,23 +86,20 @@ pub async fn register(
             .into_response());
     }
 
-    // Check registration is enabled
-    let registration = std::env::var("OPENSESSION_REGISTRATION").unwrap_or_default();
-    if registration == "closed" {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "registration is currently closed"})),
-        )
-            .into_response());
-    }
-
     let user_id = Uuid::new_v4().to_string();
     let api_key = format!("osk_{}", Uuid::new_v4().simple());
 
     let conn = db.conn();
+
+    // First user becomes admin
+    let user_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .unwrap_or(0);
+    let is_admin = user_count == 0;
+
     let result = conn.execute(
-        "INSERT INTO users (id, nickname, api_key) VALUES (?1, ?2, ?3)",
-        rusqlite::params![&user_id, &nickname, &api_key],
+        "INSERT INTO users (id, nickname, api_key, is_admin) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![&user_id, &nickname, &api_key, is_admin],
     );
 
     match result {
@@ -110,6 +109,7 @@ pub async fn register(
                 user_id,
                 nickname,
                 api_key,
+                is_admin,
             }),
         )),
         Err(rusqlite::Error::SqliteFailure(err, _))
@@ -153,16 +153,15 @@ pub async fn me(
 ) -> Result<Json<UserSettingsResponse>, Response> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, nickname, api_key, github_login, avatar_url, created_at FROM users WHERE id = ?1",
+        "SELECT id, nickname, api_key, is_admin, created_at FROM users WHERE id = ?1",
         [&user.user_id],
         |row| {
             Ok(UserSettingsResponse {
                 user_id: row.get(0)?,
                 nickname: row.get(1)?,
                 api_key: row.get(2)?,
-                github_login: row.get(3)?,
-                avatar_url: row.get(4)?,
-                created_at: row.get(5)?,
+                is_admin: row.get(3)?,
+                created_at: row.get(4)?,
             })
         },
     )

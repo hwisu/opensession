@@ -10,7 +10,7 @@
 
 	const navLinks = [
 		{ href: '/', label: 'Home' },
-		{ href: '/groups', label: 'Groups' },
+		{ href: '/teams', label: 'Teams' },
 		{ href: '/upload', label: 'Upload' }
 	];
 
@@ -40,17 +40,9 @@
 						class="ml-1 flex items-center rounded-full transition-opacity hover:opacity-80"
 						title={user.nickname}
 					>
-						{#if user.avatar_url}
-							<img
-								src={user.avatar_url}
-								alt={user.nickname}
-								class="h-7 w-7 rounded-full ring-2 ring-border"
-							/>
-						{:else}
-							<div class="flex h-7 w-7 items-center justify-center rounded-full bg-bg-hover text-xs font-bold text-text-secondary ring-2 ring-border">
-								{user.nickname[0].toUpperCase()}
-							</div>
-						{/if}
+						<div class="flex h-7 w-7 items-center justify-center rounded-full bg-bg-hover text-xs font-bold text-text-secondary ring-2 ring-border">
+							{user.nickname[0].toUpperCase()}
+						</div>
 					</a>
 				{:else}
 					<a

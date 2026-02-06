@@ -66,7 +66,6 @@ fn run_migrations(conn: &Connection) -> Result<()> {
 
     let migrations = vec![
         ("0001_init", include_str!("../../../migrations/0001_init.sql")),
-        ("0002_github_oauth", include_str!("../../../migrations/0002_github_oauth.sql")),
     ];
 
     for (name, sql) in migrations {

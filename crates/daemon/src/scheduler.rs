@@ -161,7 +161,7 @@ async fn process_file(
 
     let upload_body = serde_json::json!({
         "session": session,
-        "visibility": "public"
+        "team_id": config.identity.team_id,
     });
 
     let client = reqwest::Client::new();

@@ -51,19 +51,19 @@ pub async fn upload_session(
         }
     }
 
-    // Serialize body to JSON
-    let body_json = serde_json::to_vec(session).map_err(|e| {
+    // Serialize body to HAIL JSONL
+    let body_jsonl = session.to_jsonl().map_err(|e| {
         tracing::error!("serialize session body: {e}");
         (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "invalid session JSON"})),
+            Json(serde_json::json!({"error": "failed to serialize session"})),
         )
             .into_response()
     })?;
 
     let session_id = Uuid::new_v4().to_string();
 
-    let storage_key = db.write_body(&session_id, &body_json).map_err(|e| {
+    let storage_key = db.write_body(&session_id, body_jsonl.as_bytes()).map_err(|e| {
         tracing::error!("write body: {e}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -351,13 +351,25 @@ pub async fn get_session_raw(
             .into_response()
     })?;
 
+    // Detect format from storage key extension
+    let content_type = if storage_key.ends_with(".jsonl") {
+        "application/jsonl"
+    } else {
+        "application/json"
+    };
+    let filename = if storage_key.ends_with(".jsonl") {
+        "session.hail.jsonl"
+    } else {
+        "session.hail.json"
+    };
+
     Ok((
         StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, "application/json"),
+            (axum::http::header::CONTENT_TYPE, content_type),
             (
                 axum::http::header::CONTENT_DISPOSITION,
-                "attachment; filename=\"session.hail.json\"",
+                &format!("attachment; filename=\"{filename}\""),
             ),
         ],
         body,

@@ -96,7 +96,66 @@ export async function listSessions(params?: {
 }
 
 export async function getSession(id: string): Promise<Session> {
-	return request<Session>(`/api/sessions/${encodeURIComponent(id)}/raw`);
+	const url = `${getBaseUrl()}/api/sessions/${encodeURIComponent(id)}/raw`;
+	const headers: Record<string, string> = {};
+	const apiKey = getApiKey();
+	if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+	const res = await fetch(url, { headers });
+	if (!res.ok) {
+		const body = await res.text();
+		throw new ApiError(res.status, body);
+	}
+
+	const contentType = res.headers.get('content-type') || '';
+	const text = await res.text();
+
+	// JSONL format: parse line by line
+	if (contentType.includes('jsonl') || text.trimStart().startsWith('{"type":"header"')) {
+		return parseHailJsonl(text);
+	}
+
+	// Legacy JSON format
+	return JSON.parse(text) as Session;
+}
+
+/** Parse HAIL JSONL text into a Session object */
+function parseHailJsonl(text: string): Session {
+	const lines = text.split('\n').filter((l) => l.trim().length > 0);
+	if (lines.length === 0) throw new Error('Empty JSONL');
+
+	const header = JSON.parse(lines[0]);
+	if (header.type !== 'header') throw new Error('First line must be header');
+
+	const events: Session['events'] = [];
+	let stats: Session['stats'] | null = null;
+
+	for (let i = 1; i < lines.length; i++) {
+		const line = JSON.parse(lines[i]);
+		if (line.type === 'event') {
+			// Remove the wrapping "type":"event" tag, keep the event fields
+			const { type: _, ...event } = line;
+			events.push(event);
+		} else if (line.type === 'stats') {
+			const { type: _, ...s } = line;
+			stats = s;
+		}
+	}
+
+	return {
+		version: header.version,
+		session_id: header.session_id,
+		agent: header.agent,
+		context: header.context,
+		events,
+		stats: stats ?? {
+			event_count: events.length,
+			message_count: 0,
+			tool_call_count: 0,
+			task_count: 0,
+			duration_seconds: 0,
+		},
+	};
 }
 
 export async function uploadSession(session: Session, teamId: string): Promise<{ id: string; url: string }> {

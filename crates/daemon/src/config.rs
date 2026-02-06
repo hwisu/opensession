@@ -68,15 +68,16 @@ impl Default for ServerSettings {
 pub struct IdentitySettings {
     #[serde(default = "default_nickname")]
     pub nickname: String,
+    /// Team ID to upload sessions to
     #[serde(default)]
-    pub group_ids: Vec<String>,
+    pub team_id: String,
 }
 
 impl Default for IdentitySettings {
     fn default() -> Self {
         Self {
             nickname: default_nickname(),
-            group_ids: Vec::new(),
+            team_id: String::new(),
         }
     }
 }

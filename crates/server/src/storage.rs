@@ -20,17 +20,17 @@ impl Db {
         self.data_dir.join("bodies")
     }
 
-    /// Write a session body JSON to disk, return the storage key
-    pub fn write_body(&self, session_id: &str, json: &[u8]) -> Result<String> {
+    /// Write a session body as HAIL JSONL to disk, return the storage key
+    pub fn write_body(&self, session_id: &str, data: &[u8]) -> Result<String> {
         let dir = self.bodies_dir();
         std::fs::create_dir_all(&dir)?;
-        let key = format!("{session_id}.json");
+        let key = format!("{session_id}.hail.jsonl");
         let path = dir.join(&key);
-        std::fs::write(&path, json).context("writing session body")?;
+        std::fs::write(&path, data).context("writing session body")?;
         Ok(key)
     }
 
-    /// Read a session body JSON from disk
+    /// Read a session body from disk
     pub fn read_body(&self, storage_key: &str) -> Result<Vec<u8>> {
         let path = self.bodies_dir().join(storage_key);
         std::fs::read(&path).context("reading session body")

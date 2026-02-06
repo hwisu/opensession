@@ -31,17 +31,10 @@
 
 	let currentUserMsgIdx = $state(-1);
 
-	function jumpTo(direction: 'next' | 'prev' | 'exact', exactIdx?: number) {
-		if (userMessageIndices.length === 0) return;
-		if (direction === 'exact' && exactIdx !== undefined) {
-			currentUserMsgIdx = exactIdx;
-		} else if (direction === 'next') {
-			currentUserMsgIdx = (currentUserMsgIdx + 1) % userMessageIndices.length;
-		} else {
-			currentUserMsgIdx =
-				currentUserMsgIdx <= 0 ? userMessageIndices.length - 1 : currentUserMsgIdx - 1;
-		}
-		const targetIdx = userMessageIndices[currentUserMsgIdx];
+	function jumpTo(msgNum: number) {
+		if (msgNum < 0 || msgNum >= userMessageIndices.length) return;
+		currentUserMsgIdx = msgNum;
+		const targetIdx = userMessageIndices[msgNum];
 		const el = document.querySelector(`[data-timeline-idx="${targetIdx}"]`);
 		if (el) {
 			el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -79,52 +72,36 @@
 		</span>
 	</div>
 
-	<!-- Jump to message bar -->
-	{#if userMessageIndices.length > 1}
-		<div class="mb-4 flex items-center gap-1 rounded-lg border border-border bg-bg-secondary px-3 py-2">
-			{#if userMessageIndices.length <= 20}
-				<!-- Numbered buttons for small sessions -->
-				<span class="shrink-0 text-xs text-text-muted mr-1">Jump to</span>
-				<div class="flex items-center gap-1 overflow-x-auto">
-					{#each userMessageIndices as _msgIdx, i}
-						<button
-							onclick={() => jumpTo('exact', i)}
-							class="shrink-0 rounded px-2 py-0.5 text-xs font-mono transition-colors
-								{currentUserMsgIdx === i
-								? 'bg-accent text-white'
-								: 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'}"
-						>
-							{i + 1}
-						</button>
-					{/each}
-				</div>
-			{:else}
-				<!-- Compact nav for large sessions -->
-				<button
-					onclick={() => jumpTo('prev')}
-					class="shrink-0 rounded px-2 py-0.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-				>
-					&#x25C0;
-				</button>
-				<span class="shrink-0 text-xs font-mono text-text-muted px-2">
-					{currentUserMsgIdx >= 0 ? currentUserMsgIdx + 1 : '-'} / {userMessageIndices.length} messages
-				</span>
-				<button
-					onclick={() => jumpTo('next')}
-					class="shrink-0 rounded px-2 py-0.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-				>
-					&#x25B6;
-				</button>
-			{/if}
-		</div>
-	{/if}
-
-	<!-- Timeline content -->
-	<div>
-		{#each timeline as item, idx}
-			<div data-timeline-idx={idx} class="rounded transition-all">
-				<EventView event={item.event} />
+	<!-- Main layout: message nav rail + timeline -->
+	<div class="flex gap-0">
+		<!-- Left: vertical user message nav rail -->
+		{#if userMessageIndices.length > 1}
+			<div class="mr-2 hidden sm:flex flex-col items-center shrink-0" style="width: 24px;">
+				{#each userMessageIndices as _msgIdx, i}
+					<button
+						onclick={() => jumpTo(i)}
+						class="relative flex h-6 w-6 items-center justify-center rounded-full text-[9px] font-bold transition-all
+							{currentUserMsgIdx === i
+							? 'bg-blue-500 text-white ring-2 ring-blue-400/50 scale-110'
+							: 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/40 hover:text-blue-300'}"
+						title="Jump to user message {i + 1}"
+					>
+						{i + 1}
+					</button>
+					{#if i < userMessageIndices.length - 1}
+						<div class="w-px flex-1 min-h-1.5 bg-border"></div>
+					{/if}
+				{/each}
 			</div>
-		{/each}
+		{/if}
+
+		<!-- Timeline content -->
+		<div class="min-w-0 flex-1">
+			{#each timeline as item, idx}
+				<div data-timeline-idx={idx} class="rounded transition-all">
+					<EventView event={item.event} />
+				</div>
+			{/each}
+		</div>
 	</div>
 </div>

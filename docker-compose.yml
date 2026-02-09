@@ -1,6 +1,10 @@
 services:
   opensession:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        - opensession-core=../opensession-core
     ports:
       - "3000:3000"
     volumes:
@@ -11,6 +15,12 @@ services:
       - OPENSESSION_BASE_URL=http://localhost:3000
       - RUST_LOG=opensession_server=info,tower_http=info
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   opensession-data:

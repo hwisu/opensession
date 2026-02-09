@@ -10,6 +10,8 @@ use opensession_api_types::{
     SessionDetail, SessionListQuery, SessionListResponse, SessionSummary, UploadResponse,
 };
 
+use opensession_core::extract::{extract_first_user_text, extract_user_texts, truncate_str};
+
 use crate::routes::auth::AuthUser;
 use crate::storage::Db;
 
@@ -374,57 +376,3 @@ fn internal_error(e: impl std::fmt::Display) -> Response {
         .into_response()
 }
 
-/// Extract text from first UserMessage in a session
-fn extract_first_user_text(session: &opensession_core::Session) -> Option<String> {
-    for event in &session.events {
-        if matches!(event.event_type, opensession_core::EventType::UserMessage) {
-            return extract_text_from_content(&event.content);
-        }
-    }
-    None
-}
-
-/// Extract concatenated text from first N UserMessages
-fn extract_user_texts(session: &opensession_core::Session, n: usize) -> Option<String> {
-    let mut texts = Vec::new();
-    for event in &session.events {
-        if matches!(event.event_type, opensession_core::EventType::UserMessage) {
-            if let Some(text) = extract_text_from_content(&event.content) {
-                texts.push(text);
-                if texts.len() >= n {
-                    break;
-                }
-            }
-        }
-    }
-    if texts.is_empty() {
-        None
-    } else {
-        Some(texts.join(" | "))
-    }
-}
-
-fn extract_text_from_content(content: &opensession_core::Content) -> Option<String> {
-    for block in &content.blocks {
-        if let opensession_core::ContentBlock::Text { text } = block {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        // Find a char boundary near max_len
-        let mut end = max_len.saturating_sub(3);
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        format!("{}...", &s[..end])
-    }
-}

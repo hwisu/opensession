@@ -9,7 +9,7 @@
 	let error = $state<string | null>(null);
 
 	$effect(() => {
-		const id = $page.params.id;
+		const id = $page.params.id!;
 		loading = true;
 		error = null;
 		getTeam(id)

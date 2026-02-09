@@ -9,6 +9,9 @@ description = "Terminal UI for browsing opensession.io sessions"
 name = "opensession-tui"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 opensession-core = { workspace = true }
 opensession-parsers = { workspace = true }

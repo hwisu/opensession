@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Background daemon for automatic session detection and upload"
 
+[lints]
+workspace = true
+
 [dependencies]
 opensession-core = { workspace = true }
 opensession-parsers = { workspace = true }

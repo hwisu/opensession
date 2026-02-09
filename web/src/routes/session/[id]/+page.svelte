@@ -78,7 +78,7 @@
 	}
 
 	$effect(() => {
-		const id = $page.params.id;
+		const id = $page.params.id!;
 		loading = true;
 		error = null;
 		Promise.all([

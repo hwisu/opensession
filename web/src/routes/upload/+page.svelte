@@ -10,6 +10,7 @@
 	let uploadError = $state<string | null>(null);
 	let rawJson = $state('');
 	let dragover = $state(false);
+	let teamId = $state('');
 
 	function parseJson(text: string) {
 		parseError = null;
@@ -70,8 +71,8 @@
 		uploading = true;
 		uploadError = null;
 		try {
-			const result = await uploadSession(parsedSession);
-			goto(`/session/${result.session_id}`);
+			const result = await uploadSession(parsedSession, teamId);
+			goto(`/session/${result.id}`);
 		} catch (e) {
 			uploadError = e instanceof Error ? e.message : 'Upload failed';
 		} finally {
@@ -142,6 +143,19 @@
 	{/if}
 
 	{#if parsedSession && tool}
+		<div class="mb-4">
+			<label class="mb-1 block text-sm text-text-secondary" for="team-id">
+				Team ID:
+			</label>
+			<input
+				id="team-id"
+				type="text"
+				bind:value={teamId}
+				placeholder="Enter team ID"
+				class="w-full rounded-lg border border-border bg-bg-secondary p-3 text-sm text-text-primary placeholder-text-muted outline-none transition-colors focus:border-accent"
+			/>
+		</div>
+
 		<div class="mb-4 rounded-lg border border-border bg-bg-secondary p-4">
 			<h3 class="mb-2 text-sm font-medium text-text-primary">Preview</h3>
 			<div class="flex items-center gap-3">
@@ -182,7 +196,7 @@
 
 		<button
 			onclick={handleUpload}
-			disabled={uploading}
+			disabled={uploading || !teamId.trim()}
 			class="w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-50"
 		>
 			{uploading ? 'Uploading...' : 'Upload Session'}

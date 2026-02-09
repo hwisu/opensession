@@ -37,13 +37,16 @@
 	}
 
 	// --- Classify ---
-	const evType = event.event_type.type;
-	const isMessage = ['UserMessage', 'AgentMessage', 'SystemMessage'].includes(evType);
-	const isThinking = evType === 'Thinking';
-	const isSubAgent = evType === 'ToolCall' && event.event_type.data?.name === 'Task';
+	const evType = $derived(event.event_type.type);
+	const isMessage = $derived(['UserMessage', 'AgentMessage', 'SystemMessage'].includes(evType));
+	const isThinking = $derived(evType === 'Thinking');
+	const isSubAgent = $derived.by(() => {
+		const t = event.event_type;
+		return t.type === 'ToolCall' && t.data.name === 'Task';
+	});
 
 	// --- State ---
-	let expanded = $state(isMessage ? true : false);
+	let expanded = $state(true);
 	let showFull = $state(false);
 
 	// --- Derived ---
@@ -95,9 +98,10 @@
 		}
 	});
 
-	let isError = $derived(
-		evType === 'ToolResult' && 'data' in event.event_type && event.event_type.data.is_error
-	);
+	let isError = $derived.by(() => {
+		const t = event.event_type;
+		return t.type === 'ToolResult' && t.data.is_error;
+	});
 
 	let contentLength = $derived.by(() => {
 		let len = 0;

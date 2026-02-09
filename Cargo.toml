@@ -8,6 +8,14 @@ members = [
     "crates/tui",
 ]
 
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+collapsible_if = "warn"
+empty_line_after_doc_comments = "warn"
+needless_return = "warn"
+redundant_closure = "warn"
+single_match = "warn"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

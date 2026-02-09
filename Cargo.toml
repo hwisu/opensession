@@ -23,9 +23,9 @@ license = "MIT"
 repository = "https://github.com/hwisu/opensession"
 
 [workspace.dependencies]
-opensession-core = { path = "../opensession-core/crates/core" }
-opensession-parsers = { path = "../opensession-core/crates/parsers" }
-opensession-api-types = { path = "../opensession-core/crates/api-types" }
+opensession-core = { git = "https://github.com/hwisu/opensession-core" }
+opensession-parsers = { git = "https://github.com/hwisu/opensession-core" }
+opensession-api-types = { git = "https://github.com/hwisu/opensession-core" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -47,3 +47,4 @@ regex = "1"
 glob = "0.3"
 shellexpand = "3"
 ts-rs = "12"
+dialoguer = "0.11"

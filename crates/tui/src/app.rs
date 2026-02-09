@@ -21,6 +21,20 @@ pub enum EventFilter {
     All,
 }
 
+#[derive(Debug, Clone)]
+pub struct ServerInfo {
+    pub url: String,
+    pub status: ServerStatus,
+    pub last_upload: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ServerStatus {
+    Online(String), // version
+    Offline,
+    Unknown,
+}
+
 pub struct App {
     pub sessions: Vec<Session>,
     pub filtered_sessions: Vec<usize>,
@@ -37,6 +51,8 @@ pub struct App {
     pub collapsed_tasks: HashSet<String>,
     pub event_filter: EventFilter,
 
+    // Server connection info
+    pub server_info: Option<ServerInfo>,
 }
 
 impl App {
@@ -58,6 +74,7 @@ impl App {
             detail_event_index: 0,
             collapsed_tasks: HashSet::new(),
             event_filter: EventFilter::All,
+            server_info: None,
         }
     }
 

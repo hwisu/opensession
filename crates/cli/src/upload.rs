@@ -1,7 +1,9 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
+use std::time::Duration;
 
 use crate::config::load_config;
+use crate::server::retry_upload;
 use opensession_parsers::{all_parsers, SessionParser};
 
 /// Upload a session file to the configured server
@@ -52,15 +54,11 @@ pub async fn run_upload(file: &Path) -> Result<()> {
         "team_id": config.server.team_id,
     });
 
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", config.server.api_key))
-        .header("Content-Type", "application/json")
-        .json(&upload_body)
-        .send()
-        .await
-        .context("Failed to connect to server")?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?;
+
+    let response = retry_upload(&client, &url, &config.server.api_key, &upload_body).await?;
 
     let status = response.status();
     if status.is_success() {

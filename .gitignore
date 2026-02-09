@@ -1,5 +1,8 @@
 # Build artifacts
 /target/
+
+# Local cargo overrides (dev only)
+.cargo/config.toml
 web/node_modules/
 web/build/
 web/.svelte-kit/

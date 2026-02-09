@@ -1,6 +1,8 @@
 mod config;
 mod daemon_ctl;
 mod discover;
+mod handoff;
+pub mod server;
 mod upload;
 mod upload_all;
 
@@ -48,6 +50,26 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
+
+    /// Check server connection and authentication
+    Server {
+        #[command(subcommand)]
+        action: ServerAction,
+    },
+
+    /// Generate a session handoff summary for the next agent
+    Handoff {
+        /// Path to the session file (omit to select interactively)
+        file: Option<PathBuf>,
+
+        /// Use the most recent session
+        #[arg(short, long)]
+        last: bool,
+
+        /// Write output to a file instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -58,6 +80,14 @@ enum DaemonAction {
     Stop,
     /// Show daemon status
     Status,
+}
+
+#[derive(Subcommand)]
+enum ServerAction {
+    /// Check server health and version
+    Status,
+    /// Verify API key authentication
+    Verify,
 }
 
 #[tokio::main]
@@ -87,6 +117,13 @@ async fn main() {
             DaemonAction::Stop => daemon_ctl::daemon_stop(),
             DaemonAction::Status => daemon_ctl::daemon_status(),
         },
+        Commands::Server { action } => match action {
+            ServerAction::Status => server::run_status().await,
+            ServerAction::Verify => server::run_verify().await,
+        },
+        Commands::Handoff { file, last, output } => {
+            handoff::run_handoff(file.as_deref(), last, output.as_deref())
+        }
     };
 
     if let Err(e) = result {

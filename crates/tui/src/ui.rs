@@ -1,4 +1,4 @@
-use crate::app::{App, EventFilter, View};
+use crate::app::{App, EventFilter, ServerStatus, View};
 use crate::views::{session_detail, session_list};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph, Tabs};
@@ -30,7 +30,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
-            let header_line = Line::from(vec![
+            // Left side: title + session count
+            let left_spans = vec![
                 Span::styled(
                     " opensession ",
                     Style::new()
@@ -50,9 +51,18 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Span::raw("")
                 },
-            ]);
-            let p = Paragraph::new(header_line).alignment(Alignment::Left);
+            ];
+            let left_line = Line::from(left_spans);
+            let p = Paragraph::new(left_line).alignment(Alignment::Left);
             frame.render_widget(p, inner);
+
+            // Right side: server status
+            if let Some(ref info) = app.server_info {
+                let status_spans = build_server_status_spans(info);
+                let right_line = Line::from(status_spans);
+                let p_right = Paragraph::new(right_line).alignment(Alignment::Right);
+                frame.render_widget(p_right, inner);
+            }
         }
         View::SessionDetail => {
             let filter_titles = [
@@ -130,4 +140,52 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(help);
     frame.render_widget(paragraph, area);
+}
+
+use crate::app::ServerInfo;
+
+fn build_server_status_spans(info: &ServerInfo) -> Vec<Span<'_>> {
+    let mut spans = Vec::new();
+
+    // Shorten URL for display
+    let display_url = info
+        .url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+
+    match &info.status {
+        ServerStatus::Online(version) => {
+            spans.push(Span::styled(
+                format!("{} ", display_url),
+                Style::new().fg(Color::Rgb(140, 145, 160)),
+            ));
+            spans.push(Span::styled(
+                format!("online v{} ", version),
+                Style::new().fg(Color::Rgb(80, 200, 120)),
+            ));
+        }
+        ServerStatus::Offline => {
+            spans.push(Span::styled(
+                format!("{} ", display_url),
+                Style::new().fg(Color::Rgb(140, 145, 160)),
+            ));
+            spans.push(Span::styled(
+                "offline ",
+                Style::new().fg(Color::Rgb(220, 80, 80)),
+            ));
+        }
+        ServerStatus::Unknown => {
+            // Web target: show last upload time if available
+            if let Some(ref time) = info.last_upload {
+                // Show only date portion for brevity
+                let display_time = if time.len() > 10 { &time[..10] } else { time };
+                spans.push(Span::styled(
+                    format!("last upload: {} ", display_time),
+                    Style::new().fg(Color::DarkGray),
+                ));
+            }
+        }
+    }
+
+    spans
 }

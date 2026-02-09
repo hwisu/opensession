@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
+use std::time::Duration;
 
 use crate::config::load_config;
+use crate::server::retry_upload;
 use opensession_parsers::discover::discover_sessions;
 use opensession_parsers::{all_parsers, SessionParser};
 
@@ -21,7 +23,9 @@ pub async fn run_upload_all() -> Result<()> {
     }
 
     let parsers = all_parsers();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?;
     let url = format!("{}/api/sessions", config.server.url.trim_end_matches('/'));
 
     let mut total = 0usize;
@@ -72,20 +76,13 @@ pub async fn run_upload_all() -> Result<()> {
                 continue;
             }
 
-            // Upload
+            // Upload with retry
             let upload_body = serde_json::json!({
                 "session": session,
                 "team_id": config.server.team_id,
             });
 
-            match client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", config.server.api_key))
-                .header("Content-Type", "application/json")
-                .json(&upload_body)
-                .send()
-                .await
-            {
+            match retry_upload(&client, &url, &config.server.api_key, &upload_body).await {
                 Ok(resp) if resp.status().is_success() => {
                     let title = session.context.title.as_deref().unwrap_or("(untitled)");
                     println!(

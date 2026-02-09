@@ -5,8 +5,9 @@ use opensession_parsers::{all_parsers, SessionParser};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::config::DaemonConfig;
@@ -155,7 +156,7 @@ async fn process_file(
     };
     sanitize_session(&mut session, &sanitize_config);
 
-    // Upload
+    // Upload with retry
     let url = format!("{}/api/sessions", config.server.url.trim_end_matches('/'));
     info!("Uploading session {} to {}", session.session_id, url);
 
@@ -164,27 +165,68 @@ async fn process_file(
         "team_id": config.identity.team_id,
     });
 
-    let client = reqwest::Client::new();
-    let mut req = client
-        .post(&url)
-        .header("Content-Type", "application/json");
-    if !config.server.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", config.server.api_key));
-    }
-    let response = req
-        .json(&upload_body)
-        .send()
-        .await
-        .context("Failed to connect to server")?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?;
 
-    let status = response.status();
-    if status.is_success() {
-        info!("Uploaded session: {}", session.session_id);
-        state.mark_uploaded(&path_str);
-        state.save(state_path)?;
-    } else {
-        let body = response.text().await.unwrap_or_default();
-        error!("Upload failed (HTTP {}): {}", status, body);
+    let delays = [1u64, 2, 4];
+    let max_attempts = delays.len() + 1;
+    let mut last_err: Option<String> = None;
+
+    for attempt in 0..max_attempts {
+        let mut req = client
+            .post(&url)
+            .header("Content-Type", "application/json");
+        if !config.server.api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", config.server.api_key));
+        }
+
+        match req.json(&upload_body).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!("Uploaded session: {}", session.session_id);
+                state.mark_uploaded(&path_str);
+                state.save(state_path)?;
+                return Ok(());
+            }
+            Ok(resp) if resp.status().is_server_error() => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                last_err = Some(format!("HTTP {}: {}", status, body));
+                if attempt < delays.len() {
+                    warn!(
+                        "Upload attempt {}/{} failed (HTTP {}), retrying in {}s...",
+                        attempt + 1,
+                        max_attempts,
+                        status,
+                        delays[attempt]
+                    );
+                    tokio::time::sleep(Duration::from_secs(delays[attempt])).await;
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                error!("Upload failed (HTTP {}): {}", status, body);
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+                if attempt < delays.len() {
+                    warn!(
+                        "Upload attempt {}/{} failed ({}), retrying in {}s...",
+                        attempt + 1,
+                        max_attempts,
+                        e,
+                        delays[attempt]
+                    );
+                    tokio::time::sleep(Duration::from_secs(delays[attempt])).await;
+                }
+            }
+        }
+    }
+
+    if let Some(err) = last_err {
+        error!("Upload failed after {} attempts: {}", max_attempts, err);
     }
 
     Ok(())

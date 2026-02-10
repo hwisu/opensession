@@ -80,7 +80,10 @@ async fn check_server(client: &reqwest::Client, server_url: &str, api_key: &str)
 fn check_watch_paths(watch_paths: &[PathBuf]) {
     for path in watch_paths {
         if !path.exists() {
-            warn!("Health check: watch path no longer exists: {}", path.display());
+            warn!(
+                "Health check: watch path no longer exists: {}",
+                path.display()
+            );
         }
     }
 }

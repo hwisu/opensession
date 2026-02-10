@@ -14,9 +14,7 @@ pub async fn retry_upload(
     let max_attempts = max_retries + 1;
 
     for attempt in 0..max_attempts {
-        let mut req = client
-            .post(url)
-            .header("Content-Type", "application/json");
+        let mut req = client.post(url).header("Content-Type", "application/json");
         if !api_key.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }

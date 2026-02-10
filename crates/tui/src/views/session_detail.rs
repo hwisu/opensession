@@ -30,7 +30,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let tags_str = if session.context.tags.is_empty() {
         String::new()
     } else {
-        format!("  {}", session.context.tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" "))
+        format!(
+            "  {}",
+            session
+                .context
+                .tags
+                .iter()
+                .map(|t| format!("#{}", t))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
     };
 
     let header_text = vec![
@@ -39,9 +48,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(Color::White).bold(),
         )]),
         Line::from(vec![
-            Span::styled(&session.agent.tool, Style::new().fg(Color::Rgb(217, 119, 80))),
+            Span::styled(
+                &session.agent.tool,
+                Style::new().fg(Color::Rgb(217, 119, 80)),
+            ),
             Span::styled(" · ", Style::new().fg(Color::DarkGray)),
-            Span::styled(&session.agent.model, Style::new().fg(Color::Rgb(100, 140, 220))),
+            Span::styled(
+                &session.agent.model,
+                Style::new().fg(Color::Rgb(100, 140, 220)),
+            ),
             Span::styled(" · ", Style::new().fg(Color::DarkGray)),
             Span::styled(
                 format!("{} msgs", session.stats.message_count),
@@ -60,10 +75,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!(
-                    "{}",
-                    session.context.created_at.format("%Y-%m-%d %H:%M:%S")
-                ),
+                format!("{}", session.context.created_at.format("%Y-%m-%d %H:%M:%S")),
                 Style::new().fg(Color::DarkGray),
             ),
             Span::styled(tags_str, Style::new().fg(Color::Rgb(100, 120, 160))),
@@ -176,10 +188,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Calculate scroll using tracked positions
     let visible_height = timeline_area.height.saturating_sub(2) as usize;
-    let target_line = event_line_positions
-        .get(current_idx)
-        .copied()
-        .unwrap_or(0);
+    let target_line = event_line_positions.get(current_idx).copied().unwrap_or(0);
     let scroll = if target_line >= visible_height {
         target_line.saturating_sub(visible_height / 3)
     } else {
@@ -257,10 +266,7 @@ fn render_content_preview(blocks: &[ContentBlock], lines: &mut Vec<Line>, _width
                 lines.push(
                     Line::from(vec![
                         Span::styled(gutter, Style::new().fg(Color::Rgb(55, 60, 75))),
-                        Span::styled(
-                            format!("```{}", lang),
-                            Style::new().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("```{}", lang), Style::new().fg(Color::DarkGray)),
                     ])
                     .style(bg),
                 );
@@ -274,10 +280,7 @@ fn render_content_preview(blocks: &[ContentBlock], lines: &mut Vec<Line>, _width
                     lines.push(
                         Line::from(vec![
                             Span::styled(gutter, Style::new().fg(Color::Rgb(55, 60, 75))),
-                            Span::styled(
-                                truncated,
-                                Style::new().fg(Color::Rgb(130, 200, 130)),
-                            ),
+                            Span::styled(truncated, Style::new().fg(Color::Rgb(130, 200, 130))),
                         ])
                         .style(bg),
                     );
@@ -410,9 +413,7 @@ fn event_summary(event_type: &EventType) -> String {
         EventType::ImageGenerate { prompt } => truncate(prompt, 40),
         EventType::VideoGenerate { prompt } => truncate(prompt, 40),
         EventType::AudioGenerate { prompt } => truncate(prompt, 40),
-        EventType::TaskStart { title } => {
-            title.as_deref().unwrap_or("unnamed").to_string()
-        }
+        EventType::TaskStart { title } => title.as_deref().unwrap_or("unnamed").to_string(),
         EventType::TaskEnd { summary } => summary.as_deref().unwrap_or("").to_string(),
         EventType::Custom { kind } => kind.clone(),
     }

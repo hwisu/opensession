@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Top-level daemon configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DaemonConfig {
     #[serde(default)]
     pub daemon: DaemonSettings,
@@ -17,7 +16,6 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub watchers: WatcherSettings,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonSettings {

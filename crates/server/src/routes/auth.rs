@@ -6,7 +6,9 @@ use axum::{
 };
 use uuid::Uuid;
 
-use opensession_api_types::{RegisterRequest, RegisterResponse, UserSettingsResponse, VerifyResponse};
+use opensession_api_types::{
+    RegisterRequest, RegisterResponse, UserSettingsResponse, VerifyResponse,
+};
 
 use crate::storage::Db;
 

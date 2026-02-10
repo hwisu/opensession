@@ -57,10 +57,7 @@ pub async fn run_verify() -> Result<()> {
 
     let response = client
         .post(&url)
-        .header(
-            "Authorization",
-            format!("Bearer {}", config.server.api_key),
-        )
+        .header("Authorization", format!("Bearer {}", config.server.api_key))
         .send()
         .await
         .context("Failed to connect to server")?;
@@ -97,9 +94,7 @@ pub async fn retry_upload(
     let max_attempts = delays.len() + 1;
 
     for attempt in 0..max_attempts {
-        let mut req = client
-            .post(url)
-            .header("Content-Type", "application/json");
+        let mut req = client.post(url).header("Content-Type", "application/json");
         if !api_key.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }

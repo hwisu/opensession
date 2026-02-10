@@ -65,14 +65,16 @@ pub async fn upload_session(
 
     let session_id = Uuid::new_v4().to_string();
 
-    let storage_key = db.write_body(&session_id, body_jsonl.as_bytes()).map_err(|e| {
-        tracing::error!("write body: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "failed to store session body"})),
-        )
-            .into_response()
-    })?;
+    let storage_key = db
+        .write_body(&session_id, body_jsonl.as_bytes())
+        .map_err(|e| {
+            tracing::error!("write body: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "failed to store session body"})),
+            )
+                .into_response()
+        })?;
 
     let tags = if session.context.tags.is_empty() {
         None
@@ -82,15 +84,23 @@ pub async fn upload_session(
     let created_at = session.context.created_at.to_rfc3339();
 
     // Auto-extract title and description from first user messages if empty
-    let title = session.context.title.clone().filter(|t| !t.is_empty())
+    let title = session
+        .context
+        .title
+        .clone()
+        .filter(|t| !t.is_empty())
         .or_else(|| extract_first_user_text(session).map(|t| truncate_str(&t, 80)));
-    let description = session.context.description.clone().filter(|d| !d.is_empty())
+    let description = session
+        .context
+        .description
+        .clone()
+        .filter(|d| !d.is_empty())
         .or_else(|| extract_user_texts(session, 3).map(|t| truncate_str(&t, 500)));
 
     let conn = db.conn();
     conn.execute(
-        "INSERT INTO sessions (id, user_id, team_id, tool, agent_provider, agent_model, title, description, tags, created_at, message_count, task_count, event_count, duration_seconds, body_storage_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        "INSERT INTO sessions (id, user_id, team_id, tool, agent_provider, agent_model, title, description, tags, created_at, message_count, task_count, event_count, duration_seconds, total_input_tokens, total_output_tokens, body_storage_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         rusqlite::params![
             &session_id,
             &user.user_id,
@@ -106,6 +116,8 @@ pub async fn upload_session(
             session.stats.task_count as i64,
             session.stats.event_count as i64,
             session.stats.duration_seconds as i64,
+            session.stats.total_input_tokens as i64,
+            session.stats.total_output_tokens as i64,
             &storage_key,
         ],
     )
@@ -129,7 +141,13 @@ pub async fn upload_session(
         std::env::var("OPENSESSION_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
     let url = format!("{base_url}/session/{session_id}");
 
-    Ok((StatusCode::CREATED, Json(UploadResponse { id: session_id, url })))
+    Ok((
+        StatusCode::CREATED,
+        Json(UploadResponse {
+            id: session_id,
+            url,
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -145,9 +163,7 @@ pub async fn list_sessions(
     let offset = (q.page.saturating_sub(1)) * per_page;
 
     // Build dynamic query
-    let mut where_clauses = vec![
-        "(s.event_count > 0 OR s.message_count > 0)".to_string(),
-    ];
+    let mut where_clauses = vec!["(s.event_count > 0 OR s.message_count > 0)".to_string()];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut param_idx = 1u32;
 
@@ -196,12 +212,11 @@ pub async fn list_sessions(
     let where_str = where_clauses.join(" AND ");
 
     // Count total
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM sessions s WHERE {where_str}"
-    );
+    let count_sql = format!("SELECT COUNT(*) FROM sessions s WHERE {where_str}");
     let total: i64 = {
         let mut stmt = conn.prepare(&count_sql).map_err(internal_error)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         stmt.query_row(param_refs.as_slice(), |row| row.get(0))
             .map_err(internal_error)?
     };
@@ -215,7 +230,7 @@ pub async fn list_sessions(
 
     // Fetch page
     let select_sql = format!(
-        "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds
+        "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, s.total_input_tokens, s.total_output_tokens
          FROM sessions s
          LEFT JOIN users u ON u.id = s.user_id
          WHERE {where_str}
@@ -247,6 +262,8 @@ pub async fn list_sessions(
                 task_count: row.get(13)?,
                 event_count: row.get(14)?,
                 duration_seconds: row.get(15)?,
+                total_input_tokens: row.get(16)?,
+                total_output_tokens: row.get(17)?,
             })
         })
         .map_err(internal_error)?;
@@ -273,7 +290,7 @@ pub async fn get_session(
 
     let summary = conn
         .query_row(
-            "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds
+            "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, s.total_input_tokens, s.total_output_tokens
              FROM sessions s
              LEFT JOIN users u ON u.id = s.user_id
              WHERE s.id = ?1",
@@ -296,6 +313,8 @@ pub async fn get_session(
                     task_count: row.get(13)?,
                     event_count: row.get(14)?,
                     duration_seconds: row.get(15)?,
+                    total_input_tokens: row.get(16)?,
+                    total_output_tokens: row.get(17)?,
                 })
             },
         )
@@ -375,4 +394,3 @@ fn internal_error(e: impl std::fmt::Display) -> Response {
     )
         .into_response()
 }
-

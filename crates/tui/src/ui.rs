@@ -24,8 +24,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     match app.view {
         View::SessionList => {
-            let block = Block::bordered()
-                .border_style(Style::new().fg(Color::Rgb(60, 65, 80)));
+            let block = Block::bordered().border_style(Style::new().fg(Color::Rgb(60, 65, 80)));
 
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -34,9 +33,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let left_spans = vec![
                 Span::styled(
                     " opensession ",
-                    Style::new()
-                        .fg(Color::Rgb(217, 119, 80))
-                        .bold(),
+                    Style::new().fg(Color::Rgb(217, 119, 80)).bold(),
                 ),
                 Span::styled("  ", Style::new().fg(Color::DarkGray)),
                 Span::styled(
@@ -65,14 +62,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::SessionDetail => {
-            let filter_titles = [
-                "All",
-                "Messages",
-                "Tools",
-                "Thinking",
-                "Files",
-                "Shell",
-            ];
+            let filter_titles = ["All", "Messages", "Tools", "Thinking", "Files", "Shell"];
             let selected = match app.event_filter {
                 EventFilter::All => 0,
                 EventFilter::Messages => 1,
@@ -83,10 +73,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             let tabs = Tabs::new(filter_titles)
-                .block(
-                    Block::bordered()
-                        .border_style(Style::new().fg(Color::Rgb(60, 65, 80))),
-                )
+                .block(Block::bordered().border_style(Style::new().fg(Color::Rgb(60, 65, 80))))
                 .select(selected)
                 .style(Style::new().fg(Color::Rgb(80, 85, 100)))
                 .highlight_style(Style::new().fg(Color::Rgb(100, 180, 240)).bold())
@@ -102,7 +89,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         View::SessionList => {
             if app.searching {
                 Line::from(vec![
-                    Span::styled(" / ", Style::new().fg(Color::Black).bg(Color::Rgb(220, 180, 60)).bold()),
+                    Span::styled(
+                        " / ",
+                        Style::new()
+                            .fg(Color::Black)
+                            .bg(Color::Rgb(220, 180, 60))
+                            .bold(),
+                    ),
                     Span::styled(
                         format!(" {}", app.search_query),
                         Style::new().fg(Color::White),

@@ -84,6 +84,7 @@ pub async fn create_team(
             id: team_id,
             name,
             description: req.description,
+            is_public: false,
             created_by: user.user_id,
             created_at,
         }),
@@ -102,7 +103,7 @@ pub async fn list_my_teams(
 
     let mut stmt = conn
         .prepare(
-            "SELECT t.id, t.name, t.description, t.created_by, t.created_at
+            "SELECT t.id, t.name, t.description, t.is_public, t.created_by, t.created_at
              FROM teams t
              INNER JOIN team_members tm ON tm.team_id = t.id
              WHERE tm.user_id = ?1
@@ -116,8 +117,9 @@ pub async fn list_my_teams(
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
-                created_by: row.get(3)?,
-                created_at: row.get(4)?,
+                is_public: row.get(3)?,
+                created_by: row.get(4)?,
+                created_at: row.get(5)?,
             })
         })
         .map_err(internal_error)?
@@ -139,15 +141,16 @@ pub async fn get_team(
 
     let team = conn
         .query_row(
-            "SELECT id, name, description, created_by, created_at FROM teams WHERE id = ?1",
+            "SELECT id, name, description, is_public, created_by, created_at FROM teams WHERE id = ?1",
             [&id],
             |row| {
                 Ok(TeamResponse {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(2)?,
-                    created_by: row.get(3)?,
-                    created_at: row.get(4)?,
+                    is_public: row.get(3)?,
+                    created_by: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
             },
         )
@@ -169,7 +172,7 @@ pub async fn get_team(
 
     let mut stmt = conn
         .prepare(
-            "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds
+            "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, s.total_input_tokens, s.total_output_tokens
              FROM sessions s
              LEFT JOIN users u ON u.id = s.user_id
              WHERE s.team_id = ?1
@@ -197,6 +200,8 @@ pub async fn get_team(
                 task_count: row.get(13)?,
                 event_count: row.get(14)?,
                 duration_seconds: row.get(15)?,
+                total_input_tokens: row.get(16)?,
+                total_output_tokens: row.get(17)?,
             })
         })
         .map_err(internal_error)?
@@ -273,15 +278,16 @@ pub async fn update_team(
 
     let team = conn
         .query_row(
-            "SELECT id, name, description, created_by, created_at FROM teams WHERE id = ?1",
+            "SELECT id, name, description, is_public, created_by, created_at FROM teams WHERE id = ?1",
             [&id],
             |row| {
                 Ok(TeamResponse {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(2)?,
-                    created_by: row.get(3)?,
-                    created_at: row.get(4)?,
+                    is_public: row.get(3)?,
+                    created_by: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
             },
         )

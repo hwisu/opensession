@@ -329,12 +329,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| {
-                    let title = s
-                        .context
-                        .title
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase();
+                    let title = s.context.title.as_deref().unwrap_or("").to_lowercase();
                     let tool = s.agent.tool.to_lowercase();
                     let model = s.agent.model.to_lowercase();
                     let sid = s.session_id.to_lowercase();

@@ -65,7 +65,14 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     )?;
 
     let migrations = vec![
-        ("0001_init", include_str!("../../../migrations/0001_init.sql")),
+        (
+            "0001_init",
+            include_str!("../../../migrations/0001_init.sql"),
+        ),
+        (
+            "0002_add_tokens_and_public",
+            include_str!("../../../migrations/0002_add_tokens_and_public.sql"),
+        ),
     ];
 
     for (name, sql) in migrations {
@@ -80,10 +87,7 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         if !already_applied {
             conn.execute_batch(sql)
                 .with_context(|| format!("running migration {name}"))?;
-            conn.execute(
-                "INSERT INTO _migrations (name) VALUES (?1)",
-                [name],
-            )?;
+            conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
             tracing::info!("Applied migration: {name}");
         }
     }

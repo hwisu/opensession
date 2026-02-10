@@ -40,36 +40,21 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Line 1: icon + title
             let line1 = Line::from(vec![
-                Span::styled(
-                    tool_icon(tool),
-                    Style::new().fg(tool_color(tool)).bold(),
-                ),
+                Span::styled(tool_icon(tool), Style::new().fg(tool_color(tool)).bold()),
                 Span::raw(" "),
-                Span::styled(
-                    truncate(title, 70),
-                    Style::new().fg(Color::White).bold(),
-                ),
+                Span::styled(truncate(title, 70), Style::new().fg(Color::White).bold()),
             ]);
 
             // Line 2: metadata with subtle separators
             let line2 = Line::from(vec![
                 Span::raw("   "),
-                Span::styled(
-                    format!("{}", date),
-                    Style::new().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("{}", date), Style::new().fg(Color::DarkGray)),
                 Span::styled("  ", Style::new().fg(Color::DarkGray)),
                 Span::styled(model, Style::new().fg(Color::Blue)),
                 Span::styled("  ", Style::new().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("{} msgs", msgs),
-                    Style::new().fg(Color::Green),
-                ),
+                Span::styled(format!("{} msgs", msgs), Style::new().fg(Color::Green)),
                 Span::styled("  ", Style::new().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("{} events", events),
-                    Style::new().fg(Color::Yellow),
-                ),
+                Span::styled(format!("{} events", events), Style::new().fg(Color::Yellow)),
                 Span::styled("  ", Style::new().fg(Color::DarkGray)),
                 Span::styled(duration, Style::new().fg(Color::Cyan)),
             ]);

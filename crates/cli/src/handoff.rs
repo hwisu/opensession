@@ -33,8 +33,7 @@ pub fn run_handoff(file: Option<&Path>, last: bool, output: Option<&Path>) -> Re
     let md = generate_handoff(&session);
 
     if let Some(out) = output {
-        std::fs::write(out, &md)
-            .with_context(|| format!("Failed to write {}", out.display()))?;
+        std::fs::write(out, &md).with_context(|| format!("Failed to write {}", out.display()))?;
         println!("Handoff written to {}", out.display());
     } else {
         print!("{md}");
@@ -247,11 +246,7 @@ fn generate_handoff(session: &Session) -> String {
                 Some(c) => c.to_string(),
                 None => "?".to_string(),
             };
-            md.push_str(&format!(
-                "- `{}` → {}\n",
-                truncate_str(cmd, 80),
-                code_str
-            ));
+            md.push_str(&format!("- `{}` → {}\n", truncate_str(cmd, 80), code_str));
         }
         md.push('\n');
     }
@@ -309,8 +304,8 @@ fn format_duration(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opensession_core::{Agent, Content, Event, Session, Stats};
     use chrono::Utc;
+    use opensession_core::{Agent, Content, Event, Session, Stats};
     use std::collections::HashMap;
 
     fn make_agent() -> Agent {
@@ -355,7 +350,9 @@ mod tests {
             total_input_tokens: 0,
             total_output_tokens: 0,
         };
-        session.events.push(make_event(EventType::UserMessage, "Fix the build error"));
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "Fix the build error"));
         session.events.push(make_event(
             EventType::FileEdit {
                 path: "src/main.rs".to_string(),
@@ -391,17 +388,26 @@ mod tests {
     #[test]
     fn test_files_read_excludes_modified() {
         let mut session = Session::new("test-id".to_string(), make_agent());
-        session.events.push(make_event(EventType::UserMessage, "test"));
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "test"));
         session.events.push(make_event(
-            EventType::FileRead { path: "src/main.rs".to_string() },
+            EventType::FileRead {
+                path: "src/main.rs".to_string(),
+            },
             "",
         ));
         session.events.push(make_event(
-            EventType::FileEdit { path: "src/main.rs".to_string(), diff: None },
+            EventType::FileEdit {
+                path: "src/main.rs".to_string(),
+                diff: None,
+            },
             "",
         ));
         session.events.push(make_event(
-            EventType::FileRead { path: "README.md".to_string() },
+            EventType::FileRead {
+                path: "README.md".to_string(),
+            },
             "",
         ));
 
@@ -415,13 +421,20 @@ mod tests {
     #[test]
     fn test_file_create_not_overwritten_by_edit() {
         let mut session = Session::new("test-id".to_string(), make_agent());
-        session.events.push(make_event(EventType::UserMessage, "test"));
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "test"));
         session.events.push(make_event(
-            EventType::FileCreate { path: "new_file.rs".to_string() },
+            EventType::FileCreate {
+                path: "new_file.rs".to_string(),
+            },
             "",
         ));
         session.events.push(make_event(
-            EventType::FileEdit { path: "new_file.rs".to_string(), diff: None },
+            EventType::FileEdit {
+                path: "new_file.rs".to_string(),
+                diff: None,
+            },
             "",
         ));
 
@@ -432,7 +445,9 @@ mod tests {
     #[test]
     fn test_shell_error_in_errors_section() {
         let mut session = Session::new("test-id".to_string(), make_agent());
-        session.events.push(make_event(EventType::UserMessage, "test"));
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "test"));
         session.events.push(make_event(
             EventType::ShellCommand {
                 command: "cargo test".to_string(),

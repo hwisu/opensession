@@ -86,9 +86,7 @@ async fn main() -> anyhow::Result<()> {
     if web_dir.exists() {
         tracing::info!("serving static files from {}", web_dir.display());
         let index_html = web_dir.join("index.html");
-        app = app.fallback_service(
-            ServeDir::new(&web_dir).fallback(ServeFile::new(index_html)),
-        );
+        app = app.fallback_service(ServeDir::new(&web_dir).fallback(ServeFile::new(index_html)));
     }
 
     let app = app

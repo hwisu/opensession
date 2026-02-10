@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use opensession_core::sanitize::{SanitizeConfig, sanitize_session};
+use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_parsers::{all_parsers, SessionParser};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -63,7 +63,8 @@ pub async fn run_scheduler(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let debounce_duration = Duration::from_secs(config.daemon.debounce_secs);
-    let state_path = crate::config::state_file_path().unwrap_or_else(|_| PathBuf::from("state.json"));
+    let state_path =
+        crate::config::state_file_path().unwrap_or_else(|_| PathBuf::from("state.json"));
     let mut state = UploadState::load(&state_path);
 
     // Warn if deprecated auto_publish is set to false while publish_on is not Manual
@@ -156,9 +157,7 @@ async fn process_file(
     state_path: &PathBuf,
 ) -> Result<()> {
     // Check if file was already uploaded since last modification
-    let modified: DateTime<Utc> = std::fs::metadata(path)?
-        .modified()?
-        .into();
+    let modified: DateTime<Utc> = std::fs::metadata(path)?.modified()?.into();
 
     let path_str = path.to_string_lossy().to_string();
     if state.was_uploaded_after(&path_str, modified) {

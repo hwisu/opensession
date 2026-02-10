@@ -10,7 +10,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "opensession", about = "opensession.io CLI - manage AI coding sessions")]
+#[command(
+    name = "opensession",
+    about = "opensession.io CLI - manage AI coding sessions"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -130,7 +133,11 @@ async fn main() {
         Commands::Discover => discover::run_discover(),
         Commands::Upload { file } => upload::run_upload(&file).await,
         Commands::UploadAll => upload_all::run_upload_all().await,
-        Commands::Config { server, api_key, team_id } => {
+        Commands::Config {
+            server,
+            api_key,
+            team_id,
+        } => {
             if server.is_none() && api_key.is_none() && team_id.is_none() {
                 config::show_config()
             } else {

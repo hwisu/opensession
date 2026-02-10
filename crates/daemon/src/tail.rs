@@ -4,10 +4,12 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Tracks byte offsets per file for incremental reads
+#[allow(dead_code)]
 pub struct FileTailer {
     offsets: HashMap<PathBuf, u64>,
 }
 
+#[allow(dead_code)]
 impl FileTailer {
     pub fn new() -> Self {
         Self {
@@ -35,8 +37,8 @@ impl FileTailer {
     /// Read new lines from a file since the last read.
     /// Returns the new lines and updates the internal offset.
     pub fn read_new_lines(&mut self, path: &Path) -> Result<Vec<String>> {
-        let metadata = std::fs::metadata(path)
-            .with_context(|| format!("Cannot stat {}", path.display()))?;
+        let metadata =
+            std::fs::metadata(path).with_context(|| format!("Cannot stat {}", path.display()))?;
         let file_size = metadata.len();
 
         let current_offset = self.offsets.get(path).copied().unwrap_or(0);
@@ -58,8 +60,8 @@ impl FileTailer {
             return Ok(Vec::new());
         }
 
-        let mut file = std::fs::File::open(path)
-            .with_context(|| format!("Cannot open {}", path.display()))?;
+        let mut file =
+            std::fs::File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
         file.seek(SeekFrom::Start(current_offset))
             .with_context(|| format!("Cannot seek in {}", path.display()))?;
 

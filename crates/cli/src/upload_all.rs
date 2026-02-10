@@ -41,7 +41,11 @@ pub async fn run_upload_all() -> Result<()> {
 
             // Skip subagent files
             let path_str = path.to_string_lossy();
-            if path_str.contains("/subagents/") || path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("agent-")) {
+            if path_str.contains("/subagents/")
+                || path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("agent-"))
+            {
                 skipped += 1;
                 continue;
             }
@@ -116,7 +120,11 @@ pub async fn run_upload_all() -> Result<()> {
                     failed += 1;
                 }
                 Err(e) => {
-                    eprintln!("  FAIL upload {}: {}", path.file_name().unwrap_or_default().to_string_lossy(), e);
+                    eprintln!(
+                        "  FAIL upload {}: {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        e
+                    );
                     failed += 1;
                 }
             }

@@ -67,10 +67,7 @@ pub fn start_watcher(
 
 /// Check if a file looks like a session file we care about
 fn is_session_file(path: &Path) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     matches!(ext, "jsonl" | "json" | "db")
 }

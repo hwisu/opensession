@@ -36,8 +36,7 @@ pub fn daemon_start() -> Result<()> {
     let pid_path = pid_file_path()?;
     let dir = pid_path.parent().unwrap();
     std::fs::create_dir_all(dir)?;
-    std::fs::write(&pid_path, pid.to_string())
-        .context("Failed to write PID file")?;
+    std::fs::write(&pid_path, pid.to_string()).context("Failed to write PID file")?;
 
     println!("Daemon started (PID {})", pid);
     Ok(())
@@ -81,7 +80,10 @@ pub fn daemon_stop() -> Result<()> {
     std::thread::sleep(std::time::Duration::from_secs(2));
 
     if is_process_running(pid) {
-        bail!("Daemon did not stop (PID {}). Try killing it manually.", pid);
+        bail!(
+            "Daemon did not stop (PID {}). Try killing it manually.",
+            pid
+        );
     }
 
     let _ = std::fs::remove_file(pid_file_path()?);
@@ -113,12 +115,8 @@ fn read_pid() -> Result<Option<u32>> {
     if !path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&path)
-        .context("Failed to read PID file")?;
-    let pid: u32 = content
-        .trim()
-        .parse()
-        .context("Invalid PID in pid file")?;
+    let content = std::fs::read_to_string(&path).context("Failed to read PID file")?;
+    let pid: u32 = content.trim().parse().context("Invalid PID in pid file")?;
     Ok(Some(pid))
 }
 

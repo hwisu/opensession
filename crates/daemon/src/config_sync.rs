@@ -62,8 +62,7 @@ fn save_synced_config(config: &SyncedConfig) -> Result<()> {
     let path = synced_config_path()?;
     let dir = path.parent().unwrap();
     std::fs::create_dir_all(dir)?;
-    let content = toml::to_string_pretty(config)
-        .context("Failed to serialize synced config")?;
+    let content = toml::to_string_pretty(config).context("Failed to serialize synced config")?;
     std::fs::write(&path, content)
         .with_context(|| format!("Failed to write synced config at {}", path.display()))?;
     Ok(())
@@ -250,7 +249,9 @@ async fn poll_config(
                 .get("ETag")
                 .and_then(|v| v.to_str().ok())
                 .map(String::from);
-            let data: ConfigSyncData = resp.json().await
+            let data: ConfigSyncData = resp
+                .json()
+                .await
                 .context("Failed to parse config sync response")?;
             Ok(PollResult::Updated(data, new_etag))
         }
@@ -295,10 +296,7 @@ mod tests {
             merged.privacy.exclude_patterns,
             vec!["*.env", "*secret*", "*token*"]
         );
-        assert_eq!(
-            merged.privacy.exclude_tools,
-            vec!["cursor", "aider"]
-        );
+        assert_eq!(merged.privacy.exclude_tools, vec!["cursor", "aider"]);
     }
 
     #[test]

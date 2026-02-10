@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// CLI configuration stored at ~/.config/opensession/config.toml
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CliConfig {
     #[serde(default)]
     pub server: ServerConfig,
@@ -69,15 +68,12 @@ impl Default for DaemonRefConfig {
     }
 }
 
-
 /// Get the config directory path (~/.config/opensession/)
 pub fn config_dir() -> Result<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .context("Could not determine home directory")?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("opensession"))
+    Ok(PathBuf::from(home).join(".config").join("opensession"))
 }
 
 /// Get the config file path
@@ -104,8 +100,7 @@ pub fn save_config(config: &CliConfig) -> Result<()> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create config dir at {}", dir.display()))?;
     let path = config_path()?;
-    let content = toml::to_string_pretty(config)
-        .context("Failed to serialize config")?;
+    let content = toml::to_string_pretty(config).context("Failed to serialize config")?;
     std::fs::write(&path, content)
         .with_context(|| format!("Failed to write config at {}", path.display()))?;
     Ok(())
@@ -124,7 +119,10 @@ pub fn show_config() -> Result<()> {
         if config.server.api_key.is_empty() {
             "(not set)".to_string()
         } else {
-            format!("{}...", &config.server.api_key[..8.min(config.server.api_key.len())])
+            format!(
+                "{}...",
+                &config.server.api_key[..8.min(config.server.api_key.len())]
+            )
         }
     );
     println!(
@@ -142,7 +140,11 @@ pub fn show_config() -> Result<()> {
 }
 
 /// Update config with provided values
-pub fn set_config(server_url: Option<String>, api_key: Option<String>, team_id: Option<String>) -> Result<()> {
+pub fn set_config(
+    server_url: Option<String>,
+    api_key: Option<String>,
+    team_id: Option<String>,
+) -> Result<()> {
     let mut config = load_config()?;
 
     if let Some(url) = server_url {

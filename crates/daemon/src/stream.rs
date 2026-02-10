@@ -4,6 +4,7 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 /// Client for streaming events to the server incrementally.
+#[allow(dead_code)]
 pub struct StreamClient {
     client: reqwest::Client,
     server_url: String,
@@ -13,6 +14,7 @@ pub struct StreamClient {
     remote_session_id: Option<String>,
 }
 
+#[allow(dead_code)]
 impl StreamClient {
     pub fn new(server_url: String, api_key: String, team_id: String) -> Self {
         let client = reqwest::Client::builder()

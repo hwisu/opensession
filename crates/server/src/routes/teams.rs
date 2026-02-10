@@ -6,7 +6,7 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api_types::{
-    db, AddMemberRequest, CreateTeamRequest, ListMembersResponse, ListTeamsResponse,
+    db, service, AddMemberRequest, CreateTeamRequest, ListMembersResponse, ListTeamsResponse,
     MemberResponse, SessionSummary, TeamDetailResponse, TeamResponse, UpdateTeamRequest,
 };
 
@@ -27,10 +27,7 @@ pub async fn create_team(
         return Err(ApiErr::forbidden("admin only"));
     }
 
-    let name = req.name.trim().to_string();
-    if name.is_empty() || name.len() > 128 {
-        return Err(ApiErr::bad_request("name must be 1-128 characters"));
-    }
+    let name = service::validate_team_name(&req.name).map_err(ApiErr::from)?;
 
     let team_id = Uuid::new_v4().to_string();
     let is_public = req.is_public.unwrap_or(false);
@@ -177,13 +174,10 @@ pub async fn update_team(
     }
 
     if let Some(ref name) = req.name {
-        let name = name.trim();
-        if name.is_empty() || name.len() > 128 {
-            return Err(ApiErr::bad_request("name must be 1-128 characters"));
-        }
+        let name = service::validate_team_name(name).map_err(ApiErr::from)?;
         conn.execute(
             "UPDATE teams SET name = ?1 WHERE id = ?2",
-            rusqlite::params![name, &id],
+            rusqlite::params![&name, &id],
         )
         .map_err(ApiErr::from_db("update team name"))?;
     }

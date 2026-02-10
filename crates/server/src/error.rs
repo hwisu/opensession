@@ -3,58 +3,38 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use opensession_api_types::ServiceError;
 use std::fmt;
 
-/// Unified API error type.
+/// Thin Axum adapter around the shared [`ServiceError`] type.
 ///
-/// Produces `{"error": "<message>"}` JSON responses — the same structure
-/// previously built ad-hoc via `serde_json::json!`.
-pub struct ApiErr {
-    status: StatusCode,
-    message: String,
-}
+/// Keeps the same convenience constructors so route code doesn't change.
+/// Produces `{"error": "<message>"}` JSON responses.
+pub struct ApiErr(ServiceError);
 
 impl ApiErr {
     pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: msg.into(),
-        }
+        Self(ServiceError::BadRequest(msg.into()))
     }
 
     pub fn unauthorized(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: msg.into(),
-        }
+        Self(ServiceError::Unauthorized(msg.into()))
     }
 
     pub fn forbidden(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::FORBIDDEN,
-            message: msg.into(),
-        }
+        Self(ServiceError::Forbidden(msg.into()))
     }
 
     pub fn not_found(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_FOUND,
-            message: msg.into(),
-        }
+        Self(ServiceError::NotFound(msg.into()))
     }
 
     pub fn conflict(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
-            message: msg.into(),
-        }
+        Self(ServiceError::Conflict(msg.into()))
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: msg.into(),
-        }
+        Self(ServiceError::Internal(msg.into()))
     }
 
     /// Build a closure that logs a DB/IO error and returns `500 Internal Server Error`.
@@ -66,12 +46,16 @@ impl ApiErr {
     }
 }
 
+impl From<ServiceError> for ApiErr {
+    fn from(e: ServiceError) -> Self {
+        Self(e)
+    }
+}
+
 impl IntoResponse for ApiErr {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(serde_json::json!({"error": self.message})),
-        )
-            .into_response()
+        let status =
+            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (status, Json(serde_json::json!({"error": self.0.message()}))).into_response()
     }
 }

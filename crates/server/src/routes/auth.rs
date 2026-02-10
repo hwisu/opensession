@@ -6,7 +6,7 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api_types::{
-    RegisterRequest, RegisterResponse, UserSettingsResponse, VerifyResponse,
+    service, RegisterRequest, RegisterResponse, UserSettingsResponse, VerifyResponse,
 };
 
 use crate::error::ApiErr;
@@ -67,10 +67,7 @@ pub async fn register(
     State(db): State<Db>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), ApiErr> {
-    let nickname = req.nickname.trim().to_string();
-    if nickname.is_empty() || nickname.len() > 64 {
-        return Err(ApiErr::bad_request("nickname must be 1-64 characters"));
-    }
+    let nickname = service::validate_nickname(&req.nickname).map_err(ApiErr::from)?;
 
     let user_id = Uuid::new_v4().to_string();
     let api_key = format!("osk_{}", Uuid::new_v4().simple());

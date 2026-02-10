@@ -1,6 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
+use opensession_local_db::git::extract_git_context;
+use opensession_local_db::LocalDb;
 use opensession_parsers::{all_parsers, SessionParser};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,45 +16,22 @@ use crate::config::{DaemonConfig, PublishMode};
 use crate::retry::retry_upload;
 use crate::watcher::FileChangeEvent;
 
-/// Tracks which sessions have been uploaded
+/// Legacy state – kept only for migration from state.json.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UploadState {
-    /// Map of file path -> last uploaded timestamp
     pub uploaded: HashMap<String, DateTime<Utc>>,
-    /// Map of file path -> byte offset for incremental reads (Phase 3)
     #[serde(default)]
     pub offsets: HashMap<String, u64>,
 }
 
 impl UploadState {
-    pub fn load(path: &PathBuf) -> Self {
+    pub fn load(path: &PathBuf) -> Option<Self> {
         if !path.exists() {
-            return Self::default();
+            return None;
         }
         std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn save(&self, path: &PathBuf) -> Result<()> {
-        let dir = path.parent().unwrap();
-        std::fs::create_dir_all(dir)?;
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)
-            .with_context(|| format!("Failed to write state file at {}", path.display()))?;
-        Ok(())
-    }
-
-    pub fn mark_uploaded(&mut self, file_path: &str) {
-        self.uploaded.insert(file_path.to_string(), Utc::now());
-    }
-
-    pub fn was_uploaded_after(&self, file_path: &str, modified: DateTime<Utc>) -> bool {
-        self.uploaded
-            .get(file_path)
-            .map(|uploaded_at| *uploaded_at >= modified)
-            .unwrap_or(false)
     }
 }
 
@@ -61,11 +40,28 @@ pub async fn run_scheduler(
     config: DaemonConfig,
     mut rx: mpsc::UnboundedReceiver<FileChangeEvent>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    db: std::sync::Arc<LocalDb>,
 ) {
     let debounce_duration = Duration::from_secs(config.daemon.debounce_secs);
+
+    // Migrate from state.json if it exists
     let state_path =
         crate::config::state_file_path().unwrap_or_else(|_| PathBuf::from("state.json"));
-    let mut state = UploadState::load(&state_path);
+    if let Some(legacy) = UploadState::load(&state_path) {
+        if !legacy.uploaded.is_empty() {
+            match db.migrate_from_state_json(&legacy.uploaded) {
+                Ok(count) => {
+                    info!("Migrated {count} entries from state.json to local DB");
+                    // Rename the old file so we don't re-migrate
+                    let bak = state_path.with_extension("json.bak");
+                    if let Err(e) = std::fs::rename(&state_path, &bak) {
+                        warn!("Could not rename state.json to .bak: {e}");
+                    }
+                }
+                Err(e) => warn!("state.json migration failed: {e}"),
+            }
+        }
+    }
 
     // Warn if deprecated auto_publish is set to false while publish_on is not Manual
     if !config.daemon.auto_publish && config.daemon.publish_on != PublishMode::Manual {
@@ -94,8 +90,6 @@ pub async fn run_scheduler(
                 debug!("Scheduling: {:?}", event.path.display());
                 match effective_mode {
                     PublishMode::Realtime => {
-                        // In realtime mode, process with minimal debounce
-                        // Phase 3 will replace this with incremental streaming
                         pending.insert(event.path, Instant::now());
                     }
                     _ => {
@@ -125,7 +119,7 @@ pub async fn run_scheduler(
                             debug!("Manual mode, skipping auto-publish: {}", path.display());
                         }
                         PublishMode::SessionEnd | PublishMode::Realtime => {
-                            if let Err(e) = process_file(&path, &config, &mut state, &state_path).await {
+                            if let Err(e) = process_file(&path, &config, &db).await {
                                 error!("Failed to process {}: {:#}", path.display(), e);
                             }
                         }
@@ -142,25 +136,15 @@ pub async fn run_scheduler(
             }
         }
     }
-
-    // Save state on shutdown
-    if let Err(e) = state.save(&state_path) {
-        error!("Failed to save state on shutdown: {}", e);
-    }
 }
 
-/// Process a single file: parse, sanitize, upload
-async fn process_file(
-    path: &PathBuf,
-    config: &DaemonConfig,
-    state: &mut UploadState,
-    state_path: &PathBuf,
-) -> Result<()> {
+/// Process a single file: parse, store in local DB, sanitize, upload
+async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Result<()> {
     // Check if file was already uploaded since last modification
     let modified: DateTime<Utc> = std::fs::metadata(path)?.modified()?.into();
 
     let path_str = path.to_string_lossy().to_string();
-    if state.was_uploaded_after(&path_str, modified) {
+    if db.was_uploaded_after(&path_str, &modified)? {
         debug!("Skipping already-uploaded file: {}", path.display());
         return Ok(());
     }
@@ -198,6 +182,18 @@ async fn process_file(
         return Ok(());
     }
 
+    // Extract git context from the session's working directory
+    let cwd = session
+        .context
+        .attributes
+        .get("cwd")
+        .or_else(|| session.context.attributes.get("working_directory"))
+        .and_then(|v| v.as_str().map(String::from));
+    let git = cwd.as_deref().map(extract_git_context).unwrap_or_default();
+
+    // Store in local DB (before sanitization, so we keep git context)
+    db.upsert_local_session(&session, &path_str, &git)?;
+
     // Sanitize
     let sanitize_config = SanitizeConfig {
         strip_paths: config.privacy.strip_paths,
@@ -231,8 +227,7 @@ async fn process_file(
     let status = response.status();
     if status.is_success() {
         info!("Uploaded session: {}", session.session_id);
-        state.mark_uploaded(&path_str);
-        state.save(state_path)?;
+        db.mark_synced(&session.session_id)?;
     } else if status.is_client_error() {
         let body = response.text().await.unwrap_or_default();
         error!("Upload rejected (HTTP {}): {}", status, body);

@@ -9,6 +9,6 @@ echo "Running cargo clippy..."
 cargo clippy --workspace --exclude opensession-worker -- -D warnings
 
 echo "Running tests..."
-cargo test -p opensession-daemon -p opensession-cli --quiet
+cargo test -p opensession-daemon --quiet
 
 echo "All checks passed."

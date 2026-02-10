@@ -1,6 +1,7 @@
 mod config;
 mod config_sync;
 mod health;
+mod pull_sync;
 mod retry;
 mod scheduler;
 mod stream;
@@ -8,6 +9,8 @@ mod tail;
 mod watcher;
 
 use anyhow::Result;
+use opensession_local_db::LocalDb;
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info};
 
@@ -41,6 +44,10 @@ async fn run() -> Result<()> {
         info!("Watching {} directories", watch_paths.len());
     }
 
+    // Open local DB
+    let db = Arc::new(LocalDb::open()?);
+    info!("Local DB opened");
+
     // Write PID file
     write_pid_file()?;
 
@@ -60,8 +67,9 @@ async fn run() -> Result<()> {
     // Start scheduler in background
     let scheduler_cfg = cfg.clone();
     let scheduler_shutdown = shutdown_rx.clone();
+    let scheduler_db = Arc::clone(&db);
     let scheduler_handle = tokio::spawn(async move {
-        scheduler::run_scheduler(scheduler_cfg, rx, scheduler_shutdown).await;
+        scheduler::run_scheduler(scheduler_cfg, rx, scheduler_shutdown, scheduler_db).await;
     });
 
     // Start health check in background
@@ -83,6 +91,17 @@ async fn run() -> Result<()> {
         sync_shutdown,
     ));
 
+    // Start pull sync in background
+    let pull_shutdown = shutdown_rx.clone();
+    let pull_db = Arc::clone(&db);
+    let pull_handle = tokio::spawn(pull_sync::run_pull_sync(
+        cfg.server.url.clone(),
+        cfg.server.api_key.clone(),
+        cfg.identity.team_id.clone(),
+        pull_db,
+        pull_shutdown,
+    ));
+
     // Wait for shutdown signal
     wait_for_shutdown().await;
 
@@ -93,6 +112,7 @@ async fn run() -> Result<()> {
     let _ = scheduler_handle.await;
     let _ = health_handle.await;
     let _ = sync_handle.await;
+    let _ = pull_handle.await;
 
     // Clean up PID file
     cleanup_pid_file();

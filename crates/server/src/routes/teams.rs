@@ -7,8 +7,8 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api_types::{
-    AddMemberRequest, CreateTeamRequest, ListMembersResponse, ListTeamsResponse, MemberResponse,
-    SessionSummary, TeamDetailResponse, TeamResponse, UpdateTeamRequest,
+    db, AddMemberRequest, CreateTeamRequest, ListMembersResponse, ListTeamsResponse,
+    MemberResponse, SessionSummary, TeamDetailResponse, TeamResponse, UpdateTeamRequest,
 };
 
 use crate::routes::auth::AuthUser;
@@ -41,11 +41,12 @@ pub async fn create_team(
     }
 
     let team_id = Uuid::new_v4().to_string();
+    let is_public = req.is_public.unwrap_or(false);
     let conn = db.conn();
 
     conn.execute(
-        "INSERT INTO teams (id, name, description, created_by) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![&team_id, &name, &req.description, &user.user_id],
+        db::TEAM_INSERT,
+        rusqlite::params![&team_id, &name, &req.description, is_public, &user.user_id],
     )
     .map_err(|e| {
         tracing::error!("create team: {e}");
@@ -84,7 +85,7 @@ pub async fn create_team(
             id: team_id,
             name,
             description: req.description,
-            is_public: false,
+            is_public,
             created_by: user.user_id,
             created_at,
         }),
@@ -101,15 +102,7 @@ pub async fn list_my_teams(
 ) -> Result<Json<ListTeamsResponse>, Response> {
     let conn = db.conn();
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT t.id, t.name, t.description, t.is_public, t.created_by, t.created_at
-             FROM teams t
-             INNER JOIN team_members tm ON tm.team_id = t.id
-             WHERE tm.user_id = ?1
-             ORDER BY t.created_at DESC",
-        )
-        .map_err(internal_error)?;
+    let mut stmt = conn.prepare(&db::TEAM_LIST_MY).map_err(internal_error)?;
 
     let teams: Vec<TeamResponse> = stmt
         .query_map([&user.user_id], |row| {
@@ -140,20 +133,16 @@ pub async fn get_team(
     let conn = db.conn();
 
     let team = conn
-        .query_row(
-            "SELECT id, name, description, is_public, created_by, created_at FROM teams WHERE id = ?1",
-            [&id],
-            |row| {
-                Ok(TeamResponse {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    is_public: row.get(3)?,
-                    created_by: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            },
-        )
+        .query_row(&db::TEAM_GET, [&id], |row| {
+            Ok(TeamResponse {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                is_public: row.get(3)?,
+                created_by: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
         .map_err(|_| {
             (
                 StatusCode::NOT_FOUND,
@@ -170,16 +159,16 @@ pub async fn get_team(
         )
         .unwrap_or(0);
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, s.total_input_tokens, s.total_output_tokens
-             FROM sessions s
-             LEFT JOIN users u ON u.id = s.user_id
-             WHERE s.team_id = ?1
-             ORDER BY s.uploaded_at DESC
-             LIMIT 50",
-        )
-        .map_err(internal_error)?;
+    let sessions_sql = format!(
+        "SELECT {} \
+         FROM sessions s \
+         LEFT JOIN users u ON u.id = s.user_id \
+         WHERE s.team_id = ?1 \
+         ORDER BY s.uploaded_at DESC \
+         LIMIT 50",
+        db::SESSION_COLUMNS,
+    );
+    let mut stmt = conn.prepare(&sessions_sql).map_err(internal_error)?;
 
     let sessions: Vec<SessionSummary> = stmt
         .query_map([&id], |row| {
@@ -276,21 +265,25 @@ pub async fn update_team(
         .map_err(internal_error)?;
     }
 
-    let team = conn
-        .query_row(
-            "SELECT id, name, description, is_public, created_by, created_at FROM teams WHERE id = ?1",
-            [&id],
-            |row| {
-                Ok(TeamResponse {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    is_public: row.get(3)?,
-                    created_by: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            },
+    if let Some(is_public) = req.is_public {
+        conn.execute(
+            "UPDATE teams SET is_public = ?1 WHERE id = ?2",
+            rusqlite::params![is_public, &id],
         )
+        .map_err(internal_error)?;
+    }
+
+    let team = conn
+        .query_row(&db::TEAM_GET, [&id], |row| {
+            Ok(TeamResponse {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                is_public: row.get(3)?,
+                created_by: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
         .map_err(|_| {
             (
                 StatusCode::NOT_FOUND,
@@ -455,15 +448,7 @@ pub async fn list_members(
             .into_response());
     }
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT tm.user_id, u.nickname, tm.role, tm.joined_at
-             FROM team_members tm
-             INNER JOIN users u ON u.id = tm.user_id
-             WHERE tm.team_id = ?1
-             ORDER BY tm.joined_at ASC",
-        )
-        .map_err(internal_error)?;
+    let mut stmt = conn.prepare(&db::MEMBER_LIST).map_err(internal_error)?;
 
     let members: Vec<MemberResponse> = stmt
         .query_map([&team_id], |row| {

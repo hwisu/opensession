@@ -68,6 +68,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/teams", get(routes::teams::list_my_teams))
         .route("/teams/{id}", get(routes::teams::get_team))
         .route("/teams/{id}", put(routes::teams::update_team))
+        // Sync
+        .route("/sync/pull", get(routes::sync::pull))
         // Team members
         .route("/teams/{id}/members", get(routes::teams::list_members))
         .route("/teams/{id}/members", post(routes::teams::add_member))

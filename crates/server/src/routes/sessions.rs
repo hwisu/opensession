@@ -7,7 +7,7 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api_types::{
-    SessionDetail, SessionListQuery, SessionListResponse, SessionSummary, UploadResponse,
+    db, SessionDetail, SessionListQuery, SessionListResponse, SessionSummary, UploadResponse,
 };
 
 use opensession_core::extract::{extract_first_user_text, extract_user_texts, truncate_str};
@@ -99,8 +99,7 @@ pub async fn upload_session(
 
     let conn = db.conn();
     conn.execute(
-        "INSERT INTO sessions (id, user_id, team_id, tool, agent_provider, agent_model, title, description, tags, created_at, message_count, task_count, event_count, duration_seconds, total_input_tokens, total_output_tokens, body_storage_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        db::SESSION_INSERT,
         rusqlite::params![
             &session_id,
             &user.user_id,
@@ -230,13 +229,14 @@ pub async fn list_sessions(
 
     // Fetch page
     let select_sql = format!(
-        "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, s.total_input_tokens, s.total_output_tokens
-         FROM sessions s
-         LEFT JOIN users u ON u.id = s.user_id
-         WHERE {where_str}
-         ORDER BY {order_clause}
+        "SELECT {} \
+         FROM sessions s \
+         LEFT JOIN users u ON u.id = s.user_id \
+         WHERE {where_str} \
+         ORDER BY {order_clause} \
          LIMIT ?{param_idx} OFFSET ?{}",
-        param_idx + 1
+        db::SESSION_COLUMNS,
+        param_idx + 1,
     );
     params.push(Box::new(per_page as i64));
     params.push(Box::new(offset as i64));
@@ -289,35 +289,28 @@ pub async fn get_session(
     let conn = db.conn();
 
     let summary = conn
-        .query_row(
-            "SELECT s.id, s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, s.title, s.description, s.tags, s.created_at, s.uploaded_at, s.message_count, s.task_count, s.event_count, s.duration_seconds, s.total_input_tokens, s.total_output_tokens
-             FROM sessions s
-             LEFT JOIN users u ON u.id = s.user_id
-             WHERE s.id = ?1",
-            [&id],
-            |row| {
-                Ok(SessionSummary {
-                    id: row.get(0)?,
-                    user_id: row.get(1)?,
-                    nickname: row.get(2)?,
-                    team_id: row.get(3)?,
-                    tool: row.get(4)?,
-                    agent_provider: row.get(5)?,
-                    agent_model: row.get(6)?,
-                    title: row.get(7)?,
-                    description: row.get(8)?,
-                    tags: row.get(9)?,
-                    created_at: row.get(10)?,
-                    uploaded_at: row.get(11)?,
-                    message_count: row.get(12)?,
-                    task_count: row.get(13)?,
-                    event_count: row.get(14)?,
-                    duration_seconds: row.get(15)?,
-                    total_input_tokens: row.get(16)?,
-                    total_output_tokens: row.get(17)?,
-                })
-            },
-        )
+        .query_row(&db::SESSION_GET, [&id], |row| {
+            Ok(SessionSummary {
+                id: row.get(0)?,
+                user_id: row.get(1)?,
+                nickname: row.get(2)?,
+                team_id: row.get(3)?,
+                tool: row.get(4)?,
+                agent_provider: row.get(5)?,
+                agent_model: row.get(6)?,
+                title: row.get(7)?,
+                description: row.get(8)?,
+                tags: row.get(9)?,
+                created_at: row.get(10)?,
+                uploaded_at: row.get(11)?,
+                message_count: row.get(12)?,
+                task_count: row.get(13)?,
+                event_count: row.get(14)?,
+                duration_seconds: row.get(15)?,
+                total_input_tokens: row.get(16)?,
+                total_output_tokens: row.get(17)?,
+            })
+        })
         .map_err(|_| {
             (
                 StatusCode::NOT_FOUND,

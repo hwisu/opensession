@@ -1,0 +1,22 @@
+[package]
+name = "opensession-local-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local SQLite database shared by TUI and Daemon"
+
+[lints]
+workspace = true
+
+[dependencies]
+opensession-core = { workspace = true }
+opensession-parsers = { workspace = true }
+opensession-api-types = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

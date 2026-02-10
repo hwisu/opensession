@@ -1,35 +1,22 @@
 mod app;
+mod config;
 mod ui;
 mod views;
 
 use anyhow::Result;
-use app::{App, ServerInfo, ServerStatus};
+use app::{App, ServerInfo, ServerStatus, StartupStatus, View};
 use crossterm::{
     event::{self, Event, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use opensession_local_db::git::extract_git_context;
+use opensession_local_db::LocalDb;
 use ratatui::prelude::*;
-use serde::Deserialize;
 use std::io::stdout;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
-
-#[derive(Deserialize, Default)]
-struct CliConfig {
-    #[serde(default)]
-    server: CliServerConfig,
-}
-
-#[derive(Deserialize, Default)]
-struct CliServerConfig {
-    #[serde(default = "default_server_url")]
-    url: String,
-}
-
-fn default_server_url() -> String {
-    "https://opensession.io".to_string()
-}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -44,8 +31,48 @@ fn main() -> Result<()> {
 
     let mut app = App::new(sessions);
 
-    // Load server info from CLI config
-    app.server_info = load_server_info();
+    // ── Load full daemon config ──────────────────────────────────────
+    let daemon_config = config::load_daemon_config();
+    let config_exists = config::config_dir()
+        .map(|d| d.join("daemon.toml").exists())
+        .unwrap_or(false);
+
+    // Build server info from daemon config
+    app.server_info = build_server_info(&daemon_config);
+    app.team_id = if daemon_config.identity.team_id.is_empty() {
+        None
+    } else {
+        Some(daemon_config.identity.team_id.clone())
+    };
+    app.daemon_config = daemon_config;
+
+    // ── Build startup status ─────────────────────────────────────────
+    let mut status = StartupStatus {
+        sessions_cached: 0,
+        repos_detected: 0,
+        daemon_pid: config::daemon_pid(),
+        config_exists,
+    };
+
+    // ── Open local DB and cache sessions ─────────────────────────────
+    if let Ok(db) = LocalDb::open() {
+        let db = Arc::new(db);
+        // Cache parsed sessions into the local DB
+        cache_sessions_to_db(&db, &app.sessions);
+        status.sessions_cached = app.sessions.len();
+        // Load repo list for view cycling
+        app.repos = db.list_repos().unwrap_or_default();
+        status.repos_detected = app.repos.len();
+        app.db = Some(db);
+    }
+
+    app.startup_status = status;
+
+    // ── If config needs setup, start in Setup view ───────────────────
+    if config::needs_setup(&app.daemon_config) {
+        app.view = View::Setup;
+        app.settings_index = 0;
+    }
 
     // If targeting a local Docker server, do a health check
     if let Some(ref mut info) = app.server_info {
@@ -81,37 +108,21 @@ fn is_local_url(url: &str) -> bool {
         || lower.contains("172.16.")
 }
 
-fn load_server_info() -> Option<ServerInfo> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()?;
-    let config_path = PathBuf::from(home)
-        .join(".config")
-        .join("opensession")
-        .join("config.toml");
-
-    if !config_path.exists() {
-        return None;
-    }
-
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let config: CliConfig = toml::from_str(&content).ok()?;
-
+fn build_server_info(config: &config::DaemonConfig) -> Option<ServerInfo> {
     if config.server.url.is_empty() {
         return None;
     }
 
-    // Try to read last upload time from state.json
-    let state_dir = PathBuf::from(
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_default(),
-    )
-    .join(".config")
-    .join("opensession")
-    .join("state.json");
+    // Try to read last upload time from state.json (legacy)
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let state_path = PathBuf::from(&home)
+        .join(".config")
+        .join("opensession")
+        .join("state.json");
 
-    let last_upload = std::fs::read_to_string(&state_dir)
+    let last_upload = std::fs::read_to_string(&state_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| {
@@ -123,7 +134,7 @@ fn load_server_info() -> Option<ServerInfo> {
         });
 
     Some(ServerInfo {
-        url: config.server.url,
+        url: config.server.url.clone(),
         status: ServerStatus::Unknown,
         last_upload,
     })
@@ -150,6 +161,28 @@ async fn check_health(server_url: &str) -> ServerStatus {
             }
         }
         _ => ServerStatus::Offline,
+    }
+}
+
+/// Cache parsed sessions into the local DB with git context.
+fn cache_sessions_to_db(db: &LocalDb, sessions: &[opensession_core::trace::Session]) {
+    for session in sessions {
+        // Determine source path (best-effort: use session_id as key)
+        let source = session.session_id.clone();
+
+        // Extract git context from working directory
+        let cwd = session
+            .context
+            .attributes
+            .get("cwd")
+            .or_else(|| session.context.attributes.get("working_directory"))
+            .and_then(|v| v.as_str().map(String::from));
+        let git = cwd
+            .as_deref()
+            .map(extract_git_context)
+            .unwrap_or_default();
+
+        let _ = db.upsert_local_session(session, &source, &git);
     }
 }
 

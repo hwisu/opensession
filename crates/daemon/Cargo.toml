@@ -11,6 +11,8 @@ workspace = true
 [dependencies]
 opensession-core = { workspace = true }
 opensession-parsers = { workspace = true }
+opensession-api-types = { workspace = true }
+opensession-local-db = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

@@ -1,3 +1,4 @@
+mod error;
 mod routes;
 mod storage;
 
@@ -105,7 +106,8 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("OPENSESSION_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
     tracing::info!("starting server at {base_url}");
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     axum::serve(listener, app).await?;
 
     Ok(())

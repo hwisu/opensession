@@ -1,14 +1,13 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
     Json,
 };
 
 use opensession_api_types::{db, SessionSummary, SyncPullQuery, SyncPullResponse};
 
+use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::Db;
+use crate::storage::{session_from_row, Db};
 
 /// `GET /api/sync/pull` — incremental pull of team sessions.
 ///
@@ -18,26 +17,12 @@ pub async fn pull(
     State(db): State<Db>,
     user: AuthUser,
     Query(q): Query<SyncPullQuery>,
-) -> Result<Json<SyncPullResponse>, Response> {
-    let conn = db.conn();
-
-    // Verify user is a member of the team
-    let is_member: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM team_members WHERE team_id = ?1 AND user_id = ?2",
-            rusqlite::params![&q.team_id, &user.user_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-
-    if !is_member {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "not a member of this team"})),
-        )
-            .into_response());
+) -> Result<Json<SyncPullResponse>, ApiErr> {
+    if !db.is_team_member(&q.team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("not a member of this team"));
     }
 
+    let conn = db.conn();
     let limit = q.limit.unwrap_or(100).clamp(1, 500) as i64;
 
     let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
@@ -71,32 +56,13 @@ pub async fn pull(
             )
         };
 
-    let mut stmt = conn.prepare(&sql).map_err(internal_error)?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(ApiErr::from_db("prepare pull"))?;
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt
-        .query_map(param_refs.as_slice(), |row| {
-            Ok(SessionSummary {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                nickname: row.get(2)?,
-                team_id: row.get(3)?,
-                tool: row.get(4)?,
-                agent_provider: row.get(5)?,
-                agent_model: row.get(6)?,
-                title: row.get(7)?,
-                description: row.get(8)?,
-                tags: row.get(9)?,
-                created_at: row.get(10)?,
-                uploaded_at: row.get(11)?,
-                message_count: row.get(12)?,
-                task_count: row.get(13)?,
-                event_count: row.get(14)?,
-                duration_seconds: row.get(15)?,
-                total_input_tokens: row.get(16)?,
-                total_output_tokens: row.get(17)?,
-            })
-        })
-        .map_err(internal_error)?;
+        .query_map(param_refs.as_slice(), session_from_row)
+        .map_err(ApiErr::from_db("pull sessions"))?;
 
     let sessions: Vec<SessionSummary> = rows.filter_map(|r| r.ok()).collect();
 
@@ -112,13 +78,4 @@ pub async fn pull(
         next_cursor,
         has_more,
     }))
-}
-
-fn internal_error(e: impl std::fmt::Display) -> Response {
-    tracing::error!("db error: {e}");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"error": "internal server error"})),
-    )
-        .into_response()
 }

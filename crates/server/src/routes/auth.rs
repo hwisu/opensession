@@ -1,7 +1,6 @@
 use axum::{
     extract::{FromRef, FromRequestParts, State},
     http::{request::Parts, StatusCode},
-    response::{IntoResponse, Response},
     Json,
 };
 use uuid::Uuid;
@@ -10,6 +9,7 @@ use opensession_api_types::{
     RegisterRequest, RegisterResponse, UserSettingsResponse, VerifyResponse,
 };
 
+use crate::error::ApiErr;
 use crate::storage::Db;
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ where
     S: Send + Sync,
     Db: axum::extract::FromRef<S>,
 {
-    type Rejection = Response;
+    type Rejection = ApiErr;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let db = Db::from_ref(state);
@@ -38,17 +38,13 @@ where
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            .ok_or_else(|| {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({"error": "missing or invalid Authorization header"})),
-                )
-                    .into_response()
-            })?
+            .ok_or(ApiErr::unauthorized(
+                "missing or invalid Authorization header",
+            ))?
             .to_string();
 
         let conn = db.conn();
-        let result = conn.query_row(
+        conn.query_row(
             "SELECT id, nickname, is_admin FROM users WHERE api_key = ?1",
             [&api_key],
             |row| {
@@ -58,16 +54,8 @@ where
                     is_admin: row.get(2)?,
                 })
             },
-        );
-
-        match result {
-            Ok(user) => Ok(user),
-            Err(_) => Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid API key"})),
-            )
-                .into_response()),
-        }
+        )
+        .map_err(|_| ApiErr::unauthorized("invalid API key"))
     }
 }
 
@@ -78,14 +66,10 @@ where
 pub async fn register(
     State(db): State<Db>,
     Json(req): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<RegisterResponse>), Response> {
+) -> Result<(StatusCode, Json<RegisterResponse>), ApiErr> {
     let nickname = req.nickname.trim().to_string();
     if nickname.is_empty() || nickname.len() > 64 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "nickname must be 1-64 characters"})),
-        )
-            .into_response());
+        return Err(ApiErr::bad_request("nickname must be 1-64 characters"));
     }
 
     let user_id = Uuid::new_v4().to_string();
@@ -117,19 +101,11 @@ pub async fn register(
         Err(rusqlite::Error::SqliteFailure(err, _))
             if err.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
-            Err((
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "nickname already taken"})),
-            )
-                .into_response())
+            Err(ApiErr::conflict("nickname already taken"))
         }
         Err(e) => {
             tracing::error!("register error: {e}");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal server error"})),
-            )
-                .into_response())
+            Err(ApiErr::internal("internal server error"))
         }
     }
 }
@@ -152,7 +128,7 @@ pub async fn verify(user: AuthUser) -> Json<VerifyResponse> {
 pub async fn me(
     State(db): State<Db>,
     user: AuthUser,
-) -> Result<Json<UserSettingsResponse>, Response> {
+) -> Result<Json<UserSettingsResponse>, ApiErr> {
     let conn = db.conn();
     conn.query_row(
         "SELECT id, nickname, api_key, is_admin, created_at FROM users WHERE id = ?1",
@@ -168,14 +144,7 @@ pub async fn me(
         },
     )
     .map(Json)
-    .map_err(|e| {
-        tracing::error!("me error: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal server error"})),
-        )
-            .into_response()
-    })
+    .map_err(ApiErr::from_db("me error"))
 }
 
 // ---------------------------------------------------------------------------
@@ -185,21 +154,14 @@ pub async fn me(
 pub async fn regenerate_key(
     State(db): State<Db>,
     user: AuthUser,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let new_key = format!("osk_{}", Uuid::new_v4().simple());
     let conn = db.conn();
     conn.execute(
         "UPDATE users SET api_key = ?1 WHERE id = ?2",
         rusqlite::params![&new_key, &user.user_id],
     )
-    .map_err(|e| {
-        tracing::error!("regenerate key error: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal server error"})),
-        )
-            .into_response()
-    })?;
+    .map_err(ApiErr::from_db("regenerate key error"))?;
 
     Ok(Json(serde_json::json!({ "api_key": new_key })))
 }

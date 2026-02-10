@@ -1,18 +1,19 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
+use opensession_core::Session;
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::LocalDb;
 use opensession_parsers::{all_parsers, SessionParser};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::config::{DaemonConfig, PublishMode};
+use crate::config::{DaemonConfig, DaemonSettings, PublishMode};
 use crate::retry::retry_upload;
 use crate::watcher::FileChangeEvent;
 
@@ -33,6 +34,20 @@ impl UploadState {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
     }
+}
+
+/// Resolve the effective publish mode, collapsing the deprecated `auto_publish` flag.
+fn resolve_publish_mode(settings: &DaemonSettings) -> PublishMode {
+    if settings.auto_publish {
+        return settings.publish_on.clone();
+    }
+    if settings.publish_on != PublishMode::Manual {
+        warn!(
+            "auto_publish=false is deprecated, treating as publish_on=manual. \
+             Please update your config to use publish_on = \"manual\" instead."
+        );
+    }
+    PublishMode::Manual
 }
 
 /// Run the scheduler loop: receives file change events, debounces, parses, and uploads.
@@ -63,20 +78,7 @@ pub async fn run_scheduler(
         }
     }
 
-    // Warn if deprecated auto_publish is set to false while publish_on is not Manual
-    if !config.daemon.auto_publish && config.daemon.publish_on != PublishMode::Manual {
-        warn!(
-            "auto_publish=false is deprecated, treating as publish_on=manual. \
-             Please update your config to use publish_on = \"manual\" instead."
-        );
-    }
-
-    // Resolve effective publish mode
-    let effective_mode = if !config.daemon.auto_publish {
-        &PublishMode::Manual
-    } else {
-        &config.daemon.publish_on
-    };
+    let effective_mode = resolve_publish_mode(&config.daemon);
 
     // Pending changes: path -> when we last saw a change
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
@@ -88,14 +90,7 @@ pub async fn run_scheduler(
             // Receive new file change events
             Some(event) = rx.recv() => {
                 debug!("Scheduling: {:?}", event.path.display());
-                match effective_mode {
-                    PublishMode::Realtime => {
-                        pending.insert(event.path, Instant::now());
-                    }
-                    _ => {
-                        pending.insert(event.path, Instant::now());
-                    }
-                }
+                pending.insert(event.path, Instant::now());
             }
 
             // Periodic tick to check for debounced items
@@ -138,18 +133,41 @@ pub async fn run_scheduler(
     }
 }
 
-/// Process a single file: parse, store in local DB, sanitize, upload
-async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Result<()> {
-    // Check if file was already uploaded since last modification
-    let modified: DateTime<Utc> = std::fs::metadata(path)?.modified()?.into();
+// ---------------------------------------------------------------------------
+// process_file: orchestrator + helpers
+// ---------------------------------------------------------------------------
 
-    let path_str = path.to_string_lossy().to_string();
-    if db.was_uploaded_after(&path_str, &modified)? {
-        debug!("Skipping already-uploaded file: {}", path.display());
+/// Process a single file: parse, store in local DB, sanitize, upload.
+async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Result<()> {
+    if was_already_uploaded(path, db)? {
         return Ok(());
     }
 
-    // Find a parser
+    let mut session = match parse_session(path)? {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    if is_tool_excluded(&session, config) {
+        return Ok(());
+    }
+
+    store_locally(&session, path, db)?;
+    sanitize(&mut session, config);
+    upload_to_server(&session, config, db).await
+}
+
+fn was_already_uploaded(path: &PathBuf, db: &LocalDb) -> Result<bool> {
+    let modified: DateTime<Utc> = std::fs::metadata(path)?.modified()?.into();
+    let path_str = path.to_string_lossy().to_string();
+    if db.was_uploaded_after(&path_str, &modified)? {
+        debug!("Skipping already-uploaded file: {}", path.display());
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn parse_session(path: &Path) -> Result<Option<Session>> {
     let parsers = all_parsers();
     let parser: Option<&dyn SessionParser> = parsers
         .iter()
@@ -160,29 +178,33 @@ async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Re
         Some(p) => p,
         None => {
             warn!("No parser for: {}", path.display());
-            return Ok(());
+            return Ok(None);
         }
     };
 
     info!("Parsing: {} ({})", path.display(), parser.name());
-    let mut session = parser.parse(path)?;
+    Ok(Some(parser.parse(path)?))
+}
 
-    // exclude_tools filter: skip if this session's tool is excluded
-    if config
+fn is_tool_excluded(session: &Session, config: &DaemonConfig) -> bool {
+    let excluded = config
         .privacy
         .exclude_tools
         .iter()
-        .any(|t| t.eq_ignore_ascii_case(&session.agent.tool))
-    {
-        info!(
-            "Excluding tool '{}': {}",
-            session.agent.tool,
-            path.display()
-        );
-        return Ok(());
-    }
+        .any(|t| t.eq_ignore_ascii_case(&session.agent.tool));
 
-    // Extract git context from the session's working directory
+    if excluded {
+        info!(
+            "Excluding tool '{}': source file excluded by config",
+            session.agent.tool,
+        );
+    }
+    excluded
+}
+
+fn store_locally(session: &Session, path: &Path, db: &LocalDb) -> Result<()> {
+    let path_str = path.to_string_lossy().to_string();
+
     let cwd = session
         .context
         .attributes
@@ -191,18 +213,20 @@ async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Re
         .and_then(|v| v.as_str().map(String::from));
     let git = cwd.as_deref().map(extract_git_context).unwrap_or_default();
 
-    // Store in local DB (before sanitization, so we keep git context)
-    db.upsert_local_session(&session, &path_str, &git)?;
+    db.upsert_local_session(session, &path_str, &git)?;
+    Ok(())
+}
 
-    // Sanitize
+fn sanitize(session: &mut Session, config: &DaemonConfig) {
     let sanitize_config = SanitizeConfig {
         strip_paths: config.privacy.strip_paths,
         strip_env_vars: config.privacy.strip_env_vars,
         exclude_patterns: config.privacy.exclude_patterns.clone(),
     };
-    sanitize_session(&mut session, &sanitize_config);
+    sanitize_session(session, &sanitize_config);
+}
 
-    // Upload with retry
+async fn upload_to_server(session: &Session, config: &DaemonConfig, db: &LocalDb) -> Result<()> {
     let url = format!("{}/api/sessions", config.server.url.trim_end_matches('/'));
     info!("Uploading session {} to {}", session.session_id, url);
 

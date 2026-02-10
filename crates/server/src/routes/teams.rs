@@ -1,7 +1,6 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
     Json,
 };
 use uuid::Uuid;
@@ -11,8 +10,9 @@ use opensession_api_types::{
     MemberResponse, SessionSummary, TeamDetailResponse, TeamResponse, UpdateTeamRequest,
 };
 
+use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::Db;
+use crate::storage::{session_from_row, team_from_row, Db};
 
 // ---------------------------------------------------------------------------
 // Create team (admin only)
@@ -22,22 +22,14 @@ pub async fn create_team(
     State(db): State<Db>,
     user: AuthUser,
     Json(req): Json<CreateTeamRequest>,
-) -> Result<(StatusCode, Json<TeamResponse>), Response> {
+) -> Result<(StatusCode, Json<TeamResponse>), ApiErr> {
     if !user.is_admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "admin only"})),
-        )
-            .into_response());
+        return Err(ApiErr::forbidden("admin only"));
     }
 
     let name = req.name.trim().to_string();
     if name.is_empty() || name.len() > 128 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "name must be 1-128 characters"})),
-        )
-            .into_response());
+        return Err(ApiErr::bad_request("name must be 1-128 characters"));
     }
 
     let team_id = Uuid::new_v4().to_string();
@@ -50,11 +42,7 @@ pub async fn create_team(
     )
     .map_err(|e| {
         tracing::error!("create team: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "failed to create team"})),
-        )
-            .into_response()
+        ApiErr::internal("failed to create team")
     })?;
 
     // Add creator as admin member
@@ -64,11 +52,7 @@ pub async fn create_team(
     )
     .map_err(|e| {
         tracing::error!("add creator as member: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "failed to create team"})),
-        )
-            .into_response()
+        ApiErr::internal("failed to create team")
     })?;
 
     let created_at: String = conn
@@ -99,23 +83,16 @@ pub async fn create_team(
 pub async fn list_my_teams(
     State(db): State<Db>,
     user: AuthUser,
-) -> Result<Json<ListTeamsResponse>, Response> {
+) -> Result<Json<ListTeamsResponse>, ApiErr> {
     let conn = db.conn();
 
-    let mut stmt = conn.prepare(&db::TEAM_LIST_MY).map_err(internal_error)?;
+    let mut stmt = conn
+        .prepare(&db::TEAM_LIST_MY)
+        .map_err(ApiErr::from_db("prepare teams"))?;
 
     let teams: Vec<TeamResponse> = stmt
-        .query_map([&user.user_id], |row| {
-            Ok(TeamResponse {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                is_public: row.get(3)?,
-                created_by: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })
-        .map_err(internal_error)?
+        .query_map([&user.user_id], team_from_row)
+        .map_err(ApiErr::from_db("list teams"))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -129,27 +106,12 @@ pub async fn list_my_teams(
 pub async fn get_team(
     State(db): State<Db>,
     Path(id): Path<String>,
-) -> Result<Json<TeamDetailResponse>, Response> {
+) -> Result<Json<TeamDetailResponse>, ApiErr> {
     let conn = db.conn();
 
     let team = conn
-        .query_row(&db::TEAM_GET, [&id], |row| {
-            Ok(TeamResponse {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                is_public: row.get(3)?,
-                created_by: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "team not found"})),
-            )
-                .into_response()
-        })?;
+        .query_row(&db::TEAM_GET, [&id], team_from_row)
+        .map_err(|_| ApiErr::not_found("team not found"))?;
 
     let member_count: i64 = conn
         .query_row(
@@ -168,32 +130,13 @@ pub async fn get_team(
          LIMIT 50",
         db::SESSION_COLUMNS,
     );
-    let mut stmt = conn.prepare(&sessions_sql).map_err(internal_error)?;
+    let mut stmt = conn
+        .prepare(&sessions_sql)
+        .map_err(ApiErr::from_db("prepare team sessions"))?;
 
     let sessions: Vec<SessionSummary> = stmt
-        .query_map([&id], |row| {
-            Ok(SessionSummary {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                nickname: row.get(2)?,
-                team_id: row.get(3)?,
-                tool: row.get(4)?,
-                agent_provider: row.get(5)?,
-                agent_model: row.get(6)?,
-                title: row.get(7)?,
-                description: row.get(8)?,
-                tags: row.get(9)?,
-                created_at: row.get(10)?,
-                uploaded_at: row.get(11)?,
-                message_count: row.get(12)?,
-                task_count: row.get(13)?,
-                event_count: row.get(14)?,
-                duration_seconds: row.get(15)?,
-                total_input_tokens: row.get(16)?,
-                total_output_tokens: row.get(17)?,
-            })
-        })
-        .map_err(internal_error)?
+        .query_map([&id], session_from_row)
+        .map_err(ApiErr::from_db("list team sessions"))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -213,13 +156,9 @@ pub async fn update_team(
     user: AuthUser,
     Path(id): Path<String>,
     Json(req): Json<UpdateTeamRequest>,
-) -> Result<Json<TeamResponse>, Response> {
+) -> Result<Json<TeamResponse>, ApiErr> {
     if !user.is_admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "admin only"})),
-        )
-            .into_response());
+        return Err(ApiErr::forbidden("admin only"));
     }
 
     let conn = db.conn();
@@ -234,27 +173,19 @@ pub async fn update_team(
         .unwrap_or(false);
 
     if !exists {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "team not found"})),
-        )
-            .into_response());
+        return Err(ApiErr::not_found("team not found"));
     }
 
     if let Some(ref name) = req.name {
         let name = name.trim();
         if name.is_empty() || name.len() > 128 {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "name must be 1-128 characters"})),
-            )
-                .into_response());
+            return Err(ApiErr::bad_request("name must be 1-128 characters"));
         }
         conn.execute(
             "UPDATE teams SET name = ?1 WHERE id = ?2",
             rusqlite::params![name, &id],
         )
-        .map_err(internal_error)?;
+        .map_err(ApiErr::from_db("update team name"))?;
     }
 
     if let Some(ref desc) = req.description {
@@ -262,7 +193,7 @@ pub async fn update_team(
             "UPDATE teams SET description = ?1 WHERE id = ?2",
             rusqlite::params![desc, &id],
         )
-        .map_err(internal_error)?;
+        .map_err(ApiErr::from_db("update team description"))?;
     }
 
     if let Some(is_public) = req.is_public {
@@ -270,27 +201,12 @@ pub async fn update_team(
             "UPDATE teams SET is_public = ?1 WHERE id = ?2",
             rusqlite::params![is_public, &id],
         )
-        .map_err(internal_error)?;
+        .map_err(ApiErr::from_db("update team visibility"))?;
     }
 
     let team = conn
-        .query_row(&db::TEAM_GET, [&id], |row| {
-            Ok(TeamResponse {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                is_public: row.get(3)?,
-                created_by: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "team not found"})),
-            )
-                .into_response()
-        })?;
+        .query_row(&db::TEAM_GET, [&id], team_from_row)
+        .map_err(|_| ApiErr::not_found("team not found"))?;
 
     Ok(Json(team))
 }
@@ -304,13 +220,9 @@ pub async fn add_member(
     user: AuthUser,
     Path(team_id): Path<String>,
     Json(req): Json<AddMemberRequest>,
-) -> Result<(StatusCode, Json<MemberResponse>), Response> {
+) -> Result<(StatusCode, Json<MemberResponse>), ApiErr> {
     if !user.is_admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "admin only"})),
-        )
-            .into_response());
+        return Err(ApiErr::forbidden("admin only"));
     }
 
     let conn = db.conn();
@@ -322,13 +234,7 @@ pub async fn add_member(
             [&req.nickname],
             |row| row.get::<_, String>(0),
         )
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "user not found"})),
-            )
-                .into_response()
-        })?;
+        .map_err(|_| ApiErr::not_found("user not found"))?;
 
     // Check not already a member
     let already: bool = conn
@@ -340,11 +246,7 @@ pub async fn add_member(
         .unwrap_or(false);
 
     if already {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "already a member"})),
-        )
-            .into_response());
+        return Err(ApiErr::conflict("already a member"));
     }
 
     conn.execute(
@@ -353,11 +255,7 @@ pub async fn add_member(
     )
     .map_err(|e| {
         tracing::error!("add member: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "failed to add member"})),
-        )
-            .into_response()
+        ApiErr::internal("failed to add member")
     })?;
 
     let joined_at: String = conn
@@ -387,13 +285,9 @@ pub async fn remove_member(
     State(db): State<Db>,
     user: AuthUser,
     Path((team_id, user_id)): Path<(String, String)>,
-) -> Result<StatusCode, Response> {
+) -> Result<StatusCode, ApiErr> {
     if !user.is_admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "admin only"})),
-        )
-            .into_response());
+        return Err(ApiErr::forbidden("admin only"));
     }
 
     let conn = db.conn();
@@ -404,19 +298,11 @@ pub async fn remove_member(
         )
         .map_err(|e| {
             tracing::error!("remove member: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "failed to remove member"})),
-            )
-                .into_response()
+            ApiErr::internal("failed to remove member")
         })?;
 
     if affected == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "member not found"})),
-        )
-            .into_response());
+        return Err(ApiErr::not_found("member not found"));
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -429,7 +315,7 @@ pub async fn remove_member(
 pub async fn list_members(
     State(db): State<Db>,
     Path(team_id): Path<String>,
-) -> Result<Json<ListMembersResponse>, Response> {
+) -> Result<Json<ListMembersResponse>, ApiErr> {
     let conn = db.conn();
 
     let exists: bool = conn
@@ -441,14 +327,12 @@ pub async fn list_members(
         .unwrap_or(false);
 
     if !exists {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "team not found"})),
-        )
-            .into_response());
+        return Err(ApiErr::not_found("team not found"));
     }
 
-    let mut stmt = conn.prepare(&db::MEMBER_LIST).map_err(internal_error)?;
+    let mut stmt = conn
+        .prepare(&db::MEMBER_LIST)
+        .map_err(ApiErr::from_db("prepare members"))?;
 
     let members: Vec<MemberResponse> = stmt
         .query_map([&team_id], |row| {
@@ -459,18 +343,9 @@ pub async fn list_members(
                 joined_at: row.get(3)?,
             })
         })
-        .map_err(internal_error)?
+        .map_err(ApiErr::from_db("list members"))?
         .filter_map(|r| r.ok())
         .collect();
 
     Ok(Json(ListMembersResponse { members }))
-}
-
-fn internal_error(e: impl std::fmt::Display) -> Response {
-    tracing::error!("db error: {e}");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"error": "internal server error"})),
-    )
-        .into_response()
 }

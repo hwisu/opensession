@@ -226,38 +226,20 @@ pub fn resolve_watch_paths(config: &DaemonConfig) -> Vec<PathBuf> {
 
     let mut paths = Vec::new();
 
-    if config.watchers.claude_code {
-        let p = home.join(".claude").join("projects");
-        if p.exists() {
-            paths.push(p);
-        }
-    }
+    let builtins: &[(bool, &[&str])] = &[
+        (config.watchers.claude_code, &[".claude", "projects"]),
+        (config.watchers.opencode, &[".local", "share", "opencode"]),
+        (config.watchers.goose, &[".local", "share", "goose"]),
+        (config.watchers.aider, &[".aider"]),
+        (config.watchers.cursor, &[".cursor"]),
+    ];
 
-    if config.watchers.opencode {
-        let p = home.join(".local").join("share").join("opencode");
-        if p.exists() {
-            paths.push(p);
-        }
-    }
-
-    if config.watchers.goose {
-        let p = home.join(".local").join("share").join("goose");
-        if p.exists() {
-            paths.push(p);
-        }
-    }
-
-    if config.watchers.aider {
-        let p = home.join(".aider");
-        if p.exists() {
-            paths.push(p);
-        }
-    }
-
-    if config.watchers.cursor {
-        let p = home.join(".cursor");
-        if p.exists() {
-            paths.push(p);
+    for &(enabled, segments) in builtins {
+        if enabled {
+            let p = segments.iter().fold(home.clone(), |acc, s| acc.join(s));
+            if p.exists() {
+                paths.push(p);
+            }
         }
     }
 

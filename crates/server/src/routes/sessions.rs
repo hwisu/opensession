@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     Json,
 };
 use uuid::Uuid;
@@ -12,8 +12,9 @@ use opensession_api_types::{
 
 use opensession_core::extract::{extract_first_user_text, extract_user_texts, truncate_str};
 
+use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::Db;
+use crate::storage::{session_from_row, Db};
 
 // ---------------------------------------------------------------------------
 // Upload session
@@ -26,41 +27,56 @@ pub struct UploadRequest {
     pub team_id: String,
 }
 
+struct SessionMetadata {
+    tags: Option<String>,
+    created_at: String,
+    title: Option<String>,
+    description: Option<String>,
+}
+
+fn extract_session_metadata(session: &opensession_core::Session) -> SessionMetadata {
+    let tags = if session.context.tags.is_empty() {
+        None
+    } else {
+        Some(session.context.tags.join(","))
+    };
+
+    let title = session
+        .context
+        .title
+        .clone()
+        .filter(|t| !t.is_empty())
+        .or_else(|| extract_first_user_text(session).map(|t| truncate_str(&t, 80)));
+
+    let description = session
+        .context
+        .description
+        .clone()
+        .filter(|d| !d.is_empty())
+        .or_else(|| extract_user_texts(session, 3).map(|t| truncate_str(&t, 500)));
+
+    SessionMetadata {
+        tags,
+        created_at: session.context.created_at.to_rfc3339(),
+        title,
+        description,
+    }
+}
+
 pub async fn upload_session(
     State(db): State<Db>,
     user: AuthUser,
     Json(req): Json<UploadRequest>,
-) -> Result<(StatusCode, Json<UploadResponse>), Response> {
+) -> Result<(StatusCode, Json<UploadResponse>), ApiErr> {
     let session = &req.session;
 
-    // Verify user is a member of the team
-    {
-        let conn = db.conn();
-        let is_member: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM team_members WHERE team_id = ?1 AND user_id = ?2",
-                rusqlite::params![&req.team_id, &user.user_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-
-        if !is_member {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "not a member of this team"})),
-            )
-                .into_response());
-        }
+    if !db.is_team_member(&req.team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("not a member of this team"));
     }
 
-    // Serialize body to HAIL JSONL
     let body_jsonl = session.to_jsonl().map_err(|e| {
         tracing::error!("serialize session body: {e}");
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "failed to serialize session"})),
-        )
-            .into_response()
+        ApiErr::bad_request("failed to serialize session")
     })?;
 
     let session_id = Uuid::new_v4().to_string();
@@ -69,33 +85,10 @@ pub async fn upload_session(
         .write_body(&session_id, body_jsonl.as_bytes())
         .map_err(|e| {
             tracing::error!("write body: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "failed to store session body"})),
-            )
-                .into_response()
+            ApiErr::internal("failed to store session body")
         })?;
 
-    let tags = if session.context.tags.is_empty() {
-        None
-    } else {
-        Some(session.context.tags.join(","))
-    };
-    let created_at = session.context.created_at.to_rfc3339();
-
-    // Auto-extract title and description from first user messages if empty
-    let title = session
-        .context
-        .title
-        .clone()
-        .filter(|t| !t.is_empty())
-        .or_else(|| extract_first_user_text(session).map(|t| truncate_str(&t, 80)));
-    let description = session
-        .context
-        .description
-        .clone()
-        .filter(|d| !d.is_empty())
-        .or_else(|| extract_user_texts(session, 3).map(|t| truncate_str(&t, 500)));
+    let meta = extract_session_metadata(session);
 
     let conn = db.conn();
     conn.execute(
@@ -107,10 +100,10 @@ pub async fn upload_session(
             &session.agent.tool,
             &session.agent.provider,
             &session.agent.model,
-            &title,
-            &description,
-            &tags,
-            &created_at,
+            &meta.title,
+            &meta.description,
+            &meta.tags,
+            &meta.created_at,
             session.stats.message_count as i64,
             session.stats.task_count as i64,
             session.stats.event_count as i64,
@@ -122,11 +115,7 @@ pub async fn upload_session(
     )
     .map_err(|e| {
         tracing::error!("insert session: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "failed to store session"})),
-        )
-            .into_response()
+        ApiErr::internal("failed to store session")
     })?;
 
     // Update FTS
@@ -156,7 +145,7 @@ pub async fn upload_session(
 pub async fn list_sessions(
     State(db): State<Db>,
     Query(q): Query<SessionListQuery>,
-) -> Result<Json<SessionListResponse>, Response> {
+) -> Result<Json<SessionListResponse>, ApiErr> {
     let conn = db.conn();
     let per_page = q.per_page.clamp(1, 100);
     let offset = (q.page.saturating_sub(1)) * per_page;
@@ -164,33 +153,31 @@ pub async fn list_sessions(
     // Build dynamic query
     let mut where_clauses = vec!["(s.event_count > 0 OR s.message_count > 0)".to_string()];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut param_idx = 1u32;
 
     if let Some(ref tool) = q.tool {
-        where_clauses.push(format!("s.tool = ?{param_idx}"));
+        let idx = params.len() + 1;
         params.push(Box::new(tool.clone()));
-        param_idx += 1;
+        where_clauses.push(format!("s.tool = ?{idx}"));
     }
 
     if let Some(ref team_id) = q.team_id {
-        where_clauses.push(format!("s.team_id = ?{param_idx}"));
+        let idx = params.len() + 1;
         params.push(Box::new(team_id.clone()));
-        param_idx += 1;
+        where_clauses.push(format!("s.team_id = ?{idx}"));
     }
 
     // Search: use LIKE for flexible partial matching on title, description, tags
     if let Some(ref search) = q.search {
         let like_param = format!("%{search}%");
-        where_clauses.push(format!(
-            "(s.title LIKE ?{pi} OR s.description LIKE ?{pi2} OR s.tags LIKE ?{pi3})",
-            pi = param_idx,
-            pi2 = param_idx + 1,
-            pi3 = param_idx + 2,
-        ));
+        let base = params.len() + 1;
         params.push(Box::new(like_param.clone()));
         params.push(Box::new(like_param.clone()));
         params.push(Box::new(like_param));
-        param_idx += 3;
+        where_clauses.push(format!(
+            "(s.title LIKE ?{base} OR s.description LIKE ?{} OR s.tags LIKE ?{})",
+            base + 1,
+            base + 2,
+        ));
     }
 
     // Time range filter
@@ -202,9 +189,9 @@ pub async fn list_sessions(
             _ => None, // "all" or unrecognized
         };
         if let Some(interval) = interval {
-            where_clauses.push(format!("s.created_at >= datetime('now', ?{param_idx})"));
+            let idx = params.len() + 1;
             params.push(Box::new(interval.to_string()));
-            param_idx += 1;
+            where_clauses.push(format!("s.created_at >= datetime('now', ?{idx})"));
         }
     }
 
@@ -213,11 +200,13 @@ pub async fn list_sessions(
     // Count total
     let count_sql = format!("SELECT COUNT(*) FROM sessions s WHERE {where_str}");
     let total: i64 = {
-        let mut stmt = conn.prepare(&count_sql).map_err(internal_error)?;
+        let mut stmt = conn
+            .prepare(&count_sql)
+            .map_err(ApiErr::from_db("prepare count"))?;
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
         stmt.query_row(param_refs.as_slice(), |row| row.get(0))
-            .map_err(internal_error)?
+            .map_err(ApiErr::from_db("count sessions"))?
     };
 
     // Sort order
@@ -228,45 +217,28 @@ pub async fn list_sessions(
     };
 
     // Fetch page
+    let limit_idx = params.len() + 1;
+    params.push(Box::new(per_page as i64));
+    params.push(Box::new(offset as i64));
+
     let select_sql = format!(
         "SELECT {} \
          FROM sessions s \
          LEFT JOIN users u ON u.id = s.user_id \
          WHERE {where_str} \
          ORDER BY {order_clause} \
-         LIMIT ?{param_idx} OFFSET ?{}",
+         LIMIT ?{limit_idx} OFFSET ?{}",
         db::SESSION_COLUMNS,
-        param_idx + 1,
+        limit_idx + 1,
     );
-    params.push(Box::new(per_page as i64));
-    params.push(Box::new(offset as i64));
 
-    let mut stmt = conn.prepare(&select_sql).map_err(internal_error)?;
+    let mut stmt = conn
+        .prepare(&select_sql)
+        .map_err(ApiErr::from_db("prepare list"))?;
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt
-        .query_map(param_refs.as_slice(), |row| {
-            Ok(SessionSummary {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                nickname: row.get(2)?,
-                team_id: row.get(3)?,
-                tool: row.get(4)?,
-                agent_provider: row.get(5)?,
-                agent_model: row.get(6)?,
-                title: row.get(7)?,
-                description: row.get(8)?,
-                tags: row.get(9)?,
-                created_at: row.get(10)?,
-                uploaded_at: row.get(11)?,
-                message_count: row.get(12)?,
-                task_count: row.get(13)?,
-                event_count: row.get(14)?,
-                duration_seconds: row.get(15)?,
-                total_input_tokens: row.get(16)?,
-                total_output_tokens: row.get(17)?,
-            })
-        })
-        .map_err(internal_error)?;
+        .query_map(param_refs.as_slice(), session_from_row)
+        .map_err(ApiErr::from_db("list sessions"))?;
 
     let sessions: Vec<SessionSummary> = rows.filter_map(|r| r.ok()).collect();
 
@@ -285,39 +257,12 @@ pub async fn list_sessions(
 pub async fn get_session(
     State(db): State<Db>,
     Path(id): Path<String>,
-) -> Result<Json<SessionDetail>, Response> {
+) -> Result<Json<SessionDetail>, ApiErr> {
     let conn = db.conn();
 
     let summary = conn
-        .query_row(&db::SESSION_GET, [&id], |row| {
-            Ok(SessionSummary {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                nickname: row.get(2)?,
-                team_id: row.get(3)?,
-                tool: row.get(4)?,
-                agent_provider: row.get(5)?,
-                agent_model: row.get(6)?,
-                title: row.get(7)?,
-                description: row.get(8)?,
-                tags: row.get(9)?,
-                created_at: row.get(10)?,
-                uploaded_at: row.get(11)?,
-                message_count: row.get(12)?,
-                task_count: row.get(13)?,
-                event_count: row.get(14)?,
-                duration_seconds: row.get(15)?,
-                total_input_tokens: row.get(16)?,
-                total_output_tokens: row.get(17)?,
-            })
-        })
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "session not found"})),
-            )
-                .into_response()
-        })?;
+        .query_row(&db::SESSION_GET, [&id], session_from_row)
+        .map_err(|_| ApiErr::not_found("session not found"))?;
 
     let team_name: Option<String> = conn
         .query_row(
@@ -337,7 +282,7 @@ pub async fn get_session(
 pub async fn get_session_raw(
     State(db): State<Db>,
     Path(id): Path<String>,
-) -> Result<Response, Response> {
+) -> Result<axum::response::Response, ApiErr> {
     let conn = db.conn();
 
     let storage_key: String = conn
@@ -346,23 +291,13 @@ pub async fn get_session_raw(
             [&id],
             |row| row.get(0),
         )
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "session not found"})),
-            )
-                .into_response()
-        })?;
+        .map_err(|_| ApiErr::not_found("session not found"))?;
 
     drop(conn);
 
     let body = db.read_body(&storage_key).map_err(|e| {
         tracing::error!("read body: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "failed to read session body"})),
-        )
-            .into_response()
+        ApiErr::internal("failed to read session body")
     })?;
 
     Ok((
@@ -377,13 +312,4 @@ pub async fn get_session_raw(
         body,
     )
         .into_response())
-}
-
-fn internal_error(e: impl std::fmt::Display) -> Response {
-    tracing::error!("db error: {e}");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"error": "internal server error"})),
-    )
-        .into_response()
 }

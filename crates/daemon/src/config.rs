@@ -27,6 +27,12 @@ pub struct DaemonSettings {
     pub debounce_secs: u64,
     #[serde(default = "default_publish_on")]
     pub publish_on: PublishMode,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_health_check_interval")]
+    pub health_check_interval_secs: u64,
+    #[serde(default = "default_realtime_debounce_ms")]
+    pub realtime_debounce_ms: u64,
 }
 
 impl Default for DaemonSettings {
@@ -35,6 +41,9 @@ impl Default for DaemonSettings {
             auto_publish: true,
             debounce_secs: 5,
             publish_on: PublishMode::SessionEnd,
+            max_retries: 3,
+            health_check_interval_secs: 300,
+            realtime_debounce_ms: 500,
         }
     }
 }
@@ -140,6 +149,18 @@ fn default_true() -> bool {
 
 fn default_debounce() -> u64 {
     5
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_health_check_interval() -> u64 {
+    300
+}
+
+fn default_realtime_debounce_ms() -> u64 {
+    500
 }
 
 fn default_publish_on() -> PublishMode {
@@ -272,6 +293,9 @@ mod tests {
         assert!(toml_str.contains("auto_publish = true"));
         assert!(toml_str.contains("debounce_secs = 5"));
         assert!(toml_str.contains("publish_on = \"session_end\""));
+        assert!(toml_str.contains("max_retries = 3"));
+        assert!(toml_str.contains("health_check_interval_secs = 300"));
+        assert!(toml_str.contains("realtime_debounce_ms = 500"));
     }
 
     #[test]
@@ -281,6 +305,9 @@ mod tests {
         let parsed: DaemonConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.daemon.debounce_secs, 5);
         assert_eq!(parsed.daemon.publish_on, PublishMode::SessionEnd);
+        assert_eq!(parsed.daemon.max_retries, 3);
+        assert_eq!(parsed.daemon.health_check_interval_secs, 300);
+        assert_eq!(parsed.daemon.realtime_debounce_ms, 500);
         assert!(parsed.watchers.claude_code);
         assert!(!parsed.watchers.cursor);
     }

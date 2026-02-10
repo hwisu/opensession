@@ -1,5 +1,10 @@
 mod config;
+mod config_sync;
+mod health;
+mod retry;
 mod scheduler;
+mod stream;
+mod tail;
 mod watcher;
 
 use anyhow::Result;
@@ -25,7 +30,9 @@ async fn main() {
 async fn run() -> Result<()> {
     info!("opensession-daemon starting");
 
-    let cfg = config::load_config()?;
+    let local_cfg = config::load_config()?;
+    let synced_cfg = config_sync::load_synced_config();
+    let cfg = config_sync::merge_configs(&local_cfg, &synced_cfg);
     let watch_paths = config::resolve_watch_paths(&cfg);
 
     if watch_paths.is_empty() {
@@ -52,9 +59,29 @@ async fn run() -> Result<()> {
 
     // Start scheduler in background
     let scheduler_cfg = cfg.clone();
+    let scheduler_shutdown = shutdown_rx.clone();
     let scheduler_handle = tokio::spawn(async move {
-        scheduler::run_scheduler(scheduler_cfg, rx, shutdown_rx).await;
+        scheduler::run_scheduler(scheduler_cfg, rx, scheduler_shutdown).await;
     });
+
+    // Start health check in background
+    let health_shutdown = shutdown_rx.clone();
+    let health_handle = tokio::spawn(health::run_health_check(
+        cfg.server.url.clone(),
+        cfg.server.api_key.clone(),
+        watch_paths.clone(),
+        cfg.daemon.health_check_interval_secs,
+        health_shutdown,
+    ));
+
+    // Start config sync poller in background
+    let sync_shutdown = shutdown_rx.clone();
+    let sync_handle = tokio::spawn(config_sync::run_config_sync(
+        cfg.server.url.clone(),
+        cfg.server.api_key.clone(),
+        cfg.daemon.health_check_interval_secs, // reuse same interval
+        sync_shutdown,
+    ));
 
     // Wait for shutdown signal
     wait_for_shutdown().await;
@@ -62,8 +89,10 @@ async fn run() -> Result<()> {
     info!("Shutdown signal received, stopping...");
     let _ = shutdown_tx.send(true);
 
-    // Wait for scheduler to finish
+    // Wait for tasks to finish
     let _ = scheduler_handle.await;
+    let _ = health_handle.await;
+    let _ = sync_handle.await;
 
     // Clean up PID file
     cleanup_pid_file();

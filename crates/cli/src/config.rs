@@ -11,6 +11,8 @@ pub struct CliConfig {
     #[serde(default)]
     pub daemon: DaemonRefConfig,
     #[serde(default)]
+    pub privacy: PrivacyConfig,
+    #[serde(default)]
     pub custom_parsers: Vec<CustomParserConfig>,
 }
 
@@ -28,6 +30,12 @@ pub struct ServerConfig {
 pub struct DaemonRefConfig {
     #[serde(default = "default_true")]
     pub auto_start: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PrivacyConfig {
+    #[serde(default)]
+    pub exclude_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

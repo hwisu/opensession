@@ -80,6 +80,8 @@ enum DaemonAction {
     Stop,
     /// Show daemon status
     Status,
+    /// Check daemon and server health
+    Health,
 }
 
 #[derive(Subcommand)]
@@ -88,6 +90,21 @@ enum ServerAction {
     Status,
     /// Verify API key authentication
     Verify,
+}
+
+/// Auto-start daemon if configured and not already running
+fn maybe_auto_start_daemon() {
+    let cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    if cfg.daemon.auto_start && !daemon_ctl::is_daemon_running() {
+        eprintln!("Auto-starting daemon...");
+        if let Err(e) = daemon_ctl::daemon_start() {
+            eprintln!("Warning: failed to auto-start daemon: {}", e);
+        }
+    }
 }
 
 #[tokio::main]
@@ -100,6 +117,14 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
+
+    // Auto-start daemon for commands that benefit from it
+    match &cli.command {
+        Commands::Discover | Commands::Upload { .. } | Commands::UploadAll => {
+            maybe_auto_start_daemon();
+        }
+        _ => {}
+    }
 
     let result = match cli.command {
         Commands::Discover => discover::run_discover(),
@@ -116,6 +141,7 @@ async fn main() {
             DaemonAction::Start => daemon_ctl::daemon_start(),
             DaemonAction::Stop => daemon_ctl::daemon_stop(),
             DaemonAction::Status => daemon_ctl::daemon_status(),
+            DaemonAction::Health => run_daemon_health().await,
         },
         Commands::Server { action } => match action {
             ServerAction::Status => server::run_status().await,
@@ -130,4 +156,19 @@ async fn main() {
         eprintln!("Error: {:#}", e);
         std::process::exit(1);
     }
+}
+
+/// Run daemon health check from CLI
+async fn run_daemon_health() -> anyhow::Result<()> {
+    // Check daemon status
+    if daemon_ctl::is_daemon_running() {
+        println!("Daemon: running");
+    } else {
+        println!("Daemon: not running");
+    }
+
+    // Check server
+    server::run_status().await?;
+
+    Ok(())
 }

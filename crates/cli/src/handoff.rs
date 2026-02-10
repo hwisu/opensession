@@ -352,6 +352,8 @@ mod tests {
             tool_call_count: 5,
             task_count: 0,
             duration_seconds: 750,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         session.events.push(make_event(EventType::UserMessage, "Fix the build error"));
         session.events.push(make_event(

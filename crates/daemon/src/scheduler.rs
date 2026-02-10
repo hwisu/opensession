@@ -10,7 +10,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::config::DaemonConfig;
+use crate::config::{DaemonConfig, PublishMode};
+use crate::retry::retry_upload;
 use crate::watcher::FileChangeEvent;
 
 /// Tracks which sessions have been uploaded
@@ -18,6 +19,9 @@ use crate::watcher::FileChangeEvent;
 pub struct UploadState {
     /// Map of file path -> last uploaded timestamp
     pub uploaded: HashMap<String, DateTime<Utc>>,
+    /// Map of file path -> byte offset for incremental reads (Phase 3)
+    #[serde(default)]
+    pub offsets: HashMap<String, u64>,
 }
 
 impl UploadState {
@@ -62,6 +66,21 @@ pub async fn run_scheduler(
     let state_path = crate::config::state_file_path().unwrap_or_else(|_| PathBuf::from("state.json"));
     let mut state = UploadState::load(&state_path);
 
+    // Warn if deprecated auto_publish is set to false while publish_on is not Manual
+    if !config.daemon.auto_publish && config.daemon.publish_on != PublishMode::Manual {
+        warn!(
+            "auto_publish=false is deprecated, treating as publish_on=manual. \
+             Please update your config to use publish_on = \"manual\" instead."
+        );
+    }
+
+    // Resolve effective publish mode
+    let effective_mode = if !config.daemon.auto_publish {
+        &PublishMode::Manual
+    } else {
+        &config.daemon.publish_on
+    };
+
     // Pending changes: path -> when we last saw a change
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
 
@@ -72,26 +91,43 @@ pub async fn run_scheduler(
             // Receive new file change events
             Some(event) = rx.recv() => {
                 debug!("Scheduling: {:?}", event.path.display());
-                pending.insert(event.path, Instant::now());
+                match effective_mode {
+                    PublishMode::Realtime => {
+                        // In realtime mode, process with minimal debounce
+                        // Phase 3 will replace this with incremental streaming
+                        pending.insert(event.path, Instant::now());
+                    }
+                    _ => {
+                        pending.insert(event.path, Instant::now());
+                    }
+                }
             }
 
             // Periodic tick to check for debounced items
             _ = tick.tick() => {
                 let now = Instant::now();
+                let effective_debounce = match effective_mode {
+                    PublishMode::Realtime => Duration::from_millis(config.daemon.realtime_debounce_ms),
+                    _ => debounce_duration,
+                };
+
                 let ready: Vec<PathBuf> = pending
                     .iter()
-                    .filter(|(_, last_change)| now.duration_since(**last_change) >= debounce_duration)
+                    .filter(|(_, last_change)| now.duration_since(**last_change) >= effective_debounce)
                     .map(|(path, _)| path.clone())
                     .collect();
 
                 for path in ready {
                     pending.remove(&path);
-                    if config.daemon.auto_publish {
-                        if let Err(e) = process_file(&path, &config, &mut state, &state_path).await {
-                            error!("Failed to process {}: {:#}", path.display(), e);
+                    match effective_mode {
+                        PublishMode::Manual => {
+                            debug!("Manual mode, skipping auto-publish: {}", path.display());
                         }
-                    } else {
-                        debug!("Auto-publish disabled, skipping: {}", path.display());
+                        PublishMode::SessionEnd | PublishMode::Realtime => {
+                            if let Err(e) = process_file(&path, &config, &mut state, &state_path).await {
+                                error!("Failed to process {}: {:#}", path.display(), e);
+                            }
+                        }
                     }
                 }
             }
@@ -148,6 +184,21 @@ async fn process_file(
     info!("Parsing: {} ({})", path.display(), parser.name());
     let mut session = parser.parse(path)?;
 
+    // exclude_tools filter: skip if this session's tool is excluded
+    if config
+        .privacy
+        .exclude_tools
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(&session.agent.tool))
+    {
+        info!(
+            "Excluding tool '{}': {}",
+            session.agent.tool,
+            path.display()
+        );
+        return Ok(());
+    }
+
     // Sanitize
     let sanitize_config = SanitizeConfig {
         strip_paths: config.privacy.strip_paths,
@@ -169,64 +220,26 @@ async fn process_file(
         .timeout(Duration::from_secs(60))
         .build()?;
 
-    let delays = [1u64, 2, 4];
-    let max_attempts = delays.len() + 1;
-    let mut last_err: Option<String> = None;
+    let response = retry_upload(
+        &client,
+        &url,
+        &config.server.api_key,
+        &upload_body,
+        config.daemon.max_retries,
+    )
+    .await?;
 
-    for attempt in 0..max_attempts {
-        let mut req = client
-            .post(&url)
-            .header("Content-Type", "application/json");
-        if !config.server.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", config.server.api_key));
-        }
-
-        match req.json(&upload_body).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                info!("Uploaded session: {}", session.session_id);
-                state.mark_uploaded(&path_str);
-                state.save(state_path)?;
-                return Ok(());
-            }
-            Ok(resp) if resp.status().is_server_error() => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                last_err = Some(format!("HTTP {}: {}", status, body));
-                if attempt < delays.len() {
-                    warn!(
-                        "Upload attempt {}/{} failed (HTTP {}), retrying in {}s...",
-                        attempt + 1,
-                        max_attempts,
-                        status,
-                        delays[attempt]
-                    );
-                    tokio::time::sleep(Duration::from_secs(delays[attempt])).await;
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                error!("Upload failed (HTTP {}): {}", status, body);
-                return Ok(());
-            }
-            Err(e) => {
-                last_err = Some(e.to_string());
-                if attempt < delays.len() {
-                    warn!(
-                        "Upload attempt {}/{} failed ({}), retrying in {}s...",
-                        attempt + 1,
-                        max_attempts,
-                        e,
-                        delays[attempt]
-                    );
-                    tokio::time::sleep(Duration::from_secs(delays[attempt])).await;
-                }
-            }
-        }
-    }
-
-    if let Some(err) = last_err {
-        error!("Upload failed after {} attempts: {}", max_attempts, err);
+    let status = response.status();
+    if status.is_success() {
+        info!("Uploaded session: {}", session.session_id);
+        state.mark_uploaded(&path_str);
+        state.save(state_path)?;
+    } else if status.is_client_error() {
+        let body = response.text().await.unwrap_or_default();
+        error!("Upload rejected (HTTP {}): {}", status, body);
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        error!("Upload failed (HTTP {}): {}", status, body);
     }
 
     Ok(())

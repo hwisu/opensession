@@ -1266,6 +1266,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "opensession-api-types"
 version = "0.1.0"
+source = "git+https://github.com/hwisu/opensession-core#3f9148c2bf5ebb23d14332ff1760cac66a0c3411"
 dependencies = [
  "opensession-core",
  "serde",
@@ -1296,6 +1297,7 @@ dependencies = [
 [[package]]
 name = "opensession-core"
 version = "0.1.0"
+source = "git+https://github.com/hwisu/opensession-core#3f9148c2bf5ebb23d14332ff1760cac66a0c3411"
 dependencies = [
  "chrono",
  "regex",
@@ -1317,6 +1319,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
@@ -1326,6 +1329,7 @@ dependencies = [
 [[package]]
 name = "opensession-parsers"
 version = "0.1.0"
+source = "git+https://github.com/hwisu/opensession-core#3f9148c2bf5ebb23d14332ff1760cac66a0c3411"
 dependencies = [
  "anyhow",
  "chrono",

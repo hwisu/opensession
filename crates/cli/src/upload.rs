@@ -40,6 +40,20 @@ pub async fn run_upload(file: &Path) -> Result<()> {
         .parse(file)
         .with_context(|| format!("Failed to parse {}", file.display()))?;
 
+    // Check exclude_tools
+    if config
+        .privacy
+        .exclude_tools
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(&session.agent.tool))
+    {
+        println!(
+            "Skipping upload: tool '{}' is in exclude_tools list",
+            session.agent.tool
+        );
+        return Ok(());
+    }
+
     println!(
         "Parsed session: {} ({} events, {} tool calls)",
         session.session_id, session.stats.event_count, session.stats.tool_call_count

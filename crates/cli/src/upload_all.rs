@@ -76,6 +76,17 @@ pub async fn run_upload_all() -> Result<()> {
                 continue;
             }
 
+            // Check exclude_tools
+            if config
+                .privacy
+                .exclude_tools
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(&session.agent.tool))
+            {
+                skipped += 1;
+                continue;
+            }
+
             // Upload with retry
             let upload_body = serde_json::json!({
                 "session": session,

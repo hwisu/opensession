@@ -122,6 +122,14 @@ fn read_pid() -> Result<Option<u32>> {
     Ok(Some(pid))
 }
 
+/// Check if the daemon is currently running
+pub fn is_daemon_running() -> bool {
+    match read_pid() {
+        Ok(Some(pid)) => is_process_running(pid),
+        _ => false,
+    }
+}
+
 /// Check if a process with the given PID is running
 fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]

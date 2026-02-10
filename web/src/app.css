@@ -1,2 +1,12 @@
 @import 'tailwindcss';
 @import '@opensession/ui/theme.css';
+@source "../node_modules/@opensession/ui/src";
+
+/* TUI: remove all border-radius */
+* {
+	border-radius: 0 !important;
+}
+/* Keep scrollbar thumb rounded */
+::-webkit-scrollbar-thumb {
+	border-radius: 3px !important;
+}

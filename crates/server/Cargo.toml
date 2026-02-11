@@ -3,7 +3,11 @@ name = "opensession-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Self-hosted server for opensession.io (Axum + SQLite)"
+keywords = ["ai", "session", "server", "opensession"]
+categories = ["web-programming::http-server", "development-tools"]
 
 [lints]
 workspace = true

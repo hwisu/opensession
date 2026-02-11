@@ -14,7 +14,8 @@ COPY migrations/ migrations/
 # Override git deps with local paths for Docker build
 RUN mkdir -p .cargo && printf '[patch."https://github.com/hwisu/opensession-core"]\nopensession-core = { path = "/opensession-core/crates/core" }\nopensession-parsers = { path = "/opensession-core/crates/parsers" }\nopensession-api-types = { path = "/opensession-core/crates/api-types" }\n' > .cargo/config.toml
 
-RUN cargo build --release --bin opensession-server
+RUN cargo build --release --bin opensession-server && \
+    strip /app/target/release/opensession-server
 
 # ── Stage 2: Frontend build ──────────────────────────────────────────────────
 FROM node:22-slim AS frontend
@@ -34,11 +35,20 @@ RUN cd web && npm run build
 # ── Stage 3: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+LABEL org.opencontainers.image.title="OpenSession"
+LABEL org.opencontainers.image.source="https://github.com/hwisu/opensession"
+LABEL org.opencontainers.image.licenses="MIT"
 
-COPY --from=builder /app/target/release/opensession-server /usr/local/bin/
-COPY --from=frontend /build/opensession/web/build /var/www/opensession
-COPY migrations/ /var/www/migrations/
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r opensession && useradd -r -g opensession -s /bin/false opensession
+
+RUN mkdir -p /data && chown opensession:opensession /data
+
+COPY --from=builder --chown=opensession:opensession /app/target/release/opensession-server /usr/local/bin/
+COPY --from=frontend --chown=opensession:opensession /build/opensession/web/build /var/www/opensession
+COPY --chown=opensession:opensession migrations/ /var/www/migrations/
 
 ENV OPENSESSION_DATA_DIR=/data
 ENV OPENSESSION_WEB_DIR=/var/www/opensession
@@ -47,4 +57,10 @@ EXPOSE 3000
 
 VOLUME ["/data"]
 
+USER opensession
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:3000/api/health || exit 1
+
+ENTRYPOINT ["tini", "--"]
 CMD ["opensession-server"]

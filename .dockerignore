@@ -6,6 +6,16 @@ packages/ui/node_modules/
 .git/
 .claude/
 .playwright-mcp/
+.github/
+.env
+.env.*
 data/
 *.png
 *.jpg
+*.log
+*.db
+*.db-shm
+*.db-wal
+.cargo/
+docker-compose*.yml
+Dockerfile

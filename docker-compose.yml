@@ -14,6 +14,13 @@ services:
       - OPENSESSION_WEB_DIR=/var/www/opensession
       - OPENSESSION_BASE_URL=http://localhost:3000
       - RUST_LOG=opensession_server=info,tower_http=info
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]

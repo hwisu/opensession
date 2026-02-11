@@ -1,0 +1,41 @@
+#!/bin/sh
+# Pre-push hook: Docker build + E2E tests (uses Docker layer cache)
+set -e
+
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.test.yml"
+E2E_DIR="../opensession-core"
+
+echo "=== Building Docker image (cached) ==="
+$COMPOSE build
+
+echo "=== Starting server ==="
+$COMPOSE up -d
+
+echo "=== Waiting for server ==="
+for i in $(seq 1 30); do
+    if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
+        echo "Server is ready"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "Server failed to start"
+        $COMPOSE logs
+        $COMPOSE down
+        exit 1
+    fi
+    sleep 2
+done
+
+echo "=== Running E2E tests ==="
+E2E_BASE_URL=http://localhost:3000 cargo test -p opensession-e2e --test docker --manifest-path "$E2E_DIR/Cargo.toml" -- --test-threads=1
+E2E_EXIT=$?
+
+echo "=== Stopping server ==="
+$COMPOSE down
+
+if [ $E2E_EXIT -ne 0 ]; then
+    echo "E2E tests failed!"
+    exit 1
+fi
+
+echo "=== E2E tests passed ==="

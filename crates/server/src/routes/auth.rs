@@ -137,6 +137,9 @@ pub async fn me(
                 api_key: row.get(2)?,
                 is_admin: row.get(3)?,
                 created_at: row.get(4)?,
+                email: None,
+                github_username: None,
+                avatar_url: None,
             })
         },
     )

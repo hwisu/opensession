@@ -98,6 +98,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install UI package deps
+        run: npm install
+        working-directory: _opensession-core/packages/ui
       - run: npm ci
         working-directory: web
       - run: npm run check

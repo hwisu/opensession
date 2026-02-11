@@ -2,7 +2,6 @@ mod config;
 mod config_sync;
 mod health;
 mod pull_sync;
-mod retry;
 mod scheduler;
 mod stream;
 mod tail;

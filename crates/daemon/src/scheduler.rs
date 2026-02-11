@@ -1,5 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use opensession_api_client::retry::{retry_post, RetryConfig};
+use opensession_api_client::ApiClient;
+use opensession_api_types::UploadRequest;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_core::Session;
 use opensession_local_db::git::extract_git_context;
@@ -14,7 +17,6 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::config::{DaemonConfig, DaemonSettings, PublishMode};
-use crate::retry::retry_upload;
 use crate::watcher::FileChangeEvent;
 
 /// Legacy state – kept only for migration from state.json.
@@ -227,24 +229,36 @@ fn sanitize(session: &mut Session, config: &DaemonConfig) {
 }
 
 async fn upload_to_server(session: &Session, config: &DaemonConfig, db: &LocalDb) -> Result<()> {
-    let url = format!("{}/api/sessions", config.server.url.trim_end_matches('/'));
-    info!("Uploading session {} to {}", session.session_id, url);
+    let mut api = ApiClient::new(&config.server.url, Duration::from_secs(60))?;
+    api.set_auth(config.server.api_key.clone());
 
-    let upload_body = serde_json::json!({
-        "session": session,
-        "team_id": config.identity.team_id,
-    });
+    info!(
+        "Uploading session {} to {}",
+        session.session_id,
+        api.base_url()
+    );
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?;
+    let upload_body = serde_json::to_value(&UploadRequest {
+        session: serde_json::to_value(session)?,
+        team_id: Some(config.identity.team_id.clone()),
+        body_url: None,
+        linked_session_ids: None,
+    })?;
 
-    let response = retry_upload(
-        &client,
+    let retry_cfg = RetryConfig {
+        max_retries: config.daemon.max_retries as usize,
+        delays: (0..config.daemon.max_retries)
+            .map(|i| 1u64 << i.min(4))
+            .collect(),
+    };
+
+    let url = format!("{}/api/sessions", api.base_url());
+    let response = retry_post(
+        api.reqwest_client(),
         &url,
-        &config.server.api_key,
+        api.auth_token(),
         &upload_body,
-        config.daemon.max_retries,
+        &retry_cfg,
     )
     .await?;
 

@@ -6,8 +6,9 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api_types::{
-    db, service, AddMemberRequest, CreateTeamRequest, ListMembersResponse, ListTeamsResponse,
-    MemberResponse, SessionSummary, TeamDetailResponse, TeamResponse, UpdateTeamRequest,
+    db, service, AcceptInvitationResponse, AddMemberRequest, CreateTeamRequest, InvitationResponse,
+    InviteRequest, ListInvitationsResponse, ListMembersResponse, ListTeamsResponse, MemberResponse,
+    OkResponse, SessionSummary, TeamDetailResponse, TeamResponse, UpdateTeamRequest,
 };
 
 use crate::error::ApiErr;
@@ -15,18 +16,15 @@ use crate::routes::auth::AuthUser;
 use crate::storage::{session_from_row, team_from_row, Db};
 
 // ---------------------------------------------------------------------------
-// Create team (admin only)
+// Create team
 // ---------------------------------------------------------------------------
 
+/// POST /api/teams — create a new team. Creator is added as team admin.
 pub async fn create_team(
     State(db): State<Db>,
     user: AuthUser,
     Json(req): Json<CreateTeamRequest>,
 ) -> Result<(StatusCode, Json<TeamResponse>), ApiErr> {
-    if !user.is_admin {
-        return Err(ApiErr::forbidden("admin only"));
-    }
-
     let name = service::validate_team_name(&req.name).map_err(ApiErr::from)?;
 
     let team_id = Uuid::new_v4().to_string();
@@ -44,8 +42,8 @@ pub async fn create_team(
 
     // Add creator as admin member
     conn.execute(
-        "INSERT INTO team_members (team_id, user_id, role) VALUES (?1, ?2, 'admin')",
-        rusqlite::params![&team_id, &user.user_id],
+        db::MEMBER_INSERT,
+        rusqlite::params![&team_id, &user.user_id, "admin"],
     )
     .map_err(|e| {
         tracing::error!("add creator as member: {e}");
@@ -53,11 +51,7 @@ pub async fn create_team(
     })?;
 
     let created_at: String = conn
-        .query_row(
-            "SELECT created_at FROM teams WHERE id = ?1",
-            [&team_id],
-            |row| row.get(0),
-        )
+        .query_row(db::TEAM_CREATED_AT, [&team_id], |row| row.get(0))
         .unwrap_or_default();
 
     Ok((
@@ -77,6 +71,7 @@ pub async fn create_team(
 // List my teams
 // ---------------------------------------------------------------------------
 
+/// GET /api/teams — list teams the authenticated user belongs to.
 pub async fn list_my_teams(
     State(db): State<Db>,
     user: AuthUser,
@@ -100,6 +95,7 @@ pub async fn list_my_teams(
 // Get team detail + sessions
 // ---------------------------------------------------------------------------
 
+/// GET /api/teams/:id — get team detail with member count and recent sessions.
 pub async fn get_team(
     State(db): State<Db>,
     Path(id): Path<String>,
@@ -111,11 +107,7 @@ pub async fn get_team(
         .map_err(|_| ApiErr::not_found("team not found"))?;
 
     let member_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM team_members WHERE team_id = ?1",
-            [&id],
-            |row| row.get(0),
-        )
+        .query_row(db::TEAM_MEMBER_COUNT, [&id], |row| row.get(0))
         .unwrap_or(0);
 
     let sessions_sql = format!(
@@ -148,6 +140,7 @@ pub async fn get_team(
 // Update team (admin only)
 // ---------------------------------------------------------------------------
 
+/// PUT /api/teams/:id — update team name, description, or visibility (admin only).
 pub async fn update_team(
     State(db): State<Db>,
     user: AuthUser,
@@ -162,11 +155,9 @@ pub async fn update_team(
 
     // Verify team exists
     let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM teams WHERE id = ?1",
-            [&id],
-            |row| row.get(0),
-        )
+        .query_row(db::TEAM_EXISTS, [&id], |row| {
+            row.get::<_, i64>(0).map(|c| c > 0)
+        })
         .unwrap_or(false);
 
     if !exists {
@@ -175,24 +166,18 @@ pub async fn update_team(
 
     if let Some(ref name) = req.name {
         let name = service::validate_team_name(name).map_err(ApiErr::from)?;
-        conn.execute(
-            "UPDATE teams SET name = ?1 WHERE id = ?2",
-            rusqlite::params![&name, &id],
-        )
-        .map_err(ApiErr::from_db("update team name"))?;
+        conn.execute(db::TEAM_UPDATE_NAME, rusqlite::params![&name, &id])
+            .map_err(ApiErr::from_db("update team name"))?;
     }
 
     if let Some(ref desc) = req.description {
-        conn.execute(
-            "UPDATE teams SET description = ?1 WHERE id = ?2",
-            rusqlite::params![desc, &id],
-        )
-        .map_err(ApiErr::from_db("update team description"))?;
+        conn.execute(db::TEAM_UPDATE_DESCRIPTION, rusqlite::params![desc, &id])
+            .map_err(ApiErr::from_db("update team description"))?;
     }
 
     if let Some(is_public) = req.is_public {
         conn.execute(
-            "UPDATE teams SET is_public = ?1 WHERE id = ?2",
+            db::TEAM_UPDATE_VISIBILITY,
             rusqlite::params![is_public, &id],
         )
         .map_err(ApiErr::from_db("update team visibility"))?;
@@ -209,6 +194,7 @@ pub async fn update_team(
 // Add member to team (admin only, by nickname)
 // ---------------------------------------------------------------------------
 
+/// POST /api/teams/:id/members — add a member by nickname (admin only).
 pub async fn add_member(
     State(db): State<Db>,
     user: AuthUser,
@@ -223,19 +209,17 @@ pub async fn add_member(
 
     // Look up user by nickname
     let target = conn
-        .query_row(
-            "SELECT id FROM users WHERE nickname = ?1",
-            [&req.nickname],
-            |row| row.get::<_, String>(0),
-        )
+        .query_row(db::USER_BY_NICKNAME, [&req.nickname], |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|_| ApiErr::not_found("user not found"))?;
 
     // Check not already a member
     let already: bool = conn
         .query_row(
-            "SELECT COUNT(*) > 0 FROM team_members WHERE team_id = ?1 AND user_id = ?2",
+            db::TEAM_MEMBER_EXISTS,
             rusqlite::params![&team_id, &target],
-            |row| row.get(0),
+            |row| row.get::<_, i64>(0).map(|c| c > 0),
         )
         .unwrap_or(false);
 
@@ -244,8 +228,8 @@ pub async fn add_member(
     }
 
     conn.execute(
-        "INSERT INTO team_members (team_id, user_id, role) VALUES (?1, ?2, 'member')",
-        rusqlite::params![&team_id, &target],
+        db::MEMBER_INSERT,
+        rusqlite::params![&team_id, &target, "member"],
     )
     .map_err(|e| {
         tracing::error!("add member: {e}");
@@ -254,7 +238,7 @@ pub async fn add_member(
 
     let joined_at: String = conn
         .query_row(
-            "SELECT joined_at FROM team_members WHERE team_id = ?1 AND user_id = ?2",
+            db::MEMBER_JOINED_AT,
             rusqlite::params![&team_id, &target],
             |row| row.get(0),
         )
@@ -275,6 +259,7 @@ pub async fn add_member(
 // Remove member from team (admin only)
 // ---------------------------------------------------------------------------
 
+/// DELETE /api/teams/:id/members/:user_id — remove a member (admin only).
 pub async fn remove_member(
     State(db): State<Db>,
     user: AuthUser,
@@ -286,10 +271,7 @@ pub async fn remove_member(
 
     let conn = db.conn();
     let affected = conn
-        .execute(
-            "DELETE FROM team_members WHERE team_id = ?1 AND user_id = ?2",
-            rusqlite::params![&team_id, &user_id],
-        )
+        .execute(db::MEMBER_DELETE, rusqlite::params![&team_id, &user_id])
         .map_err(|e| {
             tracing::error!("remove member: {e}");
             ApiErr::internal("failed to remove member")
@@ -306,6 +288,7 @@ pub async fn remove_member(
 // List members
 // ---------------------------------------------------------------------------
 
+/// GET /api/teams/:id/members — list all members of a team.
 pub async fn list_members(
     State(db): State<Db>,
     Path(team_id): Path<String>,
@@ -313,11 +296,9 @@ pub async fn list_members(
     let conn = db.conn();
 
     let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM teams WHERE id = ?1",
-            [&team_id],
-            |row| row.get(0),
-        )
+        .query_row(db::TEAM_EXISTS, [&team_id], |row| {
+            row.get::<_, i64>(0).map(|c| c > 0)
+        })
         .unwrap_or(false);
 
     if !exists {
@@ -342,4 +323,315 @@ pub async fn list_members(
         .collect();
 
     Ok(Json(ListMembersResponse { members }))
+}
+
+// ---------------------------------------------------------------------------
+// Invitations
+// ---------------------------------------------------------------------------
+
+/// Check if the user is a team admin.
+fn is_team_admin(conn: &rusqlite::Connection, team_id: &str, user_id: &str) -> bool {
+    conn.query_row(
+        db::TEAM_MEMBER_ROLE,
+        rusqlite::params![team_id, user_id],
+        |row| row.get::<_, String>(0),
+    )
+    .map(|role| role == "admin")
+    .unwrap_or(false)
+}
+
+/// POST /api/teams/:id/invite — invite a member by email or OAuth identity.
+pub async fn invite_member(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(team_id): Path<String>,
+    Json(req): Json<InviteRequest>,
+) -> Result<(StatusCode, Json<InvitationResponse>), ApiErr> {
+    let conn = db.conn();
+
+    if !user.is_admin && !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
+
+    let email = req.email.as_deref().map(|e| e.trim().to_lowercase());
+    let oauth_provider = req
+        .oauth_provider
+        .as_deref()
+        .map(|p| p.trim().to_lowercase());
+    let oauth_provider_username = req
+        .oauth_provider_username
+        .as_deref()
+        .map(|u| u.trim().to_string());
+    let role = req.role.as_deref().unwrap_or("member");
+
+    let has_oauth = oauth_provider.is_some() && oauth_provider_username.is_some();
+    if email.is_none() && !has_oauth {
+        return Err(ApiErr::bad_request(
+            "email or oauth_provider+oauth_provider_username required",
+        ));
+    }
+
+    // Check for duplicate pending invitation
+    let dup = if let Some(ref email) = email {
+        conn.query_row(
+            db::INVITATION_DUP_CHECK_EMAIL,
+            rusqlite::params![&team_id, email],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+    } else if let (Some(ref prov), Some(ref uname)) = (&oauth_provider, &oauth_provider_username) {
+        conn.query_row(
+            db::INVITATION_DUP_CHECK_OAUTH,
+            rusqlite::params![&team_id, prov, uname],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+    } else {
+        0
+    };
+
+    if dup > 0 {
+        return Err(ApiErr::conflict("invitation already pending"));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(7))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    conn.execute(
+        db::INVITATION_INSERT,
+        rusqlite::params![
+            &id,
+            &team_id,
+            &email,
+            &oauth_provider,
+            &oauth_provider_username,
+            &user.user_id,
+            role,
+            &expires_at
+        ],
+    )
+    .map_err(|e| {
+        tracing::error!("invite member: {e}");
+        ApiErr::internal("failed to create invitation")
+    })?;
+
+    let team_name: String = conn
+        .query_row(db::TEAM_NAME_BY_ID, [&team_id], |row| row.get(0))
+        .unwrap_or_default();
+
+    Ok((
+        StatusCode::CREATED,
+        Json(InvitationResponse {
+            id,
+            team_id,
+            team_name,
+            email,
+            oauth_provider,
+            oauth_provider_username,
+            invited_by_nickname: user.nickname,
+            role: role.to_string(),
+            status: "pending".to_string(),
+            created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        }),
+    ))
+}
+
+/// GET /api/invitations — list pending invitations for the current user.
+pub async fn list_invitations(
+    State(db): State<Db>,
+    user: AuthUser,
+) -> Result<Json<ListInvitationsResponse>, ApiErr> {
+    let conn = db.conn();
+    let email = user.email.as_deref().unwrap_or("");
+
+    let mut stmt = conn
+        .prepare(&db::INVITATION_LIST_MY)
+        .map_err(ApiErr::from_db("prepare invitations"))?;
+
+    let invitations: Vec<InvitationResponse> = stmt
+        .query_map(rusqlite::params![email, &user.user_id], |row| {
+            Ok(InvitationResponse {
+                id: row.get(0)?,
+                team_id: row.get(1)?,
+                team_name: row.get(2)?,
+                email: row.get(3)?,
+                oauth_provider: row.get(4)?,
+                oauth_provider_username: row.get(5)?,
+                invited_by_nickname: row.get(6)?,
+                role: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })
+        .map_err(ApiErr::from_db("list invitations"))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(ListInvitationsResponse { invitations }))
+}
+
+/// POST /api/invitations/:id/accept — accept an invitation.
+pub async fn accept_invitation(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(inv_id): Path<String>,
+) -> Result<Json<AcceptInvitationResponse>, ApiErr> {
+    let conn = db.conn();
+
+    // Fetch invitation
+    let inv = conn
+        .query_row(db::INVITATION_LOOKUP, [&inv_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,         // id
+                row.get::<_, String>(1)?,         // team_id
+                row.get::<_, Option<String>>(2)?, // email
+                row.get::<_, Option<String>>(3)?, // oauth_provider
+                row.get::<_, Option<String>>(4)?, // oauth_provider_username
+                row.get::<_, String>(5)?,         // role
+                row.get::<_, String>(6)?,         // status
+                row.get::<_, String>(7)?,         // expires_at
+            ))
+        })
+        .map_err(|_| ApiErr::not_found("invitation not found"))?;
+
+    let (_inv_id, team_id, inv_email, inv_prov, inv_uname, role, status, expires_at) = inv;
+
+    if status != "pending" {
+        return Err(ApiErr::bad_request("invitation is no longer pending"));
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if expires_at < now {
+        return Err(ApiErr::bad_request("invitation has expired"));
+    }
+
+    // Verify ownership
+    let email_match = inv_email
+        .as_ref()
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            user.email
+                .as_ref()
+                .map(|ue| ue.to_lowercase() == e.to_lowercase())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    let oauth_match = match (&inv_prov, &inv_uname) {
+        (Some(prov), Some(uname)) if !prov.is_empty() && !uname.is_empty() => conn
+            .query_row(
+                db::OAUTH_IDENTITY_MATCH,
+                rusqlite::params![&user.user_id, prov, uname],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false),
+        _ => false,
+    };
+
+    if !email_match && !oauth_match {
+        return Err(ApiErr::forbidden("this invitation is not for you"));
+    }
+
+    // Check not already a member
+    let already: bool = conn
+        .query_row(
+            db::TEAM_MEMBER_EXISTS,
+            rusqlite::params![&team_id, &user.user_id],
+            |row| row.get::<_, i64>(0).map(|c| c > 0),
+        )
+        .unwrap_or(false);
+
+    if already {
+        conn.execute(
+            db::INVITATION_UPDATE_STATUS,
+            rusqlite::params!["accepted", &inv_id],
+        )
+        .ok();
+        return Err(ApiErr::conflict("already a member of this team"));
+    }
+
+    // Add as team member
+    conn.execute(
+        db::MEMBER_INSERT,
+        rusqlite::params![&team_id, &user.user_id, &role],
+    )
+    .map_err(|e| {
+        tracing::error!("accept invitation: {e}");
+        ApiErr::internal("failed to join team")
+    })?;
+
+    // Mark invitation accepted
+    conn.execute(
+        db::INVITATION_UPDATE_STATUS,
+        rusqlite::params!["accepted", &inv_id],
+    )
+    .ok();
+
+    Ok(Json(AcceptInvitationResponse { team_id, role }))
+}
+
+/// POST /api/invitations/:id/decline — decline an invitation.
+pub async fn decline_invitation(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(inv_id): Path<String>,
+) -> Result<Json<OkResponse>, ApiErr> {
+    let conn = db.conn();
+
+    // Fetch invitation
+    let inv = conn
+        .query_row(db::INVITATION_LOOKUP, [&inv_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(2)?, // email
+                row.get::<_, Option<String>>(3)?, // oauth_provider
+                row.get::<_, Option<String>>(4)?, // oauth_provider_username
+                row.get::<_, String>(6)?,         // status
+            ))
+        })
+        .map_err(|_| ApiErr::not_found("invitation not found"))?;
+
+    let (inv_email, inv_prov, inv_uname, status) = inv;
+
+    if status != "pending" {
+        return Err(ApiErr::bad_request("invitation is no longer pending"));
+    }
+
+    // Verify ownership
+    let email_match = inv_email
+        .as_ref()
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            user.email
+                .as_ref()
+                .map(|ue| ue.to_lowercase() == e.to_lowercase())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    let oauth_match = match (&inv_prov, &inv_uname) {
+        (Some(prov), Some(uname)) if !prov.is_empty() && !uname.is_empty() => conn
+            .query_row(
+                db::OAUTH_IDENTITY_MATCH,
+                rusqlite::params![&user.user_id, prov, uname],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false),
+        _ => false,
+    };
+
+    if !email_match && !oauth_match {
+        return Err(ApiErr::forbidden("this invitation is not for you"));
+    }
+
+    conn.execute(
+        db::INVITATION_UPDATE_STATUS,
+        rusqlite::params!["declined", &inv_id],
+    )
+    .ok();
+
+    Ok(Json(OkResponse { ok: true }))
 }

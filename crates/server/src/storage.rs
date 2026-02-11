@@ -122,6 +122,18 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             "0002_add_tokens_and_public",
             include_str!("../../../migrations/0002_add_tokens_and_public.sql"),
         ),
+        (
+            "0003_session_links",
+            include_str!("../../../migrations/0003_session_links.sql"),
+        ),
+        (
+            "0004_auth",
+            include_str!("../../../migrations/0004_auth.sql"),
+        ),
+        (
+            "0005_invitations",
+            include_str!("../../../migrations/0005_invitations.sql"),
+        ),
     ];
 
     for (name, sql) in migrations {

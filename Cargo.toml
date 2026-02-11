@@ -24,6 +24,7 @@ repository = "https://github.com/hwisu/opensession"
 opensession-core = { path = "../opensession-core/crates/core" }
 opensession-parsers = { path = "../opensession-core/crates/parsers" }
 opensession-api-types = { path = "../opensession-core/crates/api-types" }
+opensession-api-client = { path = "../opensession-core/crates/api-client" }
 opensession-local-db = { path = "../opensession-core/crates/local-db" }
 
 serde = { version = "1", features = ["derive"] }

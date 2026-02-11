@@ -12,18 +12,67 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+use opensession_api_types::oauth::{self, OAuthProviderConfig};
 use storage::Db;
 
 /// Application state shared across all handlers.
 #[derive(Clone)]
-struct AppState {
-    db: Db,
+pub struct AppState {
+    pub db: Db,
+    pub config: AppConfig,
+}
+
+/// Server configuration loaded from environment variables.
+#[derive(Clone)]
+pub struct AppConfig {
+    pub base_url: String,
+    pub jwt_secret: String,
+    pub oauth_providers: Vec<OAuthProviderConfig>,
 }
 
 impl FromRef<AppState> for Db {
     fn from_ref(state: &AppState) -> Self {
         state.db.clone()
     }
+}
+
+impl FromRef<AppState> for AppConfig {
+    fn from_ref(state: &AppState) -> Self {
+        state.config.clone()
+    }
+}
+
+/// Load OAuth providers from environment variables.
+fn load_oauth_providers() -> Vec<OAuthProviderConfig> {
+    let mut providers = Vec::new();
+
+    // GitHub: GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("GITHUB_CLIENT_ID"),
+        std::env::var("GITHUB_CLIENT_SECRET"),
+    ) {
+        if !id.is_empty() && !secret.is_empty() {
+            tracing::info!("OAuth provider enabled: GitHub");
+            providers.push(oauth::github_preset(id, secret));
+        }
+    }
+
+    // GitLab: GITLAB_URL + GITLAB_CLIENT_ID + GITLAB_CLIENT_SECRET
+    if let (Ok(url), Ok(id), Ok(secret)) = (
+        std::env::var("GITLAB_URL"),
+        std::env::var("GITLAB_CLIENT_ID"),
+        std::env::var("GITLAB_CLIENT_SECRET"),
+    ) {
+        if !url.is_empty() && !id.is_empty() && !secret.is_empty() {
+            let ext_url = std::env::var("GITLAB_EXTERNAL_URL")
+                .ok()
+                .filter(|s| !s.is_empty());
+            tracing::info!("OAuth provider enabled: GitLab ({})", url);
+            providers.push(oauth::gitlab_preset(url, ext_url, id, secret));
+        }
+    }
+
+    providers
 }
 
 #[tokio::main]
@@ -47,17 +96,47 @@ async fn main() -> anyhow::Result<()> {
     let db = storage::init_db(&data_dir)?;
     tracing::info!("database initialized");
 
-    let state = AppState { db };
+    let base_url =
+        std::env::var("OPENSESSION_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+
+    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
+    if jwt_secret.is_empty() {
+        tracing::warn!("JWT_SECRET not set — JWT auth and OAuth will be disabled");
+    }
+
+    let oauth_providers = load_oauth_providers();
+
+    let config = AppConfig {
+        base_url: base_url.clone(),
+        jwt_secret,
+        oauth_providers,
+    };
+
+    let state = AppState { db, config };
 
     // Build API routes
     let api = Router::new()
         // Health
         .route("/health", get(routes::health::health))
-        // Auth
+        // Auth (legacy)
         .route("/register", post(routes::auth::register))
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))
         .route("/auth/regenerate-key", post(routes::auth::regenerate_key))
+        // Auth (email/password + JWT)
+        .route("/auth/register", post(routes::auth::auth_register))
+        .route("/auth/login", post(routes::auth::login))
+        .route("/auth/refresh", post(routes::auth::refresh))
+        .route("/auth/logout", post(routes::auth::logout))
+        .route("/auth/password", put(routes::auth::change_password))
+        // OAuth (generic — handles any provider)
+        .route("/auth/providers", get(routes::oauth::providers))
+        .route("/auth/oauth/{provider}", get(routes::oauth::redirect))
+        .route(
+            "/auth/oauth/{provider}/callback",
+            get(routes::oauth::callback),
+        )
+        .route("/auth/oauth/{provider}/link", post(routes::oauth::link))
         // Sessions
         .route("/sessions", post(routes::sessions::upload_session))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB for large sessions
@@ -77,6 +156,17 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/teams/{team_id}/members/{user_id}",
             delete(routes::teams::remove_member),
+        )
+        // Invitations
+        .route("/teams/{id}/invite", post(routes::teams::invite_member))
+        .route("/invitations", get(routes::teams::list_invitations))
+        .route(
+            "/invitations/{id}/accept",
+            post(routes::teams::accept_invitation),
+        )
+        .route(
+            "/invitations/{id}/decline",
+            post(routes::teams::decline_invitation),
         );
 
     // Build main router
@@ -102,8 +192,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_state(state);
 
-    let base_url =
-        std::env::var("OPENSESSION_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
     tracing::info!("starting server at {base_url}");
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());

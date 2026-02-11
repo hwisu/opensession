@@ -15,11 +15,13 @@ pub struct DaemonConfig {
     pub privacy: PrivacySettings,
     #[serde(default)]
     pub watchers: WatcherSettings,
+    #[serde(default)]
+    pub git_storage: GitStorageSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonSettings {
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub auto_publish: bool,
     #[serde(default = "default_debounce")]
     pub debounce_secs: u64,
@@ -36,9 +38,9 @@ pub struct DaemonSettings {
 impl Default for DaemonSettings {
     fn default() -> Self {
         Self {
-            auto_publish: true,
+            auto_publish: false,
             debounce_secs: 5,
-            publish_on: PublishMode::SessionEnd,
+            publish_on: PublishMode::Manual,
             max_retries: 3,
             health_check_interval_secs: 300,
             realtime_debounce_ms: 500,
@@ -145,6 +147,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 fn default_debounce() -> u64 {
     5
 }
@@ -161,8 +167,35 @@ fn default_realtime_debounce_ms() -> u64 {
     500
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitStorageSettings {
+    #[serde(default)]
+    pub method: GitStorageMethod,
+    #[serde(default)]
+    pub token: String,
+}
+
+impl Default for GitStorageSettings {
+    fn default() -> Self {
+        Self {
+            method: GitStorageMethod::None,
+            token: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStorageMethod {
+    #[serde(alias = "native")]
+    PlatformApi,
+    #[default]
+    #[serde(other)]
+    None,
+}
+
 fn default_publish_on() -> PublishMode {
-    PublishMode::SessionEnd
+    PublishMode::Manual
 }
 
 fn default_server_url() -> String {
@@ -270,9 +303,9 @@ mod tests {
     fn test_default_config_serializes() {
         let config = DaemonConfig::default();
         let toml_str = toml::to_string_pretty(&config).unwrap();
-        assert!(toml_str.contains("auto_publish = true"));
+        assert!(toml_str.contains("auto_publish = false"));
         assert!(toml_str.contains("debounce_secs = 5"));
-        assert!(toml_str.contains("publish_on = \"session_end\""));
+        assert!(toml_str.contains("publish_on = \"manual\""));
         assert!(toml_str.contains("max_retries = 3"));
         assert!(toml_str.contains("health_check_interval_secs = 300"));
         assert!(toml_str.contains("realtime_debounce_ms = 500"));
@@ -284,7 +317,7 @@ mod tests {
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: DaemonConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.daemon.debounce_secs, 5);
-        assert_eq!(parsed.daemon.publish_on, PublishMode::SessionEnd);
+        assert_eq!(parsed.daemon.publish_on, PublishMode::Manual);
         assert_eq!(parsed.daemon.max_retries, 3);
         assert_eq!(parsed.daemon.health_check_interval_secs, 300);
         assert_eq!(parsed.daemon.realtime_debounce_ms, 500);

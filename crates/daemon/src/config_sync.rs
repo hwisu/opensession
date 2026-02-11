@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use opensession_api_client::ApiClient;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -140,17 +141,23 @@ pub async fn run_config_sync(
     // Skip first tick
     interval.tick().await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
+    let mut api = match ApiClient::new(&server_url, Duration::from_secs(10)) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to create config sync client: {e}");
+            return;
+        }
+    };
+    if !api_key.is_empty() {
+        api.set_auth(api_key);
+    }
 
     let mut current_etag: Option<String> = load_synced_config().etag;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                match poll_config(&client, &server_url, &api_key, &current_etag).await {
+                match poll_config(&api, &current_etag).await {
                     Ok(PollResult::Updated(config, new_etag)) => {
                         info!("Config sync: received updated config from server");
                         current_etag = new_etag.clone();
@@ -221,17 +228,12 @@ struct SyncedWatchersData {
     cursor: Option<bool>,
 }
 
-async fn poll_config(
-    client: &reqwest::Client,
-    server_url: &str,
-    api_key: &str,
-    current_etag: &Option<String>,
-) -> Result<PollResult> {
-    let url = format!("{}/api/config/sync", server_url.trim_end_matches('/'));
+async fn poll_config(api: &ApiClient, current_etag: &Option<String>) -> Result<PollResult> {
+    let url = format!("{}/api/config/sync", api.base_url());
 
-    let mut req = client.get(&url);
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
+    let mut req = api.reqwest_client().get(&url);
+    if let Some(token) = api.auth_token() {
+        req = req.bearer_auth(token);
     }
     if let Some(etag) = current_etag {
         req = req.header("If-None-Match", etag.as_str());

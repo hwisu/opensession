@@ -11,17 +11,53 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hwisu/opensession-core
+          path: ../opensession-core
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
   check:
     name: Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hwisu/opensession-core
+          path: ../opensession-core
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "cargo-check"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --workspace --exclude opensession-worker
+      - run: cargo check --workspace
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hwisu/opensession-core
+          path: ../opensession-core
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cargo-check"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace -- -D warnings
 
   test:
     name: Test
@@ -29,33 +65,67 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hwisu/opensession-core
+          path: ../opensession-core
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "cargo-test"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test -p opensession-daemon -p opensession-cli
+      - run: cargo test --workspace
 
-  clippy:
-    name: Clippy
+  frontend:
+    name: Frontend
     runs-on: ubuntu-latest
-    needs: check
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
         with:
-          components: clippy
+          repository: hwisu/opensession-core
+          path: ../opensession-core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: web
+      - run: npm run check
+        working-directory: web
+
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    needs: [test, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hwisu/opensession-core
+          path: ../opensession-core
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "cargo-check"
-      - run: cargo clippy --workspace --exclude opensession-worker -- -D warnings
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+          shared-key: "cargo-test"
+      - run: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              exit 0
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+          echo "Server failed to start"
+          docker compose logs
+          exit 1
+      - name: Run E2E tests
+        run: cargo test -p opensession-e2e --test docker
+        working-directory: ../opensession-core
+        env:
+          E2E_BASE_URL: http://localhost:3000
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs

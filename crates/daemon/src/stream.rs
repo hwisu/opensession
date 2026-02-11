@@ -1,4 +1,5 @@
 use anyhow::Result;
+use opensession_api_client::ApiClient;
 use opensession_core::trace::{Agent, Event, SessionContext};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -6,9 +7,7 @@ use tracing::{debug, error, info, warn};
 /// Client for streaming events to the server incrementally.
 #[allow(dead_code)]
 pub struct StreamClient {
-    client: reqwest::Client,
-    server_url: String,
-    api_key: String,
+    api: ApiClient,
     team_id: String,
     /// Session ID on the server (assigned after first batch creates the session)
     remote_session_id: Option<String>,
@@ -17,15 +16,12 @@ pub struct StreamClient {
 #[allow(dead_code)]
 impl StreamClient {
     pub fn new(server_url: String, api_key: String, team_id: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+        let mut api = ApiClient::new(&server_url, Duration::from_secs(30))
+            .expect("Failed to create stream client");
+        api.set_auth(api_key);
 
         Self {
-            client,
-            server_url,
-            api_key,
+            api,
             team_id,
             remote_session_id: None,
         }
@@ -43,19 +39,7 @@ impl StreamClient {
             return Ok(());
         }
 
-        let url = if let Some(ref remote_id) = self.remote_session_id {
-            format!(
-                "{}/api/sessions/{}/events",
-                self.server_url.trim_end_matches('/'),
-                remote_id
-            )
-        } else {
-            format!(
-                "{}/api/sessions/{}/events",
-                self.server_url.trim_end_matches('/'),
-                session_id
-            )
-        };
+        let target_id = self.remote_session_id.as_deref().unwrap_or(session_id);
 
         let mut body = serde_json::json!({
             "events": events,
@@ -72,12 +56,7 @@ impl StreamClient {
             body["team_id"] = serde_json::Value::String(self.team_id.clone());
         }
 
-        let mut req = self.client.post(&url);
-        if !self.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        match req.json(&body).send().await {
+        match self.api.stream_events(target_id, &body).await {
             Ok(resp) if resp.status().is_success() => {
                 debug!("Streamed {} events to {}", events.len(), session_id);
 

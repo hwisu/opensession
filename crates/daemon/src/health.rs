@@ -1,3 +1,4 @@
+use opensession_api_client::ApiClient;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -19,15 +20,21 @@ pub async fn run_health_check(
     // Skip the first immediate tick
     interval.tick().await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
+    let mut api = match ApiClient::new(&server_url, Duration::from_secs(10)) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to create health check client: {e}");
+            return;
+        }
+    };
+    if !api_key.is_empty() {
+        api.set_auth(api_key);
+    }
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                check_server(&client, &server_url, &api_key).await;
+                check_server(&api).await;
                 check_watch_paths(&watch_paths);
             }
             _ = shutdown.changed() => {
@@ -40,38 +47,21 @@ pub async fn run_health_check(
     }
 }
 
-async fn check_server(client: &reqwest::Client, server_url: &str, api_key: &str) {
-    let url = format!("{}/api/health", server_url.trim_end_matches('/'));
-
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            debug!("Health check OK: server reachable");
-        }
-        Ok(resp) => {
-            warn!("Health check: server returned HTTP {}", resp.status());
-        }
-        Err(e) => {
-            warn!("Health check: server unreachable ({})", e);
-        }
+async fn check_server(api: &ApiClient) {
+    match api.health().await {
+        Ok(_) => debug!("Health check OK: server reachable"),
+        Err(e) => warn!("Health check: server issue ({e})"),
     }
 
-    // Verify API key if configured
-    if !api_key.is_empty() {
-        let verify_url = format!("{}/api/auth/verify", server_url.trim_end_matches('/'));
-        match client
-            .post(&verify_url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                debug!("Health check OK: API key valid");
-            }
-            Ok(resp) if resp.status().as_u16() == 401 => {
-                warn!("Health check: API key is invalid or expired");
-            }
-            _ => {
-                // Server unreachable — already warned above
+    if api.auth_token().is_some() {
+        match api.verify().await {
+            Ok(_) => debug!("Health check OK: API key valid"),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("401") {
+                    warn!("Health check: API key is invalid or expired");
+                }
+                // else: server unreachable — already warned above
             }
         }
     }

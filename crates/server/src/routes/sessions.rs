@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use opensession_api_types::service::ParamValue;
 use opensession_api_types::{
-    db, service, SessionDetail, SessionListQuery, SessionListResponse, SessionSummary,
+    db, service, SessionDetail, SessionLink, SessionListQuery, SessionListResponse, SessionSummary,
     UploadResponse,
 };
 
@@ -27,8 +27,11 @@ use crate::storage::{session_from_row, Db};
 pub struct UploadRequest {
     pub session: opensession_core::Session,
     pub team_id: String,
+    #[serde(default)]
+    pub linked_session_ids: Option<Vec<String>>,
 }
 
+/// POST /api/sessions — upload a new session (requires team membership).
 pub async fn upload_session(
     State(db): State<Db>,
     user: AuthUser,
@@ -84,6 +87,23 @@ pub async fn upload_session(
         ApiErr::internal("failed to store session")
     })?;
 
+    // Insert session links: prefer explicit linked_session_ids, fall back to context.related_session_ids
+    let linked_ids: Vec<String> = req
+        .linked_session_ids
+        .unwrap_or_default()
+        .into_iter()
+        .chain(session.context.related_session_ids.iter().cloned())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    for linked_id in &linked_ids {
+        let _ = conn.execute(
+            db::SESSION_LINK_INSERT,
+            rusqlite::params![&session_id, linked_id, "handoff"],
+        );
+    }
+
     // Update FTS
     let _ = conn.execute(
         "INSERT INTO sessions_fts (rowid, title, description, tags)
@@ -121,6 +141,7 @@ fn to_rusqlite_params(params: &[ParamValue]) -> Vec<Box<dyn rusqlite::types::ToS
         .collect()
 }
 
+/// GET /api/sessions — list sessions (public, paginated, filtered).
 pub async fn list_sessions(
     State(db): State<Db>,
     Query(q): Query<SessionListQuery>,
@@ -163,6 +184,7 @@ pub async fn list_sessions(
 // Get session detail
 // ---------------------------------------------------------------------------
 
+/// GET /api/sessions/:id — get session detail with linked sessions.
 pub async fn get_session(
     State(db): State<Db>,
     Path(id): Path<String>,
@@ -181,13 +203,36 @@ pub async fn get_session(
         )
         .ok();
 
-    Ok(Json(SessionDetail { summary, team_name }))
+    // Fetch linked sessions
+    let linked_sessions = {
+        let mut stmt = conn
+            .prepare(db::SESSION_LINKS_BY_SESSION)
+            .map_err(ApiErr::from_db("prepare session_links"))?;
+        let rows = stmt
+            .query_map([&id], |row| {
+                Ok(SessionLink {
+                    session_id: row.get(0)?,
+                    linked_session_id: row.get(1)?,
+                    link_type: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(ApiErr::from_db("query session_links"))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    Ok(Json(SessionDetail {
+        summary,
+        team_name,
+        linked_sessions,
+    }))
 }
 
 // ---------------------------------------------------------------------------
 // Get raw session body
 // ---------------------------------------------------------------------------
 
+/// GET /api/sessions/:id/raw — download the full HAIL JSONL body.
 pub async fn get_session_raw(
     State(db): State<Db>,
     Path(id): Path<String>,

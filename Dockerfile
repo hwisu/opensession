@@ -23,6 +23,7 @@ WORKDIR /build/opensession
 
 # opensession-core packages/ui (via additional_contexts)
 COPY --from=opensession-core packages/ui/ /build/opensession-core/packages/ui/
+RUN cd /build/opensession-core/packages/ui && npm install
 
 COPY web/package.json web/package-lock.json web/
 RUN cd web && npm ci

@@ -19,13 +19,15 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/hwisu/opensession"
+homepage = "https://opensession.io"
+authors = ["opensession.io contributors"]
 
 [workspace.dependencies]
-opensession-core = { path = "../opensession-core/crates/core" }
-opensession-parsers = { path = "../opensession-core/crates/parsers" }
-opensession-api-types = { path = "../opensession-core/crates/api-types" }
-opensession-api-client = { path = "../opensession-core/crates/api-client" }
-opensession-local-db = { path = "../opensession-core/crates/local-db" }
+opensession-core = { version = "0.1.0", path = "../opensession-core/crates/core" }
+opensession-parsers = { version = "0.1.0", path = "../opensession-core/crates/parsers" }
+opensession-api-types = { version = "0.1.0", path = "../opensession-core/crates/api-types" }
+opensession-api-client = { version = "0.1.0", path = "../opensession-core/crates/api-client" }
+opensession-local-db = { version = "0.1.0", path = "../opensession-core/crates/local-db" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

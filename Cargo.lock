@@ -1042,7 +1042,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
 name = "opensession-api-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "opensession-api-types",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-api-types"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "chrono",
@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "regex",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-local-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-parsers"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",

@@ -5,6 +5,9 @@ set -e
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.test.yml"
 E2E_DIR="../opensession-core"
 
+echo "=== Cleaning up previous volumes ==="
+$COMPOSE down -v
+
 echo "=== Building Docker image (cached) ==="
 $COMPOSE build
 

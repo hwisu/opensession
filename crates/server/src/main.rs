@@ -170,7 +170,11 @@ async fn main() -> anyhow::Result<()> {
         );
 
     // Build main router
-    let mut app = Router::new().nest("/api", api);
+    let mut app = Router::new()
+        .nest("/api", api)
+        // Docs (content negotiation: markdown for AI agents, HTML for browsers)
+        .route("/docs", get(routes::docs::handle))
+        .route("/llms.txt", get(routes::docs::llms_txt));
 
     // Serve static files from web build if present
     let web_dir = std::env::var("OPENSESSION_WEB_DIR")

@@ -25,6 +25,9 @@ pub async fn create_team(
     user: AuthUser,
     Json(req): Json<CreateTeamRequest>,
 ) -> Result<(StatusCode, Json<TeamResponse>), ApiErr> {
+    if !user.is_admin {
+        return Err(ApiErr::forbidden("admin only"));
+    }
     let name = service::validate_team_name(&req.name).map_err(ApiErr::from)?;
 
     let team_id = Uuid::new_v4().to_string();

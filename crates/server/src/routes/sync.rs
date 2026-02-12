@@ -25,30 +25,53 @@ pub async fn pull(
     let conn = db.conn();
     let limit = q.limit.unwrap_or(100).clamp(1, 500) as i64;
 
+    // Cursor format: "{uploaded_at}\n{session_id}" (opaque to clients).
     let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
         if let Some(ref since) = q.since {
-            (
-                format!(
-                    "SELECT {} \
-                 FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
-                 WHERE s.team_id = ?1 AND s.uploaded_at > ?2 \
-                 ORDER BY s.uploaded_at ASC \
-                 LIMIT ?3",
-                    db::SESSION_COLUMNS
-                ),
-                vec![
-                    Box::new(q.team_id.clone()),
-                    Box::new(since.clone()),
-                    Box::new(limit),
-                ],
-            )
+            if let Some((ts, last_id)) = since.split_once('\n') {
+                // Keyset pagination: skip past the exact (uploaded_at, id) pair.
+                (
+                    format!(
+                        "SELECT {} \
+                     FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
+                     WHERE s.team_id = ?1 \
+                       AND (s.uploaded_at > ?2 OR (s.uploaded_at = ?2 AND s.id > ?3)) \
+                     ORDER BY s.uploaded_at ASC, s.id ASC \
+                     LIMIT ?4",
+                        db::SESSION_COLUMNS
+                    ),
+                    vec![
+                        Box::new(q.team_id.clone()),
+                        Box::new(ts.to_owned()),
+                        Box::new(last_id.to_owned()),
+                        Box::new(limit),
+                    ],
+                )
+            } else {
+                // Legacy cursor (plain timestamp) — best-effort.
+                (
+                    format!(
+                        "SELECT {} \
+                     FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
+                     WHERE s.team_id = ?1 AND s.uploaded_at > ?2 \
+                     ORDER BY s.uploaded_at ASC, s.id ASC \
+                     LIMIT ?3",
+                        db::SESSION_COLUMNS
+                    ),
+                    vec![
+                        Box::new(q.team_id.clone()),
+                        Box::new(since.clone()),
+                        Box::new(limit),
+                    ],
+                )
+            }
         } else {
             (
                 format!(
                     "SELECT {} \
                  FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
                  WHERE s.team_id = ?1 \
-                 ORDER BY s.uploaded_at ASC \
+                 ORDER BY s.uploaded_at ASC, s.id ASC \
                  LIMIT ?2",
                     db::SESSION_COLUMNS
                 ),
@@ -68,7 +91,9 @@ pub async fn pull(
 
     let has_more = sessions.len() as i64 == limit;
     let next_cursor = if has_more {
-        sessions.last().map(|s| s.uploaded_at.clone())
+        sessions
+            .last()
+            .map(|s| format!("{}\n{}", s.uploaded_at, s.id))
     } else {
         None
     };

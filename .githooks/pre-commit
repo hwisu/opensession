@@ -2,6 +2,9 @@
 # Pre-commit hook: format check, lint, and test
 set -e
 
+# Cargo.lock 변경 감지를 위한 스냅샷
+LOCK_HASH_BEFORE=$(shasum Cargo.lock 2>/dev/null || echo "none")
+
 echo "Running cargo fmt check..."
 cargo fmt --all -- --check
 
@@ -10,5 +13,15 @@ cargo clippy --workspace --exclude opensession-worker -- -D warnings
 
 echo "Running tests..."
 cargo test -p opensession-daemon --quiet
+
+# Cargo.lock 변경 여부 확인
+LOCK_HASH_AFTER=$(shasum Cargo.lock 2>/dev/null || echo "none")
+if [ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]; then
+  echo ""
+  echo "ERROR: Cargo.lock was modified during pre-commit checks."
+  echo "Please stage the updated Cargo.lock and commit again:"
+  echo "  git add Cargo.lock && git commit"
+  exit 1
+fi
 
 echo "All checks passed."

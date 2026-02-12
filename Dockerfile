@@ -10,6 +10,7 @@ COPY --from=opensession-core crates/ /opensession-core/crates/
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
+COPY docs.md ./
 
 # Override git deps with local paths for Docker build
 RUN mkdir -p .cargo && printf '[patch."https://github.com/hwisu/opensession-core"]\nopensession-core = { path = "/opensession-core/crates/core" }\nopensession-parsers = { path = "/opensession-core/crates/parsers" }\nopensession-api-types = { path = "/opensession-core/crates/api-types" }\n' > .cargo/config.toml

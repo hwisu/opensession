@@ -13,7 +13,7 @@ use opensession_api_types::{
 
 use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::{session_from_row, team_from_row, Db};
+use crate::storage::{session_from_row, sq_execute, sq_query_map, sq_query_row, team_from_row, Db};
 
 // ---------------------------------------------------------------------------
 // Create team
@@ -34,9 +34,15 @@ pub async fn create_team(
     let is_public = req.is_public.unwrap_or(false);
     let conn = db.conn();
 
-    conn.execute(
-        db::TEAM_INSERT,
-        rusqlite::params![&team_id, &name, &req.description, is_public, &user.user_id],
+    sq_execute(
+        &conn,
+        db::teams::insert(
+            &team_id,
+            &name,
+            req.description.as_deref(),
+            is_public,
+            &user.user_id,
+        ),
     )
     .map_err(|e| {
         tracing::error!("create team: {e}");
@@ -44,18 +50,18 @@ pub async fn create_team(
     })?;
 
     // Add creator as admin member
-    conn.execute(
-        db::MEMBER_INSERT,
-        rusqlite::params![&team_id, &user.user_id, "admin"],
+    sq_execute(
+        &conn,
+        db::teams::member_insert(&team_id, &user.user_id, "admin"),
     )
     .map_err(|e| {
         tracing::error!("add creator as member: {e}");
         ApiErr::internal("failed to create team")
     })?;
 
-    let created_at: String = conn
-        .query_row(db::TEAM_CREATED_AT, [&team_id], |row| row.get(0))
-        .unwrap_or_default();
+    let created_at: String =
+        sq_query_row(&conn, db::teams::get_created_at(&team_id), |row| row.get(0))
+            .unwrap_or_default();
 
     Ok((
         StatusCode::CREATED,
@@ -81,15 +87,9 @@ pub async fn list_my_teams(
 ) -> Result<Json<ListTeamsResponse>, ApiErr> {
     let conn = db.conn();
 
-    let mut stmt = conn
-        .prepare(&db::TEAM_LIST_MY)
-        .map_err(ApiErr::from_db("prepare teams"))?;
-
-    let teams: Vec<TeamResponse> = stmt
-        .query_map([&user.user_id], team_from_row)
-        .map_err(ApiErr::from_db("list teams"))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let teams: Vec<TeamResponse> =
+        sq_query_map(&conn, db::teams::list_my(&user.user_id), team_from_row)
+            .map_err(ApiErr::from_db("list teams"))?;
 
     Ok(Json(ListTeamsResponse { teams }))
 }
@@ -105,32 +105,15 @@ pub async fn get_team(
 ) -> Result<Json<TeamDetailResponse>, ApiErr> {
     let conn = db.conn();
 
-    let team = conn
-        .query_row(&db::TEAM_GET, [&id], team_from_row)
+    let team = sq_query_row(&conn, db::teams::get_by_id(&id), team_from_row)
         .map_err(|_| ApiErr::not_found("team not found"))?;
 
-    let member_count: i64 = conn
-        .query_row(db::TEAM_MEMBER_COUNT, [&id], |row| row.get(0))
-        .unwrap_or(0);
+    let member_count: i64 =
+        sq_query_row(&conn, db::teams::member_count(&id), |row| row.get(0)).unwrap_or(0);
 
-    let sessions_sql = format!(
-        "SELECT {} \
-         FROM sessions s \
-         LEFT JOIN users u ON u.id = s.user_id \
-         WHERE s.team_id = ?1 \
-         ORDER BY s.uploaded_at DESC \
-         LIMIT 50",
-        db::SESSION_COLUMNS,
-    );
-    let mut stmt = conn
-        .prepare(&sessions_sql)
-        .map_err(ApiErr::from_db("prepare team sessions"))?;
-
-    let sessions: Vec<SessionSummary> = stmt
-        .query_map([&id], session_from_row)
-        .map_err(ApiErr::from_db("list team sessions"))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let sessions: Vec<SessionSummary> =
+        sq_query_map(&conn, db::sessions::list_by_team(&id, 50), session_from_row)
+            .map_err(ApiErr::from_db("list team sessions"))?;
 
     Ok(Json(TeamDetailResponse {
         team,
@@ -157,11 +140,10 @@ pub async fn update_team(
     let conn = db.conn();
 
     // Verify team exists
-    let exists: bool = conn
-        .query_row(db::TEAM_EXISTS, [&id], |row| {
-            row.get::<_, i64>(0).map(|c| c > 0)
-        })
-        .unwrap_or(false);
+    let exists: bool = sq_query_row(&conn, db::teams::exists(&id), |row| {
+        row.get::<_, i64>(0).map(|c| c > 0)
+    })
+    .unwrap_or(false);
 
     if !exists {
         return Err(ApiErr::not_found("team not found"));
@@ -169,25 +151,21 @@ pub async fn update_team(
 
     if let Some(ref name) = req.name {
         let name = service::validate_team_name(name).map_err(ApiErr::from)?;
-        conn.execute(db::TEAM_UPDATE_NAME, rusqlite::params![&name, &id])
+        sq_execute(&conn, db::teams::update_name(&id, &name))
             .map_err(ApiErr::from_db("update team name"))?;
     }
 
     if let Some(ref desc) = req.description {
-        conn.execute(db::TEAM_UPDATE_DESCRIPTION, rusqlite::params![desc, &id])
+        sq_execute(&conn, db::teams::update_description(&id, desc))
             .map_err(ApiErr::from_db("update team description"))?;
     }
 
     if let Some(is_public) = req.is_public {
-        conn.execute(
-            db::TEAM_UPDATE_VISIBILITY,
-            rusqlite::params![is_public, &id],
-        )
-        .map_err(ApiErr::from_db("update team visibility"))?;
+        sq_execute(&conn, db::teams::update_visibility(&id, is_public))
+            .map_err(ApiErr::from_db("update team visibility"))?;
     }
 
-    let team = conn
-        .query_row(&db::TEAM_GET, [&id], team_from_row)
+    let team = sq_query_row(&conn, db::teams::get_by_id(&id), team_from_row)
         .map_err(|_| ApiErr::not_found("team not found"))?;
 
     Ok(Json(team))
@@ -211,41 +189,32 @@ pub async fn add_member(
     let conn = db.conn();
 
     // Look up user by nickname
-    let target = conn
-        .query_row(db::USER_BY_NICKNAME, [&req.nickname], |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|_| ApiErr::not_found("user not found"))?;
+    let target = sq_query_row(&conn, db::users::get_by_nickname(&req.nickname), |row| {
+        row.get::<_, String>(0)
+    })
+    .map_err(|_| ApiErr::not_found("user not found"))?;
 
     // Check not already a member
-    let already: bool = conn
-        .query_row(
-            db::TEAM_MEMBER_EXISTS,
-            rusqlite::params![&team_id, &target],
-            |row| row.get::<_, i64>(0).map(|c| c > 0),
-        )
-        .unwrap_or(false);
+    let already: bool = sq_query_row(&conn, db::teams::member_exists(&team_id, &target), |row| {
+        row.get::<_, i64>(0).map(|c| c > 0)
+    })
+    .unwrap_or(false);
 
     if already {
         return Err(ApiErr::conflict("already a member"));
     }
 
-    conn.execute(
-        db::MEMBER_INSERT,
-        rusqlite::params![&team_id, &target, "member"],
-    )
-    .map_err(|e| {
+    sq_execute(&conn, db::teams::member_insert(&team_id, &target, "member")).map_err(|e| {
         tracing::error!("add member: {e}");
         ApiErr::internal("failed to add member")
     })?;
 
-    let joined_at: String = conn
-        .query_row(
-            db::MEMBER_JOINED_AT,
-            rusqlite::params![&team_id, &target],
-            |row| row.get(0),
-        )
-        .unwrap_or_default();
+    let joined_at: String = sq_query_row(
+        &conn,
+        db::teams::member_joined_at(&team_id, &target),
+        |row| row.get(0),
+    )
+    .unwrap_or_default();
 
     Ok((
         StatusCode::CREATED,
@@ -273,9 +242,8 @@ pub async fn remove_member(
     }
 
     let conn = db.conn();
-    let affected = conn
-        .execute(db::MEMBER_DELETE, rusqlite::params![&team_id, &user_id])
-        .map_err(|e| {
+    let affected =
+        sq_execute(&conn, db::teams::member_delete(&team_id, &user_id)).map_err(|e| {
             tracing::error!("remove member: {e}");
             ApiErr::internal("failed to remove member")
         })?;
@@ -298,22 +266,17 @@ pub async fn list_members(
 ) -> Result<Json<ListMembersResponse>, ApiErr> {
     let conn = db.conn();
 
-    let exists: bool = conn
-        .query_row(db::TEAM_EXISTS, [&team_id], |row| {
-            row.get::<_, i64>(0).map(|c| c > 0)
-        })
-        .unwrap_or(false);
+    let exists: bool = sq_query_row(&conn, db::teams::exists(&team_id), |row| {
+        row.get::<_, i64>(0).map(|c| c > 0)
+    })
+    .unwrap_or(false);
 
     if !exists {
         return Err(ApiErr::not_found("team not found"));
     }
 
-    let mut stmt = conn
-        .prepare(&db::MEMBER_LIST)
-        .map_err(ApiErr::from_db("prepare members"))?;
-
-    let members: Vec<MemberResponse> = stmt
-        .query_map([&team_id], |row| {
+    let members: Vec<MemberResponse> =
+        sq_query_map(&conn, db::teams::member_list(&team_id), |row| {
             Ok(MemberResponse {
                 user_id: row.get(0)?,
                 nickname: row.get(1)?,
@@ -321,9 +284,7 @@ pub async fn list_members(
                 joined_at: row.get(3)?,
             })
         })
-        .map_err(ApiErr::from_db("list members"))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .map_err(ApiErr::from_db("list members"))?;
 
     Ok(Json(ListMembersResponse { members }))
 }
@@ -334,11 +295,9 @@ pub async fn list_members(
 
 /// Check if the user is a team admin.
 fn is_team_admin(conn: &rusqlite::Connection, team_id: &str, user_id: &str) -> bool {
-    conn.query_row(
-        db::TEAM_MEMBER_ROLE,
-        rusqlite::params![team_id, user_id],
-        |row| row.get::<_, String>(0),
-    )
+    sq_query_row(conn, db::teams::member_role(team_id, user_id), |row| {
+        row.get::<_, String>(0)
+    })
     .map(|role| role == "admin")
     .unwrap_or(false)
 }
@@ -376,16 +335,16 @@ pub async fn invite_member(
 
     // Check for duplicate pending invitation
     let dup = if let Some(ref email) = email {
-        conn.query_row(
-            db::INVITATION_DUP_CHECK_EMAIL,
-            rusqlite::params![&team_id, email],
+        sq_query_row(
+            &conn,
+            db::invitations::dup_check_email(&team_id, email),
             |row| row.get::<_, i64>(0),
         )
         .unwrap_or(0)
     } else if let (Some(ref prov), Some(ref uname)) = (&oauth_provider, &oauth_provider_username) {
-        conn.query_row(
-            db::INVITATION_DUP_CHECK_OAUTH,
-            rusqlite::params![&team_id, prov, uname],
+        sq_query_row(
+            &conn,
+            db::invitations::dup_check_oauth(&team_id, prov, uname),
             |row| row.get::<_, i64>(0),
         )
         .unwrap_or(0)
@@ -402,27 +361,26 @@ pub async fn invite_member(
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
-    conn.execute(
-        db::INVITATION_INSERT,
-        rusqlite::params![
+    sq_execute(
+        &conn,
+        db::invitations::insert(
             &id,
             &team_id,
-            &email,
-            &oauth_provider,
-            &oauth_provider_username,
+            email.as_deref(),
+            oauth_provider.as_deref(),
+            oauth_provider_username.as_deref(),
             &user.user_id,
             role,
-            &expires_at
-        ],
+            &expires_at,
+        ),
     )
     .map_err(|e| {
         tracing::error!("invite member: {e}");
         ApiErr::internal("failed to create invitation")
     })?;
 
-    let team_name: String = conn
-        .query_row(db::TEAM_NAME_BY_ID, [&team_id], |row| row.get(0))
-        .unwrap_or_default();
+    let team_name: String =
+        sq_query_row(&conn, db::teams::get_name(&team_id), |row| row.get(0)).unwrap_or_default();
 
     Ok((
         StatusCode::CREATED,
@@ -449,12 +407,10 @@ pub async fn list_invitations(
     let conn = db.conn();
     let email = user.email.as_deref().unwrap_or("");
 
-    let mut stmt = conn
-        .prepare(&db::INVITATION_LIST_MY)
-        .map_err(ApiErr::from_db("prepare invitations"))?;
-
-    let invitations: Vec<InvitationResponse> = stmt
-        .query_map(rusqlite::params![email, &user.user_id], |row| {
+    let invitations: Vec<InvitationResponse> = sq_query_map(
+        &conn,
+        db::invitations::list_my(email, &user.user_id),
+        |row| {
             Ok(InvitationResponse {
                 id: row.get(0)?,
                 team_id: row.get(1)?,
@@ -467,10 +423,9 @@ pub async fn list_invitations(
                 status: row.get(8)?,
                 created_at: row.get(9)?,
             })
-        })
-        .map_err(ApiErr::from_db("list invitations"))?
-        .filter_map(|r| r.ok())
-        .collect();
+        },
+    )
+    .map_err(ApiErr::from_db("list invitations"))?;
 
     Ok(Json(ListInvitationsResponse { invitations }))
 }
@@ -484,20 +439,19 @@ pub async fn accept_invitation(
     let conn = db.conn();
 
     // Fetch invitation
-    let inv = conn
-        .query_row(db::INVITATION_LOOKUP, [&inv_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,         // id
-                row.get::<_, String>(1)?,         // team_id
-                row.get::<_, Option<String>>(2)?, // email
-                row.get::<_, Option<String>>(3)?, // oauth_provider
-                row.get::<_, Option<String>>(4)?, // oauth_provider_username
-                row.get::<_, String>(5)?,         // role
-                row.get::<_, String>(6)?,         // status
-                row.get::<_, String>(7)?,         // expires_at
-            ))
-        })
-        .map_err(|_| ApiErr::not_found("invitation not found"))?;
+    let inv = sq_query_row(&conn, db::invitations::lookup(&inv_id), |row| {
+        Ok((
+            row.get::<_, String>(0)?,         // id
+            row.get::<_, String>(1)?,         // team_id
+            row.get::<_, Option<String>>(2)?, // email
+            row.get::<_, Option<String>>(3)?, // oauth_provider
+            row.get::<_, Option<String>>(4)?, // oauth_provider_username
+            row.get::<_, String>(5)?,         // role
+            row.get::<_, String>(6)?,         // status
+            row.get::<_, String>(7)?,         // expires_at
+        ))
+    })
+    .map_err(|_| ApiErr::not_found("invitation not found"))?;
 
     let (_inv_id, team_id, inv_email, inv_prov, inv_uname, role, status, expires_at) = inv;
 
@@ -523,14 +477,13 @@ pub async fn accept_invitation(
         .unwrap_or(false);
 
     let oauth_match = match (&inv_prov, &inv_uname) {
-        (Some(prov), Some(uname)) if !prov.is_empty() && !uname.is_empty() => conn
-            .query_row(
-                db::OAUTH_IDENTITY_MATCH,
-                rusqlite::params![&user.user_id, prov, uname],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|c| c > 0)
-            .unwrap_or(false),
+        (Some(prov), Some(uname)) if !prov.is_empty() && !uname.is_empty() => sq_query_row(
+            &conn,
+            db::oauth::identity_match(&user.user_id, prov, uname),
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false),
         _ => false,
     };
 
@@ -539,27 +492,22 @@ pub async fn accept_invitation(
     }
 
     // Check not already a member
-    let already: bool = conn
-        .query_row(
-            db::TEAM_MEMBER_EXISTS,
-            rusqlite::params![&team_id, &user.user_id],
-            |row| row.get::<_, i64>(0).map(|c| c > 0),
-        )
-        .unwrap_or(false);
+    let already: bool = sq_query_row(
+        &conn,
+        db::teams::member_exists(&team_id, &user.user_id),
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )
+    .unwrap_or(false);
 
     if already {
-        conn.execute(
-            db::INVITATION_UPDATE_STATUS,
-            rusqlite::params!["accepted", &inv_id],
-        )
-        .ok();
+        sq_execute(&conn, db::invitations::update_status(&inv_id, "accepted")).ok();
         return Err(ApiErr::conflict("already a member of this team"));
     }
 
     // Add as team member
-    conn.execute(
-        db::MEMBER_INSERT,
-        rusqlite::params![&team_id, &user.user_id, &role],
+    sq_execute(
+        &conn,
+        db::teams::member_insert(&team_id, &user.user_id, &role),
     )
     .map_err(|e| {
         tracing::error!("accept invitation: {e}");
@@ -567,11 +515,7 @@ pub async fn accept_invitation(
     })?;
 
     // Mark invitation accepted
-    conn.execute(
-        db::INVITATION_UPDATE_STATUS,
-        rusqlite::params!["accepted", &inv_id],
-    )
-    .ok();
+    sq_execute(&conn, db::invitations::update_status(&inv_id, "accepted")).ok();
 
     Ok(Json(AcceptInvitationResponse { team_id, role }))
 }
@@ -585,16 +529,15 @@ pub async fn decline_invitation(
     let conn = db.conn();
 
     // Fetch invitation
-    let inv = conn
-        .query_row(db::INVITATION_LOOKUP, [&inv_id], |row| {
-            Ok((
-                row.get::<_, Option<String>>(2)?, // email
-                row.get::<_, Option<String>>(3)?, // oauth_provider
-                row.get::<_, Option<String>>(4)?, // oauth_provider_username
-                row.get::<_, String>(6)?,         // status
-            ))
-        })
-        .map_err(|_| ApiErr::not_found("invitation not found"))?;
+    let inv = sq_query_row(&conn, db::invitations::lookup(&inv_id), |row| {
+        Ok((
+            row.get::<_, Option<String>>(2)?, // email
+            row.get::<_, Option<String>>(3)?, // oauth_provider
+            row.get::<_, Option<String>>(4)?, // oauth_provider_username
+            row.get::<_, String>(6)?,         // status
+        ))
+    })
+    .map_err(|_| ApiErr::not_found("invitation not found"))?;
 
     let (inv_email, inv_prov, inv_uname, status) = inv;
 
@@ -615,14 +558,13 @@ pub async fn decline_invitation(
         .unwrap_or(false);
 
     let oauth_match = match (&inv_prov, &inv_uname) {
-        (Some(prov), Some(uname)) if !prov.is_empty() && !uname.is_empty() => conn
-            .query_row(
-                db::OAUTH_IDENTITY_MATCH,
-                rusqlite::params![&user.user_id, prov, uname],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|c| c > 0)
-            .unwrap_or(false),
+        (Some(prov), Some(uname)) if !prov.is_empty() && !uname.is_empty() => sq_query_row(
+            &conn,
+            db::oauth::identity_match(&user.user_id, prov, uname),
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false),
         _ => false,
     };
 
@@ -630,11 +572,7 @@ pub async fn decline_invitation(
         return Err(ApiErr::forbidden("this invitation is not for you"));
     }
 
-    conn.execute(
-        db::INVITATION_UPDATE_STATUS,
-        rusqlite::params!["declined", &inv_id],
-    )
-    .ok();
+    sq_execute(&conn, db::invitations::update_status(&inv_id, "declined")).ok();
 
     Ok(Json(OkResponse { ok: true }))
 }

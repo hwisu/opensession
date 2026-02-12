@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use opensession_api_types::db;
 use opensession_api_types::{SessionSummary, TeamResponse};
 
 /// Shared database state
@@ -40,17 +41,72 @@ impl Db {
 
     /// Check whether a user belongs to a team.
     pub fn is_team_member(&self, team_id: &str, user_id: &str) -> bool {
-        self.conn()
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM team_members WHERE team_id = ?1 AND user_id = ?2",
-                rusqlite::params![team_id, user_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(false)
+        let (sql, values) = db::teams::member_exists(team_id, user_id);
+        sq_query_row(&self.conn(), (sql, values), |row| {
+            row.get::<_, i64>(0).map(|c| c > 0)
+        })
+        .unwrap_or(false)
     }
 }
 
-/// Map a `SESSION_COLUMNS` row into a `SessionSummary`.
+// ── sea-query ↔ rusqlite helpers ──────────────────────────────────────────
+
+/// Built query: `(sql, sea_query::Values)`.
+pub type Built = (String, sea_query::Values);
+
+/// Convert `sea_query::Values` to boxed rusqlite params.
+pub fn sq_params(values: &sea_query::Values) -> Vec<Box<dyn rusqlite::types::ToSql>> {
+    values
+        .0
+        .iter()
+        .map(|v| -> Box<dyn rusqlite::types::ToSql> {
+            match v {
+                sea_query::Value::Bool(Some(b)) => Box::new(*b),
+                sea_query::Value::Int(Some(i)) => Box::new(*i),
+                sea_query::Value::BigInt(Some(i)) => Box::new(*i),
+                sea_query::Value::String(Some(s)) => Box::new(s.as_ref().clone()),
+                sea_query::Value::Bytes(Some(b)) => Box::new(b.as_ref().clone()),
+                sea_query::Value::Double(Some(f)) => Box::new(*f),
+                _ => Box::new(rusqlite::types::Null),
+            }
+        })
+        .collect()
+}
+
+/// Execute a built query (INSERT/UPDATE/DELETE).
+pub fn sq_execute(conn: &Connection, (sql, values): Built) -> rusqlite::Result<usize> {
+    let params = sq_params(&values);
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, refs.as_slice())
+}
+
+/// Query a single row from a built query.
+pub fn sq_query_row<T>(
+    conn: &Connection,
+    (sql, values): Built,
+    f: impl FnOnce(&rusqlite::Row) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    let params = sq_params(&values);
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.query_row(&sql, refs.as_slice(), f)
+}
+
+/// Prepare + query_map from a built query, collecting into a Vec.
+pub fn sq_query_map<T>(
+    conn: &Connection,
+    (sql, values): Built,
+    f: impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>,
+) -> rusqlite::Result<Vec<T>> {
+    let params = sq_params(&values);
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), f)?;
+    rows.collect()
+}
+
+// ── Row mappers ───────────────────────────────────────────────────────────
+
+/// Map a `session_columns()` row into a `SessionSummary`.
 pub fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> {
     Ok(SessionSummary {
         id: row.get(0)?,
@@ -71,10 +127,20 @@ pub fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSumm
         duration_seconds: row.get(15)?,
         total_input_tokens: row.get(16)?,
         total_output_tokens: row.get(17)?,
+        git_remote: row.get(18)?,
+        git_branch: row.get(19)?,
+        git_commit: row.get(20)?,
+        git_repo_name: row.get(21)?,
+        pr_number: row.get(22)?,
+        pr_url: row.get(23)?,
+        working_directory: row.get(24)?,
+        files_modified: row.get(25)?,
+        files_read: row.get(26)?,
+        has_errors: row.get::<_, i64>(27).unwrap_or(0) != 0,
     })
 }
 
-/// Map a `TEAM_COLUMNS` row into a `TeamResponse`.
+/// Map a `team_columns()` row into a `TeamResponse`.
 pub fn team_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamResponse> {
     Ok(TeamResponse {
         id: row.get(0)?,
@@ -85,6 +151,8 @@ pub fn team_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamResponse> 
         created_at: row.get(5)?,
     })
 }
+
+// ── Database init ─────────────────────────────────────────────────────────
 
 /// Initialize the database: open connection, enable WAL, run migrations
 pub fn init_db(data_dir: &Path) -> Result<Db> {
@@ -113,30 +181,7 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         );",
     )?;
 
-    let migrations = vec![
-        (
-            "0001_init",
-            include_str!("../../../migrations/0001_init.sql"),
-        ),
-        (
-            "0002_add_tokens_and_public",
-            include_str!("../../../migrations/0002_add_tokens_and_public.sql"),
-        ),
-        (
-            "0003_session_links",
-            include_str!("../../../migrations/0003_session_links.sql"),
-        ),
-        (
-            "0004_auth",
-            include_str!("../../../migrations/0004_auth.sql"),
-        ),
-        (
-            "0005_invitations",
-            include_str!("../../../migrations/0005_invitations.sql"),
-        ),
-    ];
-
-    for (name, sql) in migrations {
+    for (name, sql) in db::migrations::MIGRATIONS {
         let already_applied: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM _migrations WHERE name = ?1",

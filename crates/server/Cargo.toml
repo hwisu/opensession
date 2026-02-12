@@ -27,3 +27,4 @@ anyhow = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
+sea-query = "0.32"

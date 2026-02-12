@@ -12,7 +12,7 @@ use opensession_api_types::{
 };
 
 use crate::error::ApiErr;
-use crate::storage::Db;
+use crate::storage::{sq_execute, sq_query_map, sq_query_row, Db};
 use crate::AppConfig;
 
 // ---------------------------------------------------------------------------
@@ -56,16 +56,15 @@ where
         // API key path
         if token.starts_with("osk_") {
             let conn = db.conn();
-            return conn
-                .query_row(dbq::USER_BY_API_KEY, [&token], |row| {
-                    Ok(AuthUser {
-                        user_id: row.get(0)?,
-                        nickname: row.get(1)?,
-                        is_admin: row.get(2)?,
-                        email: row.get(3)?,
-                    })
+            return sq_query_row(&conn, dbq::users::get_by_api_key(&token), |row| {
+                Ok(AuthUser {
+                    user_id: row.get(0)?,
+                    nickname: row.get(1)?,
+                    is_admin: row.get(2)?,
+                    email: row.get(3)?,
                 })
-                .map_err(|_| ApiErr::unauthorized("invalid API key"));
+            })
+            .map_err(|_| ApiErr::unauthorized("invalid API key"));
         }
 
         // JWT path
@@ -78,7 +77,7 @@ where
             .map_err(|e| ApiErr::unauthorized(e.message()))?;
 
         let conn = db.conn();
-        conn.query_row(dbq::USER_BY_ID, [&user_id], |row| {
+        sq_query_row(&conn, dbq::users::get_by_id(&user_id), |row| {
             Ok(AuthUser {
                 user_id: row.get(0)?,
                 nickname: row.get(1)?,
@@ -114,14 +113,14 @@ fn issue_tokens(
     let bundle = service::prepare_token_bundle(jwt_secret, user_id, nickname, now);
 
     let conn = db.conn();
-    conn.execute(
-        dbq::REFRESH_TOKEN_INSERT,
-        rusqlite::params![
-            bundle.token_id,
+    sq_execute(
+        &conn,
+        dbq::users::insert_refresh_token(
+            &bundle.token_id,
             user_id,
-            bundle.token_hash,
-            bundle.expires_at
-        ],
+            &bundle.token_hash,
+            &bundle.expires_at,
+        ),
     )
     .map_err(ApiErr::from_db("issue_tokens"))?;
 
@@ -130,9 +129,7 @@ fn issue_tokens(
 
 fn is_first_user(db: &Db) -> bool {
     let conn = db.conn();
-    let count: i64 = conn
-        .query_row(dbq::USER_COUNT, [], |row| row.get(0))
-        .unwrap_or(0);
+    let count: i64 = sq_query_row(&conn, dbq::users::count(), |row| row.get(0)).unwrap_or(0);
     count == 0
 }
 
@@ -151,14 +148,12 @@ pub async fn register(
 
     let conn = db.conn();
 
-    let user_count: i64 = conn
-        .query_row(dbq::USER_COUNT, [], |row| row.get(0))
-        .unwrap_or(0);
+    let user_count: i64 = sq_query_row(&conn, dbq::users::count(), |row| row.get(0)).unwrap_or(0);
     let is_admin = user_count == 0;
 
-    let result = conn.execute(
-        dbq::USER_INSERT,
-        rusqlite::params![&user_id, &nickname, &api_key, is_admin],
+    let result = sq_execute(
+        &conn,
+        dbq::users::insert(&user_id, &nickname, &api_key, is_admin),
     );
 
     match result {
@@ -204,8 +199,7 @@ pub async fn auth_register(
     // Check email uniqueness
     {
         let conn = db.conn();
-        let exists: bool = conn
-            .query_row(dbq::USER_EMAIL_EXISTS, [&email], |row| row.get(0))
+        let exists: bool = sq_query_row(&conn, dbq::users::email_exists(&email), |row| row.get(0))
             .unwrap_or(false);
         if exists {
             return Err(ApiErr::conflict("email already registered"));
@@ -219,17 +213,17 @@ pub async fn auth_register(
 
     {
         let conn = db.conn();
-        let result = conn.execute(
-            dbq::USER_INSERT_WITH_EMAIL,
-            rusqlite::params![
-                user_id,
-                nickname,
-                api_key,
+        let result = sq_execute(
+            &conn,
+            dbq::users::insert_with_email(
+                &user_id,
+                &nickname,
+                &api_key,
                 admin,
-                email,
-                password_hash,
-                password_salt
-            ],
+                &email,
+                &password_hash,
+                &password_salt,
+            ),
         );
         match result {
             Ok(_) => {}
@@ -262,16 +256,15 @@ pub async fn login(
     let email = service::validate_email(&req.email).map_err(ApiErr::from)?;
 
     let conn = db.conn();
-    let user = conn
-        .query_row(dbq::USER_BY_EMAIL_FOR_LOGIN, [&email], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })
-        .map_err(|_| ApiErr::unauthorized("invalid email or password"))?;
+    let user = sq_query_row(&conn, dbq::users::get_by_email_for_login(&email), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })
+    .map_err(|_| ApiErr::unauthorized("invalid email or password"))?;
 
     let (user_id, nickname, hash, salt) = user;
     let (hash, salt) = match (hash, salt) {
@@ -305,28 +298,30 @@ pub async fn refresh(
     let token_hash = crypto::hash_token(&req.refresh_token);
 
     let conn = db.conn();
-    let row = conn
-        .query_row(dbq::REFRESH_TOKEN_LOOKUP, [&token_hash], |row| {
+    let row = sq_query_row(
+        &conn,
+        dbq::users::lookup_refresh_token(&token_hash),
+        |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
             ))
-        })
-        .map_err(|_| ApiErr::unauthorized("invalid refresh token"))?;
+        },
+    )
+    .map_err(|_| ApiErr::unauthorized("invalid refresh token"))?;
 
     let (rt_id, user_id, expires_at, nickname) = row;
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     if expires_at < now {
-        conn.execute("DELETE FROM refresh_tokens WHERE id = ?1", [&rt_id])
-            .ok();
+        sq_execute(&conn, dbq::users::delete_refresh_token_by_id(&rt_id)).ok();
         return Err(ApiErr::unauthorized("refresh token expired"));
     }
 
     // Rotate: delete old, issue new
-    conn.execute(dbq::REFRESH_TOKEN_DELETE, [&token_hash]).ok();
+    sq_execute(&conn, dbq::users::delete_refresh_token(&token_hash)).ok();
     drop(conn);
 
     let tokens = issue_tokens(&db, &config.jwt_secret, &user_id, &nickname)?;
@@ -340,7 +335,7 @@ pub async fn logout(
 ) -> Result<Json<OkResponse>, ApiErr> {
     let token_hash = crypto::hash_token(&req.refresh_token);
     let conn = db.conn();
-    conn.execute(dbq::REFRESH_TOKEN_DELETE, [&token_hash]).ok();
+    sq_execute(&conn, dbq::users::delete_refresh_token(&token_hash)).ok();
     Ok(Json(OkResponse { ok: true }))
 }
 
@@ -351,11 +346,12 @@ pub async fn change_password(
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<OkResponse>, ApiErr> {
     let conn = db.conn();
-    let (hash, salt): (Option<String>, Option<String>) = conn
-        .query_row(dbq::USER_PASSWORD_FIELDS, [&user.user_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .map_err(ApiErr::from_db("change_password lookup"))?;
+    let (hash, salt): (Option<String>, Option<String>) = sq_query_row(
+        &conn,
+        dbq::users::get_password_fields(&user.user_id),
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .map_err(ApiErr::from_db("change_password lookup"))?;
 
     let (hash, salt) = match (hash, salt) {
         (Some(h), Some(s)) => (h, s),
@@ -373,9 +369,9 @@ pub async fn change_password(
     service::validate_password(&req.new_password).map_err(ApiErr::from)?;
     let (new_hash, new_salt) = crypto::hash_password(&req.new_password);
 
-    conn.execute(
-        dbq::USER_UPDATE_PASSWORD,
-        rusqlite::params![new_hash, new_salt, user.user_id],
+    sq_execute(
+        &conn,
+        dbq::users::update_password(&user.user_id, &new_hash, &new_salt),
     )
     .map_err(ApiErr::from_db("change_password update"))?;
 
@@ -404,18 +400,15 @@ pub async fn me(
     user: AuthUser,
 ) -> Result<Json<UserSettingsResponse>, ApiErr> {
     let conn = db.conn();
-    let (email, avatar_url): (Option<String>, Option<String>) = conn
-        .query_row(dbq::USER_EMAIL_AVATAR, [&user.user_id], |row| {
+    let (email, avatar_url): (Option<String>, Option<String>) =
+        sq_query_row(&conn, dbq::users::get_email_avatar(&user.user_id), |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
         .map_err(ApiErr::from_db("me error"))?;
 
     // Load linked OAuth providers
-    let mut stmt = conn
-        .prepare(dbq::OAUTH_IDENTITY_FIND_BY_USER)
-        .map_err(ApiErr::from_db("me prepare"))?;
-    let providers: Vec<oauth::LinkedProvider> = stmt
-        .query_map([&user.user_id], |row| {
+    let providers: Vec<oauth::LinkedProvider> =
+        sq_query_map(&conn, dbq::oauth::find_by_user(&user.user_id), |row| {
             Ok(oauth::LinkedProvider {
                 provider: row.get(1)?,
                 provider_username: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
@@ -426,9 +419,7 @@ pub async fn me(
                 },
             })
         })
-        .map_err(ApiErr::from_db("me query oauth"))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .map_err(ApiErr::from_db("me query oauth"))?;
 
     // Legacy: first GitHub provider's username
     let github_username = providers
@@ -436,11 +427,12 @@ pub async fn me(
         .find(|p| p.provider == "github")
         .map(|p| p.provider_username.clone());
 
-    let (api_key, created_at): (String, String) = conn
-        .query_row(dbq::USER_SETTINGS_FIELDS, [&user.user_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .unwrap_or_default();
+    let (api_key, created_at): (String, String) = sq_query_row(
+        &conn,
+        dbq::users::get_settings_fields(&user.user_id),
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .unwrap_or_default();
 
     Ok(Json(UserSettingsResponse {
         user_id: user.user_id,
@@ -466,11 +458,8 @@ pub async fn regenerate_key(
 ) -> Result<Json<RegenerateKeyResponse>, ApiErr> {
     let new_key = service::generate_api_key();
     let conn = db.conn();
-    conn.execute(
-        dbq::USER_UPDATE_API_KEY,
-        rusqlite::params![&new_key, &user.user_id],
-    )
-    .map_err(ApiErr::from_db("regenerate key error"))?;
+    sq_execute(&conn, dbq::users::update_api_key(&user.user_id, &new_key))
+        .map_err(ApiErr::from_db("regenerate key error"))?;
 
     Ok(Json(RegenerateKeyResponse { api_key: new_key }))
 }

@@ -13,7 +13,7 @@ use opensession_api_types::{
 
 use super::auth::AuthUser;
 use crate::error::ApiErr;
-use crate::storage::Db;
+use crate::storage::{sq_execute, sq_query_row, Db};
 use crate::{AppConfig, AppState};
 
 // ---------------------------------------------------------------------------
@@ -30,10 +30,7 @@ fn find_provider<'a>(config: &'a AppConfig, id: &str) -> Result<&'a OAuthProvide
 
 fn is_first_user(db: &Db) -> bool {
     let conn = db.conn();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
-        .unwrap_or(0);
-    count == 0
+    sq_query_row(&conn, dbq::users::count(), |row| row.get::<_, i64>(0)).unwrap_or(0) == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -77,9 +74,9 @@ pub async fn redirect(
         .to_string();
 
     let conn = db.conn();
-    conn.execute(
-        dbq::OAUTH_STATE_INSERT,
-        rusqlite::params![state, provider_id, expires_at, Option::<String>::None],
+    sq_execute(
+        &conn,
+        dbq::oauth::insert_state(&state, &provider_id, &expires_at, None),
     )
     .map_err(ApiErr::from_db("oauth state insert"))?;
 
@@ -116,15 +113,14 @@ pub async fn callback(
     // Validate state (scope the MutexGuard so it's dropped before await)
     let (_state_provider, linking_user_id) = {
         let conn = db.conn();
-        let state_row = conn
-            .query_row(dbq::OAUTH_STATE_VALIDATE, [state_param], |row| {
-                Ok((
-                    row.get::<_, String>(1)?,         // provider
-                    row.get::<_, String>(2)?,         // expires_at
-                    row.get::<_, Option<String>>(3)?, // user_id
-                ))
-            })
-            .map_err(|_| ApiErr::bad_request("invalid OAuth state"))?;
+        let state_row = sq_query_row(&conn, dbq::oauth::validate_state(state_param), |row| {
+            Ok((
+                row.get::<_, String>(1)?,         // provider
+                row.get::<_, String>(2)?,         // expires_at
+                row.get::<_, Option<String>>(3)?, // user_id
+            ))
+        })
+        .map_err(|_| ApiErr::bad_request("invalid OAuth state"))?;
 
         let (sp, expires_at, lu) = state_row;
 
@@ -138,7 +134,7 @@ pub async fn callback(
         }
 
         // Delete used state
-        conn.execute(dbq::OAUTH_STATE_DELETE, [state_param]).ok();
+        sq_execute(&conn, dbq::oauth::delete_state(state_param)).ok();
         (sp, lu)
     }; // conn dropped here, before any .await
 
@@ -202,13 +198,12 @@ pub async fn callback(
     // ── Linking mode ──
     if let Some(ref link_uid) = linking_user_id {
         // Check if this provider identity is already linked to another account
-        let existing_user: Option<String> = conn
-            .query_row(
-                dbq::OAUTH_IDENTITY_FIND_BY_PROVIDER,
-                rusqlite::params![provider_id, user_info.provider_user_id],
-                |row| row.get(0),
-            )
-            .ok();
+        let existing_user: Option<String> = sq_query_row(
+            &conn,
+            dbq::oauth::find_by_provider(&provider_id, &user_info.provider_user_id),
+            |row| row.get(0),
+        )
+        .ok();
 
         if let Some(ref existing) = existing_user {
             if existing != link_uid {
@@ -219,16 +214,16 @@ pub async fn callback(
             }
         }
 
-        conn.execute(
-            dbq::OAUTH_IDENTITY_UPSERT,
-            rusqlite::params![
+        sq_execute(
+            &conn,
+            dbq::oauth::upsert_identity(
                 link_uid,
-                provider_id,
-                user_info.provider_user_id,
-                user_info.username,
-                user_info.avatar_url,
-                Option::<String>::None,
-            ],
+                &provider_id,
+                &user_info.provider_user_id,
+                Some(&user_info.username),
+                user_info.avatar_url.as_deref(),
+                None,
+            ),
         )
         .map_err(ApiErr::from_db("oauth link upsert"))?;
 
@@ -241,88 +236,88 @@ pub async fn callback(
     // ── Normal login/register flow ──
 
     // Check if OAuth identity already exists
-    let existing_user_id: Option<String> = conn
-        .query_row(
-            dbq::OAUTH_IDENTITY_FIND_BY_PROVIDER,
-            rusqlite::params![provider_id, user_info.provider_user_id],
-            |row| row.get(0),
-        )
-        .ok();
+    let existing_user_id: Option<String> = sq_query_row(
+        &conn,
+        dbq::oauth::find_by_provider(&provider_id, &user_info.provider_user_id),
+        |row| row.get(0),
+    )
+    .ok();
 
     let (user_id, nickname) = if let Some(uid) = existing_user_id {
         // Update provider info
-        conn.execute(
-            dbq::OAUTH_IDENTITY_UPSERT,
-            rusqlite::params![
-                uid,
-                provider_id,
-                user_info.provider_user_id,
-                user_info.username,
-                user_info.avatar_url,
-                Option::<String>::None,
-            ],
+        sq_execute(
+            &conn,
+            dbq::oauth::upsert_identity(
+                &uid,
+                &provider_id,
+                &user_info.provider_user_id,
+                Some(&user_info.username),
+                user_info.avatar_url.as_deref(),
+                None,
+            ),
         )
         .ok();
 
-        let nick: String = conn
-            .query_row("SELECT nickname FROM users WHERE id = ?1", [&uid], |row| {
-                row.get(0)
-            })
-            .unwrap_or_else(|_| user_info.username.clone());
+        let nick: String = sq_query_row(
+            &conn,
+            dbq::users::get_by_id(&uid),
+            |row| row.get(1), // col 1 = nickname
+        )
+        .unwrap_or_else(|_| user_info.username.clone());
 
         (uid, nick)
     } else {
         // Check if email matches existing user (auto-link)
         let by_email = user_info.email.as_ref().and_then(|email| {
-            conn.query_row(
-                "SELECT id, nickname FROM users WHERE email = ?1",
-                [email],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
+            sq_query_row(&conn, dbq::users::get_by_email_for_login(email), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .ok()
         });
 
         if let Some((uid, nick)) = by_email {
-            conn.execute(
-                dbq::OAUTH_IDENTITY_UPSERT,
-                rusqlite::params![
-                    uid,
-                    provider_id,
-                    user_info.provider_user_id,
-                    user_info.username,
-                    user_info.avatar_url,
-                    Option::<String>::None,
-                ],
+            sq_execute(
+                &conn,
+                dbq::oauth::upsert_identity(
+                    &uid,
+                    &provider_id,
+                    &user_info.provider_user_id,
+                    Some(&user_info.username),
+                    user_info.avatar_url.as_deref(),
+                    None,
+                ),
             )
             .ok();
             (uid, nick)
         } else {
             // Create new user
             let user_id = Uuid::new_v4().to_string();
+            let username = user_info.username.clone();
             let api_key = service::generate_api_key();
             let admin = is_first_user(&db);
 
+            // OAuth users have no password — insert with email but empty hash/salt
             conn.execute(
                 "INSERT INTO users (id, nickname, api_key, is_admin, email) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![user_id, user_info.username, api_key, admin, user_info.email,],
+                rusqlite::params![user_id, username, api_key, admin, user_info.email],
             )
             .map_err(ApiErr::from_db("create user from oauth"))?;
 
-            conn.execute(
-                dbq::OAUTH_IDENTITY_UPSERT,
-                rusqlite::params![
-                    user_id,
-                    provider_id,
-                    user_info.provider_user_id,
-                    user_info.username,
-                    user_info.avatar_url,
-                    Option::<String>::None,
-                ],
+            sq_execute(
+                &conn,
+                dbq::oauth::upsert_identity(
+                    &user_id,
+                    &provider_id,
+                    &user_info.provider_user_id,
+                    Some(&user_info.username),
+                    user_info.avatar_url.as_deref(),
+                    None,
+                ),
             )
             .map_err(ApiErr::from_db("oauth identity insert"))?;
 
-            (user_id, user_info.username)
+            (user_id, username)
         }
     };
     drop(conn);
@@ -356,7 +351,7 @@ pub async fn link(
         return Err(ApiErr::internal("JWT_SECRET not configured"));
     }
 
-    // Check if already linked
+    // Check if already linked (one-off query specific to this flow)
     let conn = db.conn();
     let already: bool = conn
         .query_row(
@@ -377,9 +372,9 @@ pub async fn link(
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
-    conn.execute(
-        dbq::OAUTH_STATE_INSERT,
-        rusqlite::params![state, provider_id, expires_at, Some(&user.user_id)],
+    sq_execute(
+        &conn,
+        dbq::oauth::insert_state(&state, &provider_id, &expires_at, Some(&user.user_id)),
     )
     .map_err(ApiErr::from_db("oauth state insert for link"))?;
 

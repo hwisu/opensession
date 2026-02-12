@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/daemon",
-    # "crates/worker",  # Requires wasm target - build separately
     "crates/server",
 ]
 

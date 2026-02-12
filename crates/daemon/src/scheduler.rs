@@ -243,6 +243,7 @@ async fn upload_to_server(session: &Session, config: &DaemonConfig, db: &LocalDb
         team_id: Some(config.identity.team_id.clone()),
         body_url: None,
         linked_session_ids: None,
+        ..Default::default()
     })?;
 
     let retry_cfg = RetryConfig {

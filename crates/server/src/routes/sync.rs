@@ -7,7 +7,7 @@ use opensession_api_types::{db, SessionSummary, SyncPullQuery, SyncPullResponse}
 
 use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::{session_from_row, Db};
+use crate::storage::{session_from_row, sq_query_map, Db};
 
 /// `GET /api/sync/pull` — incremental pull of team sessions.
 ///
@@ -22,74 +22,36 @@ pub async fn pull(
         return Err(ApiErr::forbidden("not a member of this team"));
     }
 
-    let conn = db.conn();
-    let limit = q.limit.unwrap_or(100).clamp(1, 500) as i64;
+    let limit = q.limit.unwrap_or(100).clamp(1, 500) as u64;
 
     // Cursor format: "{uploaded_at}\n{session_id}" (opaque to clients).
-    let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-        if let Some(ref since) = q.since {
-            if let Some((ts, last_id)) = since.split_once('\n') {
-                // Keyset pagination: skip past the exact (uploaded_at, id) pair.
-                (
-                    format!(
-                        "SELECT {} \
-                     FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
-                     WHERE s.team_id = ?1 \
-                       AND (s.uploaded_at > ?2 OR (s.uploaded_at = ?2 AND s.id > ?3)) \
-                     ORDER BY s.uploaded_at ASC, s.id ASC \
-                     LIMIT ?4",
-                        db::SESSION_COLUMNS
-                    ),
-                    vec![
-                        Box::new(q.team_id.clone()),
-                        Box::new(ts.to_owned()),
-                        Box::new(last_id.to_owned()),
-                        Box::new(limit),
-                    ],
-                )
-            } else {
-                // Legacy cursor (plain timestamp) — best-effort.
-                (
-                    format!(
-                        "SELECT {} \
-                     FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
-                     WHERE s.team_id = ?1 AND s.uploaded_at > ?2 \
-                     ORDER BY s.uploaded_at ASC, s.id ASC \
-                     LIMIT ?3",
-                        db::SESSION_COLUMNS
-                    ),
-                    vec![
-                        Box::new(q.team_id.clone()),
-                        Box::new(since.clone()),
-                        Box::new(limit),
-                    ],
-                )
-            }
+    let (cursor_at, cursor_id) = if let Some(ref since) = q.since {
+        if let Some((ts, last_id)) = since.split_once('\n') {
+            (Some(ts.to_owned()), Some(last_id.to_owned()))
         } else {
-            (
-                format!(
-                    "SELECT {} \
-                 FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
-                 WHERE s.team_id = ?1 \
-                 ORDER BY s.uploaded_at ASC, s.id ASC \
-                 LIMIT ?2",
-                    db::SESSION_COLUMNS
-                ),
-                vec![Box::new(q.team_id.clone()), Box::new(limit)],
-            )
-        };
+            // Legacy cursor (plain timestamp) — best-effort.
+            // Use empty string as session_id sentinel so that the keyset
+            // condition `(uploaded_at, id) > (ts, "")` skips past that timestamp.
+            (Some(since.clone()), Some(String::new()))
+        }
+    } else {
+        (None, None)
+    };
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(ApiErr::from_db("prepare pull"))?;
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let rows = stmt
-        .query_map(param_refs.as_slice(), session_from_row)
-        .map_err(ApiErr::from_db("pull sessions"))?;
+    let conn = db.conn();
+    let sessions: Vec<SessionSummary> = sq_query_map(
+        &conn,
+        db::sessions::sync_pull(
+            &q.team_id,
+            cursor_at.as_deref(),
+            cursor_id.as_deref(),
+            limit,
+        ),
+        session_from_row,
+    )
+    .map_err(ApiErr::from_db("pull sessions"))?;
 
-    let sessions: Vec<SessionSummary> = rows.filter_map(|r| r.ok()).collect();
-
-    let has_more = sessions.len() as i64 == limit;
+    let has_more = sessions.len() as u64 == limit;
     let next_cursor = if has_more {
         sessions
             .last()

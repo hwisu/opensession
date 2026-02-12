@@ -68,7 +68,6 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: check
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -103,7 +102,7 @@ jobs:
             web/package-lock.json
             _opensession-core/packages/ui/package-lock.json
       - name: Install UI package deps
-        run: npm install
+        run: npm ci
         working-directory: _opensession-core/packages/ui
       - run: npm ci
         working-directory: web

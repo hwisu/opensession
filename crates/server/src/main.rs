@@ -153,11 +153,35 @@ async fn main() -> anyhow::Result<()> {
         .route("/teams/{id}/stats", get(routes::teams::team_stats))
         .route("/teams/{id}", get(routes::teams::get_team))
         .route("/teams/{id}", put(routes::teams::update_team))
+        .route(
+            "/teams/{id}/keys",
+            post(routes::teams::create_team_invite_key),
+        )
+        .route(
+            "/teams/{id}/keys",
+            get(routes::teams::list_team_invite_keys),
+        )
+        .route(
+            "/teams/{id}/keys/{key_id}",
+            delete(routes::teams::revoke_team_invite_key),
+        )
+        .route(
+            "/teams/join-with-key",
+            post(routes::teams::join_team_with_key),
+        )
         // Sync
         .route("/sync/pull", get(routes::sync::pull))
         // Team members
         .route("/teams/{id}/members", get(routes::teams::list_members))
         .route("/teams/{id}/members", post(routes::teams::add_member))
+        .route(
+            "/teams/{id}/invitations",
+            get(routes::teams::list_team_invitations),
+        )
+        .route(
+            "/teams/{id}/invitations/{invitation_id}",
+            delete(routes::teams::cancel_team_invitation),
+        )
         .route(
             "/teams/{team_id}/members/{user_id}",
             delete(routes::teams::remove_member),

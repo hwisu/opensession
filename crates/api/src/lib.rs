@@ -560,6 +560,68 @@ pub struct ToolStats {
     pub total_output_tokens: i64,
 }
 
+/// Request body for `POST /api/teams/:id/keys`.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct CreateTeamInviteKeyRequest {
+    pub role: Option<TeamRole>,
+    /// Defaults to 7 days. Clamped to [1, 30].
+    pub expires_in_days: Option<u32>,
+}
+
+/// Create response for team invite key generation.
+/// `invite_key` is only returned once.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct CreateTeamInviteKeyResponse {
+    pub key_id: String,
+    pub invite_key: String,
+    pub role: TeamRole,
+    pub expires_at: String,
+}
+
+/// Team invite key metadata, safe to list repeatedly.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct TeamInviteKeySummary {
+    pub id: String,
+    pub role: TeamRole,
+    pub created_by_nickname: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub used_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+/// Returned by `GET /api/teams/:id/keys`.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct ListTeamInviteKeysResponse {
+    pub keys: Vec<TeamInviteKeySummary>,
+}
+
+/// Request body for `POST /api/teams/join-with-key`.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct JoinTeamWithKeyRequest {
+    pub invite_key: String,
+}
+
+/// Returned after successful key redemption.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct JoinTeamWithKeyResponse {
+    pub team_id: String,
+    pub team_name: String,
+    pub role: TeamRole,
+}
+
 // ─── From impls: core stats → API types ─────────────────────────────────────
 
 impl From<opensession_core::stats::SessionAggregate> for TeamStatsTotals {
@@ -918,6 +980,12 @@ mod tests {
             TeamStatsTotals,
             UserStats,
             ToolStats,
+            CreateTeamInviteKeyRequest,
+            CreateTeamInviteKeyResponse,
+            TeamInviteKeySummary,
+            ListTeamInviteKeysResponse,
+            JoinTeamWithKeyRequest,
+            JoinTeamWithKeyResponse,
             // Members
             AddMemberRequest,
             MemberResponse,

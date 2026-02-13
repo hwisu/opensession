@@ -3,13 +3,13 @@ use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, invitation_count: usize) {
-    let tabs = [
-        (Tab::Sessions, "1:Sessions", "Sessions"),
-        (Tab::Teams, "2:Teams", "Teams"),
-        (Tab::Invitations, "3:Invitations", "Invitations"),
-        (Tab::Settings, "4:Settings", "Settings"),
-    ];
+pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mode: bool) {
+    let mut tabs = vec![(Tab::Sessions, "1:Sessions", "Sessions")];
+    if !local_mode {
+        tabs.push((Tab::Teams, "2:Teams", "Teams"));
+        tabs.push((Tab::TeamMgmt, "3:Team Mgmt", "Team Mgmt"));
+    }
+    tabs.push((Tab::Settings, "4:Settings", "Settings"));
 
     // In detail views, hide number prefixes since 1-6 keys are used for event filters
     let hide_numbers = matches!(view, View::SessionDetail | View::TeamDetail);
@@ -37,11 +37,6 @@ pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, invitati
         };
 
         let mut text = format!(" {} ", label);
-
-        // Show badge for pending invitations
-        if matches!(tab, Tab::Invitations) && invitation_count > 0 && !is_active {
-            text = format!(" {} ({}) ", label, invitation_count);
-        }
 
         spans.push(Span::styled(text, style));
         spans.push(Span::styled(" ", Style::new()));

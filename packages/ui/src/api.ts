@@ -3,8 +3,10 @@ import type {
 	AuthProvidersResponse,
 	AuthTokenResponse,
 	InvitationResponse,
+	JoinTeamWithKeyResponse,
 	ListInvitationsResponse,
 	ListMembersResponse,
+	ListTeamInviteKeysResponse,
 	ListTeamsResponse,
 	MemberResponse,
 	Session,
@@ -156,7 +158,21 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 		throw new ApiError(res.status, body);
 	}
 
-	return res.json();
+	if (res.status === 204) {
+		return undefined as T;
+	}
+
+	const contentType = res.headers.get('content-type') || '';
+	if (!contentType.includes('application/json')) {
+		return undefined as T;
+	}
+
+	const text = await res.text();
+	if (!text.trim()) {
+		return undefined as T;
+	}
+
+	return JSON.parse(text) as T;
 }
 
 export class ApiError extends Error {
@@ -318,6 +334,45 @@ export async function addMember(teamId: string, nickname: string): Promise<Membe
 export async function removeMember(teamId: string, userId: string): Promise<void> {
 	await request(`/api/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`, {
 		method: 'DELETE',
+	});
+}
+
+// Team Invite Keys
+
+export async function listTeamInviteKeys(teamId: string): Promise<ListTeamInviteKeysResponse> {
+	return request(`/api/teams/${encodeURIComponent(teamId)}/keys`);
+}
+
+export async function createTeamInviteKey(
+	teamId: string,
+	data?: { role?: 'admin' | 'member'; expires_in_days?: number },
+): Promise<{ key_id: string; invite_key: string; role: 'admin' | 'member'; expires_at: string }> {
+	return request(`/api/teams/${encodeURIComponent(teamId)}/keys`, {
+		method: 'POST',
+		body: JSON.stringify(data ?? {}),
+	});
+}
+
+export async function revokeTeamInviteKey(teamId: string, keyId: string): Promise<void> {
+	await request(`/api/teams/${encodeURIComponent(teamId)}/keys/${encodeURIComponent(keyId)}`, {
+		method: 'DELETE',
+	});
+}
+
+export async function listTeamInvitations(teamId: string): Promise<ListInvitationsResponse> {
+	return request(`/api/teams/${encodeURIComponent(teamId)}/invitations`);
+}
+
+export async function cancelTeamInvitation(teamId: string, invitationId: string): Promise<void> {
+	await request(`/api/teams/${encodeURIComponent(teamId)}/invitations/${encodeURIComponent(invitationId)}`, {
+		method: 'DELETE',
+	});
+}
+
+export async function joinTeamWithKey(inviteKey: string): Promise<JoinTeamWithKeyResponse> {
+	return request('/api/teams/join-with-key', {
+		method: 'POST',
+		body: JSON.stringify({ invite_key: inviteKey }),
 	});
 }
 

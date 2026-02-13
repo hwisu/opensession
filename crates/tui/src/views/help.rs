@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  1/2/3/4   ", key_style),
             Span::styled(
-                "Switch tabs (Sessions/Teams/Invitations/Settings)",
+                "Switch tabs (Sessions/Teams/Team Mgmt/Settings)",
                 desc_style,
             ),
         ]),

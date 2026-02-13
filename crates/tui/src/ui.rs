@@ -35,7 +35,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         &app.active_tab,
         &app.view,
         tab_area,
-        app.invitations.len(),
+        app.is_local_mode(),
     );
 
     // Header
@@ -269,10 +269,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
             let count = app.invitations.len();
             let spans = vec![
-                Span::styled(
-                    " Invitations ",
-                    Style::new().fg(Theme::ACCENT_ORANGE).bold(),
-                ),
+                Span::styled(" Inbox ", Style::new().fg(Theme::ACCENT_ORANGE).bold()),
                 Span::styled(
                     format!(" {} pending", count),
                     Style::new().fg(Theme::TEXT_SECONDARY),
@@ -495,8 +492,17 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         _ => Line::raw(""),
     };
 
-    // Append flash message to any view's footer
     let mut spans = help.spans;
+    // Persistent first-run hint after setup skip
+    if matches!(app.view, View::SessionList) && !app.startup_status.config_exists {
+        spans.push(Span::styled("  |  ", Style::new().fg(Theme::GUTTER)));
+        spans.push(Span::styled(
+            "setup later: 4:Settings > Config",
+            Style::new().fg(Theme::TEXT_HINT),
+        ));
+    }
+
+    // Append flash message to any view's footer
     if let Some((ref msg, level)) = app.flash_message {
         let color = match level {
             FlashLevel::Success => Theme::ACCENT_GREEN,

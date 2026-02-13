@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 // Re-export shared config types from core
-pub use opensession_core::config::{DaemonConfig, GitStorageMethod};
+pub use opensession_core::config::{DaemonConfig, GitStorageMethod, PublishMode};
 
 // ── File I/O ────────────────────────────────────────────────────────────
 
@@ -131,8 +131,8 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     },
     SettingItem::Field {
         field: SettingField::ApiKey,
-        label: "API Key",
-        description: "Authentication key for server access (starts with osk_)",
+        label: "API Key (personal)",
+        description: "Personal authentication key for cloud/team/public sync",
         dependency_hint: None,
     },
     SettingItem::Field {
@@ -144,8 +144,8 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     SettingItem::Header("Identity"),
     SettingItem::Field {
         field: SettingField::Nickname,
-        label: "Nickname",
-        description: "Display name shown on your sessions",
+        label: "Handle",
+        description: "Display handle shown on your sessions",
         dependency_hint: None,
     },
     SettingItem::Header("Daemon"),

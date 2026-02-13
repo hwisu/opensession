@@ -8,6 +8,7 @@ pub mod oauth;
 pub mod sessions;
 pub mod sync;
 pub mod tables;
+pub mod team_invite_keys;
 pub mod teams;
 pub mod users;
 

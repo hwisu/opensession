@@ -6,11 +6,12 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api::{
-    db, service, AcceptInvitationResponse, AddMemberRequest, CreateTeamRequest, InvitationResponse,
-    InvitationStatus, InviteRequest, ListInvitationsResponse, ListMembersResponse,
-    ListTeamsResponse, MemberResponse, OkResponse, SessionSummary, TeamDetailResponse,
-    TeamResponse, TeamRole, TeamStatsQuery, TeamStatsResponse, TeamStatsTotals, ToolStats,
-    UpdateTeamRequest, UserStats,
+    crypto, db, service, AcceptInvitationResponse, AddMemberRequest, CreateTeamInviteKeyRequest,
+    CreateTeamInviteKeyResponse, CreateTeamRequest, InvitationResponse, InvitationStatus,
+    InviteRequest, JoinTeamWithKeyRequest, JoinTeamWithKeyResponse, ListInvitationsResponse,
+    ListMembersResponse, ListTeamInviteKeysResponse, ListTeamsResponse, MemberResponse, OkResponse,
+    SessionSummary, TeamDetailResponse, TeamInviteKeySummary, TeamResponse, TeamRole,
+    TeamStatsQuery, TeamStatsResponse, TeamStatsTotals, ToolStats, UpdateTeamRequest, UserStats,
 };
 
 use crate::error::ApiErr;
@@ -402,6 +403,195 @@ pub async fn list_members(
 }
 
 // ---------------------------------------------------------------------------
+// Team invite keys
+// ---------------------------------------------------------------------------
+
+/// POST /api/teams/:id/keys — create a single-use invite key (admin only).
+pub async fn create_team_invite_key(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(team_id): Path<String>,
+    Json(req): Json<CreateTeamInviteKeyRequest>,
+) -> Result<(StatusCode, Json<CreateTeamInviteKeyResponse>), ApiErr> {
+    let conn = db.conn();
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
+
+    let role = req.role.unwrap_or(TeamRole::Member);
+    let days = req.expires_in_days.unwrap_or(7).clamp(1, 30);
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(days as i64))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let key_id = Uuid::new_v4().to_string();
+    let invite_key = format!("ostk_{}", crypto::generate_token().map_err(ApiErr::from)?);
+    let key_hash = crypto::hash_token(&invite_key);
+
+    sq_execute(
+        &conn,
+        db::team_invite_keys::insert(
+            &key_id,
+            &team_id,
+            &key_hash,
+            role.as_str(),
+            &user.user_id,
+            &expires_at,
+        ),
+    )
+    .map_err(|e| {
+        tracing::error!("create team invite key: {e}");
+        ApiErr::internal("failed to create team invite key")
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateTeamInviteKeyResponse {
+            key_id,
+            invite_key,
+            role,
+            expires_at,
+        }),
+    ))
+}
+
+/// GET /api/teams/:id/keys — list invite key metadata (admin only).
+pub async fn list_team_invite_keys(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(team_id): Path<String>,
+) -> Result<Json<ListTeamInviteKeysResponse>, ApiErr> {
+    let conn = db.conn();
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
+
+    let keys = sq_query_map(
+        &conn,
+        db::team_invite_keys::list_for_team(&team_id),
+        |row| {
+            let role: String = row.get(1)?;
+            Ok(TeamInviteKeySummary {
+                id: row.get(0)?,
+                role: if role == TeamRole::Admin.as_str() {
+                    TeamRole::Admin
+                } else {
+                    TeamRole::Member
+                },
+                created_by_nickname: row.get(2)?,
+                created_at: row.get(3)?,
+                expires_at: row.get(4)?,
+                used_at: row.get(5)?,
+                revoked_at: row.get(6)?,
+            })
+        },
+    )
+    .map_err(ApiErr::from_db("list team invite keys"))?;
+
+    Ok(Json(ListTeamInviteKeysResponse { keys }))
+}
+
+/// DELETE /api/teams/:id/keys/:key_id — revoke an unused invite key (admin only).
+pub async fn revoke_team_invite_key(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path((team_id, key_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiErr> {
+    let conn = db.conn();
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
+
+    let affected = sq_execute(&conn, db::team_invite_keys::revoke(&team_id, &key_id))
+        .map_err(ApiErr::from_db("revoke team invite key"))?;
+    if affected == 0 {
+        return Err(ApiErr::not_found(
+            "invite key not found or already inactive",
+        ));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /api/teams/join-with-key — join a team using a single-use invite key.
+pub async fn join_team_with_key(
+    State(db): State<Db>,
+    user: AuthUser,
+    Json(req): Json<JoinTeamWithKeyRequest>,
+) -> Result<Json<JoinTeamWithKeyResponse>, ApiErr> {
+    let conn = db.conn();
+    let invite_key = req.invite_key.trim();
+    if invite_key.is_empty() {
+        return Err(ApiErr::bad_request("invite_key is required"));
+    }
+
+    let key_hash = crypto::hash_token(invite_key);
+    let (key_id, team_id, role_str, expires_at, used_at, revoked_at) = sq_query_row(
+        &conn,
+        db::team_invite_keys::lookup_active_by_hash(&key_hash),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        },
+    )
+    .map_err(|_| ApiErr::not_found("invite key not found"))?;
+
+    if used_at.is_some() || revoked_at.is_some() {
+        return Err(ApiErr::bad_request("invite key is no longer valid"));
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if expires_at < now {
+        return Err(ApiErr::bad_request("invite key has expired"));
+    }
+
+    let already_member: bool = sq_query_row(
+        &conn,
+        db::teams::member_exists(&team_id, &user.user_id),
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )
+    .unwrap_or(false);
+    if already_member {
+        return Err(ApiErr::conflict("already a member of this team"));
+    }
+
+    let role = if role_str == TeamRole::Admin.as_str() {
+        TeamRole::Admin
+    } else {
+        TeamRole::Member
+    };
+
+    sq_execute(
+        &conn,
+        db::teams::member_insert(&team_id, &user.user_id, role.as_str()),
+    )
+    .map_err(ApiErr::from_db("join team by key"))?;
+
+    sq_execute(
+        &conn,
+        db::team_invite_keys::mark_used(&key_id, &user.user_id),
+    )
+    .map_err(ApiErr::from_db("mark invite key used"))?;
+
+    let team_name: String = sq_query_row(&conn, db::team_invite_keys::team_name(&team_id), |row| {
+        row.get(0)
+    })
+    .unwrap_or_else(|_| "team".to_string());
+
+    Ok(Json(JoinTeamWithKeyResponse {
+        team_id,
+        team_name,
+        role,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Invitations
 // ---------------------------------------------------------------------------
 
@@ -509,6 +699,71 @@ pub async fn invite_member(
             created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         }),
     ))
+}
+
+/// GET /api/teams/:id/invitations — list pending invitations for a team (admin only).
+pub async fn list_team_invitations(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path(team_id): Path<String>,
+) -> Result<Json<ListInvitationsResponse>, ApiErr> {
+    let conn = db.conn();
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
+
+    let invitations: Vec<InvitationResponse> =
+        sq_query_map(&conn, db::invitations::list_team_pending(&team_id), |row| {
+            let role_str: String = row.get(7)?;
+            let status_str: String = row.get(8)?;
+            Ok(InvitationResponse {
+                id: row.get(0)?,
+                team_id: row.get(1)?,
+                team_name: row.get(2)?,
+                email: row.get(3)?,
+                oauth_provider: row.get(4)?,
+                oauth_provider_username: row.get(5)?,
+                invited_by_nickname: row.get(6)?,
+                role: if role_str == "admin" {
+                    TeamRole::Admin
+                } else {
+                    TeamRole::Member
+                },
+                status: match status_str.as_str() {
+                    "accepted" => InvitationStatus::Accepted,
+                    "declined" => InvitationStatus::Declined,
+                    _ => InvitationStatus::Pending,
+                },
+                created_at: row.get(9)?,
+            })
+        })
+        .map_err(ApiErr::from_db("list team invitations"))?;
+
+    Ok(Json(ListInvitationsResponse { invitations }))
+}
+
+/// DELETE /api/teams/:id/invitations/:invitation_id — cancel pending invitation (admin only).
+pub async fn cancel_team_invitation(
+    State(db): State<Db>,
+    user: AuthUser,
+    Path((team_id, invitation_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiErr> {
+    let conn = db.conn();
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
+
+    let affected = sq_execute(
+        &conn,
+        db::invitations::delete_pending_for_team(&team_id, &invitation_id),
+    )
+    .map_err(ApiErr::from_db("cancel invitation"))?;
+
+    if affected == 0 {
+        return Err(ApiErr::not_found("pending invitation not found"));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// GET /api/invitations — list pending invitations for the current user.

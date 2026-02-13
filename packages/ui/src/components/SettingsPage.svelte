@@ -26,6 +26,7 @@ let loading = $state(true);
 let error = $state<string | null>(null);
 
 let manualKey = $state('');
+let showManualKeyInput = $state(false);
 let showKey = $state(false);
 let regenerating = $state(false);
 
@@ -71,6 +72,8 @@ function handleSetKey() {
 async function handleLogout() {
 	await authLogout();
 	settings = null;
+	manualKey = '';
+	showManualKeyInput = false;
 }
 
 async function handleRegenerateKey() {
@@ -422,7 +425,7 @@ $effect(() => {
 					<p class="text-text-muted"># Install</p>
 					<p>cargo install opensession</p>
 					<p class="mt-2 text-text-muted"># Configure</p>
-					<p>opensession config set api-key {showKey ? settings.api_key : '<your-api-key>'}</p>
+					<p>opensession config --api-key {showKey ? settings.api_key : '<your-api-key>'}</p>
 					<p class="mt-2 text-text-muted"># Start daemon</p>
 					<p>opensession daemon start</p>
 				</div>
@@ -453,23 +456,33 @@ $effect(() => {
 			</div>
 
 			<div class="border border-border bg-bg-secondary p-3">
-				<h2 class="mb-2 text-sm font-medium text-text-primary">Already have an API key?</h2>
-				<div class="flex gap-2">
-					<input
-						type="text"
-						placeholder="Paste your API key"
-						bind:value={manualKey}
-						onkeydown={(e) => e.key === 'Enter' && handleSetKey()}
-						class="flex-1 border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-					/>
+				<div class="flex items-center justify-between gap-2">
+					<h2 class="text-sm font-medium text-text-primary">Use API key instead</h2>
 					<button
-						onclick={handleSetKey}
-						disabled={!manualKey.trim()}
-						class="bg-bg-hover px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
+						onclick={() => (showManualKeyInput = !showManualKeyInput)}
+						class="bg-bg-hover px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
 					>
-						Set Key
+						{showManualKeyInput ? 'Hide' : 'Show'}
 					</button>
 				</div>
+				{#if showManualKeyInput}
+					<div class="mt-2 flex gap-2">
+						<input
+							type="text"
+							placeholder="Paste your API key"
+							bind:value={manualKey}
+							onkeydown={(e) => e.key === 'Enter' && handleSetKey()}
+							class="flex-1 border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+						/>
+						<button
+							onclick={handleSetKey}
+							disabled={!manualKey.trim()}
+							class="bg-bg-hover px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
+						>
+							Set Key
+						</button>
+					</div>
+				{/if}
 			</div>
 		</div>
 	{/if}

@@ -35,13 +35,13 @@ fn render_profile(frame: &mut Frame, app: &App, area: Rect) {
 
     if let Some(ref profile) = app.profile {
         let fields: Vec<(&str, String)> = vec![
-            ("Nickname", profile.nickname.clone()),
+            ("Handle", profile.nickname.clone()),
             (
                 "Email",
                 profile.email.clone().unwrap_or_else(|| "-".to_string()),
             ),
             (
-                "API Key",
+                "API Key (personal)",
                 if profile.api_key.len() > 12 {
                     format!("{}...", &profile.api_key[..12])
                 } else {
@@ -115,7 +115,7 @@ fn render_profile(frame: &mut Frame, app: &App, area: Rect) {
         )));
     } else if app.daemon_config.server.api_key.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  API key not set. Go to Config tab to configure.",
+            "  Personal API key not set. Go to Config tab to configure.",
             Style::new().fg(Theme::TEXT_SECONDARY),
         )));
     } else {
@@ -151,7 +151,7 @@ fn render_account(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "── API Key ──",
+            "── API Key (personal) ──",
             Style::new().fg(Theme::ACCENT_BLUE).bold(),
         )),
         Line::raw(""),
@@ -176,6 +176,10 @@ fn render_account(frame: &mut Frame, app: &App, area: Rect) {
     ]));
     lines.push(Line::from(Span::styled(
         "  Press 'r' to regenerate",
+        Style::new().fg(Theme::TEXT_HINT),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  (this is your personal key, not a team-only key)",
         Style::new().fg(Theme::TEXT_HINT),
     )));
     lines.push(Line::raw(""));

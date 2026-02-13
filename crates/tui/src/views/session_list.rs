@@ -16,7 +16,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_local(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.filtered_sessions.is_empty() {
         let msg = if app.sessions.is_empty() {
-            "No sessions found. Make sure you have Claude Code sessions in ~/.claude/projects/"
+            if app.startup_status.config_exists {
+                "No sessions found. Make sure you have Claude Code sessions in ~/.claude/projects/"
+            } else {
+                "No sessions yet. You can keep browsing locally, then configure sync in Settings > Config (4)."
+            }
         } else {
             "No sessions match your search query."
         };
@@ -235,10 +239,10 @@ fn db_row_to_list_item(row: &LocalSessionRow) -> ListItem<'static> {
             Style::new().fg(Theme::TEXT_PRIMARY).bold(),
         ),
     ]);
-    if let Some(ref nick) = row.nickname {
-        let color = theme::user_color(nick);
+    if let Some(actor) = actor_label(row) {
+        let color = theme::user_color(&actor);
         line1_spans.push(Span::styled(
-            format!("  @{nick}"),
+            format!("  {actor}"),
             Style::new().fg(color).bold(),
         ));
     }
@@ -270,6 +274,16 @@ fn db_row_to_list_item(row: &LocalSessionRow) -> ListItem<'static> {
     let line3 = Line::raw("");
 
     ListItem::new(vec![line1, line2, line3])
+}
+
+fn actor_label(row: &LocalSessionRow) -> Option<String> {
+    if let Some(nick) = row.nickname.as_deref().filter(|s| !s.is_empty()) {
+        return Some(format!("@{nick}"));
+    }
+    row.user_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|uid| format!("id:{}", truncate(uid, 10)))
 }
 
 fn render_empty(frame: &mut Frame, area: Rect, msg: &str, mode: &ViewMode) {

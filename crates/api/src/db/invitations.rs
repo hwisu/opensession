@@ -120,3 +120,32 @@ pub fn dup_check_oauth(team_id: &str, provider: &str, username: &str) -> Built {
         .and_where(Expr::col(TeamInvitations::Status).eq("pending"))
         .build(SqliteQueryBuilder)
 }
+
+/// List pending invitations for a team (admin view).
+pub fn list_team_pending(team_id: &str) -> Built {
+    let sql = concat!(
+        "SELECT ",
+        "i.\"id\", i.\"team_id\", t.\"name\" AS \"team_name\", i.\"email\", ",
+        "i.\"oauth_provider\", i.\"oauth_provider_username\", ",
+        "u.\"nickname\" AS \"invited_by_nickname\", i.\"role\", i.\"status\", ",
+        "i.\"created_at\", i.\"expires_at\" ",
+        "FROM \"team_invitations\" i ",
+        "INNER JOIN \"teams\" t ON t.\"id\" = i.\"team_id\" ",
+        "INNER JOIN \"users\" u ON u.\"id\" = i.\"invited_by\" ",
+        "WHERE i.\"team_id\" = ? AND i.\"status\" = 'pending' ",
+        "ORDER BY i.\"created_at\" DESC",
+    )
+    .to_string();
+    let values = sea_query::Values(vec![team_id.into()]);
+    (sql, values)
+}
+
+/// Delete a pending invitation for a specific team.
+pub fn delete_pending_for_team(team_id: &str, invitation_id: &str) -> Built {
+    Query::delete()
+        .from_table(TeamInvitations::Table)
+        .and_where(Expr::col(TeamInvitations::TeamId).eq(team_id))
+        .and_where(Expr::col(TeamInvitations::Id).eq(invitation_id))
+        .and_where(Expr::col(TeamInvitations::Status).eq("pending"))
+        .build(SqliteQueryBuilder)
+}

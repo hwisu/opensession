@@ -7,9 +7,9 @@ use ratatui::widgets::{List, ListItem, Paragraph};
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.invitations_loading {
         let block = Theme::block_dim()
-            .title(" Invitations ")
+            .title(" Inbox ")
             .padding(Theme::PADDING_CARD);
-        let msg = Paragraph::new("Loading invitations...")
+        let msg = Paragraph::new("Loading inbox...")
             .block(block)
             .style(Style::new().fg(Theme::ACCENT_BLUE));
         frame.render_widget(msg, area);
@@ -18,11 +18,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     if app.invitations.is_empty() {
         let block = Theme::block_dim()
-            .title(" Invitations ")
+            .title(" Inbox ")
             .padding(Theme::PADDING_CARD);
-        let msg = Paragraph::new("No pending invitations.")
-            .block(block)
-            .style(Style::new().fg(Color::DarkGray));
+        let msg =
+            Paragraph::new("Inbox is empty. Invitations and collaboration updates appear here.")
+                .block(block)
+                .style(Style::new().fg(Color::DarkGray));
         frame.render_widget(msg, area);
         return;
     }
@@ -34,7 +35,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .block(Theme::block_dim().title(format!(" Invitations ({}) ", app.invitations.len())))
+        .block(Theme::block_dim().title(format!(" Inbox ({}) ", app.invitations.len())))
         .highlight_style(
             Style::new()
                 .bg(Theme::BG_SURFACE)

@@ -274,6 +274,45 @@ export interface ToolStats {
 	total_output_tokens: number;
 }
 
+export interface CreateTeamInviteKeyRequest {
+	role: TeamRole | null;
+	/**
+	 * Defaults to 7 days. Clamped to [1, 30].
+	 */
+	expires_in_days: number | null;
+}
+
+export interface CreateTeamInviteKeyResponse {
+	key_id: string;
+	invite_key: string;
+	role: TeamRole;
+	expires_at: string;
+}
+
+export interface TeamInviteKeySummary {
+	id: string;
+	role: TeamRole;
+	created_by_nickname: string;
+	created_at: string;
+	expires_at: string;
+	used_at: string | null;
+	revoked_at: string | null;
+}
+
+export interface ListTeamInviteKeysResponse {
+	keys: Array<TeamInviteKeySummary>;
+}
+
+export interface JoinTeamWithKeyRequest {
+	invite_key: string;
+}
+
+export interface JoinTeamWithKeyResponse {
+	team_id: string;
+	team_name: string;
+	role: TeamRole;
+}
+
 export interface AddMemberRequest {
 	nickname: string;
 }

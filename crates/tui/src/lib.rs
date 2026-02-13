@@ -7,7 +7,7 @@ mod ui;
 mod views;
 
 use anyhow::Result;
-use app::{App, ServerInfo, ServerStatus, StartupStatus, UploadPhase, View};
+use app::{App, ServerInfo, ServerStatus, SetupStep, StartupStatus, UploadPhase, View};
 use crossterm::{
     event::{self, Event, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -66,6 +66,8 @@ pub fn run(paths: Option<Vec<String>>) -> Result<()> {
     // ── If config file doesn't exist yet, start in Setup view ──────
     if !config_exists {
         app.view = View::Setup;
+        app.setup_step = SetupStep::Scenario;
+        app.setup_scenario_index = 0;
         app.settings_index = 0;
     }
 

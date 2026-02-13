@@ -125,6 +125,21 @@ pub enum TeamInvitations {
 }
 
 #[derive(Iden)]
+pub enum TeamInviteKeys {
+    Table,
+    Id,
+    TeamId,
+    KeyHash,
+    Role,
+    CreatedBy,
+    CreatedAt,
+    ExpiresAt,
+    UsedBy,
+    UsedAt,
+    RevokedAt,
+}
+
+#[derive(Iden)]
 pub enum SessionSync {
     Table,
     SessionId,

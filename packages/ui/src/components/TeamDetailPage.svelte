@@ -1,6 +1,22 @@
 <script lang="ts">
-import { getSettings, getTeam, inviteMember, listMembers } from '../api';
-import type { MemberResponse, TeamDetailResponse, UserSettings } from '../types';
+import {
+	createTeamInviteKey,
+	cancelTeamInvitation,
+	getSettings,
+	getTeam,
+	inviteMember,
+	listMembers,
+	listTeamInvitations,
+	listTeamInviteKeys,
+	revokeTeamInviteKey,
+} from '../api';
+import type {
+	InvitationResponse,
+	MemberResponse,
+	TeamDetailResponse,
+	TeamInviteKeySummary,
+	UserSettings,
+} from '../types';
 import SessionCard from './SessionCard.svelte';
 
 const { teamId }: { teamId: string } = $props();
@@ -19,6 +35,16 @@ let inviteRole = $state('member');
 let inviting = $state(false);
 let inviteError = $state<string | null>(null);
 let inviteSuccess = $state(false);
+let teamInvitations = $state<InvitationResponse[]>([]);
+let teamInvitationsLoading = $state(false);
+let inviteKeys = $state<TeamInviteKeySummary[]>([]);
+let keysLoading = $state(false);
+let keyError = $state<string | null>(null);
+let creatingKey = $state(false);
+let createdInviteKey = $state<string | null>(null);
+let keyRole = $state<'admin' | 'member'>('member');
+let keyDays = $state(7);
+let showInactiveKeys = $state(false);
 
 const isTeamAdmin = $derived(
 	currentUser != null &&
@@ -37,10 +63,72 @@ async function fetchData() {
 		} catch {
 			currentUser = null;
 		}
+
+		if (currentUser != null && members.some((mm) => mm.user_id === currentUser?.user_id && mm.role === 'admin')) {
+			await refreshTeamInvitations();
+			await refreshInviteKeys();
+		} else {
+			teamInvitations = [];
+			inviteKeys = [];
+		}
 	} catch (e) {
 		error = e instanceof Error ? e.message : 'Failed to load team';
 	} finally {
 		loading = false;
+	}
+}
+
+async function refreshTeamInvitations() {
+	teamInvitationsLoading = true;
+	inviteError = null;
+	try {
+		const res = await listTeamInvitations(teamId);
+		teamInvitations = res.invitations;
+	} catch (e) {
+		inviteError = e instanceof Error ? e.message : 'Failed to load invitations';
+	} finally {
+		teamInvitationsLoading = false;
+	}
+}
+
+async function refreshInviteKeys() {
+	keysLoading = true;
+	keyError = null;
+	try {
+		const res = await listTeamInviteKeys(teamId);
+		inviteKeys = res.keys;
+	} catch (e) {
+		keyError = e instanceof Error ? e.message : 'Failed to load invite keys';
+	} finally {
+		keysLoading = false;
+	}
+}
+
+async function handleCreateInviteKey() {
+	creatingKey = true;
+	keyError = null;
+	createdInviteKey = null;
+	try {
+		const res = await createTeamInviteKey(teamId, {
+			role: keyRole,
+			expires_in_days: keyDays,
+		});
+		createdInviteKey = res.invite_key;
+		await refreshInviteKeys();
+	} catch (e) {
+		keyError = e instanceof Error ? e.message : 'Failed to create invite key';
+	} finally {
+		creatingKey = false;
+	}
+}
+
+async function handleRevokeInviteKey(keyId: string) {
+	keyError = null;
+	try {
+		await revokeTeamInviteKey(teamId, keyId);
+		await refreshInviteKeys();
+	} catch (e) {
+		keyError = e instanceof Error ? e.message : 'Failed to revoke invite key';
 	}
 }
 
@@ -61,6 +149,7 @@ async function handleInvite() {
 		await inviteMember(teamId, data);
 		inviteSuccess = true;
 		inviteTarget = '';
+		await refreshTeamInvitations();
 	} catch (e) {
 		if (e instanceof Error) {
 			try {
@@ -74,6 +163,16 @@ async function handleInvite() {
 		}
 	} finally {
 		inviting = false;
+	}
+}
+
+async function handleCancelInvitation(invitationId: string) {
+	inviteError = null;
+	try {
+		await cancelTeamInvitation(teamId, invitationId);
+		teamInvitations = teamInvitations.filter((i) => i.id !== invitationId);
+	} catch (e) {
+		inviteError = e instanceof Error ? e.message : 'Failed to cancel invitation';
 	}
 }
 
@@ -127,12 +226,12 @@ $effect(() => {
 			{#if isTeamAdmin}
 				<div class="border-b border-border px-3 py-2">
 					<h3 class="mb-2 text-sm font-medium text-text-primary">Invite Member</h3>
-					<form onsubmit={(e) => { e.preventDefault(); handleInvite(); }} class="flex flex-wrap items-end gap-2">
-						<div class="flex gap-1">
+					<form onsubmit={(e) => { e.preventDefault(); handleInvite(); }} class="flex flex-wrap items-center gap-2">
+						<div class="flex h-7 gap-1">
 							<button
 								type="button"
 								onclick={() => { inviteType = 'email'; }}
-								class="px-2 py-1 text-xs"
+								class="px-2 text-xs"
 								class:bg-accent={inviteType === 'email'}
 								class:text-white={inviteType === 'email'}
 								class:bg-bg-hover={inviteType !== 'email'}
@@ -143,7 +242,7 @@ $effect(() => {
 							<button
 								type="button"
 								onclick={() => { inviteType = 'oauth'; }}
-								class="px-2 py-1 text-xs"
+								class="px-2 text-xs"
 								class:bg-accent={inviteType === 'oauth'}
 								class:text-white={inviteType === 'oauth'}
 								class:bg-bg-hover={inviteType !== 'oauth'}
@@ -155,7 +254,7 @@ $effect(() => {
 						{#if inviteType === 'oauth'}
 							<select
 								bind:value={inviteProvider}
-								class="border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary outline-none"
+								class="h-7 border border-border bg-bg-primary px-2 text-xs text-text-primary outline-none"
 							>
 								<option value="github">GitHub</option>
 								<option value="gitlab">GitLab</option>
@@ -165,11 +264,11 @@ $effect(() => {
 							type="text"
 							placeholder={inviteType === 'email' ? 'user@example.com' : 'username'}
 							bind:value={inviteTarget}
-							class="flex-1 border border-border bg-bg-primary px-3 py-1 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+							class="h-7 min-w-56 flex-1 border border-border bg-bg-primary px-3 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
 						/>
 						<select
 							bind:value={inviteRole}
-							class="border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary outline-none"
+							class="h-7 border border-border bg-bg-primary px-2 text-xs text-text-primary outline-none"
 						>
 							<option value="member">member</option>
 							<option value="admin">admin</option>
@@ -177,7 +276,7 @@ $effect(() => {
 						<button
 							type="submit"
 							disabled={inviting || !inviteTarget.trim()}
-							class="bg-accent px-3 py-1 text-xs text-white hover:bg-accent/80 disabled:opacity-50"
+							class="h-7 bg-accent px-3 text-xs text-white hover:bg-accent/80 disabled:opacity-50"
 						>
 							{inviting ? 'Sending...' : 'Invite'}
 						</button>
@@ -186,7 +285,131 @@ $effect(() => {
 						<p class="mt-1 text-xs text-error">{inviteError}</p>
 					{/if}
 					{#if inviteSuccess}
-						<p class="mt-1 text-xs text-success">Invitation sent!</p>
+						<p class="mt-1 text-xs text-success">
+							Invitation created. (No email is sent yet; recipient sees it in Inbox once matched.)
+						</p>
+					{/if}
+					{#if teamInvitationsLoading}
+						<p class="mt-2 text-xs text-text-muted">Loading pending invitations...</p>
+					{:else if teamInvitations.length > 0}
+						<div class="mt-2 space-y-1">
+							{#each teamInvitations as inv (inv.id)}
+								<div class="flex items-center justify-between gap-2 border border-border px-2 py-1">
+									<div class="min-w-0 text-xs text-text-secondary">
+										<p class="text-text-primary">
+											{inv.email ?? `${inv.oauth_provider}:${inv.oauth_provider_username}`}
+										</p>
+										<p>role: {inv.role} · created {inv.created_at}</p>
+									</div>
+									<button
+										onclick={() => handleCancelInvitation(inv.id)}
+										class="px-2 py-0.5 text-xs text-error hover:underline"
+									>
+										Cancel
+									</button>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- One-time Invite Keys (team admin only) -->
+			{#if isTeamAdmin}
+				<div class="border-b border-border px-3 py-2">
+					<h3 class="mb-2 text-sm font-medium text-text-primary">Invite Keys (single-use)</h3>
+					<p class="mb-2 text-xs text-text-muted">
+						Each key can be used once, then it becomes invalid automatically.
+					</p>
+					<div class="mb-2 flex flex-wrap items-end gap-2">
+						<div>
+							<p class="mb-1 text-[11px] text-text-muted">Role</p>
+							<select
+								bind:value={keyRole}
+								class="h-7 border border-border bg-bg-primary px-2 text-xs text-text-primary outline-none"
+							>
+								<option value="member">member</option>
+								<option value="admin">admin</option>
+							</select>
+						</div>
+						<div>
+							<p class="mb-1 text-[11px] text-text-muted">Expires (days)</p>
+							<input
+								type="number"
+								min="1"
+								max="30"
+								bind:value={keyDays}
+								class="h-7 w-28 border border-border bg-bg-primary px-2 text-xs text-text-primary outline-none"
+							/>
+						</div>
+						<button
+							onclick={handleCreateInviteKey}
+							disabled={creatingKey}
+							class="h-7 bg-accent px-3 text-xs text-white hover:bg-accent/80 disabled:opacity-50"
+						>
+							{creatingKey ? 'Creating...' : 'Create key'}
+						</button>
+					</div>
+					<p class="mb-2 text-xs text-text-muted">
+						This section does not use email/OAuth target fields. It generates a single-use key to share directly.
+					</p>
+					<div class="mb-2 flex items-center gap-2">
+						<button
+							onclick={() => (showInactiveKeys = !showInactiveKeys)}
+							class="bg-bg-hover px-2 py-0.5 text-xs text-text-secondary hover:text-text-primary"
+						>
+							{showInactiveKeys ? 'Hide inactive' : 'Show inactive'}
+						</button>
+						<span class="text-xs text-text-muted">(used/revoked keys)</span>
+					</div>
+
+					{#if createdInviteKey}
+						<div class="mb-2 border border-accent/30 bg-bg-hover p-2">
+							<p class="mb-1 text-xs text-text-primary">Copy now (shown once):</p>
+							<code class="block break-all text-xs text-accent">{createdInviteKey}</code>
+						</div>
+					{/if}
+
+					{#if keyError}
+						<p class="mb-1 text-xs text-error">{keyError}</p>
+					{/if}
+
+					{#if keysLoading}
+						<p class="text-xs text-text-muted">Loading keys...</p>
+					{:else if inviteKeys.filter((key) => showInactiveKeys || (!key.used_at && !key.revoked_at)).length === 0}
+						<p class="text-xs text-text-muted">No active/recent keys.</p>
+					{:else}
+						<div class="space-y-1">
+							{#each inviteKeys
+								.filter((key) => showInactiveKeys || (!key.used_at && !key.revoked_at))
+								.slice(0, 12) as key (key.id)}
+								<div class="flex items-center justify-between gap-2 border border-border px-2 py-1">
+									<div class="min-w-0">
+										<p class="text-xs text-text-primary">
+											{key.role} · by @{key.created_by_nickname}
+										</p>
+										<p class="text-xs text-text-muted">
+											expires {key.expires_at}
+											{#if key.used_at}
+												 · used
+											{:else if key.revoked_at}
+												 · revoked
+											{:else}
+												 · active
+											{/if}
+										</p>
+									</div>
+									{#if !key.used_at && !key.revoked_at}
+										<button
+											onclick={() => handleRevokeInviteKey(key.id)}
+											class="px-2 py-0.5 text-xs text-error hover:underline"
+										>
+											Revoke
+										</button>
+									{/if}
+								</div>
+							{/each}
+						</div>
 					{/if}
 				</div>
 			{/if}

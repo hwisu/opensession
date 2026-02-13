@@ -1,19 +1,28 @@
-use crate::app::{App, SetupMode};
+use crate::app::{App, SetupMode, SetupScenario, SetupStep};
 use crate::config::SettingField;
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-const SETUP_FIELDS: [SettingField; 4] = [
-    SettingField::ServerUrl,
-    SettingField::ApiKey,
-    SettingField::TeamId,
-    SettingField::Nickname,
+const TEAM_SETUP_FIELDS: [(SettingField, &str); 4] = [
+    (SettingField::ServerUrl, "Server URL"),
+    (SettingField::ApiKey, "API Key (personal)"),
+    (SettingField::TeamId, "Team ID"),
+    (SettingField::Nickname, "Handle"),
 ];
 
-const FIELD_LABELS: [&str; 4] = ["Server URL", "API Key", "Team ID", "Nickname"];
+const PUBLIC_SETUP_FIELDS: [(SettingField, &str); 3] = [
+    (SettingField::ServerUrl, "Server URL"),
+    (SettingField::ApiKey, "API Key (personal)"),
+    (SettingField::Nickname, "Handle"),
+];
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    if app.setup_step == SetupStep::Scenario {
+        render_scenario_picker(frame, app, area);
+        return;
+    }
+
     let [title_area, tab_area, form_area, hint_area] = Layout::vertical([
         Constraint::Length(5),
         Constraint::Length(1),
@@ -33,7 +42,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(Span::styled(
-            "Configure your server connection to get started.",
+            "Finish the required setup for your selected mode.",
             Style::new().fg(Color::DarkGray),
         )),
     ])
@@ -53,7 +62,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
     let tab_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled(" API Key ", apikey_style),
+        Span::styled(" API/Account ", apikey_style),
         Span::raw("  "),
         Span::styled(" Email Login ", login_style),
         Span::raw("  "),
@@ -80,7 +89,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("Enter ", key_style),
                 Span::styled("edit  ", desc_style),
                 Span::styled("s ", key_style),
-                Span::styled("save  ", desc_style),
+                Span::styled("save+continue  ", desc_style),
                 Span::styled("Tab ", key_style),
                 Span::styled("switch  ", desc_style),
                 Span::styled("Esc ", key_style),
@@ -103,6 +112,26 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    hint_lines.push(Line::raw(""));
+    hint_lines.push(Line::from(Span::styled(
+        "Skip now? Configure later in Settings > Config.",
+        Style::new().fg(Theme::TEXT_HINT),
+    )));
+    let settings_url = format!(
+        "{}/settings",
+        app.daemon_config.server.url.trim_end_matches('/')
+    );
+    hint_lines.push(Line::from(Span::styled(
+        format!("Personal API key: {settings_url}"),
+        Style::new().fg(Theme::TEXT_HINT),
+    )));
+    if app.setup_scenario == Some(SetupScenario::Public) {
+        hint_lines.push(Line::from(Span::styled(
+            "Public mode requires Git setup for personal uploads.",
+            Style::new().fg(Theme::TEXT_HINT),
+        )));
+    }
+
     // Flash message
     if let Some((ref msg, level)) = app.flash_message {
         use crate::app::FlashLevel;
@@ -122,6 +151,118 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(hints, hint_area);
 }
 
+fn render_scenario_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let [title_area, list_area, hint_area] = Layout::vertical([
+        Constraint::Length(6),
+        Constraint::Length(12),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+
+    let title_block = Theme::block().padding(ratatui::widgets::Padding::new(2, 2, 0, 0));
+    let title = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("opensession", Style::new().fg(Theme::ACCENT_ORANGE).bold()),
+            Span::styled(
+                " — Initial Setup",
+                Style::new().fg(Theme::TEXT_PRIMARY).bold(),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "How do you want to use OpenSession?",
+            Style::new().fg(Theme::TEXT_PRIMARY).bold(),
+        )),
+    ])
+    .block(title_block);
+    frame.render_widget(title, title_area);
+
+    let options = [
+        (
+            SetupScenario::Local,
+            "Local mode",
+            "Browse local sessions only. No cloud setup required.",
+        ),
+        (
+            SetupScenario::Team,
+            "Team mode",
+            "Sync to your team with personal API key + team ID.",
+        ),
+        (
+            SetupScenario::Public,
+            "Public mode",
+            "Auto-publish to personal public feed (Git setup required).",
+        ),
+    ];
+
+    let list_block = Theme::block_dim()
+        .title(" Choose a scenario ")
+        .padding(ratatui::widgets::Padding::new(2, 2, 0, 0));
+    let inner = list_block.inner(list_area);
+    frame.render_widget(list_block, list_area);
+
+    let mut lines = Vec::new();
+    for (idx, (_scenario, label, desc)) in options.iter().enumerate() {
+        let selected = idx == app.setup_scenario_index;
+        let pointer = if selected { ">" } else { " " };
+        let pointer_style = if selected {
+            Style::new().fg(Color::Cyan).bold()
+        } else {
+            Style::new().fg(Color::DarkGray)
+        };
+        let label_style = if selected {
+            Style::new().fg(Theme::TEXT_PRIMARY).bold()
+        } else {
+            Style::new().fg(Theme::TEXT_SECONDARY)
+        };
+        let desc_style = if selected {
+            Style::new().fg(Theme::TEXT_PRIMARY)
+        } else {
+            Style::new().fg(Theme::TEXT_HINT)
+        };
+        let bg = if selected {
+            Style::new().bg(Theme::BG_SURFACE)
+        } else {
+            Style::new()
+        };
+
+        lines.push(
+            Line::from(vec![
+                Span::styled(format!(" {} ", pointer), pointer_style),
+                Span::styled(*label, label_style),
+            ])
+            .style(bg),
+        );
+        lines.push(Line::from(vec![Span::raw("    "), Span::styled(*desc, desc_style)]).style(bg));
+        lines.push(Line::raw(""));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+
+    let key_style = Style::new().fg(Theme::TEXT_KEY);
+    let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
+    let hints = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(" j/k ", key_style),
+            Span::styled("navigate  ", desc_style),
+            Span::styled("Enter ", key_style),
+            Span::styled("continue  ", desc_style),
+            Span::styled("Esc ", key_style),
+            Span::styled("skip", desc_style),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "You can skip this now and configure it later in Settings > Config.",
+            Style::new().fg(Theme::TEXT_HINT),
+        )),
+        Line::from(Span::styled(
+            "Config file: ~/.config/opensession/daemon.toml",
+            Style::new().fg(Theme::TEXT_HINT),
+        )),
+    ]);
+    frame.render_widget(hints, hint_area);
+}
+
 fn render_apikey_form(frame: &mut Frame, app: &App, area: Rect) {
     let form_block = Theme::block_dim()
         .title(" Configuration ")
@@ -130,7 +271,12 @@ fn render_apikey_form(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(form_block, area);
 
     let mut lines = Vec::new();
-    for (i, (&field, &label)) in SETUP_FIELDS.iter().zip(FIELD_LABELS.iter()).enumerate() {
+    let fields: &[(SettingField, &str)] = if app.setup_scenario == Some(SetupScenario::Public) {
+        &PUBLIC_SETUP_FIELDS
+    } else {
+        &TEAM_SETUP_FIELDS
+    };
+    for (i, (field, label)) in fields.iter().enumerate() {
         let is_selected = i == app.settings_index;
         let is_editing = is_selected && app.editing_field;
 

@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::async_ops::{AsyncCommand, CommandResult};
-use crate::config::{self, DaemonConfig, GitStorageMethod, SettingField};
+use crate::config::{self, DaemonConfig, GitStorageMethod, PublishMode, SettingField};
 pub use crate::views::modal::{ConfirmAction, InputAction, Modal};
 
 /// A display-level event for the timeline. Wraps real events with collapse/summary info.
@@ -72,7 +72,7 @@ pub enum View {
 pub enum Tab {
     Sessions,
     Teams,
-    Invitations,
+    TeamMgmt,
     Settings,
 }
 
@@ -107,6 +107,25 @@ pub struct PasswordForm {
 pub enum SetupMode {
     ApiKey,
     Login,
+}
+
+/// Setup flow step: choose scenario first, then configure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupStep {
+    Scenario,
+    Configure,
+}
+
+/// First-run scenario choices used to prefill setup defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupScenario {
+    Local,
+    Team,
+    Public,
+}
+
+impl SetupScenario {
+    pub const ALL: [Self; 3] = [Self::Local, Self::Team, Self::Public];
 }
 
 /// State for the email/password login form.
@@ -331,6 +350,9 @@ pub struct App {
     pub flash_message: Option<(String, FlashLevel)>,
 
     // ── Setup login ──────────────────────────────────────────────
+    pub setup_step: SetupStep,
+    pub setup_scenario_index: usize,
+    pub setup_scenario: Option<SetupScenario>,
     pub setup_mode: SetupMode,
     pub login_state: LoginState,
 
@@ -401,6 +423,26 @@ pub struct TeamInfo {
 }
 
 impl App {
+    pub fn is_local_mode(&self) -> bool {
+        matches!(self.connection_ctx, ConnectionContext::Local)
+    }
+
+    fn can_use_collab_tabs(&self) -> bool {
+        !self.is_local_mode()
+    }
+
+    fn apply_session_view_mode(&mut self, mode: ViewMode) {
+        self.view_mode = mode;
+        self.tool_filter = None;
+        self.page = 0;
+        self.reload_db_sessions();
+        self.list_state.select(if self.session_count() > 0 {
+            Some(0)
+        } else {
+            None
+        });
+    }
+
     pub fn new(sessions: Vec<Session>) -> Self {
         let filtered: Vec<usize> = (0..sessions.len()).collect();
         let mut list_state = ListState::default();
@@ -450,6 +492,9 @@ impl App {
             edit_buffer: String::new(),
             config_dirty: false,
             flash_message: None,
+            setup_step: SetupStep::Scenario,
+            setup_scenario_index: 0,
+            setup_scenario: None,
             setup_mode: SetupMode::ApiKey,
             login_state: LoginState::default(),
             upload_popup: None,
@@ -529,11 +574,15 @@ impl App {
                     return false;
                 }
                 KeyCode::Char('2') => {
-                    self.switch_tab(Tab::Teams);
+                    if self.can_use_collab_tabs() {
+                        self.switch_tab(Tab::Teams);
+                    }
                     return false;
                 }
                 KeyCode::Char('3') => {
-                    self.switch_tab(Tab::Invitations);
+                    if self.can_use_collab_tabs() {
+                        self.switch_tab(Tab::TeamMgmt);
+                    }
                     return false;
                 }
                 KeyCode::Char('4') => {
@@ -562,6 +611,11 @@ impl App {
     }
 
     fn switch_tab(&mut self, tab: Tab) {
+        if !self.can_use_collab_tabs() && matches!(tab, Tab::Teams | Tab::TeamMgmt) {
+            self.active_tab = Tab::Sessions;
+            self.view = View::SessionList;
+            return;
+        }
         if self.active_tab == tab {
             return;
         }
@@ -569,26 +623,33 @@ impl App {
         match tab {
             Tab::Sessions => {
                 self.view = View::SessionList;
+                self.apply_session_view_mode(ViewMode::Local);
             }
             Tab::Teams => {
+                self.view = View::SessionList;
+                if let Some(ref tid) = self.team_id {
+                    self.apply_session_view_mode(ViewMode::Team(tid.clone()));
+                } else {
+                    self.apply_session_view_mode(ViewMode::Local);
+                    self.flash_info("Set Team ID in Settings > Config to open Team Sessions");
+                }
+            }
+            Tab::TeamMgmt => {
                 self.view = View::Teams;
                 if self.teams.is_empty() && !self.teams_loading {
                     self.teams_loading = true;
                     self.pending_command = Some(AsyncCommand::FetchTeams);
                 }
             }
-            Tab::Invitations => {
-                self.view = View::Invitations;
-                if self.invitations.is_empty() && !self.invitations_loading {
-                    self.invitations_loading = true;
-                    self.pending_command = Some(AsyncCommand::FetchInvitations);
-                }
-            }
             Tab::Settings => {
                 self.view = View::Settings;
                 self.settings_index = 0;
                 self.editing_field = false;
-                if self.profile.is_none() && !self.profile_loading {
+                if !self.is_local_mode()
+                    && !self.daemon_config.server.api_key.is_empty()
+                    && self.profile.is_none()
+                    && !self.profile_loading
+                {
                     self.profile_loading = true;
                     self.pending_command = Some(AsyncCommand::FetchProfile);
                 }
@@ -636,7 +697,11 @@ impl App {
             KeyCode::Char('/') => {
                 self.searching = true;
             }
-            KeyCode::Tab => self.cycle_view_mode(),
+            KeyCode::Tab => {
+                if self.active_tab == Tab::Sessions {
+                    self.cycle_view_mode();
+                }
+            }
             KeyCode::Char('m') => self.toggle_list_layout(),
             KeyCode::Char('p') => {
                 // Open upload popup — only when connected to a server
@@ -734,7 +799,11 @@ impl App {
                 }
             }
             KeyCode::Char('m') => self.toggle_list_layout(),
-            KeyCode::Tab => self.cycle_view_mode(),
+            KeyCode::Tab => {
+                if self.active_tab == Tab::Sessions {
+                    self.cycle_view_mode();
+                }
+            }
             _ => {}
         }
         false
@@ -791,20 +860,100 @@ impl App {
     // ── Setup key handler ─────────────────────────────────────────────
 
     fn handle_setup_key(&mut self, key: KeyCode) -> bool {
+        if self.setup_step == SetupStep::Scenario {
+            return self.handle_setup_scenario_key(key);
+        }
         match self.setup_mode {
             SetupMode::ApiKey => self.handle_setup_apikey_key(key),
             SetupMode::Login => self.handle_setup_login_key(key),
         }
     }
 
+    fn handle_setup_scenario_key(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.setup_scenario_index + 1 < SetupScenario::ALL.len() {
+                    self.setup_scenario_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.setup_scenario_index = self.setup_scenario_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if let Some(scenario) = SetupScenario::ALL.get(self.setup_scenario_index).copied() {
+                    self.apply_setup_scenario(scenario);
+                    self.setup_scenario = Some(scenario);
+                    match scenario {
+                        SetupScenario::Local => {
+                            self.view = View::SessionList;
+                            self.active_tab = Tab::Sessions;
+                            self.flash_info(
+                                "Local mode enabled. Configure cloud sync later in Settings > Config",
+                            );
+                        }
+                        SetupScenario::Team | SetupScenario::Public => {
+                            self.setup_step = SetupStep::Configure;
+                            self.setup_mode = SetupMode::ApiKey;
+                            self.settings_index = 0;
+                            self.editing_field = false;
+                            self.edit_buffer.clear();
+                            if scenario == SetupScenario::Public {
+                                self.flash_info(
+                                    "Public mode uses personal upload. Git setup is required for public uploads.",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.view = View::SessionList;
+                self.active_tab = Tab::Sessions;
+                self.flash_info(
+                    "You can configure this later in Settings > Config (~/.config/opensession/daemon.toml)",
+                );
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn apply_setup_scenario(&mut self, scenario: SetupScenario) {
+        match scenario {
+            SetupScenario::Local => {
+                self.daemon_config.daemon.auto_publish = false;
+                self.daemon_config.daemon.publish_on = PublishMode::Manual;
+            }
+            SetupScenario::Team => {
+                self.daemon_config.daemon.auto_publish = false;
+                self.daemon_config.daemon.publish_on = PublishMode::Manual;
+            }
+            SetupScenario::Public => {
+                self.daemon_config.daemon.auto_publish = true;
+                self.daemon_config.daemon.publish_on = PublishMode::SessionEnd;
+                self.daemon_config.identity.team_id.clear();
+            }
+        }
+    }
+
     fn handle_setup_apikey_key(&mut self, key: KeyCode) -> bool {
-        const SETUP_FIELD_COUNT: usize = 4;
-        let setup_fields = [
+        const TEAM_FIELDS: [SettingField; 4] = [
             SettingField::ServerUrl,
             SettingField::ApiKey,
             SettingField::TeamId,
             SettingField::Nickname,
         ];
+        const PUBLIC_FIELDS: [SettingField; 3] = [
+            SettingField::ServerUrl,
+            SettingField::ApiKey,
+            SettingField::Nickname,
+        ];
+        let setup_fields: &[SettingField] = if self.setup_scenario == Some(SetupScenario::Public) {
+            &PUBLIC_FIELDS
+        } else {
+            &TEAM_FIELDS
+        };
+        let setup_field_count = setup_fields.len();
 
         if self.editing_field {
             match key {
@@ -818,13 +967,6 @@ impl App {
                     }
                     self.editing_field = false;
                     self.edit_buffer.clear();
-                    // Auto-save and transition when API key is set
-                    if !self.daemon_config.server.api_key.is_empty() {
-                        self.save_config();
-                        self.connection_ctx = Self::derive_connection_ctx(&self.daemon_config);
-                        self.view = View::SessionList;
-                        self.active_tab = Tab::Sessions;
-                    }
                 }
                 KeyCode::Backspace => {
                     self.edit_buffer.pop();
@@ -845,9 +987,15 @@ impl App {
                     self.connection_ctx = Self::derive_connection_ctx(&self.daemon_config);
                 }
                 self.view = View::SessionList;
+                self.active_tab = Tab::Sessions;
+                if !self.startup_status.config_exists {
+                    self.flash_info(
+                        "You can configure this later in Settings > Config (~/.config/opensession/daemon.toml)",
+                    );
+                }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_index + 1 < SETUP_FIELD_COUNT {
+                if self.settings_index + 1 < setup_field_count {
                     self.settings_index += 1;
                 }
             }
@@ -862,6 +1010,8 @@ impl App {
             }
             KeyCode::Char('s') => {
                 self.save_config();
+                self.view = View::SessionList;
+                self.active_tab = Tab::Sessions;
             }
             KeyCode::Tab => {
                 self.setup_mode = SetupMode::Login;
@@ -908,6 +1058,12 @@ impl App {
         match key {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.view = View::SessionList;
+                self.active_tab = Tab::Sessions;
+                if !self.startup_status.config_exists {
+                    self.flash_info(
+                        "You can configure this later in Settings > Config (~/.config/opensession/daemon.toml)",
+                    );
+                }
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.login_state.field_index < 1 {
@@ -1108,8 +1264,12 @@ impl App {
                     SettingsSection::Profile => {
                         // Profile is read-only, only r to refresh
                         if matches!(key, KeyCode::Char('r')) {
-                            self.profile_loading = true;
-                            self.pending_command = Some(AsyncCommand::FetchProfile);
+                            if self.daemon_config.server.api_key.is_empty() {
+                                self.flash_info("Set API key in Config to load profile");
+                            } else {
+                                self.profile_loading = true;
+                                self.pending_command = Some(AsyncCommand::FetchProfile);
+                            }
                         }
                     }
                     SettingsSection::Account => {
@@ -1872,6 +2032,7 @@ impl App {
         match config::save_daemon_config(&self.daemon_config) {
             Ok(()) => {
                 self.config_dirty = false;
+                self.startup_status.config_exists = true;
                 self.flash_success("Config saved to daemon.toml");
                 // Update team_id in case it changed
                 let tid = &self.daemon_config.identity.team_id;

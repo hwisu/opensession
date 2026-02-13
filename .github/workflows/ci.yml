@@ -110,5 +110,8 @@ jobs:
         working-directory: packages/ui
       - run: npm ci
         working-directory: web
+      - name: Symlink @opensession/ui
+        run: mkdir -p node_modules/@opensession && ln -sf ${{ github.workspace }}/packages/ui node_modules/@opensession/ui
+        working-directory: web
       - run: npm run check
         working-directory: web

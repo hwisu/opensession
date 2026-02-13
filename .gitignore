@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/target-*/
 /crates/worker/target/
 
 # Local cargo overrides (dev only)

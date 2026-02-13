@@ -28,11 +28,6 @@ fn find_provider<'a>(config: &'a AppConfig, id: &str) -> Result<&'a OAuthProvide
         .ok_or_else(|| ApiErr::not_found(format!("OAuth provider '{}' not found", id)))
 }
 
-fn is_first_user(db: &Db) -> bool {
-    let conn = db.conn();
-    sq_query_row(&conn, dbq::users::count(), |row| row.get::<_, i64>(0)).unwrap_or(0) == 0
-}
-
 // ---------------------------------------------------------------------------
 // GET /api/auth/providers — list available auth methods
 // ---------------------------------------------------------------------------
@@ -294,13 +289,12 @@ pub async fn callback(
             let user_id = Uuid::new_v4().to_string();
             let username = user_info.username.clone();
             let api_key = service::generate_api_key();
-            let admin = is_first_user(&db);
 
             // OAuth users have no password — insert with email but empty hash/salt
             conn.execute(
-                "INSERT INTO users (id, nickname, api_key, is_admin, email) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![user_id, username, api_key, admin, user_info.email],
+                "INSERT INTO users (id, nickname, api_key, email) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![user_id, username, api_key, user_info.email],
             )
             .map_err(ApiErr::from_db("create user from oauth"))?;
 

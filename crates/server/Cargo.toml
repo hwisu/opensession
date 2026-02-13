@@ -14,10 +14,10 @@ workspace = true
 
 [dependencies]
 opensession-core = { workspace = true }
-opensession-api-types = { workspace = true }
+opensession-api-types = { workspace = true, features = ["server"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "fs"] }
 axum = { workspace = true, features = ["macros"] }
 tower-http = { workspace = true }
 rusqlite = { workspace = true }

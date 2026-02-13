@@ -27,7 +27,6 @@ use crate::AppConfig;
 pub struct AuthUser {
     pub user_id: String,
     pub nickname: String,
-    pub is_admin: bool,
     pub email: Option<String>,
 }
 
@@ -60,8 +59,7 @@ where
                 Ok(AuthUser {
                     user_id: row.get(0)?,
                     nickname: row.get(1)?,
-                    is_admin: row.get(2)?,
-                    email: row.get(3)?,
+                    email: row.get(2)?,
                 })
             })
             .map_err(|_| ApiErr::unauthorized("invalid API key"));
@@ -81,8 +79,7 @@ where
             Ok(AuthUser {
                 user_id: row.get(0)?,
                 nickname: row.get(1)?,
-                is_admin: row.get(2)?,
-                email: row.get(3)?,
+                email: row.get(2)?,
             })
         })
         .map_err(|_| ApiErr::unauthorized("user not found"))
@@ -127,14 +124,8 @@ fn issue_tokens(
     Ok(bundle.response)
 }
 
-fn is_first_user(db: &Db) -> bool {
-    let conn = db.conn();
-    let count: i64 = sq_query_row(&conn, dbq::users::count(), |row| row.get(0)).unwrap_or(0);
-    count == 0
-}
-
 // ---------------------------------------------------------------------------
-// Register — first user becomes admin (legacy, CLI-compatible)
+// Register (legacy, CLI-compatible)
 // ---------------------------------------------------------------------------
 
 pub async fn register(
@@ -148,13 +139,7 @@ pub async fn register(
 
     let conn = db.conn();
 
-    let user_count: i64 = sq_query_row(&conn, dbq::users::count(), |row| row.get(0)).unwrap_or(0);
-    let is_admin = user_count == 0;
-
-    let result = sq_execute(
-        &conn,
-        dbq::users::insert(&user_id, &nickname, &api_key, is_admin),
-    );
+    let result = sq_execute(&conn, dbq::users::insert(&user_id, &nickname, &api_key));
 
     match result {
         Ok(_) => Ok((
@@ -163,7 +148,6 @@ pub async fn register(
                 user_id,
                 nickname,
                 api_key,
-                is_admin,
             }),
         )),
         Err(rusqlite::Error::SqliteFailure(err, _))
@@ -209,7 +193,6 @@ pub async fn auth_register(
     let user_id = Uuid::new_v4().to_string();
     let api_key = service::generate_api_key();
     let (password_hash, password_salt) = crypto::hash_password(&req.password);
-    let admin = is_first_user(&db);
 
     {
         let conn = db.conn();
@@ -219,7 +202,6 @@ pub async fn auth_register(
                 &user_id,
                 &nickname,
                 &api_key,
-                admin,
                 &email,
                 &password_hash,
                 &password_salt,
@@ -438,7 +420,6 @@ pub async fn me(
         user_id: user.user_id,
         nickname: user.nickname,
         api_key,
-        is_admin: user.is_admin,
         created_at,
         email,
         avatar_url,

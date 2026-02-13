@@ -3,11 +3,11 @@
 
 export interface RegisterRequest { nickname: string, }
 
-export interface RegisterResponse { user_id: string, nickname: string, api_key: string, is_admin: boolean, }
+export interface RegisterResponse { user_id: string, nickname: string, api_key: string, }
 
 export interface VerifyResponse { user_id: string, nickname: string, }
 
-export interface UserSettingsResponse { user_id: string, nickname: string, api_key: string, is_admin: boolean, created_at: string, }
+export interface UserSettingsResponse { user_id: string, nickname: string, api_key: string, created_at: string, }
 
 export interface UploadResponse { id: string, url: string, }
 

@@ -1,6 +1,7 @@
 mod config;
 mod config_sync;
 mod health;
+pub mod hooks;
 mod pull_sync;
 mod scheduler;
 mod stream;

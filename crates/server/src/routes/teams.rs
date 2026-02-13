@@ -25,9 +25,6 @@ pub async fn create_team(
     user: AuthUser,
     Json(req): Json<CreateTeamRequest>,
 ) -> Result<(StatusCode, Json<TeamResponse>), ApiErr> {
-    if !user.is_admin {
-        return Err(ApiErr::forbidden("admin only"));
-    }
     let name = service::validate_team_name(&req.name).map_err(ApiErr::from)?;
 
     let team_id = Uuid::new_v4().to_string();
@@ -133,11 +130,11 @@ pub async fn update_team(
     Path(id): Path<String>,
     Json(req): Json<UpdateTeamRequest>,
 ) -> Result<Json<TeamResponse>, ApiErr> {
-    if !user.is_admin {
-        return Err(ApiErr::forbidden("admin only"));
-    }
-
     let conn = db.conn();
+
+    if !is_team_admin(&conn, &id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
 
     // Verify team exists
     let exists: bool = sq_query_row(&conn, db::teams::exists(&id), |row| {
@@ -182,11 +179,11 @@ pub async fn add_member(
     Path(team_id): Path<String>,
     Json(req): Json<AddMemberRequest>,
 ) -> Result<(StatusCode, Json<MemberResponse>), ApiErr> {
-    if !user.is_admin {
-        return Err(ApiErr::forbidden("admin only"));
-    }
-
     let conn = db.conn();
+
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
 
     // Look up user by nickname
     let target = sq_query_row(&conn, db::users::get_by_nickname(&req.nickname), |row| {
@@ -237,11 +234,11 @@ pub async fn remove_member(
     user: AuthUser,
     Path((team_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiErr> {
-    if !user.is_admin {
-        return Err(ApiErr::forbidden("admin only"));
-    }
-
     let conn = db.conn();
+
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
+        return Err(ApiErr::forbidden("team admin only"));
+    }
     let affected =
         sq_execute(&conn, db::teams::member_delete(&team_id, &user_id)).map_err(|e| {
             tracing::error!("remove member: {e}");
@@ -311,7 +308,7 @@ pub async fn invite_member(
 ) -> Result<(StatusCode, Json<InvitationResponse>), ApiErr> {
     let conn = db.conn();
 
-    if !user.is_admin && !is_team_admin(&conn, &team_id, &user.user_id) {
+    if !is_team_admin(&conn, &team_id, &user.user_id) {
         return Err(ApiErr::forbidden("team admin only"));
     }
 

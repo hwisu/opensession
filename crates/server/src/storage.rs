@@ -62,11 +62,18 @@ pub fn sq_params(values: &sea_query::Values) -> Vec<Box<dyn rusqlite::types::ToS
         .map(|v| -> Box<dyn rusqlite::types::ToSql> {
             match v {
                 sea_query::Value::Bool(Some(b)) => Box::new(*b),
+                sea_query::Value::TinyInt(Some(i)) => Box::new(*i as i32),
+                sea_query::Value::SmallInt(Some(i)) => Box::new(*i as i32),
                 sea_query::Value::Int(Some(i)) => Box::new(*i),
                 sea_query::Value::BigInt(Some(i)) => Box::new(*i),
+                sea_query::Value::TinyUnsigned(Some(u)) => Box::new(*u as i64),
+                sea_query::Value::SmallUnsigned(Some(u)) => Box::new(*u as i64),
+                sea_query::Value::Unsigned(Some(u)) => Box::new(*u as i64),
+                sea_query::Value::BigUnsigned(Some(u)) => Box::new(*u as i64),
+                sea_query::Value::Float(Some(f)) => Box::new(*f as f64),
+                sea_query::Value::Double(Some(f)) => Box::new(*f),
                 sea_query::Value::String(Some(s)) => Box::new(s.as_ref().clone()),
                 sea_query::Value::Bytes(Some(b)) => Box::new(b.as_ref().clone()),
-                sea_query::Value::Double(Some(f)) => Box::new(*f),
                 _ => Box::new(rusqlite::types::Null),
             }
         })

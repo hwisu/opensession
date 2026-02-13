@@ -44,35 +44,38 @@ impl FromRef<AppState> for AppConfig {
 
 /// Load OAuth providers from environment variables.
 fn load_oauth_providers() -> Vec<OAuthProviderConfig> {
-    let mut providers = Vec::new();
+    [try_load_github(), try_load_gitlab()]
+        .into_iter()
+        .flatten()
+        .collect()
+}
 
-    // GitHub: GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET
-    if let (Ok(id), Ok(secret)) = (
-        std::env::var("GITHUB_CLIENT_ID"),
-        std::env::var("GITHUB_CLIENT_SECRET"),
-    ) {
-        if !id.is_empty() && !secret.is_empty() {
-            tracing::info!("OAuth provider enabled: GitHub");
-            providers.push(oauth::github_preset(id, secret));
-        }
-    }
+fn try_load_github() -> Option<OAuthProviderConfig> {
+    let id = std::env::var("GITHUB_CLIENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let secret = std::env::var("GITHUB_CLIENT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    tracing::info!("OAuth provider enabled: GitHub");
+    Some(oauth::github_preset(id, secret))
+}
 
-    // GitLab: GITLAB_URL + GITLAB_CLIENT_ID + GITLAB_CLIENT_SECRET
-    if let (Ok(url), Ok(id), Ok(secret)) = (
-        std::env::var("GITLAB_URL"),
-        std::env::var("GITLAB_CLIENT_ID"),
-        std::env::var("GITLAB_CLIENT_SECRET"),
-    ) {
-        if !url.is_empty() && !id.is_empty() && !secret.is_empty() {
-            let ext_url = std::env::var("GITLAB_EXTERNAL_URL")
-                .ok()
-                .filter(|s| !s.is_empty());
-            tracing::info!("OAuth provider enabled: GitLab ({})", url);
-            providers.push(oauth::gitlab_preset(url, ext_url, id, secret));
-        }
-    }
-
-    providers
+fn try_load_gitlab() -> Option<OAuthProviderConfig> {
+    let url = std::env::var("GITLAB_URL")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let id = std::env::var("GITLAB_CLIENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let secret = std::env::var("GITLAB_CLIENT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let ext_url = std::env::var("GITLAB_EXTERNAL_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    tracing::info!("OAuth provider enabled: GitLab ({})", url);
+    Some(oauth::gitlab_preset(url, ext_url, id, secret))
 }
 
 #[tokio::main]

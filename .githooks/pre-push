@@ -11,7 +11,8 @@ run_cargo() {
         CARGO_BIN=$(rustup which --toolchain stable cargo 2>/dev/null || true)
         if [ -n "$RUSTC_BIN" ] && [ -n "$CARGO_BIN" ]; then
             RUSTC_VER=$("$RUSTC_BIN" --version | awk '{print $2}' | tr '.' '_')
-            RUSTC="$RUSTC_BIN" CARGO_TARGET_DIR="$ROOT_DIR/target-rustup-$RUSTC_VER" "$CARGO_BIN" "$@"
+            TOOLCHAIN_BIN=$(dirname "$RUSTC_BIN")
+            PATH="$TOOLCHAIN_BIN:$PATH" RUSTC="$RUSTC_BIN" CARGO_TARGET_DIR="$ROOT_DIR/target-rustup-$RUSTC_VER" "$CARGO_BIN" "$@"
             return
         fi
     fi

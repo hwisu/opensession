@@ -2,14 +2,22 @@
 # Pre-commit hook: keep this fast so commits stay snappy
 set -e
 
+run_cargo() {
+  if command -v rustup >/dev/null 2>&1; then
+    rustup run stable cargo "$@"
+  else
+    cargo "$@"
+  fi
+}
+
 # Cargo.lock 변경 감지를 위한 스냅샷
 LOCK_HASH_BEFORE=$(shasum Cargo.lock 2>/dev/null || echo "none")
 
 echo "Running cargo fmt check..."
-cargo fmt --all -- --check
+run_cargo fmt --all -- --check
 
 echo "Running daemon smoke tests..."
-cargo test -p opensession-daemon --quiet
+run_cargo test -p opensession-daemon --quiet
 
 # Cargo.lock 변경 여부 확인
 LOCK_HASH_AFTER=$(shasum Cargo.lock 2>/dev/null || echo "none")

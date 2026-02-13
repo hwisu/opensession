@@ -1235,8 +1235,46 @@ impl App {
         }
     }
 
+    fn find_daemon_binary() -> Option<std::path::PathBuf> {
+        // Look next to our own binary first
+        if let Ok(exe) = std::env::current_exe() {
+            let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+            let candidate = dir.join("opensession-daemon");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            // Try with .exe on Windows
+            let candidate = dir.join("opensession-daemon.exe");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        // Try PATH via `which`
+        if let Ok(output) = std::process::Command::new("which")
+            .arg("opensession-daemon")
+            .output()
+        {
+            if output.status.success() {
+                let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !p.is_empty() {
+                    return Some(std::path::PathBuf::from(p));
+                }
+            }
+        }
+        None
+    }
+
     fn start_daemon(&mut self) {
-        match std::process::Command::new("opensession-daemon")
+        let bin = match Self::find_daemon_binary() {
+            Some(b) => b,
+            None => {
+                self.flash_error(
+                    "opensession-daemon not found. Install: cargo install opensession-daemon",
+                );
+                return;
+            }
+        };
+        match std::process::Command::new(bin)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

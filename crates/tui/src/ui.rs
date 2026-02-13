@@ -97,7 +97,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                     ("PERSONAL".to_string(), Color::Black, Theme::BADGE_PERSONAL)
                 }
                 ConnectionContext::CloudTeam { team_name } => (
-                    format!("TEAM: {team_name}"),
+                    format!("\u{2191} {team_name}"),
                     Color::Black,
                     Theme::BADGE_TEAM,
                 ),

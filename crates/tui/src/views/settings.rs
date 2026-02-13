@@ -377,7 +377,7 @@ fn render_daemon_config(frame: &mut Frame, app: &App, area: Rect) {
                 let dimmed =
                     is_git_token_disabled || (dependency_hint.is_some() && !daemon_running);
 
-                let pointer = if is_selected { ">" } else { " " };
+                let pointer = if is_selected { "\u{25b8}" } else { " " };
                 let pointer_style = if dimmed {
                     Style::new().fg(Theme::TEXT_DIMMER)
                 } else if is_selected {
@@ -406,15 +406,25 @@ fn render_daemon_config(frame: &mut Frame, app: &App, area: Rect) {
                     Style::new().fg(Theme::ACCENT_YELLOW)
                 } else if field.is_toggle() {
                     let on = matches!(field.display_value(&app.daemon_config).as_str(), "ON");
-                    if on {
+                    let s = if on {
                         Style::new().fg(Theme::TOGGLE_ON)
                     } else {
                         Style::new().fg(Theme::TOGGLE_OFF)
+                    };
+                    if is_selected {
+                        s.underlined()
+                    } else {
+                        s
                     }
                 } else if field.is_enum() {
-                    Style::new().fg(Theme::ACCENT_PURPLE)
+                    let s = Style::new().fg(Theme::ACCENT_PURPLE);
+                    if is_selected {
+                        s.underlined()
+                    } else {
+                        s
+                    }
                 } else if is_selected {
-                    Style::new().fg(Theme::TEXT_PRIMARY)
+                    Style::new().fg(Theme::TEXT_PRIMARY).underlined()
                 } else {
                     Style::new().fg(Theme::FIELD_VALUE)
                 };
@@ -464,6 +474,21 @@ fn render_daemon_config(frame: &mut Frame, app: &App, area: Rect) {
                         Span::raw("     "),
                         Span::styled(desc_text, desc_style),
                     ]));
+
+                    // Show detailed descriptions for Git Storage Method
+                    if is_selected && *field == SettingField::GitStorageMethod {
+                        let detail_style = Style::new().fg(Theme::TEXT_MUTED);
+                        for detail in [
+                            "\u{00b7} Platform API \u{2014} Push via GitHub/GitLab REST API (needs token)",
+                            "\u{00b7} Native       \u{2014} Write git objects directly (local git required)",
+                            "\u{00b7} None         \u{2014} Server-only, no git backup",
+                        ] {
+                            lines.push(Line::from(vec![
+                                Span::raw("     "),
+                                Span::styled(detail, detail_style),
+                            ]));
+                        }
+                    }
 
                     // Show exclude patterns when Privacy fields are selected
                     if is_selected

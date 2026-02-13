@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/crates/worker/target/
 
 # Local cargo overrides (dev only)
 .cargo/config.toml

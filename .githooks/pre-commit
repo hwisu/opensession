@@ -7,14 +7,15 @@ ROOT_DIR=$(pwd)
 run_cargo() {
   if command -v rustup >/dev/null 2>&1; then
     RUSTC_BIN=$(rustup which --toolchain stable rustc 2>/dev/null || true)
-    if [ -n "$RUSTC_BIN" ]; then
-      RUSTC="$RUSTC_BIN" CARGO_TARGET_DIR="$ROOT_DIR/target-rustup-stable" rustup run stable cargo "$@"
-    else
-      CARGO_TARGET_DIR="$ROOT_DIR/target-rustup-stable" rustup run stable cargo "$@"
+    CARGO_BIN=$(rustup which --toolchain stable cargo 2>/dev/null || true)
+    if [ -n "$RUSTC_BIN" ] && [ -n "$CARGO_BIN" ]; then
+      RUSTC_VER=$("$RUSTC_BIN" --version | awk '{print $2}' | tr '.' '_')
+      RUSTC="$RUSTC_BIN" CARGO_TARGET_DIR="$ROOT_DIR/target-rustup-$RUSTC_VER" "$CARGO_BIN" "$@"
+      return
     fi
-  else
-    cargo "$@"
   fi
+
+  cargo "$@"
 }
 
 # Cargo.lock 변경 감지를 위한 스냅샷

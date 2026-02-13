@@ -65,7 +65,7 @@ clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 notify = "7"
 toml = "0.8"
 regex = "1"
@@ -81,8 +81,11 @@ tempfile = "3"
 gix = "0.79"
 sea-query = { version = "0.32", features = ["backend-sqlite", "derive"] }
 
+[profile.dev.package."*"]
+opt-level = 1
+
 [profile.release]
 lto = "thin"
-codegen-units = 1
+codegen-units = 4
 strip = true
 panic = "abort"

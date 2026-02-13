@@ -10,6 +10,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   fmt:
@@ -22,21 +24,12 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-check
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --workspace
-
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Dwarnings -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,18 +39,25 @@ jobs:
         with:
           shared-key: cargo-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install mold linker
+        run: sudo apt-get update && sudo apt-get install -y mold
       - run: cargo clippy --workspace -- -D warnings
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Dwarnings -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: cargo-test
+          shared-key: cargo-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install mold linker
+        run: sudo apt-get update && sudo apt-get install -y mold
       - run: cargo test --workspace --exclude opensession-e2e
 
   audit:
@@ -65,17 +65,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: rustsec/audit-check@v2
         with:
-          shared-key: cargo-audit
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-${{ runner.os }}
-      - run: command -v cargo-audit || cargo install cargo-audit --locked
-      - run: cargo audit
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   wasm-check:
     name: Worker (wasm)

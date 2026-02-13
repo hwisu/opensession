@@ -291,10 +291,9 @@ pub async fn callback(
             let api_key = service::generate_api_key();
 
             // OAuth users have no password — insert with email but empty hash/salt
-            conn.execute(
-                "INSERT INTO users (id, nickname, api_key, email) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![user_id, username, api_key, user_info.email],
+            sq_execute(
+                &conn,
+                dbq::users::insert_oauth(&user_id, &username, &api_key, user_info.email.as_deref()),
             )
             .map_err(ApiErr::from_db("create user from oauth"))?;
 
@@ -345,15 +344,15 @@ pub async fn link(
         return Err(ApiErr::internal("JWT_SECRET not configured"));
     }
 
-    // Check if already linked (one-off query specific to this flow)
+    // Check if already linked
     let conn = db.conn();
-    let already: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM oauth_identities WHERE user_id = ?1 AND provider = ?2",
-            rusqlite::params![user.user_id, provider_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
+    let count: i64 = sq_query_row(
+        &conn,
+        dbq::oauth::has_provider(&user.user_id, &provider_id),
+        |row| row.get(0),
+    )
+    .unwrap_or(0);
+    let already = count > 0;
     if already {
         return Err(ApiErr::conflict(format!(
             "{} account already linked",

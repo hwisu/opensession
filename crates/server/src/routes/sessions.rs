@@ -112,12 +112,8 @@ pub async fn upload_session(
         );
     }
 
-    // Update FTS (Axum-specific, kept inline)
-    let _ = conn.execute(
-        "INSERT INTO sessions_fts (rowid, title, description, tags)
-         SELECT rowid, title, description, tags FROM sessions WHERE id = ?1",
-        [&session_id],
-    );
+    // Update FTS (server-specific; D1 does not support FTS)
+    let _ = sq_execute(&conn, db::sessions::insert_fts(&session_id));
 
     let base_url =
         std::env::var("OPENSESSION_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
@@ -229,11 +225,8 @@ pub async fn delete_session(
     sq_execute(&conn, db::sessions::delete_links(&id)).map_err(ApiErr::from_db("delete links"))?;
     sq_execute(&conn, db::sessions::delete(&id)).map_err(ApiErr::from_db("delete session"))?;
 
-    // Clean up FTS
-    let _ = conn.execute(
-        "DELETE FROM sessions_fts WHERE rowid IN (SELECT rowid FROM sessions WHERE id = ?1)",
-        [&id],
-    );
+    // Clean up FTS (server-specific; D1 does not support FTS)
+    let _ = sq_execute(&conn, db::sessions::delete_fts(&id));
 
     Ok(Json(OkResponse { ok: true }))
 }

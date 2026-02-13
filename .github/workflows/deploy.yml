@@ -31,8 +31,13 @@ jobs:
             web/package-lock.json
             packages/ui/package-lock.json
 
-      - name: Install wrangler
-        run: npm install -g wrangler
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/worker-build
+          key: worker-build-${{ runner.os }}
+
+      - name: Install worker-build
+        run: command -v worker-build || cargo install worker-build --locked
 
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply opensession-io --remote
@@ -40,6 +45,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Deploy
-        run: wrangler deploy
+        run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

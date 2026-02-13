@@ -23,7 +23,7 @@ function toggle() {
 
 <button
 	onclick={toggle}
-	class="flex h-8 w-8 items-center justify-center border border-border bg-bg-secondary text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+	class="flex items-center justify-center text-sm text-text-secondary transition-colors hover:text-text-primary"
 	title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
 	aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
 >

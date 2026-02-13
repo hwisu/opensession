@@ -370,6 +370,30 @@ pub fn list_by_team(team_id: &str, limit: u64) -> Built {
         .build(SqliteQueryBuilder)
 }
 
+/// INSERT into FTS index for a newly inserted session.
+/// Server-specific: D1 does not support FTS.
+pub fn insert_fts(session_id: &str) -> Built {
+    let sql = concat!(
+        "INSERT INTO \"sessions_fts\" (\"rowid\", \"title\", \"description\", \"tags\") ",
+        "SELECT \"rowid\", \"title\", \"description\", \"tags\" FROM \"sessions\" WHERE \"id\" = ?",
+    )
+    .to_string();
+    let values = sea_query::Values(vec![session_id.into()]);
+    (sql, values)
+}
+
+/// DELETE from FTS index for a session being removed.
+/// Server-specific: D1 does not support FTS.
+pub fn delete_fts(session_id: &str) -> Built {
+    let sql = concat!(
+        "DELETE FROM \"sessions_fts\" WHERE \"rowid\" IN ",
+        "(SELECT \"rowid\" FROM \"sessions\" WHERE \"id\" = ?)",
+    )
+    .to_string();
+    let values = sea_query::Values(vec![session_id.into()]);
+    (sql, values)
+}
+
 /// SELECT for sync pull: keyset pagination by (uploaded_at, id).
 pub fn sync_pull(
     team_id: &str,

@@ -276,6 +276,12 @@ pub async fn get_session_body(env: &Env, key: &str) -> Result<Option<Vec<u8>>> {
 }
 
 // ── Auth helpers ────────────────────────────────────────────────────────────
+//
+// Worker-specific exception: these use inline `SELECT * FROM users` queries
+// instead of `api::db::users` builders because:
+// 1. D1 execution model (prepare/bind/first) differs from rusqlite
+// 2. UserRow requires all columns (`SELECT *`), while api builders select subsets
+// 3. D1 deserializes directly into typed structs via serde, not row callbacks
 
 /// Look up a user by API key.
 pub async fn authenticate(env: &Env, api_key: &str) -> Result<Option<UserRow>> {

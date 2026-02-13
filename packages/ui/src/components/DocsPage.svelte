@@ -5,24 +5,99 @@ const {
 	onNavigate?: (path: string) => void;
 } = $props();
 
-const sections = [
+type TocItem = { id: string; flag: string; title: string; children?: { id: string; title: string }[] };
+
+const sections: TocItem[] = [
 	{ id: 'getting-started', flag: '--init', title: 'Getting Started' },
 	{ id: 'sessions', flag: '--upload', title: 'Sessions' },
 	{ id: 'teams', flag: '--team', title: 'Teams' },
 	{ id: 'invitations', flag: '--invite', title: 'Invitations' },
 	{ id: 'team-stats', flag: '--stats', title: 'Team Stats' },
-	{ id: 'cli', flag: '--cli', title: 'CLI Reference' },
+	{
+		id: 'cli', flag: '--cli', title: 'CLI Reference',
+		children: [
+			{ id: 'cli-config', title: 'config' },
+			{ id: 'cli-discover', title: 'discover' },
+			{ id: 'cli-upload', title: 'upload' },
+			{ id: 'cli-log', title: 'log' },
+			{ id: 'cli-stats', title: 'stats' },
+			{ id: 'cli-handoff', title: 'handoff' },
+			{ id: 'cli-diff', title: 'diff' },
+			{ id: 'cli-daemon', title: 'daemon' },
+			{ id: 'cli-server', title: 'server' },
+			{ id: 'cli-hooks', title: 'hooks' },
+			{ id: 'cli-stream', title: 'stream' },
+			{ id: 'cli-misc', title: 'index & completion' },
+			{ id: 'cli-refs', title: 'Session References' },
+			{ id: 'cli-formats', title: 'Output Formats' },
+		],
+	},
 	{ id: 'self-hosting', flag: '--host', title: 'Self-Hosting' },
 	{ id: 'hail-format', flag: '--spec', title: 'HAIL Format' },
 ];
 
+let activeId = $state('getting-started');
+
 function scrollTo(id: string) {
 	document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
 }
+
+$effect(() => {
+	const ids = sections.flatMap((s) => [s.id, ...(s.children?.map((c) => c.id) ?? [])]);
+	const observer = new IntersectionObserver(
+		(entries) => {
+			for (const entry of entries) {
+				if (entry.isIntersecting) {
+					activeId = entry.target.id;
+				}
+			}
+		},
+		{ rootMargin: '-10% 0px -80% 0px' },
+	);
+	for (const id of ids) {
+		const el = document.getElementById(id);
+		if (el) observer.observe(el);
+	}
+	return () => observer.disconnect();
+});
 </script>
 
-<div class="docs-root">
-	<div class="mx-auto max-w-4xl px-6 py-10">
+<div class="docs-root xl:flex xl:justify-center">
+	<!-- Floating TOC (xl+ only) -->
+	<aside class="hidden xl:block xl:w-52 xl:shrink-0">
+		<nav class="sticky top-4 max-h-[calc(100vh-8rem)] overflow-y-auto py-10 pr-4">
+			<div class="mb-3 text-[10px] font-bold uppercase tracking-widest text-text-muted">
+				Contents
+			</div>
+			{#each sections as sec}
+				<button
+					onclick={() => scrollTo(sec.id)}
+					class="group flex w-full items-center gap-1.5 py-1 text-left text-xs transition-colors"
+					class:text-accent={activeId === sec.id}
+					class:text-text-secondary={activeId !== sec.id}
+				>
+					<span class="w-1 h-1 shrink-0 bg-current opacity-40 group-hover:opacity-100" class:opacity-100={activeId === sec.id}></span>
+					<span class="truncate group-hover:text-accent">{sec.title}</span>
+				</button>
+				{#if sec.children}
+					{#each sec.children as child}
+						<button
+							onclick={() => scrollTo(child.id)}
+							class="group flex w-full items-center gap-1.5 py-0.5 pl-3 text-left text-[11px] transition-colors"
+							class:text-accent={activeId === child.id}
+							class:text-text-muted={activeId !== child.id}
+						>
+							<span class="truncate group-hover:text-accent">{child.title}</span>
+						</button>
+					{/each}
+				{/if}
+			{/each}
+		</nav>
+	</aside>
+
+	<!-- Main content -->
+	<div class="min-w-0 max-w-4xl flex-1 px-6 py-10">
+
 	<!-- Header -->
 	<div class="mb-10">
 		<div class="mb-3 text-xs uppercase tracking-[0.2em] text-text-muted">
@@ -37,9 +112,9 @@ function scrollTo(id: string) {
 		</p>
 	</div>
 
-	<!-- Table of Contents -->
-	<nav class="mb-12 border border-border p-5">
-		<div class="mb-3 text-xs font-bold text-text-muted uppercase tracking-wider">Contents</div>
+	<!-- Inline Table of Contents (below xl) -->
+	<nav class="mb-12 border border-border p-5 xl:hidden">
+		<div class="mb-3 text-xs font-bold uppercase tracking-wider text-text-muted">Contents</div>
 		<div class="grid gap-1 sm:grid-cols-2">
 			{#each sections as sec}
 				<button
@@ -74,7 +149,7 @@ function scrollTo(id: string) {
 			<h3 class="text-sm font-bold text-text-primary">Get Your API Key</h3>
 			<p>
 				Navigate to <button onclick={() => onNavigate('/settings')} class="text-accent hover:underline">/settings</button> to
-				find your API key. You'll need this for uploading sessions via the CLI.
+				find your API key (starts with <code class="text-accent">osk_</code>). You'll need this for uploading sessions via the CLI.
 			</p>
 		</div>
 	</section>
@@ -91,7 +166,7 @@ function scrollTo(id: string) {
 			<div class="border border-border bg-bg-secondary p-4">
 				<div class="mb-2 text-xs uppercase tracking-wider text-text-muted">CLI Upload</div>
 				<code class="block text-xs text-accent">$ opensession upload ./session.jsonl</code>
-				<code class="mt-1 block text-xs text-accent">$ opensession upload-all ~/.claude/projects/</code>
+				<code class="mt-1 block text-xs text-accent">$ opensession upload-all</code>
 			</div>
 
 			<div class="border border-border bg-bg-secondary p-4">
@@ -198,55 +273,564 @@ function scrollTo(id: string) {
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">By User</h3>
-			<p>
-				See how many sessions, tokens, and tool calls each team member has contributed.
-			</p>
+			<p>See how many sessions, tokens, and tool calls each team member has contributed.</p>
 
 			<h3 class="text-sm font-bold text-text-primary">By Tool</h3>
-			<p>
-				Break down usage by AI tool — see which tools your team uses most (Claude Code, Cursor, Codex, etc.).
-			</p>
+			<p>Break down usage by AI tool — see which tools your team uses most (Claude Code, Cursor, Codex, etc.).</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Time Ranges</h3>
-			<p>
-				Filter stats by time range to see usage trends over the past week, month, or custom date ranges.
-			</p>
+			<p>Filter stats by time range to see usage trends over the past week, month, or custom date ranges.</p>
 		</div>
 	</section>
 
-	<!-- CLI -->
+	<!-- ═══ CLI Reference ═══ -->
 	<section id="cli" class="docs-section mb-12">
 		<div class="mb-1 text-xs text-accent">--cli</div>
 		<h2 class="mb-4 text-lg font-bold text-text-primary">CLI Reference</h2>
 
-		<div class="space-y-4 text-sm leading-relaxed text-text-secondary">
-			<h3 class="text-sm font-bold text-text-primary">Installation</h3>
-			<div class="border border-border bg-bg-secondary p-4">
-				<code class="block text-xs text-accent">$ cargo install opensession</code>
+		<div class="space-y-6 text-sm leading-relaxed text-text-secondary">
+
+			<!-- Installation -->
+			<div>
+				<h3 class="text-sm font-bold text-text-primary">Installation</h3>
+				<div class="mt-2 border border-border bg-bg-secondary p-4">
+					<code class="block text-xs text-accent">$ cargo install opensession</code>
+				</div>
+				<p class="mt-2">
+					Running <code class="text-accent">opensession</code> without arguments launches the TUI.
+					Subcommands run CLI operations.
+				</p>
 			</div>
 
-			<h3 class="text-sm font-bold text-text-primary">Configuration</h3>
-			<p>
-				Set your API endpoint and key:
-			</p>
-			<div class="border border-border bg-bg-secondary p-4">
-				<code class="block text-xs text-accent">$ opensession config set api-url https://opensession.io</code>
-				<code class="mt-1 block text-xs text-accent">$ opensession config set api-key YOUR_API_KEY</code>
+			<!-- config -->
+			<div id="cli-config" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession config</code>
+				</h3>
+				<p>Show or set CLI configuration.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>--server &lt;URL&gt;</code> <span>Server URL</span>
+					</div>
+					<div class="cli-flags">
+						<code>--api-key &lt;KEY&gt;</code> <span>API key (<code class="text-accent">osk_</code> prefix)</span>
+					</div>
+					<div class="cli-flags">
+						<code>--team-id &lt;ID&gt;</code> <span>Default team ID</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Show current configuration</span>
+$ opensession config
+
+<span class="text-text-muted"># Set server URL and API key</span>
+$ opensession config --server https://opensession.io --api-key osk_abc123
+
+<span class="text-text-muted"># Set default team for uploads</span>
+$ opensession config --team-id my-team</pre>
+				</div>
+				<p class="mt-2 text-xs text-text-muted">Config file: <code class="text-accent">~/.config/opensession/config.toml</code></p>
 			</div>
 
-			<h3 class="text-sm font-bold text-text-primary">Commands</h3>
-			<div class="space-y-3">
-				<div class="border border-border p-4">
-					<code class="text-xs font-bold text-accent">opensession upload &lt;file&gt;</code>
-					<p class="mt-1 text-xs">Upload a single HAIL session file. Supports <code class="text-accent">.jsonl</code> files.</p>
+			<!-- discover -->
+			<div id="cli-discover" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession discover</code>
+				</h3>
+				<p>Scan this machine for AI sessions from all supported tools.</p>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Example</div>
+					<pre class="text-xs text-accent leading-relaxed">$ opensession discover
+
+<span class="text-text-muted">Found 47 sessions:</span>
+<span class="text-tool-claude">  claude-code</span>  <span class="text-text-muted">32 sessions  ~/.claude/projects/</span>
+<span class="text-tool-cursor">  cursor</span>       <span class="text-text-muted"> 8 sessions  ~/.cursor/</span>
+<span class="text-tool-codex">  goose</span>        <span class="text-text-muted"> 4 sessions  ~/.config/goose/</span>
+<span class="text-tool-opencode">  aider</span>        <span class="text-text-muted"> 3 sessions  ~/.aider/</span></pre>
 				</div>
-				<div class="border border-border p-4">
-					<code class="text-xs font-bold text-accent">opensession upload-all &lt;directory&gt;</code>
-					<p class="mt-1 text-xs">Recursively scan a directory and upload all HAIL session files found. Skips already-uploaded sessions.</p>
+				<p class="mt-2 text-xs text-text-muted">Supported: Claude Code, Cursor, Codex, Goose, Aider, OpenCode, Amp</p>
+			</div>
+
+			<!-- upload / upload-all -->
+			<div id="cli-upload" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession upload</code> /
+					<code class="text-accent">upload-all</code>
+				</h3>
+				<p>Upload session files to the server.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>&lt;file&gt;</code> <span>Path to session file (required for <code class="text-accent">upload</code>)</span>
+					</div>
+					<div class="cli-flags">
+						<code>--parent &lt;ID&gt;</code> <span>Link to parent session(s), repeatable</span>
+					</div>
+					<div class="cli-flags">
+						<code>--git</code> <span>Store on git branch instead of server</span>
+					</div>
 				</div>
-				<div class="border border-border p-4">
-					<code class="text-xs font-bold text-accent">opensession config set &lt;key&gt; &lt;value&gt;</code>
-					<p class="mt-1 text-xs">Set a configuration value. Keys: <code class="text-accent">api-url</code>, <code class="text-accent">api-key</code>.</p>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Upload a single session</span>
+$ opensession upload ./session.jsonl
+
+<span class="text-text-muted"># Upload with parent session linkage</span>
+$ opensession upload ./followup.jsonl --parent abc123
+
+<span class="text-text-muted"># Discover and upload all sessions at once</span>
+$ opensession upload-all
+
+<span class="text-text-muted"># Store session in git branch instead of server</span>
+$ opensession upload ./session.jsonl --git</pre>
+				</div>
+				<p class="mt-2 text-xs text-text-muted">
+					<code class="text-accent">upload-all</code> skips subagent files and already-uploaded sessions automatically.
+				</p>
+			</div>
+
+			<!-- log -->
+			<div id="cli-log" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession log</code>
+				</h3>
+				<p>Show session history in a git-log style format.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>--since &lt;TIME&gt;</code> <span>Filter by time (e.g. "3 hours", "2 days", "1 week")</span>
+					</div>
+					<div class="cli-flags">
+						<code>--before &lt;TIME&gt;</code> <span>Show sessions before this time</span>
+					</div>
+					<div class="cli-flags">
+						<code>--tool &lt;TOOL&gt;</code> <span>Filter by tool (e.g. "claude-code", "cursor")</span>
+					</div>
+					<div class="cli-flags">
+						<code>--model &lt;MODEL&gt;</code> <span>Filter by model (supports wildcards: "opus*")</span>
+					</div>
+					<div class="cli-flags">
+						<code>--grep &lt;QUERY&gt;</code> <span>Search in titles and descriptions</span>
+					</div>
+					<div class="cli-flags">
+						<code>--touches &lt;FILE&gt;</code> <span>Show sessions that touched a specific file</span>
+					</div>
+					<div class="cli-flags">
+						<code>--has-errors</code> <span>Show only sessions with errors</span>
+					</div>
+					<div class="cli-flags">
+						<code>--project &lt;PATH&gt;</code> <span>Filter by working directory</span>
+					</div>
+					<div class="cli-flags">
+						<code>-n, --limit &lt;N&gt;</code> <span>Max results (default: 20)</span>
+					</div>
+					<div class="cli-flags">
+						<code>--format &lt;FMT&gt;</code> <span>Output format (text, json, jsonl, markdown)</span>
+					</div>
+					<div class="cli-flags">
+						<code>--json [FIELDS]</code> <span>Select JSON fields (e.g. "id,tool,title")</span>
+					</div>
+					<div class="cli-flags">
+						<code>--jq &lt;FILTER&gt;</code> <span>Apply jq filter to JSON output</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Show recent sessions</span>
+$ opensession log
+
+<span class="text-text-muted"># Sessions from the last 3 hours</span>
+$ opensession log --since "3 hours"
+
+<span class="text-text-muted"># Only Claude Code sessions with errors</span>
+$ opensession log --tool claude-code --has-errors
+
+<span class="text-text-muted"># Search for sessions about authentication</span>
+$ opensession log --grep "auth" --limit 5
+
+<span class="text-text-muted"># Sessions that touched a specific file</span>
+$ opensession log --touches src/auth.rs
+
+<span class="text-text-muted"># Filter by model using wildcards</span>
+$ opensession log --model "opus*"
+
+<span class="text-text-muted"># Export as JSON with specific fields</span>
+$ opensession log --json "id,tool,title,created_at"
+
+<span class="text-text-muted"># Pipe through jq for custom queries</span>
+$ opensession log --format json --jq '.[] | select(.has_errors)'</pre>
+				</div>
+			</div>
+
+			<!-- stats -->
+			<div id="cli-stats" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession stats</code>
+				</h3>
+				<p>Show AI usage statistics — sessions, tokens, costs, and breakdowns by tool.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>--period &lt;PERIOD&gt;</code> <span>Time period: day, week (default), month, all</span>
+					</div>
+					<div class="cli-flags">
+						<code>--format &lt;FMT&gt;</code> <span>Output format: text (default), json</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># This week's stats</span>
+$ opensession stats
+
+<span class="text-text-muted"># All-time usage</span>
+$ opensession stats --period all
+
+<span class="text-text-muted"># Today's stats in JSON</span>
+$ opensession stats --period day --format json</pre>
+				</div>
+				<p class="mt-2 text-xs text-text-muted">
+					Shows: total sessions, duration, token counts (input/output),
+					breakdown by tool, top edited files, error rate, and estimated cost.
+				</p>
+			</div>
+
+			<!-- handoff -->
+			<div id="cli-handoff" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession handoff</code>
+				</h3>
+				<p>Generate a session summary for handing off context to the next AI agent.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>[files...]</code> <span>Session file path(s). Multiple files merge into one handoff</span>
+					</div>
+					<div class="cli-flags">
+						<code>-l, --last</code> <span>Use the most recent session</span>
+					</div>
+					<div class="cli-flags">
+						<code>--claude &lt;REF&gt;</code> <span>Claude Code session reference (HEAD, HEAD~2)</span>
+					</div>
+					<div class="cli-flags">
+						<code>--gemini &lt;REF&gt;</code> <span>Gemini session reference</span>
+					</div>
+					<div class="cli-flags">
+						<code>--tool &lt;TOOL_REF&gt;</code> <span>Generic tool reference (e.g. "amp HEAD~2"), repeatable</span>
+					</div>
+					<div class="cli-flags">
+						<code>--summarize</code> <span>Generate LLM-powered summary</span>
+					</div>
+					<div class="cli-flags">
+						<code>--ai &lt;PROVIDER&gt;</code> <span>AI provider for summarization: claude, openai, gemini</span>
+					</div>
+					<div class="cli-flags">
+						<code>-o, --output &lt;PATH&gt;</code> <span>Write to file instead of stdout</span>
+					</div>
+					<div class="cli-flags">
+						<code>--format &lt;FMT&gt;</code> <span>Output format (default: markdown)</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Handoff from the last Claude Code session</span>
+$ opensession handoff --claude HEAD
+
+<span class="text-text-muted"># Handoff with AI-powered summary</span>
+$ opensession handoff --last --summarize
+
+<span class="text-text-muted"># Merge multiple sessions into one handoff</span>
+$ opensession handoff session1.jsonl session2.jsonl
+
+<span class="text-text-muted"># Save handoff to a file</span>
+$ opensession handoff --claude HEAD -o handoff.md
+
+<span class="text-text-muted"># Cross-tool handoff: Claude to Gemini</span>
+$ opensession handoff --claude HEAD~3 --summarize --ai gemini</pre>
+				</div>
+			</div>
+
+			<!-- diff -->
+			<div id="cli-diff" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession diff</code>
+				</h3>
+				<p>Compare two sessions side-by-side.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>&lt;session_a&gt;</code> <span>First session (ID, file path, or reference)</span>
+					</div>
+					<div class="cli-flags">
+						<code>&lt;session_b&gt;</code> <span>Second session</span>
+					</div>
+					<div class="cli-flags">
+						<code>--ai</code> <span>Use AI to analyze differences</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Compare two sessions by file path</span>
+$ opensession diff ./before.jsonl ./after.jsonl
+
+<span class="text-text-muted"># Compare using session references</span>
+$ opensession diff HEAD^2 HEAD^1
+
+<span class="text-text-muted"># AI-powered diff analysis</span>
+$ opensession diff HEAD^2 HEAD^1 --ai</pre>
+				</div>
+			</div>
+
+			<!-- daemon -->
+			<div id="cli-daemon" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession daemon</code>
+				</h3>
+				<p>Manage the background daemon that watches for new sessions and syncs them.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>start</code> <span>Start the background daemon</span>
+					</div>
+					<div class="cli-flags">
+						<code>stop</code> <span>Stop the daemon</span>
+					</div>
+					<div class="cli-flags">
+						<code>status</code> <span>Show daemon status</span>
+					</div>
+					<div class="cli-flags">
+						<code>health</code> <span>Check daemon and server health</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Start the daemon in the background</span>
+$ opensession daemon start
+
+<span class="text-text-muted"># Check if daemon is running</span>
+$ opensession daemon status
+
+<span class="text-text-muted"># Verify daemon + server connectivity</span>
+$ opensession daemon health
+
+<span class="text-text-muted"># Stop the daemon</span>
+$ opensession daemon stop</pre>
+				</div>
+
+				<p class="mt-3 text-xs text-text-muted">
+					The daemon watches for new sessions from configured tools and syncs them to the server.
+					Configure via <code class="text-accent">~/.config/opensession/daemon.toml</code> or the TUI settings.
+				</p>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">daemon.toml</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted">[daemon]</span>
+publish_on = "manual"        <span class="text-text-muted"># session_end | realtime | manual</span>
+debounce_secs = 5
+
+<span class="text-text-muted">[watchers]</span>
+claude_code = true
+cursor = false
+goose = true
+aider = true
+
+<span class="text-text-muted">[privacy]</span>
+strip_paths = true
+strip_env_vars = true</pre>
+				</div>
+			</div>
+
+			<!-- server -->
+			<div id="cli-server" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession server</code>
+				</h3>
+				<p>Check server connection and authentication.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>status</code> <span>Check server health and version</span>
+					</div>
+					<div class="cli-flags">
+						<code>verify</code> <span>Verify API key authentication</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Check if server is reachable</span>
+$ opensession server status
+
+<span class="text-text-muted"># Verify your API key works</span>
+$ opensession server verify</pre>
+				</div>
+			</div>
+
+			<!-- hooks -->
+			<div id="cli-hooks" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession hooks</code>
+				</h3>
+				<p>Manage git hooks that link AI sessions to git commits.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>install</code> <span>Install the prepare-commit-msg hook</span>
+					</div>
+					<div class="cli-flags">
+						<code>uninstall</code> <span>Remove the hook</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Install in current repo</span>
+$ opensession hooks install
+
+<span class="text-text-muted"># Remove from current repo</span>
+$ opensession hooks uninstall</pre>
+				</div>
+				<p class="mt-2 text-xs text-text-muted">
+					When installed, the hook appends AI session metadata (tool, model, prompt) to your commit messages automatically.
+				</p>
+			</div>
+
+			<!-- stream -->
+			<div id="cli-stream" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession stream</code>
+				</h3>
+				<p>Enable or disable real-time session streaming to the server.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>enable [--agent &lt;AGENT&gt;]</code> <span>Enable streaming (auto-detects agent if omitted)</span>
+					</div>
+					<div class="cli-flags">
+						<code>disable [--agent &lt;AGENT&gt;]</code> <span>Disable streaming</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Enable for auto-detected agent</span>
+$ opensession stream enable
+
+<span class="text-text-muted"># Enable for a specific agent</span>
+$ opensession stream enable --agent claude-code
+
+<span class="text-text-muted"># Disable streaming</span>
+$ opensession stream disable</pre>
+				</div>
+			</div>
+
+			<!-- index & completion -->
+			<div id="cli-misc" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession index</code> /
+					<code class="text-accent">completion</code>
+				</h3>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Build/update the local session index</span>
+$ opensession index
+
+<span class="text-text-muted"># Generate shell completions</span>
+$ opensession completion bash >> ~/.bashrc
+$ opensession completion zsh >> ~/.zshrc
+$ opensession completion fish > ~/.config/fish/completions/opensession.fish</pre>
+				</div>
+			</div>
+
+			<!-- Session References -->
+			<div id="cli-refs" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-2 text-sm font-bold text-text-primary">Session References</h3>
+				<p>
+					The <code class="text-accent">handoff</code> and <code class="text-accent">diff</code> commands accept flexible session references:
+				</p>
+
+				<div class="mt-3 grid gap-px border border-border bg-border">
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-28 shrink-0 font-bold text-accent">HEAD</code>
+						<span>Latest session</span>
+					</div>
+					<div class="flex bg-bg-primary px-4 py-2 text-xs">
+						<code class="w-28 shrink-0 font-bold text-accent">HEAD~N</code>
+						<span>Latest N sessions (merged)</span>
+					</div>
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-28 shrink-0 font-bold text-accent">HEAD^N</code>
+						<span>Nth most recent session (0-indexed)</span>
+					</div>
+					<div class="flex bg-bg-primary px-4 py-2 text-xs">
+						<code class="w-28 shrink-0 font-bold text-accent">&lt;id&gt;</code>
+						<span>Session ID (prefix matching supported)</span>
+					</div>
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-28 shrink-0 font-bold text-accent">&lt;path&gt;</code>
+						<span>Path to a session file</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Last Claude Code session</span>
+$ opensession handoff --claude HEAD
+
+<span class="text-text-muted"># Last 3 Claude Code sessions merged</span>
+$ opensession handoff --claude HEAD~3
+
+<span class="text-text-muted"># Compare 2nd-most-recent vs most-recent</span>
+$ opensession diff HEAD^1 HEAD^0
+
+<span class="text-text-muted"># Reference by ID prefix</span>
+$ opensession handoff abc12</pre>
+				</div>
+			</div>
+
+			<!-- Output Formats -->
+			<div id="cli-formats" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-2 text-sm font-bold text-text-primary">Output Formats</h3>
+				<p>
+					Available via <code class="text-accent">--format</code> across <code class="text-accent">log</code>,
+					<code class="text-accent">handoff</code>, <code class="text-accent">stats</code>, and other commands:
+				</p>
+
+				<div class="mt-3 grid gap-px border border-border bg-border">
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-24 shrink-0 font-bold text-accent">text</code>
+						<span>Human-readable text (default for log, stats)</span>
+					</div>
+					<div class="flex bg-bg-primary px-4 py-2 text-xs">
+						<code class="w-24 shrink-0 font-bold text-accent">markdown</code>
+						<span>Markdown format (default for handoff)</span>
+					</div>
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-24 shrink-0 font-bold text-accent">json</code>
+						<span>JSON format</span>
+					</div>
+					<div class="flex bg-bg-primary px-4 py-2 text-xs">
+						<code class="w-24 shrink-0 font-bold text-accent">jsonl</code>
+						<span>JSONL (one JSON object per line)</span>
+					</div>
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-24 shrink-0 font-bold text-accent">hail</code>
+						<span>HAIL session format</span>
+					</div>
+					<div class="flex bg-bg-primary px-4 py-2 text-xs">
+						<code class="w-24 shrink-0 font-bold text-accent">stream</code>
+						<span>NDJSON stream</span>
+					</div>
 				</div>
 			</div>
 		</div>
@@ -261,11 +845,10 @@ function scrollTo(id: string) {
 			<h3 class="text-sm font-bold text-text-primary">Quick Start</h3>
 			<p>Run OpenSession with a single command:</p>
 			<div class="border border-border bg-bg-secondary p-4">
-				<code class="block text-xs text-accent">$ docker run -p 3000:3000 ghcr.io/hwisu/opensession</code>
+				<code class="block text-xs text-accent">$ docker run -p 3000:3000 -v opensession-data:/data -e JWT_SECRET=your-secret ghcr.io/hwisu/opensession</code>
 			</div>
 			<p>
-				This starts the server on port 3000 with an embedded SQLite database.
-				Data persists inside the container — mount a volume for durability.
+				This starts the server on port 3000 with an embedded SQLite database and persistent storage.
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Docker Compose</h3>
@@ -279,15 +862,37 @@ function scrollTo(id: string) {
     volumes:
       - opensession-data:/data
     environment:
-      - DATABASE_URL=/data/opensession.db
+      - JWT_SECRET=your-secret-here
+      - OPENSESSION_BASE_URL=https://your-domain.com
+    restart: unless-stopped
 
 volumes:
   opensession-data:</pre>
 			</div>
 
+			<h3 class="text-sm font-bold text-text-primary">Environment Variables</h3>
+			<div class="grid gap-px border border-border bg-border">
+				<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+					<code class="w-48 shrink-0 font-bold text-accent">JWT_SECRET</code>
+					<span>Secret for JWT token signing (required)</span>
+				</div>
+				<div class="flex bg-bg-primary px-4 py-2 text-xs">
+					<code class="w-48 shrink-0 font-bold text-accent">OPENSESSION_DATA_DIR</code>
+					<span>SQLite DB and session storage (default: data/)</span>
+				</div>
+				<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+					<code class="w-48 shrink-0 font-bold text-accent">OPENSESSION_BASE_URL</code>
+					<span>Public-facing URL (default: http://localhost:3000)</span>
+				</div>
+				<div class="flex bg-bg-primary px-4 py-2 text-xs">
+					<code class="w-48 shrink-0 font-bold text-accent">PORT</code>
+					<span>HTTP listen port (default: 3000)</span>
+				</div>
+			</div>
+
 			<h3 class="text-sm font-bold text-text-primary">Point the CLI to Your Instance</h3>
 			<div class="border border-border bg-bg-secondary p-4">
-				<code class="block text-xs text-accent">$ opensession config set api-url http://localhost:3000</code>
+				<code class="block text-xs text-accent">$ opensession config --server http://localhost:3000</code>
 			</div>
 		</div>
 	</section>
@@ -358,7 +963,7 @@ volumes:
 				Create Account
 			</button>
 			<a
-				href="https://github.com/hwisu/opensession-core"
+				href="https://github.com/hwisu/opensession"
 				target="_blank"
 				rel="noopener"
 				class="border border-border px-4 py-2.5 text-sm text-text-secondary transition-colors hover:border-accent hover:text-accent"
@@ -373,5 +978,21 @@ volumes:
 <style>
 	.docs-section {
 		scroll-margin-top: 2rem;
+	}
+	.cli-flags {
+		display: flex;
+		gap: 0.75rem;
+		align-items: baseline;
+		font-size: 12px;
+		padding: 3px 0;
+	}
+	.cli-flags code {
+		flex-shrink: 0;
+		color: var(--color-accent);
+		font-weight: 600;
+		font-size: 11px;
+	}
+	.cli-flags span {
+		color: var(--color-text-muted);
 	}
 </style>

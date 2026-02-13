@@ -3,15 +3,13 @@ use chrono::{DateTime, Utc};
 use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_api_client::ApiClient;
 use opensession_api_types::UploadRequest;
-use opensession_core::extract::extract_changed_paths;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_core::Session;
-use opensession_git_native::{FileRemoval, FileSnapshot, ShadowMeta, ShadowStorage};
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::LocalDb;
 use opensession_parsers::{all_parsers, SessionParser};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -38,17 +36,6 @@ impl UploadState {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
     }
-}
-
-/// State for an active shadow branch.
-struct ShadowState {
-    session_id: String,
-    repo_path: PathBuf,
-    project_root: PathBuf,
-    last_event_count: usize,
-    checkpoint_count: usize,
-    tracked_files: HashSet<String>,
-    last_activity: Instant,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -123,11 +110,6 @@ pub async fn run_scheduler(
     // Pending changes: path -> when we last saw a change
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
 
-    // Shadow state for active sessions (keyed by session file path)
-    let mut shadows: HashMap<PathBuf, ShadowState> = HashMap::new();
-
-    let condense_timeout = Duration::from_secs(config.git_storage.shadow_condense_timeout_secs);
-
     let mut tick = tokio::time::interval(Duration::from_secs(1));
 
     loop {
@@ -159,37 +141,19 @@ pub async fn run_scheduler(
                             debug!("Manual mode, skipping auto-publish: {}", path.display());
                         }
                         PublishMode::SessionEnd | PublishMode::Realtime => {
-                            if let Err(e) = process_file(&path, &config, &db, &mut shadows).await {
+                            if let Err(e) = process_file(&path, &config, &db).await {
                                 error!("Failed to process {}: {:#}", path.display(), e);
                             }
                         }
                     }
                 }
 
-                // Condense idle shadows
-                if config.git_storage.shadow {
-                    let to_condense: Vec<PathBuf> = shadows
-                        .iter()
-                        .filter(|(_, s)| now.duration_since(s.last_activity) >= condense_timeout)
-                        .map(|(p, _)| p.clone())
-                        .collect();
-
-                    for path in to_condense {
-                        if let Some(shadow) = shadows.remove(&path) {
-                            condense_shadow(&path, &shadow);
-                        }
-                    }
-                }
             }
 
             // Shutdown signal
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
                     info!("Scheduler shutting down");
-                    // Condense all active shadows on shutdown
-                    for (path, shadow) in shadows.drain() {
-                        condense_shadow(&path, &shadow);
-                    }
                     break;
                 }
             }
@@ -202,12 +166,7 @@ pub async fn run_scheduler(
 // ---------------------------------------------------------------------------
 
 /// Process a single file: parse, store in local DB, sanitize, upload.
-async fn process_file(
-    path: &PathBuf,
-    config: &DaemonConfig,
-    db: &LocalDb,
-    shadows: &mut HashMap<PathBuf, ShadowState>,
-) -> Result<()> {
+async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Result<()> {
     if was_already_uploaded(path, db)? {
         return Ok(());
     }
@@ -226,17 +185,9 @@ async fn process_file(
 
     store_locally(&session, path, db)?;
 
-    // Shadow checkpoint before sanitization (needs original paths)
-    maybe_shadow_checkpoint(&session, path, &effective_config, shadows);
-
     sanitize(&mut session, &effective_config);
 
-    // If git-native storage is enabled and shadow is NOT active, store to git branch
-    let body_url = if effective_config.git_storage.shadow {
-        None // Shadow mode: condense handles archiving
-    } else {
-        maybe_git_store(&session, &effective_config)
-    };
+    let body_url = maybe_git_store(&session, &effective_config);
 
     upload_to_server(&session, &effective_config, db, body_url.as_deref()).await
 }
@@ -331,13 +282,7 @@ fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<String> {
     let meta_json = build_session_meta_json(session);
 
     let storage = opensession_git_native::NativeGitStorage;
-    match opensession_git_native::GitStorage::store(
-        &storage,
-        &repo_root,
-        &session.session_id,
-        &hail_jsonl,
-        &meta_json,
-    ) {
+    match storage.store(&repo_root, &session.session_id, &hail_jsonl, &meta_json) {
         Ok(rel_path) => {
             info!(
                 "Stored session {} to git branch at {}",
@@ -360,173 +305,6 @@ fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<String> {
     }
 }
 
-/// Create a shadow checkpoint if shadow mode is active and there are file changes.
-fn maybe_shadow_checkpoint(
-    session: &Session,
-    path: &Path,
-    config: &DaemonConfig,
-    shadows: &mut HashMap<PathBuf, ShadowState>,
-) {
-    if !config.git_storage.shadow || config.git_storage.method != GitStorageMethod::Native {
-        return;
-    }
-
-    let cwd = match session_cwd(session) {
-        Some(c) => c,
-        None => return,
-    };
-
-    let repo_root = match crate::config::find_repo_root(cwd) {
-        Some(r) => r,
-        None => return,
-    };
-
-    let project_root = PathBuf::from(cwd);
-    let path_buf = path.to_path_buf();
-
-    let shadow = shadows.entry(path_buf.clone()).or_insert_with(|| {
-        // Try to recover from existing shadow meta
-        let (last_event_count, checkpoint_count, tracked_files) =
-            match ShadowStorage::read_meta(&repo_root, &session.session_id) {
-                Ok(Some(meta)) => {
-                    let tracked: HashSet<String> = meta.tracked_files.into_iter().collect();
-                    // We don't know the exact event count, so start from 0 to re-scan
-                    (0, meta.checkpoint_count, tracked)
-                }
-                _ => (0, 0, HashSet::new()),
-            };
-
-        ShadowState {
-            session_id: session.session_id.clone(),
-            repo_path: repo_root.clone(),
-            project_root: project_root.clone(),
-            last_event_count,
-            checkpoint_count,
-            tracked_files,
-            last_activity: Instant::now(),
-        }
-    });
-
-    // Extract changed paths from new events only
-    let new_events = if shadow.last_event_count < session.events.len() {
-        &session.events[shadow.last_event_count..]
-    } else {
-        return;
-    };
-
-    let (modified, deleted) = extract_changed_paths(new_events);
-    if modified.is_empty() && deleted.is_empty() {
-        shadow.last_activity = Instant::now();
-        shadow.last_event_count = session.events.len();
-        return;
-    }
-
-    // Read file contents from working directory
-    let files: Vec<FileSnapshot> = modified
-        .iter()
-        .filter_map(|p| {
-            let abs = resolve_file_path(&shadow.project_root, p);
-            std::fs::read(&abs).ok().map(|content| FileSnapshot {
-                rel_path: p.clone(),
-                content,
-            })
-        })
-        .collect();
-
-    let removals: Vec<FileRemoval> = deleted
-        .iter()
-        .map(|p| FileRemoval {
-            rel_path: p.clone(),
-        })
-        .collect();
-
-    // Update tracked files
-    for m in &modified {
-        shadow.tracked_files.insert(m.clone());
-    }
-    for d in &deleted {
-        shadow.tracked_files.remove(d);
-    }
-
-    let meta = ShadowMeta {
-        session_id: shadow.session_id.clone(),
-        created_at: Utc::now(),
-        checkpoint_count: shadow.checkpoint_count + 1,
-        tracked_files: shadow.tracked_files.iter().cloned().collect(),
-        project_root: shadow.project_root.to_string_lossy().into(),
-    };
-
-    let result = ShadowStorage::checkpoint(
-        &shadow.repo_path,
-        &shadow.session_id,
-        &files,
-        &removals,
-        &meta,
-    );
-
-    match result {
-        Ok(cp) => {
-            debug!(
-                session_id = shadow.session_id,
-                checkpoint = cp,
-                "Shadow checkpoint created"
-            );
-            shadow.last_event_count = session.events.len();
-            shadow.checkpoint_count += 1;
-            shadow.last_activity = Instant::now();
-        }
-        Err(e) => {
-            warn!(
-                session_id = shadow.session_id,
-                "Shadow checkpoint failed: {e}"
-            );
-        }
-    }
-}
-
-/// Resolve a file path: if it's absolute, use as-is; otherwise join with project root.
-fn resolve_file_path(project_root: &Path, file_path: &str) -> PathBuf {
-    let p = Path::new(file_path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_root.join(p)
-    }
-}
-
-/// Condense a shadow branch: archive HAIL + delete shadow.
-fn condense_shadow(path: &Path, shadow: &ShadowState) {
-    let session = match parse_session(path) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            warn!("Cannot condense shadow: no session at {}", path.display());
-            return;
-        }
-        Err(e) => {
-            warn!("Cannot condense shadow: parse error: {e}");
-            return;
-        }
-    };
-
-    let hail = match opensession_core::jsonl::to_jsonl_string(&session) {
-        Ok(s) => s.into_bytes(),
-        Err(e) => {
-            warn!("Cannot condense shadow: HAIL serialization failed: {e}");
-            return;
-        }
-    };
-
-    let meta = build_session_meta_json(&session);
-
-    match ShadowStorage::condense(&shadow.repo_path, &shadow.session_id, &hail, &meta) {
-        Ok(rel) => info!(session_id = shadow.session_id, "Condensed shadow → {rel}"),
-        Err(e) => warn!(
-            session_id = shadow.session_id,
-            "Shadow condense failed: {e}"
-        ),
-    }
-}
-
 async fn upload_to_server(
     session: &Session,
     config: &DaemonConfig,
@@ -543,11 +321,16 @@ async fn upload_to_server(
     );
 
     let upload_body = serde_json::to_value(&UploadRequest {
-        session: serde_json::to_value(session)?,
+        session: session.clone(),
         team_id: Some(config.identity.team_id.clone()),
         body_url: body_url.map(String::from),
         linked_session_ids: None,
-        ..Default::default()
+        git_remote: None,
+        git_branch: None,
+        git_commit: None,
+        git_repo_name: None,
+        pr_number: None,
+        pr_url: None,
     })?;
 
     let retry_cfg = RetryConfig {
@@ -699,19 +482,5 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_publish_mode(&settings), PublishMode::Manual);
-    }
-
-    #[test]
-    fn test_resolve_file_path_absolute() {
-        let root = PathBuf::from("/project");
-        let result = resolve_file_path(&root, "/absolute/path/file.rs");
-        assert_eq!(result, PathBuf::from("/absolute/path/file.rs"));
-    }
-
-    #[test]
-    fn test_resolve_file_path_relative() {
-        let root = PathBuf::from("/project");
-        let result = resolve_file_path(&root, "src/main.rs");
-        assert_eq!(result, PathBuf::from("/project/src/main.rs"));
     }
 }

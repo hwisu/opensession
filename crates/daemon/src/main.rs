@@ -4,7 +4,6 @@ mod health;
 pub mod hooks;
 mod pull_sync;
 mod scheduler;
-mod stream;
 mod tail;
 mod watcher;
 

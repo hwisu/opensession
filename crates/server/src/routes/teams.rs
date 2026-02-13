@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -7,8 +7,10 @@ use uuid::Uuid;
 
 use opensession_api_types::{
     db, service, AcceptInvitationResponse, AddMemberRequest, CreateTeamRequest, InvitationResponse,
-    InviteRequest, ListInvitationsResponse, ListMembersResponse, ListTeamsResponse, MemberResponse,
-    OkResponse, SessionSummary, TeamDetailResponse, TeamResponse, UpdateTeamRequest,
+    InvitationStatus, InviteRequest, ListInvitationsResponse, ListMembersResponse,
+    ListTeamsResponse, MemberResponse, OkResponse, SessionSummary, TeamDetailResponse,
+    TeamResponse, TeamRole, TeamStatsQuery, TeamStatsResponse, TeamStatsTotals, ToolStats,
+    UpdateTeamRequest, UserStats,
 };
 
 use crate::error::ApiErr;
@@ -49,7 +51,7 @@ pub async fn create_team(
     // Add creator as admin member
     sq_execute(
         &conn,
-        db::teams::member_insert(&team_id, &user.user_id, "admin"),
+        db::teams::member_insert(&team_id, &user.user_id, TeamRole::Admin.as_str()),
     )
     .map_err(|e| {
         tracing::error!("add creator as member: {e}");
@@ -116,6 +118,110 @@ pub async fn get_team(
         team,
         member_count,
         sessions,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Team stats
+// ---------------------------------------------------------------------------
+
+/// GET /api/teams/:id/stats — aggregated team statistics.
+pub async fn team_stats(
+    State(db): State<Db>,
+    Path(id): Path<String>,
+    Query(query): Query<TeamStatsQuery>,
+) -> Result<Json<TeamStatsResponse>, ApiErr> {
+    let conn = db.conn();
+    let time_range = query.time_range.unwrap_or_default();
+    let time_filter = opensession_core::stats::sql::time_range_filter(time_range.as_str());
+
+    // Totals
+    let totals_sql = opensession_core::stats::sql::totals_query(time_filter);
+    let totals = conn
+        .query_row(&totals_sql, rusqlite::params![id], |row| {
+            Ok(TeamStatsTotals {
+                session_count: row.get(0)?,
+                message_count: row.get(1)?,
+                event_count: row.get(2)?,
+                tool_call_count: 0,
+                duration_seconds: row.get(3)?,
+                total_input_tokens: row.get(4)?,
+                total_output_tokens: row.get(5)?,
+            })
+        })
+        .unwrap_or(TeamStatsTotals {
+            session_count: 0,
+            message_count: 0,
+            event_count: 0,
+            tool_call_count: 0,
+            duration_seconds: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+        });
+
+    // By user
+    let by_user_sql = opensession_core::stats::sql::by_user_query(time_filter);
+    let mut stmt = conn.prepare(&by_user_sql).map_err(|e| {
+        tracing::error!("prepare by_user: {e}");
+        ApiErr::internal("failed to query stats")
+    })?;
+    let by_user: Vec<UserStats> = stmt
+        .query_map(rusqlite::params![id], |row| {
+            Ok(UserStats {
+                user_id: row.get(0)?,
+                nickname: row.get(1)?,
+                session_count: row.get(2)?,
+                message_count: row.get(3)?,
+                event_count: row.get(4)?,
+                duration_seconds: row.get(5)?,
+                total_input_tokens: row.get(6)?,
+                total_output_tokens: row.get(7)?,
+            })
+        })
+        .map_err(|e| {
+            tracing::error!("query by_user: {e}");
+            ApiErr::internal("failed to query stats")
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| {
+            tracing::error!("collect by_user: {e}");
+            ApiErr::internal("failed to query stats")
+        })?;
+
+    // By tool
+    let by_tool_sql = opensession_core::stats::sql::by_tool_query(time_filter);
+    let mut stmt = conn.prepare(&by_tool_sql).map_err(|e| {
+        tracing::error!("prepare by_tool: {e}");
+        ApiErr::internal("failed to query stats")
+    })?;
+    let by_tool: Vec<ToolStats> = stmt
+        .query_map(rusqlite::params![id], |row| {
+            Ok(ToolStats {
+                tool: row.get(0)?,
+                session_count: row.get(1)?,
+                message_count: row.get(2)?,
+                event_count: row.get(3)?,
+                duration_seconds: row.get(4)?,
+                total_input_tokens: row.get(5)?,
+                total_output_tokens: row.get(6)?,
+            })
+        })
+        .map_err(|e| {
+            tracing::error!("query by_tool: {e}");
+            ApiErr::internal("failed to query stats")
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| {
+            tracing::error!("collect by_tool: {e}");
+            ApiErr::internal("failed to query stats")
+        })?;
+
+    Ok(Json(TeamStatsResponse {
+        team_id: id,
+        time_range,
+        totals,
+        by_user,
+        by_tool,
     }))
 }
 
@@ -201,7 +307,11 @@ pub async fn add_member(
         return Err(ApiErr::conflict("already a member"));
     }
 
-    sq_execute(&conn, db::teams::member_insert(&team_id, &target, "member")).map_err(|e| {
+    sq_execute(
+        &conn,
+        db::teams::member_insert(&team_id, &target, TeamRole::Member.as_str()),
+    )
+    .map_err(|e| {
         tracing::error!("add member: {e}");
         ApiErr::internal("failed to add member")
     })?;
@@ -218,7 +328,7 @@ pub async fn add_member(
         Json(MemberResponse {
             user_id: target,
             nickname: req.nickname,
-            role: "member".to_string(),
+            role: TeamRole::Member,
             joined_at,
         }),
     ))
@@ -274,10 +384,15 @@ pub async fn list_members(
 
     let members: Vec<MemberResponse> =
         sq_query_map(&conn, db::teams::member_list(&team_id), |row| {
+            let role_str: String = row.get(2)?;
             Ok(MemberResponse {
                 user_id: row.get(0)?,
                 nickname: row.get(1)?,
-                role: row.get(2)?,
+                role: if role_str == "admin" {
+                    TeamRole::Admin
+                } else {
+                    TeamRole::Member
+                },
                 joined_at: row.get(3)?,
             })
         })
@@ -295,7 +410,7 @@ fn is_team_admin(conn: &rusqlite::Connection, team_id: &str, user_id: &str) -> b
     sq_query_row(conn, db::teams::member_role(team_id, user_id), |row| {
         row.get::<_, String>(0)
     })
-    .map(|role| role == "admin")
+    .map(|role| role == TeamRole::Admin.as_str())
     .unwrap_or(false)
 }
 
@@ -321,7 +436,7 @@ pub async fn invite_member(
         .oauth_provider_username
         .as_deref()
         .map(|u| u.trim().to_string());
-    let role = req.role.as_deref().unwrap_or("member");
+    let role = req.role.unwrap_or(TeamRole::Member);
 
     let has_oauth = oauth_provider.is_some() && oauth_provider_username.is_some();
     if email.is_none() && !has_oauth {
@@ -367,7 +482,7 @@ pub async fn invite_member(
             oauth_provider.as_deref(),
             oauth_provider_username.as_deref(),
             &user.user_id,
-            role,
+            role.as_str(),
             &expires_at,
         ),
     )
@@ -389,8 +504,8 @@ pub async fn invite_member(
             oauth_provider,
             oauth_provider_username,
             invited_by_nickname: user.nickname,
-            role: role.to_string(),
-            status: "pending".to_string(),
+            role,
+            status: InvitationStatus::Pending,
             created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         }),
     ))
@@ -408,6 +523,8 @@ pub async fn list_invitations(
         &conn,
         db::invitations::list_my(email, &user.user_id),
         |row| {
+            let role_str: String = row.get(7)?;
+            let status_str: String = row.get(8)?;
             Ok(InvitationResponse {
                 id: row.get(0)?,
                 team_id: row.get(1)?,
@@ -416,8 +533,16 @@ pub async fn list_invitations(
                 oauth_provider: row.get(4)?,
                 oauth_provider_username: row.get(5)?,
                 invited_by_nickname: row.get(6)?,
-                role: row.get(7)?,
-                status: row.get(8)?,
+                role: if role_str == "admin" {
+                    TeamRole::Admin
+                } else {
+                    TeamRole::Member
+                },
+                status: match status_str.as_str() {
+                    "accepted" => InvitationStatus::Accepted,
+                    "declined" => InvitationStatus::Declined,
+                    _ => InvitationStatus::Pending,
+                },
                 created_at: row.get(9)?,
             })
         },
@@ -450,7 +575,7 @@ pub async fn accept_invitation(
     })
     .map_err(|_| ApiErr::not_found("invitation not found"))?;
 
-    let (_inv_id, team_id, inv_email, inv_prov, inv_uname, role, status, expires_at) = inv;
+    let (_inv_id, team_id, inv_email, inv_prov, inv_uname, role_str, status, expires_at) = inv;
 
     if status != "pending" {
         return Err(ApiErr::bad_request("invitation is no longer pending"));
@@ -497,14 +622,24 @@ pub async fn accept_invitation(
     .unwrap_or(false);
 
     if already {
-        sq_execute(&conn, db::invitations::update_status(&inv_id, "accepted")).ok();
+        sq_execute(
+            &conn,
+            db::invitations::update_status(&inv_id, InvitationStatus::Accepted.as_str()),
+        )
+        .ok();
         return Err(ApiErr::conflict("already a member of this team"));
     }
+
+    let role = if role_str == "admin" {
+        TeamRole::Admin
+    } else {
+        TeamRole::Member
+    };
 
     // Add as team member
     sq_execute(
         &conn,
-        db::teams::member_insert(&team_id, &user.user_id, &role),
+        db::teams::member_insert(&team_id, &user.user_id, role.as_str()),
     )
     .map_err(|e| {
         tracing::error!("accept invitation: {e}");
@@ -512,7 +647,11 @@ pub async fn accept_invitation(
     })?;
 
     // Mark invitation accepted
-    sq_execute(&conn, db::invitations::update_status(&inv_id, "accepted")).ok();
+    sq_execute(
+        &conn,
+        db::invitations::update_status(&inv_id, InvitationStatus::Accepted.as_str()),
+    )
+    .ok();
 
     Ok(Json(AcceptInvitationResponse { team_id, role }))
 }
@@ -569,7 +708,11 @@ pub async fn decline_invitation(
         return Err(ApiErr::forbidden("this invitation is not for you"));
     }
 
-    sq_execute(&conn, db::invitations::update_status(&inv_id, "declined")).ok();
+    sq_execute(
+        &conn,
+        db::invitations::update_status(&inv_id, InvitationStatus::Declined.as_str()),
+    )
+    .ok();
 
     Ok(Json(OkResponse { ok: true }))
 }

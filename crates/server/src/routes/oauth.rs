@@ -63,7 +63,7 @@ pub async fn redirect(
         return Err(ApiErr::internal("JWT_SECRET not configured"));
     }
 
-    let state = crypto::generate_token();
+    let state = crypto::generate_token().map_err(ApiErr::from)?;
     let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(10))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
@@ -361,7 +361,7 @@ pub async fn link(
         )));
     }
 
-    let state = crypto::generate_token();
+    let state = crypto::generate_token().map_err(ApiErr::from)?;
     let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(10))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();

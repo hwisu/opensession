@@ -1,5 +1,7 @@
-# ── Stage 1: Rust build ──────────────────────────────────────────────────────
-FROM rust:1.85-bookworm AS builder
+# ── Stage 1: Rust build (musl native) ────────────────────────────────────────
+FROM rust:1.85-alpine AS builder
+
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
 
 WORKDIR /app
 
@@ -14,11 +16,12 @@ COPY docs.md ./
 # Override git deps with local paths for Docker build
 RUN mkdir -p .cargo && printf '[patch."https://github.com/hwisu/opensession-core"]\nopensession-core = { path = "/opensession-core/crates/core" }\nopensession-parsers = { path = "/opensession-core/crates/parsers" }\nopensession-api-types = { path = "/opensession-core/crates/api-types" }\n' > .cargo/config.toml
 
+ENV OPENSSL_STATIC=1
 RUN cargo build --release --bin opensession-server && \
     strip /app/target/release/opensession-server
 
 # ── Stage 2: Frontend build ──────────────────────────────────────────────────
-FROM node:22-slim AS frontend
+FROM node:22-alpine AS frontend
 
 WORKDIR /build/opensession
 
@@ -33,18 +36,15 @@ COPY web/ web/
 RUN cd web && npm run build
 
 # ── Stage 3: Runtime ─────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM alpine:3.21
 
 LABEL org.opencontainers.image.title="OpenSession"
 LABEL org.opencontainers.image.source="https://github.com/hwisu/opensession"
 LABEL org.opencontainers.image.licenses="MIT"
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN groupadd -r opensession && useradd -r -g opensession -s /bin/false opensession
-
-RUN mkdir -p /data && chown opensession:opensession /data
+RUN apk add --no-cache ca-certificates tini curl && \
+    addgroup -S opensession && adduser -S -G opensession opensession && \
+    mkdir -p /data && chown opensession:opensession /data
 
 COPY --from=builder --chown=opensession:opensession /app/target/release/opensession-server /usr/local/bin/
 COPY --from=frontend --chown=opensession:opensession /build/opensession/web/build /var/www/opensession

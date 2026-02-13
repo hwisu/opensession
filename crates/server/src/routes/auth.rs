@@ -107,7 +107,8 @@ fn issue_tokens(
     nickname: &str,
 ) -> Result<AuthTokenResponse, ApiErr> {
     let now = chrono::Utc::now().timestamp() as u64;
-    let bundle = service::prepare_token_bundle(jwt_secret, user_id, nickname, now);
+    let bundle =
+        service::prepare_token_bundle(jwt_secret, user_id, nickname, now).map_err(ApiErr::from)?;
 
     let conn = db.conn();
     sq_execute(
@@ -192,7 +193,8 @@ pub async fn auth_register(
 
     let user_id = Uuid::new_v4().to_string();
     let api_key = service::generate_api_key();
-    let (password_hash, password_salt) = crypto::hash_password(&req.password);
+    let (password_hash, password_salt) =
+        crypto::hash_password(&req.password).map_err(ApiErr::from)?;
 
     {
         let conn = db.conn();
@@ -349,7 +351,7 @@ pub async fn change_password(
     }
 
     service::validate_password(&req.new_password).map_err(ApiErr::from)?;
-    let (new_hash, new_salt) = crypto::hash_password(&req.new_password);
+    let (new_hash, new_salt) = crypto::hash_password(&req.new_password).map_err(ApiErr::from)?;
 
     sq_execute(
         &conn,

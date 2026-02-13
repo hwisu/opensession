@@ -142,11 +142,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions", post(routes::sessions::upload_session))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB for large sessions
         .route("/sessions", get(routes::sessions::list_sessions))
-        .route("/sessions/{id}", get(routes::sessions::get_session))
+        .route(
+            "/sessions/{id}",
+            get(routes::sessions::get_session).delete(routes::sessions::delete_session),
+        )
         .route("/sessions/{id}/raw", get(routes::sessions::get_session_raw))
         // Teams
         .route("/teams", post(routes::teams::create_team))
         .route("/teams", get(routes::teams::list_my_teams))
+        .route("/teams/{id}/stats", get(routes::teams::team_stats))
         .route("/teams/{id}", get(routes::teams::get_team))
         .route("/teams/{id}", put(routes::teams::update_team))
         // Sync

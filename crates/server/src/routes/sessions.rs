@@ -7,8 +7,8 @@ use axum::{
 use uuid::Uuid;
 
 use opensession_api_types::{
-    db, SessionDetail, SessionLink, SessionListQuery, SessionListResponse, SessionSummary,
-    UploadResponse,
+    db, saturating_i64, LinkType, OkResponse, SessionDetail, SessionLink, SessionListQuery,
+    SessionListResponse, SessionSummary, UploadRequest, UploadResponse,
 };
 
 use opensession_core::extract;
@@ -21,27 +21,6 @@ use crate::storage::{session_from_row, sq_execute, sq_query_map, sq_query_row, D
 // Upload session
 // ---------------------------------------------------------------------------
 
-/// Server-side upload request uses the strongly-typed Session.
-#[derive(serde::Deserialize)]
-pub struct UploadRequest {
-    pub session: opensession_core::Session,
-    pub team_id: String,
-    #[serde(default)]
-    pub linked_session_ids: Option<Vec<String>>,
-    #[serde(default)]
-    pub git_remote: Option<String>,
-    #[serde(default)]
-    pub git_branch: Option<String>,
-    #[serde(default)]
-    pub git_commit: Option<String>,
-    #[serde(default)]
-    pub git_repo_name: Option<String>,
-    #[serde(default)]
-    pub pr_number: Option<i64>,
-    #[serde(default)]
-    pub pr_url: Option<String>,
-}
-
 /// POST /api/sessions — upload a new session (requires team membership).
 pub async fn upload_session(
     State(db): State<Db>,
@@ -49,8 +28,9 @@ pub async fn upload_session(
     Json(req): Json<UploadRequest>,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiErr> {
     let session = &req.session;
+    let team_id = req.team_id.as_deref().unwrap_or("personal");
 
-    if !db.is_team_member(&req.team_id, &user.user_id) {
+    if !db.is_team_member(team_id, &user.user_id) {
         return Err(ApiErr::forbidden("not a member of this team"));
     }
 
@@ -61,12 +41,18 @@ pub async fn upload_session(
 
     let session_id = Uuid::new_v4().to_string();
 
-    let storage_key = db
-        .write_body(&session_id, body_jsonl.as_bytes())
-        .map_err(|e| {
-            tracing::error!("write body: {e}");
-            ApiErr::internal("failed to store session body")
-        })?;
+    // If body_url is provided (external git storage), skip local body storage
+    let (storage_key, effective_body_url) = if req.body_url.is_some() {
+        (String::new(), req.body_url.as_deref())
+    } else {
+        let key = db
+            .write_body(&session_id, body_jsonl.as_bytes())
+            .map_err(|e| {
+                tracing::error!("write body: {e}");
+                ApiErr::internal("failed to store session body")
+            })?;
+        (key, None)
+    };
 
     let meta = extract::extract_upload_metadata(session);
 
@@ -76,7 +62,7 @@ pub async fn upload_session(
         db::sessions::insert(&db::sessions::InsertParams {
             id: &session_id,
             user_id: &user.user_id,
-            team_id: &req.team_id,
+            team_id,
             tool: &session.agent.tool,
             agent_provider: &session.agent.provider,
             agent_model: &session.agent.model,
@@ -84,14 +70,14 @@ pub async fn upload_session(
             description: meta.description.as_deref().unwrap_or(""),
             tags: meta.tags.as_deref().unwrap_or(""),
             created_at: &meta.created_at,
-            message_count: session.stats.message_count as i64,
-            task_count: session.stats.task_count as i64,
-            event_count: session.stats.event_count as i64,
-            duration_seconds: session.stats.duration_seconds as i64,
-            total_input_tokens: session.stats.total_input_tokens as i64,
-            total_output_tokens: session.stats.total_output_tokens as i64,
+            message_count: saturating_i64(session.stats.message_count),
+            task_count: saturating_i64(session.stats.task_count),
+            event_count: saturating_i64(session.stats.event_count),
+            duration_seconds: saturating_i64(session.stats.duration_seconds),
+            total_input_tokens: saturating_i64(session.stats.total_input_tokens),
+            total_output_tokens: saturating_i64(session.stats.total_output_tokens),
             body_storage_key: &storage_key,
-            body_url: None,
+            body_url: effective_body_url,
             git_remote: req.git_remote.as_deref(),
             git_branch: req.git_branch.as_deref(),
             git_commit: req.git_commit.as_deref(),
@@ -122,7 +108,7 @@ pub async fn upload_session(
     for linked_id in &linked_ids {
         let _ = sq_execute(
             &conn,
-            db::sessions::insert_link(&session_id, linked_id, "handoff"),
+            db::sessions::insert_link(&session_id, linked_id, LinkType::Handoff),
         );
     }
 
@@ -198,10 +184,16 @@ pub async fn get_session(
     // Fetch linked sessions
     let linked_sessions: Vec<SessionLink> =
         sq_query_map(&conn, db::sessions::links_by_session(&id), |row| {
+            let lt: String = row.get(2)?;
             Ok(SessionLink {
                 session_id: row.get(0)?,
                 linked_session_id: row.get(1)?,
-                link_type: row.get(2)?,
+                link_type: match lt.as_str() {
+                    "related" => LinkType::Related,
+                    "parent" => LinkType::Parent,
+                    "child" => LinkType::Child,
+                    _ => LinkType::Handoff,
+                },
                 created_at: row.get(3)?,
             })
         })
@@ -212,6 +204,38 @@ pub async fn get_session(
         team_name,
         linked_sessions,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Delete session
+// ---------------------------------------------------------------------------
+
+/// DELETE /api/sessions/:id — delete a session (owner only).
+pub async fn delete_session(
+    State(db): State<Db>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<OkResponse>, ApiErr> {
+    let conn = db.conn();
+
+    let summary: SessionSummary =
+        sq_query_row(&conn, db::sessions::get_by_id(&id), session_from_row)
+            .map_err(|_| ApiErr::not_found("session not found"))?;
+
+    if summary.user_id.as_deref() != Some(&auth.user_id) {
+        return Err(ApiErr::forbidden("not your session"));
+    }
+
+    sq_execute(&conn, db::sessions::delete_links(&id)).map_err(ApiErr::from_db("delete links"))?;
+    sq_execute(&conn, db::sessions::delete(&id)).map_err(ApiErr::from_db("delete session"))?;
+
+    // Clean up FTS
+    let _ = conn.execute(
+        "DELETE FROM sessions_fts WHERE rowid IN (SELECT rowid FROM sessions WHERE id = ?1)",
+        [&id],
+    );
+
+    Ok(Json(OkResponse { ok: true }))
 }
 
 // ---------------------------------------------------------------------------

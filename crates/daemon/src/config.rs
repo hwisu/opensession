@@ -33,6 +33,9 @@ pub struct DaemonSettings {
     pub health_check_interval_secs: u64,
     #[serde(default = "default_realtime_debounce_ms")]
     pub realtime_debounce_ms: u64,
+    /// Agents using stream-write (PostToolUse hook): daemon skips upload for these.
+    #[serde(default)]
+    pub stream_write: Vec<String>,
 }
 
 impl Default for DaemonSettings {
@@ -44,6 +47,7 @@ impl Default for DaemonSettings {
             max_retries: 3,
             health_check_interval_secs: 300,
             realtime_debounce_ms: 500,
+            stream_write: Vec::new(),
         }
     }
 }
@@ -173,12 +177,6 @@ pub struct GitStorageSettings {
     pub method: GitStorageMethod,
     #[serde(default)]
     pub token: String,
-    /// Enable shadow branch checkpointing (opt-in).
-    #[serde(default)]
-    pub shadow: bool,
-    /// Idle timeout (seconds) before condensing a shadow to the archive branch.
-    #[serde(default = "default_shadow_condense_timeout")]
-    pub shadow_condense_timeout_secs: u64,
 }
 
 impl Default for GitStorageSettings {
@@ -186,8 +184,6 @@ impl Default for GitStorageSettings {
         Self {
             method: GitStorageMethod::None,
             token: String::new(),
-            shadow: false,
-            shadow_condense_timeout_secs: 300,
         }
     }
 }
@@ -201,10 +197,6 @@ pub enum GitStorageMethod {
     #[default]
     #[serde(other)]
     None,
-}
-
-fn default_shadow_condense_timeout() -> u64 {
-    300
 }
 
 fn default_publish_on() -> PublishMode {
@@ -320,6 +312,9 @@ pub struct ProjectConfig {
     pub identity: Option<ProjectIdentity>,
     #[serde(default)]
     pub hooks: Option<ProjectHooks>,
+    /// When false, prevents uploading sessions from this repo as Personal (Public).
+    #[serde(default)]
+    pub allow_public: Option<bool>,
 }
 
 /// Project-level privacy overrides.
@@ -479,6 +474,10 @@ pub fn merge_project_configs(shared: &ProjectConfig, local: &ProjectConfig) -> P
 
     if local.hooks.is_some() {
         merged.hooks = local.hooks.clone();
+    }
+
+    if local.allow_public.is_some() {
+        merged.allow_public = local.allow_public;
     }
 
     merged
@@ -683,6 +682,7 @@ team_id = "team-abc"
                 post_commit: true,
                 pre_push: false,
             }),
+            ..Default::default()
         };
 
         let local = ProjectConfig {
@@ -701,6 +701,7 @@ team_id = "team-abc"
                 post_commit: true,
                 pre_push: true,
             }),
+            ..Default::default()
         };
 
         let merged = merge_project_configs(&shared, &local);

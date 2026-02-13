@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pre-commit hook: format check, lint, and test
+# Pre-commit hook: keep this fast so commits stay snappy
 set -e
 
 # Cargo.lock 변경 감지를 위한 스냅샷
@@ -8,10 +8,7 @@ LOCK_HASH_BEFORE=$(shasum Cargo.lock 2>/dev/null || echo "none")
 echo "Running cargo fmt check..."
 cargo fmt --all -- --check
 
-echo "Running cargo clippy..."
-cargo clippy --workspace --exclude opensession-worker -- -D warnings
-
-echo "Running tests..."
+echo "Running daemon smoke tests..."
 cargo test -p opensession-daemon --quiet
 
 # Cargo.lock 변경 여부 확인
@@ -24,4 +21,4 @@ if [ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]; then
   exit 1
 fi
 
-echo "All checks passed."
+echo "Fast pre-commit checks passed."

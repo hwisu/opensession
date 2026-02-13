@@ -1,8 +1,27 @@
 #!/bin/sh
-# Pre-push hook: Docker build + E2E tests (uses Docker layer cache)
+# Pre-push hook: heavy local validation before pushing to CI
 set -e
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.test.yml"
+ROOT_DIR=$(pwd)
+
+echo "=== Running workspace clippy ==="
+cargo clippy --workspace --exclude opensession-worker -- -D warnings
+
+echo "=== Running Worker (wasm) checks ==="
+cargo check --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown
+cargo clippy --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+
+if command -v npm >/dev/null 2>&1; then
+    echo "=== Running frontend checks ==="
+    (cd "$ROOT_DIR/packages/ui" && npm ci --prefer-offline --no-audit)
+    (cd "$ROOT_DIR/web" && npm ci --prefer-offline --no-audit)
+    mkdir -p "$ROOT_DIR/web/node_modules/@opensession"
+    ln -sf "$ROOT_DIR/packages/ui" "$ROOT_DIR/web/node_modules/@opensession/ui"
+    (cd "$ROOT_DIR/web" && npm run check)
+else
+    echo "WARNING: npm not found; skipping frontend checks."
+fi
 
 echo "=== Cleaning up previous volumes ==="
 $COMPOSE down -v

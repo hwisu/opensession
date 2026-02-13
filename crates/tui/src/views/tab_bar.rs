@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mo
             Style::new().fg(Theme::TAB_INACTIVE)
         };
 
-        let mut text = format!(" {} ", label);
+        let text = format!(" {} ", label);
 
         spans.push(Span::styled(text, style));
         spans.push(Span::styled(" ", Style::new()));

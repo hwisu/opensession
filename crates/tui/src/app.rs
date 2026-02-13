@@ -63,6 +63,7 @@ pub enum View {
     Settings,
     Teams,
     TeamDetail,
+    #[allow(dead_code)]
     Invitations,
     Help,
 }

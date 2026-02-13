@@ -126,8 +126,7 @@ pub async fn run_scheduler(
     // Shadow state for active sessions (keyed by session file path)
     let mut shadows: HashMap<PathBuf, ShadowState> = HashMap::new();
 
-    let condense_timeout =
-        Duration::from_secs(config.git_storage.shadow_condense_timeout_secs);
+    let condense_timeout = Duration::from_secs(config.git_storage.shadow_condense_timeout_secs);
 
     let mut tick = tokio::time::interval(Duration::from_secs(1));
 
@@ -520,10 +519,7 @@ fn condense_shadow(path: &Path, shadow: &ShadowState) {
     let meta = build_session_meta_json(&session);
 
     match ShadowStorage::condense(&shadow.repo_path, &shadow.session_id, &hail, &meta) {
-        Ok(rel) => info!(
-            session_id = shadow.session_id,
-            "Condensed shadow → {rel}"
-        ),
+        Ok(rel) => info!(session_id = shadow.session_id, "Condensed shadow → {rel}"),
         Err(e) => warn!(
             session_id = shadow.session_id,
             "Shadow condense failed: {e}"

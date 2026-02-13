@@ -302,10 +302,7 @@ pub fn default_secret_patterns() -> Vec<(&'static str, &'static str)> {
         ("GitHub OAuth Token", r"gho_[a-zA-Z0-9]{36}"),
         ("Private Key", r"-----BEGIN (RSA |EC )?PRIVATE KEY-----"),
         ("Anthropic API Key", r"sk-ant-[a-zA-Z0-9\-]{20,}"),
-        (
-            "AWS Secret",
-            r"(?i)aws_secret_access_key\s*=\s*\S+",
-        ),
+        ("AWS Secret", r"(?i)aws_secret_access_key\s*=\s*\S+"),
         (
             "Generic API Key Assignment",
             r"(?i)(api[_-]?key|secret[_-]?key|auth[_-]?token)\s*=\s*['\x22][a-zA-Z0-9]{16,}['\x22]",
@@ -465,7 +462,10 @@ mod tests {
         uninstall_hooks(repo.path(), &[HookType::PrepareCommitMsg]).unwrap();
         let restored_content = fs::read_to_string(&hook_path).unwrap();
         assert_eq!(restored_content, existing_content);
-        assert!(!backup_path.exists(), "backup should be removed after restore");
+        assert!(
+            !backup_path.exists(),
+            "backup should be removed after restore"
+        );
     }
 
     #[test]
@@ -495,11 +495,7 @@ mod tests {
         let hooks_dir = repo.path().join(".git/hooks");
 
         // Write a non-opensession hook
-        fs::write(
-            hooks_dir.join("pre-push"),
-            "#!/bin/sh\necho 'custom'\n",
-        )
-        .unwrap();
+        fs::write(hooks_dir.join("pre-push"), "#!/bin/sh\necho 'custom'\n").unwrap();
 
         let installed = list_installed_hooks(repo.path());
         assert!(installed.is_empty());
@@ -555,7 +551,11 @@ api_key = 'abcdefghijklmnop1234'
 
         // Verify redaction
         for m in &matches {
-            assert!(m.context.contains("[REDACTED]"), "should be redacted: {:?}", m);
+            assert!(
+                m.context.contains("[REDACTED]"),
+                "should be redacted: {:?}",
+                m
+            );
             assert!(m.line_number > 0, "line numbers should be 1-indexed");
         }
 
@@ -595,10 +595,7 @@ let key = "abc123";
     fn test_scan_anthropic_key() {
         let content = "ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwx";
         let matches = scan_for_secrets(content);
-        assert!(
-            !matches.is_empty(),
-            "should detect Anthropic API key"
-        );
+        assert!(!matches.is_empty(), "should detect Anthropic API key");
         let pattern_names: Vec<&str> = matches.iter().map(|m| m.pattern_name.as_str()).collect();
         assert!(pattern_names.contains(&"Anthropic API Key"));
     }

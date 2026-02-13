@@ -62,9 +62,7 @@ fn try_load_github() -> Option<OAuthProviderConfig> {
 }
 
 fn try_load_gitlab() -> Option<OAuthProviderConfig> {
-    let url = std::env::var("GITLAB_URL")
-        .ok()
-        .filter(|s| !s.is_empty())?;
+    let url = std::env::var("GITLAB_URL").ok().filter(|s| !s.is_empty())?;
     let id = std::env::var("GITLAB_CLIENT_ID")
         .ok()
         .filter(|s| !s.is_empty())?;

@@ -4,7 +4,12 @@ set -e
 
 run_cargo() {
   if command -v rustup >/dev/null 2>&1; then
-    rustup run stable cargo "$@"
+    RUSTC_BIN=$(rustup which --toolchain stable rustc 2>/dev/null || true)
+    if [ -n "$RUSTC_BIN" ]; then
+      RUSTC="$RUSTC_BIN" rustup run stable cargo "$@"
+    else
+      rustup run stable cargo "$@"
+    fi
   else
     cargo "$@"
   fi

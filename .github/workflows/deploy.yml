@@ -34,12 +34,6 @@ jobs:
       - name: Install wrangler
         run: npm install -g wrangler
 
-      - name: Build frontend + worker
-        run: |
-          cd packages/ui && npm install && cd ../..
-          cd web && npm install && npm run build && cd ..
-          cargo install -q worker-build && worker-build --release --manifest-path crates/worker/Cargo.toml
-
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply opensession-io --remote
         env:

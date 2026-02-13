@@ -1,0 +1,28 @@
+[package]
+name = "opensession-git-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Git-native session storage for OpenSession using gix"
+keywords = ["ai", "session", "git", "opensession"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+
+[lints]
+workspace = true
+
+[dependencies]
+gix = { version = "0.79", default-features = false, features = [
+    "basic",
+    "tree-editor",
+] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

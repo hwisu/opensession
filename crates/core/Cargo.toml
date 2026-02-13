@@ -1,0 +1,25 @@
+[package]
+name = "opensession-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HAIL (Human AI Interaction Log) core types and validation"
+include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+
+[lib]
+doctest = false
+
+[features]
+testing = []
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }

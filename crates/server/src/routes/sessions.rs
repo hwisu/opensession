@@ -6,7 +6,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use opensession_api_types::{
+use opensession_api::{
     db, saturating_i64, LinkType, OkResponse, SessionDetail, SessionLink, SessionListQuery,
     SessionListResponse, SessionSummary, UploadRequest, UploadResponse,
 };

@@ -1,0 +1,49 @@
+[package]
+name = "opensession"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for opensession.io - discover, upload, and manage AI coding sessions"
+readme = "../../README.md"
+homepage = "https://opensession.io"
+keywords = ["ai", "session", "coding", "cli", "llm"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+
+[[bin]]
+name = "opensession"
+path = "src/main.rs"
+
+[features]
+e2e = []
+
+[lints]
+workspace = true
+
+[dependencies]
+opensession-core = { workspace = true }
+opensession-parsers = { workspace = true }
+opensession-api-client = { workspace = true }
+opensession-local-db = { workspace = true }
+opensession-git-native = { workspace = true }
+opensession-tui = { path = "../tui" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+clap = { workspace = true }
+clap_complete = "4"
+reqwest = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+dialoguer = { workspace = true }
+
+[dev-dependencies]
+opensession-core = { workspace = true, features = ["testing"] }
+tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

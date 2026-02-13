@@ -1,5 +1,5 @@
 use axum::Json;
-use opensession_api_types::HealthResponse;
+use opensession_api::HealthResponse;
 
 /// GET /api/health — server liveness check.
 pub async fn health() -> Json<HealthResponse> {

@@ -1,0 +1,36 @@
+[package]
+name = "opensession-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared API types, crypto, and SQL builders for opensession.io"
+include = ["src/**/*.rs", "migrations/**/*.sql", "Cargo.toml", "LICENSE", "README.md"]
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+ts = ["dep:ts-rs"]
+backend = ["dep:hmac", "dep:sha2", "dep:pbkdf2", "dep:getrandom", "dep:hex", "dep:sea-query"]
+
+[dependencies]
+opensession-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+# Crypto (pure Rust, wasm-compatible) — only needed with "backend" feature
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+pbkdf2 = { version = "0.12", features = ["simple"], optional = true }
+getrandom = { version = "0.2", optional = true }
+hex = { version = "0.4", optional = true }
+sea-query = { version = "0.32", features = ["backend-sqlite", "derive"], optional = true }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+chrono = { workspace = true }

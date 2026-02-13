@@ -1,0 +1,27 @@
+[package]
+name = "opensession-parsers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parsers for converting AI tool session data to HAIL format"
+include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+opensession-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+glob = { workspace = true }
+shellexpand = { workspace = true }
+regex = { workspace = true }
+rusqlite = { workspace = true }

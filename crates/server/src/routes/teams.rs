@@ -5,7 +5,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use opensession_api_types::{
+use opensession_api::{
     db, service, AcceptInvitationResponse, AddMemberRequest, CreateTeamRequest, InvitationResponse,
     InvitationStatus, InviteRequest, ListInvitationsResponse, ListMembersResponse,
     ListTeamsResponse, MemberResponse, OkResponse, SessionSummary, TeamDetailResponse,

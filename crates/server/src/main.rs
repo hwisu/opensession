@@ -12,7 +12,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use opensession_api_types::oauth::{self, OAuthProviderConfig};
+use opensession_api::oauth::{self, OAuthProviderConfig};
 use storage::Db;
 
 /// Application state shared across all handlers.

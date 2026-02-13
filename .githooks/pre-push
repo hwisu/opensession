@@ -3,7 +3,6 @@
 set -e
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.test.yml"
-E2E_DIR="../opensession-core"
 
 echo "=== Cleaning up previous volumes ==="
 $COMPOSE down -v
@@ -30,7 +29,7 @@ for i in $(seq 1 30); do
 done
 
 echo "=== Running E2E tests ==="
-E2E_BASE_URL=http://localhost:3000 cargo test -p opensession-e2e --test docker --manifest-path "$E2E_DIR/Cargo.toml" -- --test-threads=1
+E2E_BASE_URL=http://localhost:3000 cargo test -p opensession-e2e --test docker -- --test-threads=1
 E2E_EXIT=$?
 
 echo "=== Stopping server ==="

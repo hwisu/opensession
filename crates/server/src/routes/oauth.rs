@@ -5,7 +5,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use opensession_api_types::{
+use opensession_api::{
     crypto, db as dbq,
     oauth::{self, AuthProvidersResponse, OAuthProviderConfig, OAuthProviderInfo},
     service, OAuthLinkResponse,

@@ -3,8 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      additional_contexts:
-        - opensession-core=../opensession-core
     ports:
       - "3000:3000"
     volumes:

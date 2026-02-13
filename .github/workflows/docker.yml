@@ -27,17 +27,7 @@ jobs:
             suffix: "-alpine"
 
     steps:
-      - name: Checkout opensession
-        uses: actions/checkout@v4
-
-      - name: Checkout opensession-core
-        uses: actions/checkout@v4
-        with:
-          repository: hwisu/opensession-core
-          path: _opensession-core
-
-      - name: Symlink opensession-core
-        run: ln -s "$GITHUB_WORKSPACE/_opensession-core" ../opensession-core
+      - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -64,8 +54,6 @@ jobs:
         with:
           context: .
           file: ./${{ matrix.dockerfile }}
-          build-contexts: |
-            opensession-core=../opensession-core
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use opensession_api::UploadRequest;
 use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_api_client::ApiClient;
-use opensession_api_types::UploadRequest;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_core::Session;
 use opensession_local_db::git::extract_git_context;

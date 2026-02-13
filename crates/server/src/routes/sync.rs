@@ -3,7 +3,7 @@ use axum::{
     Json,
 };
 
-use opensession_api_types::{db, SessionSummary, SyncPullQuery, SyncPullResponse};
+use opensession_api::{db, SessionSummary, SyncPullQuery, SyncPullResponse};
 
 use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;

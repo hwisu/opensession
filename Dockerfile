@@ -3,16 +3,9 @@ FROM rust:1.85-bookworm AS builder
 
 WORKDIR /app
 
-# Copy opensession-core workspace (via additional_contexts)
-COPY --from=opensession-core Cargo.toml /opensession-core/Cargo.toml
-COPY --from=opensession-core crates/ /opensession-core/crates/
-
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY docs.md ./
-
-# Override git deps with local paths for Docker build
-RUN mkdir -p .cargo && printf '[patch."https://github.com/hwisu/opensession-core"]\nopensession-core = { path = "/opensession-core/crates/core" }\nopensession-parsers = { path = "/opensession-core/crates/parsers" }\nopensession-api-types = { path = "/opensession-core/crates/api-types" }\n' > .cargo/config.toml
 
 RUN cargo build --release --bin opensession-server && \
     strip /app/target/release/opensession-server
@@ -20,17 +13,18 @@ RUN cargo build --release --bin opensession-server && \
 # ── Stage 2: Frontend build ──────────────────────────────────────────────────
 FROM node:22-slim AS frontend
 
-WORKDIR /build/opensession
+WORKDIR /app
 
-# opensession-core packages/ui (via additional_contexts)
-COPY --from=opensession-core packages/ui/ /build/opensession-core/packages/ui/
-RUN cd /build/opensession-core/packages/ui && npm install
+COPY packages/ui/ packages/ui/
+RUN cd packages/ui && npm install
 
 COPY web/package.json web/package-lock.json web/
 RUN cd web && npm ci
 
 COPY web/ web/
-RUN cd web && npm run build
+RUN mkdir -p web/node_modules/@opensession && \
+    ln -sf /app/packages/ui web/node_modules/@opensession/ui && \
+    cd web && npm run build
 
 # ── Stage 3: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -47,7 +41,7 @@ RUN groupadd -r opensession && useradd -r -g opensession -s /bin/false opensessi
 RUN mkdir -p /data && chown opensession:opensession /data
 
 COPY --from=builder --chown=opensession:opensession /app/target/release/opensession-server /usr/local/bin/
-COPY --from=frontend --chown=opensession:opensession /build/opensession/web/build /var/www/opensession
+COPY --from=frontend --chown=opensession:opensession /app/web/build /var/www/opensession
 
 ENV OPENSESSION_DATA_DIR=/data
 ENV OPENSESSION_WEB_DIR=/var/www/opensession

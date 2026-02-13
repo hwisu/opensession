@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 opensession-core = { workspace = true }
 opensession-parsers = { workspace = true }
-opensession-api-types = { workspace = true, default-features = false }
+opensession-api = { workspace = true, default-features = false }
 opensession-api-client = { workspace = true }
 opensession-local-db = { workspace = true }
 opensession-git-native = { workspace = true }

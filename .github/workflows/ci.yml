@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,12 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: hwisu/opensession-core
-          path: _opensession-core
-      - name: Symlink opensession-core
-        run: ln -s "$GITHUB_WORKSPACE/_opensession-core" ../opensession-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -32,16 +27,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: hwisu/opensession-core
-          path: _opensession-core
-      - name: Symlink opensession-core
-        run: ln -s "$GITHUB_WORKSPACE/_opensession-core" ../opensession-core
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "cargo-check"
+          shared-key: cargo-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --workspace
 
@@ -50,18 +39,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: hwisu/opensession-core
-          path: _opensession-core
-      - name: Symlink opensession-core
-        run: ln -s "$GITHUB_WORKSPACE/_opensession-core" ../opensession-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "cargo-check"
+          shared-key: cargo-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace -- -D warnings
 
@@ -70,40 +53,61 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: hwisu/opensession-core
-          path: _opensession-core
-      - name: Symlink opensession-core
-        run: ln -s "$GITHUB_WORKSPACE/_opensession-core" ../opensession-core
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "cargo-test"
+          shared-key: cargo-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --workspace
+      - run: cargo test --workspace --exclude opensession-e2e
+
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-audit
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}
+      - run: command -v cargo-audit || cargo install cargo-audit --locked
+      - run: cargo audit
+
+  wasm-check:
+    name: Worker (wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm-check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown
+      - run: cargo clippy --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
 
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: hwisu/opensession-core
-          path: _opensession-core
-      - name: Symlink opensession-core
-        run: ln -s "$GITHUB_WORKSPACE/_opensession-core" ../opensession-core
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: |
             web/package-lock.json
-            _opensession-core/packages/ui/package-lock.json
+            packages/ui/package-lock.json
       - name: Install UI package deps
         run: npm ci
-        working-directory: _opensession-core/packages/ui
+        working-directory: packages/ui
       - run: npm ci
         working-directory: web
       - run: npm run check

@@ -3,7 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use opensession_api_types::ServiceError;
+use opensession_api::ServiceError;
 use std::fmt;
 
 /// Thin Axum adapter around the shared [`ServiceError`] type.
@@ -56,6 +56,6 @@ impl IntoResponse for ApiErr {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(opensession_api_types::ApiError::from(&self.0))).into_response()
+        (status, Json(opensession_api::ApiError::from(&self.0))).into_response()
     }
 }

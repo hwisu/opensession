@@ -5,8 +5,8 @@ use axum::{
 };
 use uuid::Uuid;
 
-use opensession_api_types::{
-    crypto, db as dbq, oauth, service, AuthRegisterRequest, AuthTokenResponse,
+use opensession_api::{
+    crypto, db as dbq, oauth, service, service::AuthToken, AuthRegisterRequest, AuthTokenResponse,
     ChangePasswordRequest, LoginRequest, LogoutRequest, OkResponse, RefreshRequest,
     RegenerateKeyResponse, RegisterRequest, RegisterResponse, UserSettingsResponse, VerifyResponse,
 };
@@ -49,40 +49,35 @@ where
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or(ApiErr::unauthorized(
                 "missing or invalid Authorization header",
-            ))?
-            .to_string();
-
-        // API key path
-        if token.starts_with("osk_") {
-            let conn = db.conn();
-            return sq_query_row(&conn, dbq::users::get_by_api_key(&token), |row| {
-                Ok(AuthUser {
-                    user_id: row.get(0)?,
-                    nickname: row.get(1)?,
-                    email: row.get(2)?,
-                })
-            })
-            .map_err(|_| ApiErr::unauthorized("invalid API key"));
-        }
-
-        // JWT path
-        if config.jwt_secret.is_empty() {
-            return Err(ApiErr::unauthorized("JWT authentication not configured"));
-        }
+            ))?;
 
         let now = chrono::Utc::now().timestamp() as u64;
-        let user_id = crypto::verify_jwt(&token, &config.jwt_secret, now)
+        let resolved = service::resolve_auth_token(token, &config.jwt_secret, now)
             .map_err(|e| ApiErr::unauthorized(e.message()))?;
 
         let conn = db.conn();
-        sq_query_row(&conn, dbq::users::get_by_id(&user_id), |row| {
-            Ok(AuthUser {
-                user_id: row.get(0)?,
-                nickname: row.get(1)?,
-                email: row.get(2)?,
-            })
-        })
-        .map_err(|_| ApiErr::unauthorized("user not found"))
+        match resolved {
+            AuthToken::ApiKey(key) => {
+                sq_query_row(&conn, dbq::users::get_by_api_key(&key), |row| {
+                    Ok(AuthUser {
+                        user_id: row.get(0)?,
+                        nickname: row.get(1)?,
+                        email: row.get(2)?,
+                    })
+                })
+                .map_err(|_| ApiErr::unauthorized("invalid API key"))
+            }
+            AuthToken::Jwt(user_id) => {
+                sq_query_row(&conn, dbq::users::get_by_id(&user_id), |row| {
+                    Ok(AuthUser {
+                        user_id: row.get(0)?,
+                        nickname: row.get(1)?,
+                        email: row.get(2)?,
+                    })
+                })
+                .map_err(|_| ApiErr::unauthorized("user not found"))
+            }
+        }
     }
 }
 

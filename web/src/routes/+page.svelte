@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { SessionListPage, LandingPage } from '@opensession/ui/components';
+	import { HomePage, LandingPage } from '@opensession/ui/components';
 	import { isAuthenticated } from '@opensession/ui/api';
 	import { goto } from '$app/navigation';
 
@@ -7,7 +7,7 @@
 </script>
 
 {#if authed}
-	<SessionListPage onNavigate={(path) => goto(path)} />
+	<HomePage onNavigate={(path) => goto(path)} />
 {:else}
 	<LandingPage onNavigate={(path) => goto(path)} />
 {/if}

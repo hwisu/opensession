@@ -506,132 +506,11 @@ async fn main() {
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,
         Commands::Ui => opensession_tui::run(None),
-        Commands::Session { action } => match action {
-            SessionAction::Discover => discover::run_discover(),
-            SessionAction::Index => index::run_index(),
-            SessionAction::Log {
-                since,
-                before,
-                tool,
-                model,
-                touches,
-                grep,
-                has_errors,
-                project,
-                format,
-                limit,
-                json,
-                jq,
-            } => log_cmd::run_log(
-                since.as_deref(),
-                before.as_deref(),
-                tool.as_deref(),
-                model.as_deref(),
-                touches.as_deref(),
-                grep.as_deref(),
-                has_errors,
-                project.as_deref(),
-                &format,
-                limit,
-                json.as_deref(),
-                jq.as_deref(),
-            ),
-            SessionAction::Stats { period, format } => stats::run_stats(period, &format),
-            SessionAction::Diff {
-                session_a,
-                session_b,
-                ai,
-            } => handoff::run_diff(&session_a, &session_b, ai).await,
-            SessionAction::Handoff {
-                files,
-                last,
-                output,
-                format,
-                summarize,
-                claude,
-                gemini,
-                tool,
-                ai,
-            } => {
-                handoff::run_handoff(
-                    &files,
-                    last,
-                    output.as_deref(),
-                    format,
-                    summarize,
-                    claude.as_deref(),
-                    gemini.as_deref(),
-                    &tool,
-                    ai.as_deref(),
-                )
-                .await
-            }
-            SessionAction::Timeline {
-                session,
-                tool,
-                format,
-                view,
-                no_collapse,
-                summaries,
-                no_summary,
-                summary_provider,
-                max_rows,
-            } => tui_cmd::run_tui_timeline(
-                &session,
-                tool.as_deref(),
-                format,
-                view,
-                no_collapse,
-                summaries,
-                no_summary,
-                summary_provider.as_deref(),
-                max_rows,
-            ),
-        },
-        Commands::Publish { action } => match action {
-            PublishAction::Upload { file, parent, git } => {
-                upload::run_upload(&file, &parent, git).await
-            }
-            PublishAction::UploadAll => upload_all::run_upload_all().await,
-        },
-        Commands::Ops { action } => match action {
-            OpsAction::Daemon { action } => match action {
-                DaemonAction::Start => daemon_ctl::daemon_start(),
-                DaemonAction::Stop => daemon_ctl::daemon_stop(),
-                DaemonAction::Status => daemon_ctl::daemon_status(),
-                DaemonAction::Health => run_daemon_health().await,
-            },
-            OpsAction::Stream { action } => run_stream_action(action),
-            OpsAction::StreamPush { agent } => stream_push::run_stream_push(&agent),
-            OpsAction::Hooks { action } => match action {
-                HooksAction::Install => handoff::run_hooks_install(),
-                HooksAction::Uninstall => handoff::run_hooks_uninstall(),
-            },
-        },
-        Commands::Account { action } => match action {
-            AccountAction::Config {
-                server,
-                api_key,
-                team_id,
-            } => {
-                if server.is_none() && api_key.is_none() && team_id.is_none() {
-                    config::show_config()
-                } else {
-                    config::set_config(server, api_key, team_id)
-                }
-            }
-            AccountAction::Server { action } => match action {
-                ServerAction::Status => server::run_status().await,
-                ServerAction::Verify => server::run_verify().await,
-            },
-        },
-        Commands::Docs { action } => match action {
-            DocsAction::Completion { shell } => {
-                let mut cmd = <Cli as clap::CommandFactory>::command();
-                clap_complete::generate(shell, &mut cmd, "opensession", &mut std::io::stdout());
-                Ok(())
-            }
-        },
+        Commands::Session { action } => run_session_action(action).await,
+        Commands::Publish { action } => run_publish_action(action).await,
+        Commands::Ops { action } => run_ops_action(action).await,
+        Commands::Account { action } => run_account_action(action).await,
+        Commands::Docs { action } => run_docs_action(action),
     };
 
     if let Err(e) = result {
@@ -647,6 +526,145 @@ async fn main() {
             eprintln!("Error: {:#}", e);
         }
         std::process::exit(code as i32);
+    }
+}
+
+async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
+    match action {
+        SessionAction::Discover => discover::run_discover(),
+        SessionAction::Index => index::run_index(),
+        SessionAction::Log {
+            since,
+            before,
+            tool,
+            model,
+            touches,
+            grep,
+            has_errors,
+            project,
+            format,
+            limit,
+            json,
+            jq,
+        } => log_cmd::run_log(
+            since.as_deref(),
+            before.as_deref(),
+            tool.as_deref(),
+            model.as_deref(),
+            touches.as_deref(),
+            grep.as_deref(),
+            has_errors,
+            project.as_deref(),
+            &format,
+            limit,
+            json.as_deref(),
+            jq.as_deref(),
+        ),
+        SessionAction::Stats { period, format } => stats::run_stats(period, &format),
+        SessionAction::Diff {
+            session_a,
+            session_b,
+            ai,
+        } => handoff::run_diff(&session_a, &session_b, ai).await,
+        SessionAction::Handoff {
+            files,
+            last,
+            output,
+            format,
+            summarize,
+            claude,
+            gemini,
+            tool,
+            ai,
+        } => {
+            handoff::run_handoff(
+                &files,
+                last,
+                output.as_deref(),
+                format,
+                summarize,
+                claude.as_deref(),
+                gemini.as_deref(),
+                &tool,
+                ai.as_deref(),
+            )
+            .await
+        }
+        SessionAction::Timeline {
+            session,
+            tool,
+            format,
+            view,
+            no_collapse,
+            summaries,
+            no_summary,
+            summary_provider,
+            max_rows,
+        } => tui_cmd::run_tui_timeline(
+            &session,
+            tool.as_deref(),
+            format,
+            view,
+            no_collapse,
+            summaries,
+            no_summary,
+            summary_provider.as_deref(),
+            max_rows,
+        ),
+    }
+}
+
+async fn run_publish_action(action: PublishAction) -> anyhow::Result<()> {
+    match action {
+        PublishAction::Upload { file, parent, git } => upload::run_upload(&file, &parent, git).await,
+        PublishAction::UploadAll => upload_all::run_upload_all().await,
+    }
+}
+
+async fn run_ops_action(action: OpsAction) -> anyhow::Result<()> {
+    match action {
+        OpsAction::Daemon { action } => match action {
+            DaemonAction::Start => daemon_ctl::daemon_start(),
+            DaemonAction::Stop => daemon_ctl::daemon_stop(),
+            DaemonAction::Status => daemon_ctl::daemon_status(),
+            DaemonAction::Health => run_daemon_health().await,
+        },
+        OpsAction::Stream { action } => run_stream_action(action),
+        OpsAction::StreamPush { agent } => stream_push::run_stream_push(&agent),
+        OpsAction::Hooks { action } => match action {
+            HooksAction::Install => handoff::run_hooks_install(),
+            HooksAction::Uninstall => handoff::run_hooks_uninstall(),
+        },
+    }
+}
+
+async fn run_account_action(action: AccountAction) -> anyhow::Result<()> {
+    match action {
+        AccountAction::Config {
+            server,
+            api_key,
+            team_id,
+        } => {
+            if server.is_none() && api_key.is_none() && team_id.is_none() {
+                config::show_config()
+            } else {
+                config::set_config(server, api_key, team_id)
+            }
+        }
+        AccountAction::Server { action } => match action {
+            ServerAction::Status => server::run_status().await,
+            ServerAction::Verify => server::run_verify().await,
+        },
+    }
+}
+
+fn run_docs_action(action: DocsAction) -> anyhow::Result<()> {
+    match action {
+        DocsAction::Completion { shell } => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            clap_complete::generate(shell, &mut cmd, "opensession", &mut std::io::stdout());
+            Ok(())
+        }
     }
 }
 

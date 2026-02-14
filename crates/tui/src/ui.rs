@@ -354,25 +354,18 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(block, area);
 
             // Section tabs
-            let sections = [
-                (SettingsSection::Workspace, "Workspace"),
-                (SettingsSection::CaptureSync, "Capture & Sync"),
-                (SettingsSection::TimelineIntelligence, "Timeline Intel"),
-                (SettingsSection::StoragePrivacy, "Storage & Privacy"),
-                (SettingsSection::Account, "Account"),
-            ];
             let mut spans = vec![Span::styled(
                 " Settings  ",
                 Style::new().fg(Theme::TEXT_PRIMARY).bold(),
             )];
-            for (section, label) in &sections {
-                let is_active = *section == app.settings_section;
+            for section in SettingsSection::ORDER {
+                let is_active = section == app.settings_section;
                 let style = if is_active {
                     Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold()
                 } else {
                     Style::new().fg(Theme::TAB_INACTIVE)
                 };
-                spans.push(Span::styled(format!(" {} ", label), style));
+                spans.push(Span::styled(format!(" {} ", section.label()), style));
                 spans.push(Span::styled(" ", Style::new()));
             }
             let dirty_mark = if app.config_dirty { " *" } else { "" };

@@ -5,9 +5,11 @@ test.describe('Navigation', () => {
 	test('nav links are present', async ({ page }) => {
 		await page.goto('/');
 		const nav = page.locator('nav');
+		await expect(nav.getByText('Sessions')).toBeVisible();
+		await expect(nav.getByText('Inbox')).toBeVisible();
 		await expect(nav.getByText('Docs')).toBeVisible();
 		await expect(nav.getByText('Teams')).toBeVisible();
-		await expect(nav.getByText('Upload')).toBeVisible();
+		await expect(nav.getByText('Upload')).toHaveCount(0);
 	});
 
 	test('clicking Docs navigates to /docs', async ({ page }) => {

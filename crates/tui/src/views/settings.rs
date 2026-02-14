@@ -1,28 +1,14 @@
-use crate::app::{App, SettingsSection};
+use crate::app::App;
 use crate::config::{self, SettingField, SettingItem, SettingsGroup};
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    match app.settings_section {
-        SettingsSection::Workspace => {
-            render_daemon_config(frame, app, area, SettingsGroup::Workspace, "Workspace")
-        }
-        SettingsSection::CaptureSync => {
-            render_daemon_config(frame, app, area, SettingsGroup::CaptureSync, "Capture & Sync")
-        }
-        SettingsSection::TimelineIntelligence => render_daemon_config(
-            frame,
-            app,
-            area,
-            SettingsGroup::TimelineIntelligence,
-            "Timeline Intelligence",
-        ),
-        SettingsSection::StoragePrivacy => {
-            render_daemon_config(frame, app, area, SettingsGroup::StoragePrivacy, "Storage & Privacy")
-        }
-        SettingsSection::Account => render_account(frame, app, area),
+    if let Some(group) = app.settings_section.group() {
+        render_daemon_config(frame, app, area, group, app.settings_section.panel_title());
+    } else {
+        render_account(frame, app, area);
     }
 }
 

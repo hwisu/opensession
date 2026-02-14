@@ -18,9 +18,9 @@ from Claude Code, Cursor, Codex, Goose, Aider, and other AI tools.
 ```bash
 cargo install opensession
 
-opensession            # Launch TUI (no args)
-opensession discover   # Find AI sessions on this machine
-opensession upload-all # Upload all discovered sessions
+opensession ui                    # Launch TUI
+opensession session discover      # Find AI sessions on this machine
+opensession publish upload-all    # Upload all discovered sessions
 ```
 
 ### Self-Hosted Server
@@ -62,28 +62,29 @@ Single Cargo workspace with 12 crates:
 
 | Command | Description |
 |---------|-------------|
-| `opensession` | Launch TUI (no subcommand) |
-| `opensession discover` | List all local AI sessions |
-| `opensession upload <file>` | Upload a session file |
-| `opensession upload-all` | Discover and upload all sessions |
-| `opensession log` | Show session history (git-log style) |
-| `opensession stats` | Show AI usage statistics |
-| `opensession handoff` | Generate handoff summary for next agent |
-| `opensession diff <a> <b>` | Compare two sessions |
-| `opensession config` | Show or set configuration |
-| `opensession daemon start\|stop\|status` | Manage background daemon |
-| `opensession server status\|verify` | Check server connection |
-| `opensession hooks install\|uninstall` | Manage git hooks |
-| `opensession stream enable\|disable` | Real-time session streaming |
-| `opensession index` | Build local session index |
-| `opensession completion <shell>` | Generate shell completions |
+| `opensession ui` | Launch TUI |
+| `opensession session discover` | List all local AI sessions |
+| `opensession session index` | Build local session index |
+| `opensession session log` | Show session history (git-log style) |
+| `opensession session stats` | Show AI usage statistics |
+| `opensession session handoff` | Generate handoff summary for next agent |
+| `opensession session diff <a> <b>` | Compare two sessions |
+| `opensession session timeline` | Export timeline strings (pipe-friendly) |
+| `opensession publish upload <file>` | Upload a session file |
+| `opensession publish upload-all` | Discover and upload all sessions |
+| `opensession ops daemon start\|stop\|status` | Manage background daemon |
+| `opensession ops stream enable\|disable` | Real-time session streaming |
+| `opensession ops hooks install\|uninstall` | Manage git hooks |
+| `opensession account config` | Show or set configuration |
+| `opensession account server status\|verify` | Check server connection |
+| `opensession docs completion <shell>` | Generate shell completions |
 
 ## Configuration
 
 ### CLI Config (`~/.config/opensession/config.toml`)
 
 ```bash
-opensession config --server https://opensession.io --api-key osk_xxx --team-id my-team
+opensession account config --server https://opensession.io --api-key osk_xxx --team-id my-team
 ```
 
 ### Daemon Config (`~/.config/opensession/daemon.toml`)
@@ -257,6 +258,12 @@ cd web && npm install && npm run dev
 cargo test --workspace                        # All workspace tests
 cargo test -p opensession-core                # Single crate
 cd crates/worker && cargo check --target wasm32-unknown-unknown  # Worker
+
+# Dockerized full web E2E (Playwright, default headless)
+scripts/playwright-full-test.sh --rebuild
+
+# Headed mode
+scripts/playwright-full-test.sh --headed
 ```
 
 ## HAIL Format

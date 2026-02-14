@@ -164,6 +164,66 @@ pub enum SettingsSection {
     Account,
 }
 
+impl SettingsSection {
+    pub const ORDER: [Self; 5] = [
+        Self::Workspace,
+        Self::CaptureSync,
+        Self::TimelineIntelligence,
+        Self::StoragePrivacy,
+        Self::Account,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "Workspace",
+            Self::CaptureSync => "Capture & Sync",
+            Self::TimelineIntelligence => "Timeline Intel",
+            Self::StoragePrivacy => "Storage & Privacy",
+            Self::Account => "Account",
+        }
+    }
+
+    pub fn panel_title(self) -> &'static str {
+        match self {
+            Self::Workspace => "Workspace",
+            Self::CaptureSync => "Capture & Sync",
+            Self::TimelineIntelligence => "Timeline Intelligence",
+            Self::StoragePrivacy => "Storage & Privacy",
+            Self::Account => "Account",
+        }
+    }
+
+    pub fn group(self) -> Option<config::SettingsGroup> {
+        match self {
+            Self::Workspace => Some(config::SettingsGroup::Workspace),
+            Self::CaptureSync => Some(config::SettingsGroup::CaptureSync),
+            Self::TimelineIntelligence => Some(config::SettingsGroup::TimelineIntelligence),
+            Self::StoragePrivacy => Some(config::SettingsGroup::StoragePrivacy),
+            Self::Account => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let idx = Self::ORDER
+            .iter()
+            .position(|section| *section == self)
+            .unwrap_or(0);
+        Self::ORDER[(idx + 1) % Self::ORDER.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let idx = Self::ORDER
+            .iter()
+            .position(|section| *section == self)
+            .unwrap_or(0);
+        if idx == 0 {
+            *Self::ORDER.last().unwrap_or(&Self::Workspace)
+        } else {
+            Self::ORDER[idx - 1]
+        }
+    }
+}
+
 /// Password change form state.
 #[derive(Default)]
 pub struct PasswordForm {
@@ -1318,15 +1378,7 @@ impl App {
     // ── Settings key handler ──────────────────────────────────────────
 
     fn settings_group(&self) -> Option<config::SettingsGroup> {
-        match self.settings_section {
-            SettingsSection::Workspace => Some(config::SettingsGroup::Workspace),
-            SettingsSection::CaptureSync => Some(config::SettingsGroup::CaptureSync),
-            SettingsSection::TimelineIntelligence => {
-                Some(config::SettingsGroup::TimelineIntelligence)
-            }
-            SettingsSection::StoragePrivacy => Some(config::SettingsGroup::StoragePrivacy),
-            SettingsSection::Account => None,
-        }
+        self.settings_section.group()
     }
 
     fn settings_field_count(&self) -> usize {
@@ -1410,24 +1462,12 @@ impl App {
             }
             KeyCode::Char(']') => {
                 // Next settings section
-                self.settings_section = match self.settings_section {
-                    SettingsSection::Workspace => SettingsSection::CaptureSync,
-                    SettingsSection::CaptureSync => SettingsSection::TimelineIntelligence,
-                    SettingsSection::TimelineIntelligence => SettingsSection::StoragePrivacy,
-                    SettingsSection::StoragePrivacy => SettingsSection::Account,
-                    SettingsSection::Account => SettingsSection::Workspace,
-                };
+                self.settings_section = self.settings_section.next();
                 self.settings_index = 0;
             }
             KeyCode::Char('[') => {
                 // Previous settings section
-                self.settings_section = match self.settings_section {
-                    SettingsSection::Workspace => SettingsSection::Account,
-                    SettingsSection::CaptureSync => SettingsSection::Workspace,
-                    SettingsSection::TimelineIntelligence => SettingsSection::CaptureSync,
-                    SettingsSection::StoragePrivacy => SettingsSection::TimelineIntelligence,
-                    SettingsSection::Account => SettingsSection::StoragePrivacy,
-                };
+                self.settings_section = self.settings_section.prev();
                 self.settings_index = 0;
             }
             _ => {

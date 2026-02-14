@@ -10,10 +10,10 @@ use opensession_parsers::{all_parsers, SessionParser};
 pub async fn run_upload_all() -> Result<()> {
     let config = load_config()?;
     if config.server.api_key.is_empty() {
-        bail!("API key not configured. Run: opensession config --api-key <key>");
+        bail!("API key not configured. Run: opensession account config --api-key <key>");
     }
     if config.server.team_id.is_empty() {
-        bail!("Team ID not configured. Run: opensession config --team-id <id>");
+        bail!("Team ID not configured. Run: opensession account config --team-id <id>");
     }
 
     let locations = discover_sessions();
@@ -41,12 +41,7 @@ pub async fn run_upload_all() -> Result<()> {
             total += 1;
 
             // Skip subagent files
-            let path_str = path.to_string_lossy();
-            if path_str.contains("/subagents/")
-                || path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("agent-"))
-            {
+            if opensession_parsers::claude_code::is_claude_subagent_path(path) {
                 skipped += 1;
                 continue;
             }

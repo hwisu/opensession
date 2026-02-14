@@ -156,11 +156,28 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             }
 
             // Tool filter indicator
-            if let Some(ref tool) = app.tool_filter {
+            if let Some(tool) = app.active_tool_filter() {
                 left_spans.push(Span::styled("  ", Style::new()));
                 left_spans.push(Span::styled(
                     format!(" tool:{tool} "),
                     Style::new().fg(Color::Black).bg(Color::Magenta).bold(),
+                ));
+            }
+            if !app.is_default_time_range() {
+                left_spans.push(Span::styled("  ", Style::new()));
+                left_spans.push(Span::styled(
+                    format!(" range:{} ", app.session_time_range_label()),
+                    Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
+                ));
+            }
+            if !app.is_default_sort() {
+                left_spans.push(Span::styled("  ", Style::new()));
+                left_spans.push(Span::styled(
+                    format!(" sort:{} ", app.session_sort_label()),
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Theme::ACCENT_YELLOW)
+                        .bold(),
                 ));
             }
 
@@ -288,17 +305,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 _ => (summary_badge.as_str(), Style::new().fg(Theme::TEXT_MUTED)),
             };
             spans.push(Span::styled(format!(" {} ", summary_label), summary_style));
-
-            spans.push(Span::styled(" ", Style::new()));
-            let phases_label = if app.daemon_config.daemon.summary_event_window == 0 {
-                "phases:auto".to_string()
-            } else {
-                format!("phases:w{}", app.daemon_config.daemon.summary_event_window)
-            };
-            spans.push(Span::styled(
-                format!(" {} ", phases_label),
-                Style::new().fg(Theme::TEXT_MUTED),
-            ));
             spans.push(Span::styled(" ", Style::new()));
             let (rt_label, rt_style) = if !app.daemon_config.daemon.detail_realtime_preview_enabled
             {
@@ -443,25 +449,40 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("_", Style::new().fg(Theme::ACCENT_YELLOW)),
                     Span::styled("  ESC cancel  Enter confirm", desc_style),
                 ])
-            } else if app.list_layout == ListLayout::ByUser && app.is_db_view() {
-                Line::from(vec![
+            } else if app.list_layout == ListLayout::ByUser {
+                let mut spans = vec![
                     Span::styled(" h/l ", key_style),
                     Span::styled("columns  ", desc_style),
                     Span::styled("j/k ", key_style),
                     Span::styled("navigate  ", desc_style),
+                ];
+                if app.is_db_view() && app.total_pages() > 1 {
+                    spans.push(Span::styled("PgUp/PgDn ", key_style));
+                    spans.push(Span::styled("page  ", desc_style));
+                }
+                spans.extend([
                     Span::styled("Enter ", key_style),
                     Span::styled("open  ", desc_style),
                     Span::styled("m ", key_style),
                     Span::styled("single  ", desc_style),
+                    Span::styled("t ", key_style),
+                    Span::styled("tool  ", desc_style),
+                    Span::styled("o ", key_style),
+                    Span::styled("sort  ", desc_style),
+                    Span::styled("r ", key_style),
+                    Span::styled("range  ", desc_style),
                     Span::styled("Tab ", key_style),
                     Span::styled("view  ", desc_style),
                     Span::styled("q ", key_style),
                     Span::styled("quit", desc_style),
-                ])
+                ]);
+                Line::from(spans)
             } else {
                 let mut spans = vec![
                     Span::styled(" j/k ", key_style),
                     Span::styled("navigate  ", desc_style),
+                    Span::styled("PgUp/PgDn ", key_style),
+                    Span::styled("page  ", desc_style),
                     Span::styled("Enter ", key_style),
                     Span::styled("open  ", desc_style),
                     Span::styled("/ ", key_style),
@@ -469,11 +490,19 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("Tab ", key_style),
                     Span::styled("view  ", desc_style),
                 ];
-                if app.is_db_view() {
-                    spans.push(Span::styled("m ", key_style));
-                    spans.push(Span::styled("by-user  ", desc_style));
-                    spans.push(Span::styled("f ", key_style));
+                if !app.available_tools.is_empty() {
+                    spans.push(Span::styled("t ", key_style));
                     spans.push(Span::styled("tool  ", desc_style));
+                }
+                spans.push(Span::styled("o ", key_style));
+                spans.push(Span::styled("sort  ", desc_style));
+                spans.push(Span::styled("r ", key_style));
+                spans.push(Span::styled("range  ", desc_style));
+                spans.push(Span::styled("m ", key_style));
+                spans.push(Span::styled("by-agent-count  ", desc_style));
+                if app.is_db_view() {
+                    spans.push(Span::styled("f ", key_style));
+                    spans.push(Span::styled("tool(next)  ", desc_style));
                     spans.push(Span::styled("d ", key_style));
                     spans.push(Span::styled("delete  ", desc_style));
                 }
@@ -491,18 +520,6 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::SessionDetail => {
-            let summary_state = app.llm_summary_status_label();
-            let summary_engine = app.llm_summary_engine_label();
-            let (summary_queued, summary_done, summary_skipped, filtered_control) =
-                app.detail_summary_counters();
-            let summary_queue = format!(
-                "queued:{summary_queued} done:{summary_done} skipped:{summary_skipped} filtered-control:{filtered_control}"
-            );
-            let phases_state = if app.daemon_config.daemon.summary_event_window == 0 {
-                "auto".to_string()
-            } else {
-                format!("w{}", app.daemon_config.daemon.summary_event_window)
-            };
             let realtime_state = if !app.daemon_config.daemon.detail_realtime_preview_enabled {
                 "off"
             } else if app.should_skip_realtime_for_selected() {
@@ -528,15 +545,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("raw toggle  ", desc_style),
                     Span::styled("g/G ", key_style),
                     Span::styled("first/last  ", desc_style),
-                    Span::styled("summary ", key_style),
-                    Span::styled(
-                        format!("{summary_state}/{summary_engine} {summary_queue} phases:{phases_state}  "),
-                        desc_style,
-                    ),
                     Span::styled("detail-live ", key_style),
                     Span::styled(format!("{realtime_state}  "), desc_style),
-                    Span::styled("4 ", key_style),
-                    Span::styled("settings  ", desc_style),
                     Span::styled("v ", key_style),
                     Span::styled("linear  ", desc_style),
                     Span::styled("Esc ", key_style),
@@ -554,15 +564,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("type  ", desc_style),
                     Span::styled("c ", key_style),
                     Span::styled(format!("collapse:{collapse_state}  "), desc_style),
-                    Span::styled("summary ", key_style),
-                    Span::styled(
-                        format!("{summary_state}/{summary_engine} {summary_queue} phases:{phases_state}  "),
-                        desc_style,
-                    ),
                     Span::styled("detail-live ", key_style),
                     Span::styled(format!("{realtime_state}  "), desc_style),
-                    Span::styled("4 ", key_style),
-                    Span::styled("settings  ", desc_style),
                     Span::styled("Enter ", key_style),
                     Span::styled("expand  ", desc_style),
                     Span::styled("v ", key_style),

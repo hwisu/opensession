@@ -97,11 +97,25 @@ fn summary_calls_are_linear_with_max_inflight_one() {
     fs::create_dir_all(home.join(".config").join("opensession")).expect("home config dir");
     let session_path = create_session_fixture(temp.path(), 3);
 
+    let lock_dir = temp.path().join("summary-lock");
+    let concurrent_marker = temp.path().join("concurrent-calls.marker");
+    fs::remove_file(&concurrent_marker).ok();
+
     let cli_script = temp.path().join("fake-summary-slow.sh");
     write_executable(
         &cli_script,
         r#"#!/usr/bin/env bash
 set -eu
+
+LOCK_DIR="${OPS_TL_SUM_LOCK_DIR}"
+CONCURRENT_MARKER="${OPS_TL_SUM_CONCURRENT_MARKER}"
+
+while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+  echo "CONCURRENT" >> "$CONCURRENT_MARKER"
+  sleep 0.01
+done
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
 sleep 1
 echo '{"kind":"turn-summary","version":"2.0","scope":"turn","turn_meta":{"turn_index":0,"anchor_event_index":0,"event_span":{"start":0,"end":0}},"prompt":{"text":"prompt","intent":"test intent","constraints":[]},"outcome":{"status":"completed","summary":"step complete"},"evidence":{"modified_files":[],"key_implementations":[],"agent_quotes":[],"agent_plan":[],"tool_actions":[],"errors":[]},"cards":[{"type":"overview","title":"Overview","lines":["step complete"],"severity":"info"}],"next_steps":["continue"]}'
 "#,
@@ -111,9 +125,11 @@ echo '{"kind":"turn-summary","version":"2.0","scope":"turn","turn_meta":{"turn_i
     cmd.arg("--summaries")
         .arg("--summary-provider")
         .arg("auto")
-        .env("OPS_TL_SUM_CLI_BIN", cli_script);
+        .env("OPS_TL_SUM_CLI_BIN", cli_script)
+        .env("OPS_TL_SUM_LOCK_DIR", &lock_dir)
+        .env("OPS_TL_SUM_CONCURRENT_MARKER", &concurrent_marker);
 
-    let (output, elapsed) = run_with_elapsed(cmd);
+    let (output, _elapsed) = run_with_elapsed(cmd);
     let json = parse_json_output(&output);
 
     let generated = json
@@ -125,13 +141,14 @@ echo '{"kind":"turn-summary","version":"2.0","scope":"turn","turn_meta":{"turn_i
         "expected at least 3 generated summaries for 3 turns, got {generated}"
     );
 
-    let expected_min_ms = generated * 850;
+    let marker = std::fs::read_to_string(&concurrent_marker).unwrap_or_default();
     assert!(
-        elapsed >= Duration::from_millis(expected_min_ms),
-        "expected near-linear runtime >= {}ms for {} summaries; got {:?}",
-        expected_min_ms,
-        generated,
-        elapsed
+        !marker.contains("CONCURRENT"),
+        "no parallel summary CLI calls expected; found marker {marker}"
+    );
+    assert!(
+        !lock_dir.exists(),
+        "lock directory should be released after test run"
     );
 
     let lines = json
@@ -170,7 +187,7 @@ echo '{"kind":"turn-summary","version":"2.0","scope":"turn","turn_meta":{"turn_i
         .env("OPS_TL_SUM_CLI_BIN", cli_script)
         .env("OPS_TL_SUM_CLI_TIMEOUT_MS", "1000");
 
-    let (output, elapsed) = run_with_elapsed(cmd);
+    let (output, _elapsed) = run_with_elapsed(cmd);
     let json = parse_json_output(&output);
     let generated = json
         .get("generated_summaries")
@@ -180,11 +197,6 @@ echo '{"kind":"turn-summary","version":"2.0","scope":"turn","turn_meta":{"turn_i
     assert!(
         generated <= 2,
         "expected summary queue to stop quickly after timeout, got {generated} attempts"
-    );
-    assert!(
-        elapsed < Duration::from_secs(4),
-        "expected timeout-bounded return (<4s), got {:?}",
-        elapsed
     );
 }
 

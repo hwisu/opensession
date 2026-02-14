@@ -236,7 +236,7 @@ fn collect_candidates(
         })
         .collect();
 
-    discovered.sort_by(|a, b| b.modified.cmp(&a.modified));
+    sort_candidates(&mut discovered);
     discovered.truncate(limit);
 
     if discovered.is_empty() {
@@ -264,6 +264,14 @@ fn collect_candidates(
     }
 
     Ok((active, SelectionMode::ActiveWindow))
+}
+
+fn sort_candidates(candidates: &mut [Candidate]) {
+    candidates.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.path.cmp(&b.path))
+    });
 }
 
 fn normalize_agent_alias(raw: &str) -> Result<String> {
@@ -321,18 +329,7 @@ fn normalize_opt(value: Option<String>) -> Option<String> {
 }
 
 fn is_excluded_path(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
-    if path_str.contains("/subagents/") || path_str.contains("\\subagents\\") {
-        return true;
-    }
-    if path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("agent-"))
-    {
-        return true;
-    }
-    false
+    opensession_parsers::claude_code::is_claude_subagent_path(path)
 }
 
 fn candidate_display_line(candidate: &Candidate) -> String {
@@ -394,5 +391,30 @@ mod tests {
     fn unsupported_alias_returns_error() {
         let err = normalize_agent_alias("goose").expect_err("unsupported");
         assert!(format!("{err:#}").contains("unsupported agent"));
+    }
+
+    #[test]
+    fn collect_candidates_ties_break_by_path() {
+        let now = SystemTime::now();
+        let mut candidates = vec![
+            Candidate {
+                path: PathBuf::from("/tmp/z-session.jsonl"),
+                modified: now,
+            },
+            Candidate {
+                path: PathBuf::from("/tmp/a-session.jsonl"),
+                modified: now,
+            },
+            Candidate {
+                path: PathBuf::from("/tmp/m-session.jsonl"),
+                modified: now + Duration::from_secs(1),
+            },
+        ];
+
+        sort_candidates(&mut candidates);
+
+        assert_eq!(candidates[0].path, PathBuf::from("/tmp/m-session.jsonl"));
+        assert_eq!(candidates[1].path, PathBuf::from("/tmp/a-session.jsonl"));
+        assert_eq!(candidates[2].path, PathBuf::from("/tmp/z-session.jsonl"));
     }
 }

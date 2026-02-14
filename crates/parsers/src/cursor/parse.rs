@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use opensession_core::trace::{Agent, Content, Event, EventType, Session, SessionContext};
 use rusqlite::Connection;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 // ── Raw deserialization types for Cursor's composerData JSON ────────────────
 
@@ -59,6 +59,27 @@ struct RawComposerData {
     /// Cursor v3: bubble headers (conversation stored separately in bubbleId:* keys)
     #[serde(default)]
     full_conversation_headers_only: Option<Vec<RawBubbleHeader>>,
+}
+
+/// Cursor modern workspace index: `composer.composerData` (metadata-only list).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawComposerIndex {
+    #[serde(default)]
+    all_composers: Vec<RawComposerMeta>,
+}
+
+/// Metadata-only composer entry referenced by modern Cursor workspace DBs.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawComposerMeta {
+    composer_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "string_or_number::deserialize")]
+    created_at: Option<String>,
+    #[serde(default, deserialize_with = "string_or_number::deserialize")]
+    last_updated_at: Option<String>,
 }
 
 /// Cursor v3: header reference to a separately-stored bubble
@@ -141,8 +162,25 @@ pub(super) fn parse_cursor_vscdb(path: &Path) -> Result<Session> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("Failed to open Cursor state.vscdb: {}", path.display()))?;
 
-    // Read all composerData:* entries from cursorDiskKV
-    let conversations = read_composer_data(&conn)?;
+    // Legacy Cursor format stores full conversation JSON under composerData:*.
+    let mut conversations = read_composer_data(&conn)?;
+
+    // Modern workspace DBs may only expose metadata index (`composer.composerData`).
+    // Resolve those IDs from companion globalStorage DB when needed.
+    let composer_meta = read_composer_index_entries(&conn)?;
+    if !composer_meta.is_empty() {
+        let composer_ids: HashSet<String> = composer_meta
+            .iter()
+            .map(|meta| meta.composer_id.clone())
+            .collect();
+        if !composer_ids.is_empty() {
+            let extra = read_composer_data_from_companion_global(path, &composer_ids)?;
+            if !extra.is_empty() {
+                merge_missing_composer_data(&mut conversations, extra);
+            }
+        }
+        hydrate_conversation_meta(&mut conversations, &composer_meta);
+    }
 
     if conversations.is_empty() {
         anyhow::bail!("No composer conversations found in {}", path.display());
@@ -171,27 +209,130 @@ pub(super) fn parse_cursor_vscdb(path: &Path) -> Result<Session> {
     convert_conversation_to_session(best, path)
 }
 
+fn merge_missing_composer_data(target: &mut Vec<RawComposerData>, extra: Vec<RawComposerData>) {
+    let mut seen: HashSet<String> = target
+        .iter()
+        .map(|entry| entry.composer_id.clone())
+        .collect();
+    for entry in extra {
+        if seen.insert(entry.composer_id.clone()) {
+            target.push(entry);
+        }
+    }
+}
+
+fn hydrate_conversation_meta(conversations: &mut [RawComposerData], meta: &[RawComposerMeta]) {
+    let index: HashMap<&str, &RawComposerMeta> = meta
+        .iter()
+        .map(|entry| (entry.composer_id.as_str(), entry))
+        .collect();
+
+    for conversation in conversations {
+        if let Some(meta) = index.get(conversation.composer_id.as_str()) {
+            if conversation.name.is_none() {
+                conversation.name = meta.name.clone();
+            }
+            if conversation.created_at.is_none() {
+                conversation.created_at = meta.created_at.clone();
+            }
+            if conversation.last_updated_at.is_none() {
+                conversation.last_updated_at = meta.last_updated_at.clone();
+            }
+        }
+    }
+}
+
+fn read_composer_data_from_companion_global(
+    workspace_db: &Path,
+    composer_ids: &HashSet<String>,
+) -> Result<Vec<RawComposerData>> {
+    let Some(global_db) = companion_global_db_path(workspace_db) else {
+        return Ok(Vec::new());
+    };
+    if !global_db.exists() || global_db == workspace_db {
+        return Ok(Vec::new());
+    }
+
+    let conn = Connection::open_with_flags(&global_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("Failed to open Cursor global DB: {}", global_db.display()))?;
+    let all = read_composer_data(&conn)?;
+    Ok(all
+        .into_iter()
+        .filter(|entry| composer_ids.contains(&entry.composer_id))
+        .collect())
+}
+
+fn companion_global_db_path(path: &Path) -> Option<PathBuf> {
+    let workspace_hash_dir = path.parent()?;
+    let workspace_storage_dir = workspace_hash_dir.parent()?;
+    let is_workspace_storage = workspace_storage_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("workspaceStorage"));
+    if !is_workspace_storage {
+        return None;
+    }
+    let user_dir = workspace_storage_dir.parent()?;
+    Some(user_dir.join("globalStorage").join("state.vscdb"))
+}
+
+fn read_composer_index_entries(conn: &Connection) -> Result<Vec<RawComposerMeta>> {
+    let mut merged = Vec::new();
+    if table_exists(conn, "cursorDiskKV") {
+        merged.extend(read_composer_index_from_table(conn, "cursorDiskKV")?);
+    }
+    if table_exists(conn, "ItemTable") {
+        merged.extend(read_composer_index_from_table(conn, "ItemTable")?);
+    }
+
+    let mut seen = HashSet::new();
+    merged.retain(|entry| seen.insert(entry.composer_id.clone()));
+    Ok(merged)
+}
+
+fn read_composer_index_from_table(conn: &Connection, table: &str) -> Result<Vec<RawComposerMeta>> {
+    let sql = format!("SELECT value FROM {table} WHERE key = 'composer.composerData' LIMIT 1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    let Some(row) = rows.next()? else {
+        return Ok(Vec::new());
+    };
+
+    let value_ref = row.get_ref(0)?;
+    let raw = match value_ref {
+        rusqlite::types::ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        rusqlite::types::ValueRef::Blob(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        _ => String::new(),
+    };
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    match serde_json::from_str::<RawComposerIndex>(&raw) {
+        Ok(parsed) => Ok(parsed.all_composers),
+        Err(err) => {
+            tracing::debug!(
+                "Skipping unparseable composer.composerData payload: {}",
+                err
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
 fn read_composer_data(conn: &Connection) -> Result<Vec<RawComposerData>> {
-    // First check if the cursorDiskKV table exists
-    let table_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='cursorDiskKV'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-
-    if !table_exists {
+    if !table_exists(conn, "cursorDiskKV") {
         // Try ItemTable which is another known Cursor DB layout
-        let item_table_exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='ItemTable'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-
-        if item_table_exists {
+        if table_exists(conn, "ItemTable") {
             return read_composer_data_from_item_table(conn);
         }
 
@@ -241,6 +382,10 @@ fn read_composer_data(conn: &Connection) -> Result<Vec<RawComposerData>> {
                 tracing::debug!("Skipping unparseable composerData entry {}: {}", key, e);
             }
         }
+    }
+
+    if conversations.is_empty() && table_exists(conn, "ItemTable") {
+        return read_composer_data_from_item_table(conn);
     }
 
     Ok(conversations)
@@ -848,5 +993,61 @@ mod tests {
         assert_eq!(events.len(), 2); // Thinking + AgentMessage
         assert!(matches!(events[0].event_type, EventType::Thinking));
         assert!(matches!(events[1].event_type, EventType::AgentMessage));
+    }
+
+    #[test]
+    fn test_companion_global_db_path_for_workspace_db() {
+        let workspace_db = Path::new(
+            "/Users/test/Library/Application Support/Cursor/User/workspaceStorage/abc/state.vscdb",
+        );
+        let global = companion_global_db_path(workspace_db).expect("global path");
+        assert_eq!(
+            global,
+            PathBuf::from(
+                "/Users/test/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+            )
+        );
+    }
+
+    #[test]
+    fn test_hydrate_conversation_meta_fills_missing_fields() {
+        let mut conversations = vec![RawComposerData {
+            composer_id: "comp-1".to_string(),
+            name: None,
+            created_at: None,
+            last_updated_at: None,
+            conversation: vec![RawBubble {
+                bubble_type: 1,
+                bubble_id: Some("b1".to_string()),
+                text: Some("hello".to_string()),
+                thinking: None,
+                tool_former_data: None,
+                timing_info: None,
+                model_type: None,
+                checkpoint: None,
+            }],
+            is_agentic: None,
+            version: None,
+            full_conversation_headers_only: None,
+        }];
+
+        let meta = vec![RawComposerMeta {
+            composer_id: "comp-1".to_string(),
+            name: Some("Title".to_string()),
+            created_at: Some("2026-02-14T12:00:00Z".to_string()),
+            last_updated_at: Some("2026-02-14T13:00:00Z".to_string()),
+        }];
+
+        hydrate_conversation_meta(&mut conversations, &meta);
+
+        assert_eq!(conversations[0].name.as_deref(), Some("Title"));
+        assert_eq!(
+            conversations[0].created_at.as_deref(),
+            Some("2026-02-14T12:00:00Z")
+        );
+        assert_eq!(
+            conversations[0].last_updated_at.as_deref(),
+            Some("2026-02-14T13:00:00Z")
+        );
     }
 }

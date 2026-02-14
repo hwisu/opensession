@@ -1,11 +1,14 @@
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use crossterm::event::KeyCode;
 use opensession_api::{
-    InvitationResponse, MemberResponse, TeamDetailResponse, TeamResponse, UserSettingsResponse,
+    InvitationResponse, MemberResponse, SortOrder, TeamDetailResponse, TeamResponse, TimeRange,
+    UserSettingsResponse,
 };
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
 use ratatui::widgets::ListState;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -15,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::async_ops::{AsyncCommand, CommandResult};
 use crate::config::{self, DaemonConfig, GitStorageMethod, PublishMode, SettingField};
-use crate::session_timeline::{build_lane_events, LaneMarker};
+use crate::session_timeline::{build_lane_events_with_filter, LaneMarker};
 use crate::timeline_summary::{
     describe_summary_engine, parse_timeline_summary_output, SummaryRuntimeConfig,
     TimelineSummaryCacheEntry, TimelineSummaryPayload, TimelineSummaryWindowKey,
@@ -107,6 +110,20 @@ fn consecutive_group_key(event_type: &EventType) -> Option<String> {
         EventType::ToolResult { .. } => Some("ToolResult".to_string()),
         _ => None,
     }
+}
+
+/// High-signal action events used for chronicle/window summary anchors.
+fn is_action_summary_event(event_type: &EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::TaskStart { .. }
+            | EventType::TaskEnd { .. }
+            | EventType::ToolResult { .. }
+            | EventType::ShellCommand { .. }
+            | EventType::FileEdit { .. }
+            | EventType::FileCreate { .. }
+            | EventType::FileDelete { .. }
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -305,7 +322,7 @@ pub enum FlashLevel {
     Info,
 }
 
-/// Layout for the session list (single vs multi-column by user).
+/// Layout for the session list (single vs multi-column by active agent count).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListLayout {
     #[default]
@@ -336,6 +353,9 @@ fn is_infra_warning_user_message(event: &Event) -> bool {
     if !matches!(event.event_type, EventType::UserMessage) {
         return false;
     }
+    if App::is_internal_summary_user_event(event) {
+        return true;
+    }
     event_user_text(event)
         .map(|text| is_control_user_text(&text))
         .unwrap_or(false)
@@ -357,11 +377,11 @@ fn event_user_text(event: &Event) -> Option<String> {
     }
     let mut text = String::new();
     for block in &event.content.blocks {
-        if let ContentBlock::Text { text: block_text } = block {
+        for block_text in App::block_text_fragments(block) {
             if !text.is_empty() {
                 text.push('\n');
             }
-            text.push_str(block_text);
+            text.push_str(&block_text);
         }
     }
     let trimmed = text.trim().to_string();
@@ -376,6 +396,9 @@ fn is_control_user_text(text: &str) -> bool {
     let lower = text.trim().to_ascii_lowercase();
     if lower.is_empty() {
         return false;
+    }
+    if App::is_internal_summary_title(&lower) {
+        return true;
     }
     if lower.contains("apply_patch was requested via exec_command")
         && lower.contains("use the apply_patch tool instead")
@@ -448,16 +471,17 @@ pub fn extract_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
 
 fn turn_has_visible_prompt(turn: &Turn<'_>) -> bool {
     turn.user_events.iter().any(|event| {
-        event
-            .content
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
+        if is_control_event(event) || App::is_internal_summary_user_event(event) {
+            return false;
+        }
+        event_user_text(event)
+            .map(|text| {
+                text.lines().any(|line| {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !is_control_user_text(trimmed)
+                })
             })
-            .flat_map(|text| text.lines())
-            .any(|line| !line.trim().is_empty())
+            .unwrap_or(true)
     })
 }
 
@@ -472,7 +496,8 @@ pub fn extract_visible_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
 mod turn_extract_tests {
     use super::*;
     use chrono::Utc;
-    use opensession_core::trace::Content;
+    use opensession_core::trace::{Agent, Content, Session};
+    use serde_json::Value;
 
     fn make_event(event_id: &str, event_type: EventType, text: &str) -> Event {
         Event {
@@ -484,6 +509,27 @@ mod turn_extract_tests {
             duration_ms: None,
             attributes: HashMap::new(),
         }
+    }
+
+    fn make_event_with_task(
+        event_id: &str,
+        event_type: EventType,
+        text: &str,
+        task_id: &str,
+        merged_subagent: bool,
+    ) -> Event {
+        let mut event = make_event(event_id, event_type, text);
+        event.task_id = Some(task_id.to_string());
+        if merged_subagent {
+            event
+                .attributes
+                .insert("merged_subagent".to_string(), Value::Bool(true));
+            event.attributes.insert(
+                "subagent_id".to_string(),
+                Value::String(task_id.to_string()),
+            );
+        }
+        event
     }
 
     #[test]
@@ -498,6 +544,11 @@ mod turn_extract_tests {
                 "e2",
                 EventType::UserMessage,
                 "<turn_aborted>Request interrupted by user for tool use</turn_aborted>",
+            ),
+            make_event(
+                "e2b",
+                EventType::UserMessage,
+                "You are generating a turn-summary payload. Return JSON only.",
             ),
             make_event(
                 "e3",
@@ -541,6 +592,13 @@ mod turn_extract_tests {
             DisplayEvent::Single {
                 event: &events[4],
                 source_index: 4,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+            DisplayEvent::Single {
+                event: &events[5],
+                source_index: 5,
                 lane: 0,
                 marker: LaneMarker::None,
                 active_lanes: vec![0],
@@ -596,6 +654,321 @@ mod turn_extract_tests {
         let turns = extract_visible_turns(&display);
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].user_events.len(), 1);
+    }
+
+    #[test]
+    fn internal_summary_title_matches_turn_summary_prompt() {
+        assert!(App::is_internal_summary_title(
+            "You are generating a turn-summary payload."
+        ));
+        assert!(App::is_internal_summary_title(
+            "Return JSON only (no markdown, no prose) with keys"
+        ));
+        assert!(App::is_internal_summary_title(
+            "\"kind\":\"turn-summary\",\"version\":\"2.0\""
+        ));
+        assert!(!App::is_internal_summary_title(
+            "Rules: Preserve evidence and keep factual and concise."
+        ));
+        assert!(App::is_internal_summary_title(
+            "\"agent_quotes\":[\"...\"], \"modified_files\":[{\"path\":\"...\"}]"
+        ));
+        assert!(!App::is_internal_summary_title("Rules:"));
+        assert!(!App::is_internal_summary_title(
+            "summary_scope: 1라인 보다는 전체 이벤트 내용을 읽고 서머리가 되어야해"
+        ));
+    }
+
+    #[test]
+    fn internal_summary_row_filters_json_schema_description() {
+        let row = LocalSessionRow {
+            id: "row-1".to_string(),
+            source_path: None,
+            sync_status: "local".to_string(),
+            last_synced_at: None,
+            user_id: None,
+            nickname: None,
+            team_id: None,
+            agent_provider: None,
+            agent_model: None,
+            tool: String::new(),
+            title: None,
+            description: Some("\"kind\":\"turn-summary\"".to_string()),
+            tags: None,
+            created_at: "2026-02-14T00:00:00Z".to_string(),
+            uploaded_at: None,
+            message_count: 1,
+            user_message_count: 1,
+            task_count: 0,
+            event_count: 3,
+            duration_seconds: 1,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            git_remote: None,
+            git_branch: None,
+            git_commit: None,
+            git_repo_name: None,
+            pr_number: None,
+            pr_url: None,
+            working_directory: None,
+            files_modified: None,
+            files_read: None,
+            has_errors: false,
+        };
+
+        assert!(App::is_internal_summary_row(&row));
+    }
+
+    #[test]
+    fn internal_summary_row_filters_codex_no_user_messages() {
+        let row = LocalSessionRow {
+            id: "row-2".to_string(),
+            source_path: None,
+            sync_status: "local".to_string(),
+            last_synced_at: None,
+            user_id: None,
+            nickname: None,
+            team_id: None,
+            agent_provider: None,
+            agent_model: None,
+            tool: "codex".to_string(),
+            title: None,
+            description: None,
+            tags: None,
+            created_at: "2026-02-14T00:00:00Z".to_string(),
+            uploaded_at: None,
+            message_count: 1,
+            user_message_count: 0,
+            task_count: 0,
+            event_count: 3,
+            duration_seconds: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            git_remote: None,
+            git_branch: None,
+            git_commit: None,
+            git_repo_name: None,
+            pr_number: None,
+            pr_url: None,
+            working_directory: None,
+            files_modified: None,
+            files_read: None,
+            has_errors: false,
+        };
+
+        assert!(App::is_internal_summary_row(&row));
+    }
+
+    #[test]
+    fn rebuild_columns_groups_local_sessions_by_agent_count() {
+        let mut app = App::new(vec![
+            Session::new(
+                "s1".to_string(),
+                Agent {
+                    provider: "anthropic".to_string(),
+                    model: "claude".to_string(),
+                    tool: "claude-code".to_string(),
+                    tool_version: None,
+                },
+            ),
+            Session::new(
+                "s2".to_string(),
+                Agent {
+                    provider: "openai".to_string(),
+                    model: "gpt-5".to_string(),
+                    tool: "codex".to_string(),
+                    tool_version: None,
+                },
+            ),
+            Session::new(
+                "s3".to_string(),
+                Agent {
+                    provider: "openai".to_string(),
+                    model: "gpt-5".to_string(),
+                    tool: "codex".to_string(),
+                    tool_version: None,
+                },
+            ),
+        ]);
+        app.filtered_sessions = vec![0, 1, 2];
+        app.session_max_active_agents.insert("s1".to_string(), 1);
+        app.session_max_active_agents.insert("s2".to_string(), 3);
+        app.session_max_active_agents.insert("s3".to_string(), 3);
+        app.list_layout = ListLayout::ByUser;
+
+        app.rebuild_columns();
+
+        assert_eq!(
+            app.column_users,
+            vec!["3 agents".to_string(), "1 agent".to_string()]
+        );
+        assert_eq!(app.column_session_indices("3 agents"), vec![1, 2]);
+        assert_eq!(app.column_session_indices("1 agent"), vec![0]);
+    }
+
+    #[test]
+    fn list_navigation_crosses_page_boundary() {
+        let mut app = App::new(vec![
+            Session::new(
+                "s1".to_string(),
+                Agent {
+                    provider: "anthropic".to_string(),
+                    model: "claude".to_string(),
+                    tool: "claude-code".to_string(),
+                    tool_version: None,
+                },
+            ),
+            Session::new(
+                "s2".to_string(),
+                Agent {
+                    provider: "openai".to_string(),
+                    model: "gpt-5".to_string(),
+                    tool: "codex".to_string(),
+                    tool_version: None,
+                },
+            ),
+            Session::new(
+                "s3".to_string(),
+                Agent {
+                    provider: "openai".to_string(),
+                    model: "gpt-5".to_string(),
+                    tool: "codex".to_string(),
+                    tool_version: None,
+                },
+            ),
+        ]);
+        app.per_page = 2;
+        app.page = 0;
+        app.list_state.select(Some(1));
+
+        app.list_next();
+        assert_eq!(app.page, 1);
+        assert_eq!(app.list_state.selected(), Some(0));
+
+        app.list_prev();
+        assert_eq!(app.page, 0);
+        assert_eq!(app.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn get_base_visible_events_hides_claude_merged_subagent_events() {
+        let mut session = Session::new(
+            "s-hidden".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-sonnet".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        session.events = vec![
+            make_event("u1", EventType::UserMessage, "prompt"),
+            make_event_with_task(
+                "s-start",
+                EventType::TaskStart {
+                    title: Some("subagent".to_string()),
+                },
+                "",
+                "agent-123",
+                true,
+            ),
+            make_event_with_task(
+                "s-msg",
+                EventType::AgentMessage,
+                "subagent response",
+                "agent-123",
+                true,
+            ),
+            make_event_with_task(
+                "s-end",
+                EventType::TaskEnd {
+                    summary: Some("done".to_string()),
+                },
+                "",
+                "agent-123",
+                true,
+            ),
+            make_event("a1", EventType::AgentMessage, "main response"),
+        ];
+        session.recompute_stats();
+
+        let app = App::new(vec![session]);
+        let visible = app.get_base_visible_events(&app.sessions[0]);
+
+        assert_eq!(visible.len(), 2);
+        assert!(visible
+            .iter()
+            .all(|row| row.event().task_id.as_deref() != Some("agent-123")));
+        assert_eq!(app.session_max_active_agents.get("s-hidden"), Some(&1usize));
+    }
+
+    #[test]
+    fn selected_session_actor_label_uses_local_nickname_attribute() {
+        let mut session = Session::new(
+            "s-local".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session
+            .context
+            .attributes
+            .insert("nickname".to_string(), Value::String("alice".to_string()));
+
+        let app = App::new(vec![session]);
+        assert_eq!(
+            app.selected_session_actor_label().as_deref(),
+            Some("@alice")
+        );
+    }
+
+    #[test]
+    fn selected_session_actor_label_falls_back_to_db_user_id() {
+        let mut app = App::new(vec![]);
+        app.view_mode = ViewMode::Team("team-1".to_string());
+        app.db_sessions = vec![LocalSessionRow {
+            id: "db-1".to_string(),
+            source_path: None,
+            sync_status: "synced".to_string(),
+            last_synced_at: None,
+            user_id: Some("0123456789abcdef".to_string()),
+            nickname: None,
+            team_id: Some("team-1".to_string()),
+            tool: "codex".to_string(),
+            agent_provider: None,
+            agent_model: None,
+            title: None,
+            description: None,
+            tags: None,
+            created_at: "2026-02-14T00:00:00Z".to_string(),
+            uploaded_at: None,
+            message_count: 1,
+            user_message_count: 1,
+            task_count: 0,
+            event_count: 1,
+            duration_seconds: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            git_remote: None,
+            git_branch: None,
+            git_commit: None,
+            git_repo_name: None,
+            pr_number: None,
+            pr_url: None,
+            working_directory: None,
+            files_modified: None,
+            files_read: None,
+            has_errors: false,
+        }];
+        app.list_state.select(Some(0));
+
+        assert_eq!(
+            app.selected_session_actor_label().as_deref(),
+            Some("id:0123456789")
+        );
     }
 }
 
@@ -680,8 +1053,10 @@ pub struct App {
     pub detail_selected_event_id: Option<String>,
     pub detail_source_path: Option<PathBuf>,
     pub detail_source_mtime: Option<SystemTime>,
+    pub detail_hydrate_pending: bool,
     pub realtime_preview_enabled: bool,
     pub last_realtime_check: Instant,
+    pub detail_entered_at: Instant,
     pub timeline_summary_cache: HashMap<TimelineSummaryWindowKey, TimelineSummaryCacheEntry>,
     pub timeline_summary_pending: VecDeque<TimelineSummaryWindowRequest>,
     pub timeline_summary_inflight: HashSet<TimelineSummaryWindowKey>,
@@ -707,6 +1082,8 @@ pub struct App {
     pub view_mode: ViewMode,
     /// DB-backed session list (for Team/Repo views).
     pub db_sessions: Vec<LocalSessionRow>,
+    /// Total DB-backed rows for the active filter (across all pages).
+    pub db_total_sessions: usize,
     /// Available repos for Repo view cycling.
     pub repos: Vec<String>,
     /// Current repo index when cycling.
@@ -717,6 +1094,8 @@ pub struct App {
     // ── Tool filter ──────────────────────────────────────────────
     pub tool_filter: Option<String>,
     pub available_tools: Vec<String>,
+    pub session_sort: SortOrder,
+    pub session_time_range: TimeRange,
 
     // ── Pagination ───────────────────────────────────────────────
     pub page: usize,
@@ -727,6 +1106,7 @@ pub struct App {
     pub column_focus: usize,
     pub column_list_states: Vec<ListState>,
     pub column_users: Vec<String>,
+    pub column_group_indices: Vec<Vec<usize>>,
 
     // ── Connection context ────────────────────────────────────────
     pub connection_ctx: ConnectionContext,
@@ -821,9 +1201,143 @@ pub struct TeamInfo {
 impl App {
     const DETAIL_SPLIT_MIN_WIDTH: u16 = 160;
     const INTERNAL_SUMMARY_TITLE_PREFIX: &str = "summarize this coding timeline window";
+    const INTERNAL_SUMMARY_HARD_MARKERS: &[&str] = &[
+        App::INTERNAL_SUMMARY_TITLE_PREFIX,
+        "generate a concise semantic timeline summary for this window",
+        "you are generating a hail-summary payload",
+        "you are generating a turn-summary payload",
+        "you are generating a turn-summary json",
+        "you are generating a turn summary payload",
+        "generate a turn-summary payload",
+        "generate turn-summary json",
+        "generate turn summary payload",
+        "generate turn-summary payload for this turn",
+        "return strict json only with keys",
+        "return strict json only",
+        "return turn-summary json (v2)",
+        "\"kind\":\"turn-summary\"",
+        "turn-summary payload",
+        "evidence.agent_quotes_candidates",
+        "evidence.agent_plan_candidates",
+    ];
+    const INTERNAL_SUMMARY_SOFT_MARKERS: &[&str] = &[
+        "return json only",
+        "return json only (no markdown, no prose) with keys",
+        "json only (no markdown, no prose)",
+        "json only",
+        "no markdown, no prose",
+        "preserve evidence",
+        "do not copy system/control instructions",
+        "keep factual and concise",
+        "summary_mode_hint",
+        "auto_turn_mode",
+        "turn_meta: turn_index",
+        "turn_meta",
+        "card_cap",
+        "\"agent_quotes\"",
+        "\"agent_plan\"",
+        "\"modified_files\"",
+        "\"key_implementations\"",
+        "\"tool_actions\"",
+        "\"cards\"",
+        "\"next_steps\"",
+        "rules:",
+    ];
 
     pub fn is_local_mode(&self) -> bool {
         matches!(self.connection_ctx, ConnectionContext::Local)
+    }
+
+    pub(crate) fn is_internal_summary_title(title: &str) -> bool {
+        let normalized = title.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return false;
+        }
+        let compact = normalized
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+
+        let contains_marker = |marker: &str| {
+            let marker_compact = marker
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>();
+            normalized.starts_with(marker)
+                || normalized.contains(marker)
+                || compact.contains(&marker_compact)
+        };
+
+        if Self::INTERNAL_SUMMARY_HARD_MARKERS
+            .iter()
+            .any(|marker| contains_marker(marker))
+        {
+            return true;
+        }
+
+        let soft_hits = Self::INTERNAL_SUMMARY_SOFT_MARKERS
+            .iter()
+            .filter(|marker| contains_marker(marker))
+            .count();
+        let has_turn_summary_context = contains_marker("turn-summary")
+            || contains_marker("\"kind\":\"turn-summary\"")
+            || contains_marker("turn_meta")
+            || contains_marker("agent_quotes")
+            || contains_marker("modified_files");
+
+        (soft_hits >= 2 && has_turn_summary_context) || soft_hits >= 4
+    }
+
+    pub(crate) fn block_text_fragments(block: &ContentBlock) -> Vec<String> {
+        match block {
+            ContentBlock::Text { text } => vec![text.clone()],
+            ContentBlock::Code { code, .. } => vec![code.clone()],
+            ContentBlock::Json { data } => vec![data.to_string()],
+            ContentBlock::File { path, content } => {
+                let mut out = vec![path.clone()];
+                if let Some(value) = content {
+                    out.push(value.clone());
+                }
+                out
+            }
+            ContentBlock::Reference { uri, media_type } => vec![uri.clone(), media_type.clone()],
+            ContentBlock::Image { url, alt, mime } => {
+                let mut out = vec![url.clone(), mime.clone()];
+                if let Some(alt) = alt.clone() {
+                    out.push(alt);
+                }
+                out
+            }
+            ContentBlock::Video { url, mime } | ContentBlock::Audio { url, mime } => {
+                vec![url.clone(), mime.clone()]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn is_internal_summary_user_event(event: &Event) -> bool {
+        if !matches!(event.event_type, EventType::UserMessage) {
+            return false;
+        }
+
+        if event
+            .content
+            .blocks
+            .iter()
+            .any(Self::block_has_internal_summary_content)
+        {
+            return true;
+        }
+
+        event_user_text(event)
+            .as_deref()
+            .is_some_and(Self::is_internal_summary_title)
+    }
+
+    fn block_has_internal_summary_content(block: &ContentBlock) -> bool {
+        Self::block_text_fragments(block)
+            .iter()
+            .any(|text| Self::is_internal_summary_title(text))
     }
 
     fn can_use_collab_tabs(&self) -> bool {
@@ -834,12 +1348,11 @@ impl App {
         self.view_mode = mode;
         self.tool_filter = None;
         self.page = 0;
-        self.reload_db_sessions();
-        self.list_state.select(if self.session_count() > 0 {
-            Some(0)
-        } else {
-            None
-        });
+        self.apply_filter();
+        self.rebuild_available_tools();
+        if self.list_layout == ListLayout::ByUser {
+            self.rebuild_columns();
+        }
     }
 
     pub fn new(sessions: Vec<Session>) -> Self {
@@ -858,12 +1371,20 @@ impl App {
             .filter(|(_, s)| !Self::is_internal_summary_session(s))
             .map(|(idx, _)| idx)
             .collect();
+        let mut local_tools: Vec<String> = sessions
+            .iter()
+            .filter(|s| !Self::is_internal_summary_session(s))
+            .map(|s| s.agent.tool.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        local_tools.sort();
         let mut list_state = ListState::default();
         if !filtered.is_empty() {
             list_state.select(Some(0));
         }
 
-        Self {
+        let mut app = Self {
             sessions,
             filtered_sessions: filtered,
             view: View::SessionList,
@@ -882,8 +1403,10 @@ impl App {
             detail_selected_event_id: None,
             detail_source_path: None,
             detail_source_mtime: None,
+            detail_hydrate_pending: false,
             realtime_preview_enabled: false,
             last_realtime_check: Instant::now(),
+            detail_entered_at: Instant::now(),
             timeline_summary_cache: HashMap::new(),
             timeline_summary_pending: VecDeque::new(),
             timeline_summary_inflight: HashSet::new(),
@@ -904,17 +1427,21 @@ impl App {
             db: None,
             view_mode: ViewMode::Local,
             db_sessions: Vec::new(),
+            db_total_sessions: 0,
             repos: Vec::new(),
             repo_index: 0,
             team_id: None,
             tool_filter: None,
-            available_tools: Vec::new(),
+            available_tools: local_tools,
+            session_sort: SortOrder::Recent,
+            session_time_range: TimeRange::All,
             page: 0,
             per_page: 50,
             list_layout: ListLayout::default(),
             column_focus: 0,
             column_list_states: Vec::new(),
             column_users: Vec::new(),
+            column_group_indices: Vec::new(),
             connection_ctx: ConnectionContext::Local,
             daemon_config: DaemonConfig::default(),
             startup_status: StartupStatus::default(),
@@ -952,15 +1479,9 @@ impl App {
             password_form: PasswordForm::default(),
             health_check_done: false,
             loading_sessions: false,
-        }
-    }
-
-    fn is_internal_summary_title(title: &str) -> bool {
-        let normalized = title.trim().to_ascii_lowercase();
-        normalized.starts_with(Self::INTERNAL_SUMMARY_TITLE_PREFIX)
-            || normalized
-                .starts_with("generate a concise semantic timeline summary for this window")
-            || normalized.starts_with("you are generating a hail-summary payload")
+        };
+        app.apply_filter();
+        app
     }
 
     pub(crate) fn is_internal_summary_session(session: &Session) -> bool {
@@ -973,19 +1494,67 @@ impl App {
             return true;
         }
 
-        session.events.iter().any(|event| {
-            matches!(event.event_type, EventType::UserMessage)
-                && event.content.blocks.iter().any(|block| match block {
-                    ContentBlock::Text { text } => Self::is_internal_summary_title(text),
-                    _ => false,
-                })
-        })
+        session
+            .events
+            .iter()
+            .any(|event| Self::is_internal_summary_user_event(event))
     }
 
     fn is_internal_summary_row(row: &LocalSessionRow) -> bool {
         row.title
             .as_deref()
             .is_some_and(Self::is_internal_summary_title)
+            || row
+                .description
+                .as_deref()
+                .is_some_and(Self::is_internal_summary_title)
+            || (row.tool == "codex" && row.user_message_count == 0)
+    }
+
+    fn hidden_claude_subagent_task_ids(session: &Session) -> HashSet<String> {
+        if !session.agent.tool.eq_ignore_ascii_case("claude-code") {
+            return HashSet::new();
+        }
+
+        let mut hidden = HashSet::new();
+        for event in &session.events {
+            let subagent_id = event
+                .attributes
+                .get("subagent_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let is_marked_subagent = event
+                .attributes
+                .get("merged_subagent")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+                || subagent_id.is_some();
+            if !is_marked_subagent {
+                continue;
+            }
+
+            if let Some(task_id) = event
+                .task_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                hidden.insert(task_id.to_string());
+            } else if let Some(task_id) = subagent_id {
+                hidden.insert(task_id.to_string());
+            }
+        }
+        hidden
+    }
+
+    fn hide_claude_subagent_event(event: &Event, hidden_task_ids: &HashSet<String>) -> bool {
+        event
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|task_id| !task_id.is_empty())
+            .is_some_and(|task_id| hidden_task_ids.contains(task_id))
     }
 
     /// Returns true if the app should quit.
@@ -1150,8 +1719,8 @@ impl App {
     }
 
     fn handle_list_key(&mut self, key: KeyCode) -> bool {
-        // ByUser multi-column mode
-        if self.list_layout == ListLayout::ByUser && self.is_db_view() {
+        // Agent-count multi-column mode
+        if self.list_layout == ListLayout::ByUser {
             return self.handle_multi_column_key(key);
         }
 
@@ -1159,6 +1728,8 @@ impl App {
             KeyCode::Char('q') => return true,
             KeyCode::Char('j') | KeyCode::Down => self.list_next(),
             KeyCode::Char('k') | KeyCode::Up => self.list_prev(),
+            KeyCode::PageDown => self.list_page_down(),
+            KeyCode::PageUp => self.list_page_up(),
             KeyCode::Char('G') | KeyCode::End => self.list_end(),
             KeyCode::Char('g') | KeyCode::Home => self.list_start(),
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.enter_detail(),
@@ -1171,6 +1742,15 @@ impl App {
                 }
             }
             KeyCode::Char('m') => self.toggle_list_layout(),
+            KeyCode::Char('t') => {
+                self.cycle_tool_filter();
+            }
+            KeyCode::Char('o') => {
+                self.cycle_session_sort();
+            }
+            KeyCode::Char('r') => {
+                self.cycle_session_time_range();
+            }
             KeyCode::Char('p') => {
                 // Open upload popup — only when connected to a server
                 if matches!(self.connection_ctx, ConnectionContext::Local) {
@@ -1236,12 +1816,13 @@ impl App {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                let user = self.column_users[self.column_focus].clone();
-                let count = self.column_session_indices(&user).len();
-                if let Some(state) = self.column_list_states.get_mut(self.column_focus) {
-                    if count > 0 {
-                        let current = state.selected().unwrap_or(0);
-                        state.select(Some((current + 1).min(count - 1)));
+                if let Some(label) = self.column_users.get(self.column_focus).cloned() {
+                    let count = self.column_session_indices(&label).len();
+                    if let Some(state) = self.column_list_states.get_mut(self.column_focus) {
+                        if count > 0 {
+                            let current = state.selected().unwrap_or(0);
+                            state.select(Some((current + 1).min(count - 1)));
+                        }
                     }
                 }
             }
@@ -1251,15 +1832,31 @@ impl App {
                     state.select(Some(current.saturating_sub(1)));
                 }
             }
+            KeyCode::PageDown | KeyCode::Char(']') => {
+                if self.is_db_view() {
+                    self.list_page_down();
+                }
+            }
+            KeyCode::PageUp | KeyCode::Char('[') => {
+                if self.is_db_view() {
+                    self.list_page_up();
+                }
+            }
             KeyCode::Enter => {
                 // Open the selected session from the focused column
-                if let Some(user) = self.column_users.get(self.column_focus).cloned() {
-                    let indices = self.column_session_indices(&user);
+                if let Some(label) = self.column_users.get(self.column_focus).cloned() {
+                    let indices = self.column_session_indices(&label);
                     if let Some(state) = self.column_list_states.get(self.column_focus) {
                         if let Some(sel) = state.selected() {
-                            if let Some(&db_idx) = indices.get(sel) {
-                                // Set the main list_state to this db index so enter_detail works
-                                self.list_state.select(Some(db_idx));
+                            if let Some(&abs_idx) = indices.get(sel) {
+                                // Sync main list selection from absolute index so enter_detail works
+                                if self.is_db_view() {
+                                    self.list_state.select(Some(abs_idx));
+                                } else {
+                                    let per_page = self.per_page.max(1);
+                                    self.page = abs_idx / per_page;
+                                    self.list_state.select(Some(abs_idx % per_page));
+                                }
                                 self.enter_detail();
                             }
                         }
@@ -1267,6 +1864,19 @@ impl App {
                 }
             }
             KeyCode::Char('m') => self.toggle_list_layout(),
+            KeyCode::Char('t') => {
+                self.cycle_tool_filter();
+            }
+            KeyCode::Char('o') => {
+                self.cycle_session_sort();
+            }
+            KeyCode::Char('r') => {
+                self.cycle_session_time_range();
+            }
+            KeyCode::Char('f') => {
+                // Legacy alias in DB multi-column view.
+                self.cycle_tool_filter();
+            }
             KeyCode::Tab => {
                 if self.active_tab == Tab::Sessions {
                     self.cycle_view_mode();
@@ -2634,15 +3244,29 @@ impl App {
                 if let Some(ref db) = self.db {
                     let _ = db.delete_session(&session_id);
                 }
-                self.db_sessions.retain(|r| r.id != session_id);
                 self.sessions.retain(|s| s.session_id != session_id);
-                // Fix selection
-                let count = self.page_count();
-                if count == 0 {
-                    self.list_state.select(None);
-                } else if let Some(sel) = self.list_state.selected() {
-                    if sel >= count {
-                        self.list_state.select(Some(count - 1));
+                if self.is_db_view() {
+                    let selected = self.list_state.selected().unwrap_or(0);
+                    self.reload_db_sessions();
+                    if self.list_layout == ListLayout::ByUser {
+                        self.rebuild_columns();
+                    }
+                    let count = self.page_count();
+                    if count == 0 {
+                        self.list_state.select(None);
+                    } else {
+                        self.list_state.select(Some(selected.min(count - 1)));
+                    }
+                } else {
+                    self.db_sessions.retain(|r| r.id != session_id);
+                    // Fix selection
+                    let count = self.page_count();
+                    if count == 0 {
+                        self.list_state.select(None);
+                    } else if let Some(sel) = self.list_state.selected() {
+                        if sel >= count {
+                            self.list_state.select(Some(count - 1));
+                        }
                     }
                 }
                 self.flash_success("Session deleted");
@@ -2792,19 +3416,15 @@ impl App {
         self.view_mode = next;
         self.tool_filter = None;
         self.page = 0;
-        self.reload_db_sessions();
-        self.list_state.select(if self.session_count() > 0 {
-            Some(0)
-        } else {
-            None
-        });
+        self.apply_filter();
+        self.rebuild_available_tools();
+        if self.list_layout == ListLayout::ByUser {
+            self.rebuild_columns();
+        }
     }
 
-    /// Toggle between Single and ByUser list layout (Team/Repo views only).
+    /// Toggle between Single and agent-count multi-column list layout.
     fn toggle_list_layout(&mut self) {
-        if matches!(self.view_mode, ViewMode::Local) {
-            return;
-        }
         match self.list_layout {
             ListLayout::Single => {
                 self.list_layout = ListLayout::ByUser;
@@ -2816,49 +3436,121 @@ impl App {
         }
     }
 
-    /// Group db_sessions by user nickname for multi-column view.
+    /// Group current list by max active agent count for multi-column view.
     fn rebuild_columns(&mut self) {
         use std::collections::BTreeMap;
-        let mut by_user: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-        for (idx, row) in self.db_sessions.iter().enumerate() {
-            let key = row.nickname.clone().unwrap_or_else(|| "you".into());
-            by_user.entry(key).or_default().push(idx);
+        let mut by_agents: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        match self.view_mode {
+            ViewMode::Local => {
+                for (abs_idx, &session_idx) in self.filtered_sessions.iter().enumerate() {
+                    let session = &self.sessions[session_idx];
+                    let fallback = if session.events.is_empty() { 0 } else { 1 };
+                    let agent_count = self
+                        .session_max_active_agents
+                        .get(&session.session_id)
+                        .copied()
+                        .unwrap_or(fallback)
+                        .max(1);
+                    by_agents.entry(agent_count).or_default().push(abs_idx);
+                }
+            }
+            ViewMode::Team(_) | ViewMode::Repo(_) => {
+                for (abs_idx, row) in self.db_sessions.iter().enumerate() {
+                    let agent_count = self
+                        .session_max_active_agents
+                        .get(&row.id)
+                        .copied()
+                        .unwrap_or(1)
+                        .max(1);
+                    by_agents.entry(agent_count).or_default().push(abs_idx);
+                }
+            }
         }
-        self.column_users = by_user.keys().cloned().collect();
+
+        let mut grouped: Vec<(usize, Vec<usize>)> = by_agents.into_iter().collect();
+        grouped.sort_by(|(a, _), (b, _)| b.cmp(a));
+        self.column_users = grouped
+            .iter()
+            .map(|(count, _)| {
+                if *count == 1 {
+                    "1 agent".to_string()
+                } else {
+                    format!("{count} agents")
+                }
+            })
+            .collect();
+        self.column_group_indices = grouped.into_iter().map(|(_, indices)| indices).collect();
+
         self.column_list_states = vec![ListState::default(); self.column_users.len()];
-        for s in &mut self.column_list_states {
-            s.select(Some(0));
+        for (state, indices) in self
+            .column_list_states
+            .iter_mut()
+            .zip(self.column_group_indices.iter())
+        {
+            state.select(if indices.is_empty() { None } else { Some(0) });
         }
         self.column_focus = 0;
     }
 
     /// Get the indices of db_sessions for a given column user.
     pub fn column_session_indices(&self, user: &str) -> Vec<usize> {
-        self.db_sessions
+        self.column_users
             .iter()
-            .enumerate()
-            .filter(|(_, row)| row.nickname.as_deref().unwrap_or("you") == user)
-            .map(|(i, _)| i)
-            .collect()
+            .position(|column| column == user)
+            .and_then(|idx| self.column_group_indices.get(idx).cloned())
+            .unwrap_or_default()
     }
 
     /// Reload db_sessions for the current view_mode.
     pub fn reload_db_sessions(&mut self) {
-        let Some(ref db) = self.db else { return };
-        let filter = match &self.view_mode {
+        let Some(db) = self.db.clone() else { return };
+        let search = self.normalized_search_query();
+        let base_filter = match &self.view_mode {
             ViewMode::Local => return, // Local mode uses self.sessions
             ViewMode::Team(tid) => LocalSessionFilter {
                 team_id: Some(tid.clone()),
                 tool: self.tool_filter.clone(),
+                search: search.clone(),
+                sort: self.session_sort.clone(),
+                time_range: self.session_time_range.clone(),
                 ..Default::default()
             },
             ViewMode::Repo(repo) => LocalSessionFilter {
                 git_repo_name: Some(repo.clone()),
                 tool: self.tool_filter.clone(),
+                search,
+                sort: self.session_sort.clone(),
+                time_range: self.session_time_range.clone(),
                 ..Default::default()
             },
         };
-        match db.list_sessions(&filter) {
+
+        self.db_total_sessions = match db.count_sessions_filtered(&base_filter) {
+            Ok(count) => count.max(0) as usize,
+            Err(e) => {
+                eprintln!("DB count error: {e}");
+                self.db_sessions.clear();
+                self.column_users.clear();
+                self.column_group_indices.clear();
+                0
+            }
+        };
+
+        let per_page = self.per_page.max(1);
+        let total_pages = if self.db_total_sessions == 0 {
+            1
+        } else {
+            self.db_total_sessions.div_ceil(per_page)
+        };
+        if self.page >= total_pages {
+            self.page = total_pages.saturating_sub(1);
+        }
+
+        let mut page_filter = base_filter.clone();
+        page_filter.limit = Some(per_page.min(u32::MAX as usize) as u32);
+        page_filter.offset = Some(self.page.saturating_mul(per_page).min(u32::MAX as usize) as u32);
+
+        match db.list_sessions(&page_filter) {
             Ok(rows) => {
                 self.db_sessions = rows
                     .into_iter()
@@ -2869,6 +3561,9 @@ impl App {
             Err(e) => {
                 eprintln!("DB error: {e}");
                 self.db_sessions.clear();
+                self.db_total_sessions = 0;
+                self.column_users.clear();
+                self.column_group_indices.clear();
             }
         }
     }
@@ -2877,7 +3572,7 @@ impl App {
     pub fn session_count(&self) -> usize {
         match &self.view_mode {
             ViewMode::Local => self.filtered_sessions.len(),
-            _ => self.db_sessions.len(),
+            _ => self.db_total_sessions,
         }
     }
 
@@ -2900,6 +3595,9 @@ impl App {
 
     /// Index range for the current page.
     pub fn page_range(&self) -> std::ops::Range<usize> {
+        if self.is_db_view() {
+            return 0..self.db_sessions.len();
+        }
         let total = self.session_count();
         let start = self.page * self.per_page;
         let end = (start + self.per_page).min(total);
@@ -2914,6 +3612,12 @@ impl App {
     fn next_page(&mut self) {
         if self.page + 1 < self.total_pages() {
             self.page += 1;
+            if self.is_db_view() {
+                self.reload_db_sessions();
+                if self.list_layout == ListLayout::ByUser {
+                    self.rebuild_columns();
+                }
+            }
             self.list_state.select(Some(0));
         }
     }
@@ -2921,6 +3625,12 @@ impl App {
     fn prev_page(&mut self) {
         if self.page > 0 {
             self.page -= 1;
+            if self.is_db_view() {
+                self.reload_db_sessions();
+                if self.list_layout == ListLayout::ByUser {
+                    self.rebuild_columns();
+                }
+            }
             self.list_state.select(Some(0));
         }
     }
@@ -2933,14 +3643,50 @@ impl App {
         if self.tool_filter.is_some() {
             return; // Keep existing list while filtering
         }
-        let mut tools: Vec<String> = self
-            .db_sessions
-            .iter()
-            .map(|r| r.tool.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
+        let mut tools: Vec<String> = match self.view_mode.clone() {
+            ViewMode::Local => self
+                .sessions
+                .iter()
+                .filter(|s| !Self::is_internal_summary_session(s))
+                .map(|s| s.agent.tool.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
+            ViewMode::Team(tid) => {
+                let search = self.normalized_search_query();
+                let filter = LocalSessionFilter {
+                    team_id: Some(tid),
+                    tool: None,
+                    search,
+                    sort: self.session_sort.clone(),
+                    time_range: self.session_time_range.clone(),
+                    ..Default::default()
+                };
+                if let Some(db) = self.db.as_ref() {
+                    db.list_session_tools(&filter).unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            }
+            ViewMode::Repo(repo) => {
+                let search = self.normalized_search_query();
+                let filter = LocalSessionFilter {
+                    git_repo_name: Some(repo),
+                    tool: None,
+                    search,
+                    sort: self.session_sort.clone(),
+                    time_range: self.session_time_range.clone(),
+                    ..Default::default()
+                };
+                if let Some(db) = self.db.as_ref() {
+                    db.list_session_tools(&filter).unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            }
+        };
         tools.sort();
+        tools.dedup();
         self.available_tools = tools;
     }
 
@@ -2964,12 +3710,159 @@ impl App {
             }
         };
         self.page = 0;
-        self.reload_db_sessions();
-        self.list_state.select(if self.session_count() > 0 {
-            Some(0)
-        } else {
+        self.apply_filter();
+    }
+
+    pub fn session_sort_label(&self) -> &'static str {
+        match self.session_sort {
+            SortOrder::Recent => "recent",
+            SortOrder::Popular => "popular",
+            SortOrder::Longest => "longest",
+        }
+    }
+
+    pub fn session_time_range_label(&self) -> &'static str {
+        match self.session_time_range {
+            TimeRange::All => "all",
+            TimeRange::Hours24 => "24h",
+            TimeRange::Days7 => "7d",
+            TimeRange::Days30 => "30d",
+        }
+    }
+
+    pub fn is_default_sort(&self) -> bool {
+        matches!(self.session_sort, SortOrder::Recent)
+    }
+
+    pub fn is_default_time_range(&self) -> bool {
+        matches!(self.session_time_range, TimeRange::All)
+    }
+
+    pub fn active_tool_filter(&self) -> Option<&str> {
+        self.tool_filter
+            .as_deref()
+            .filter(|tool| !tool.trim().is_empty())
+    }
+
+    pub fn has_active_session_filters(&self) -> bool {
+        self.active_tool_filter().is_some()
+            || !self.search_query.trim().is_empty()
+            || !self.is_default_sort()
+            || !self.is_default_time_range()
+    }
+
+    fn normalized_search_query(&self) -> Option<String> {
+        let query = self.search_query.trim();
+        if query.is_empty() {
             None
-        });
+        } else {
+            Some(query.to_string())
+        }
+    }
+
+    fn local_time_cutoff(&self) -> Option<DateTime<Utc>> {
+        match self.session_time_range {
+            TimeRange::All => None,
+            TimeRange::Hours24 => Some(Utc::now() - ChronoDuration::hours(24)),
+            TimeRange::Days7 => Some(Utc::now() - ChronoDuration::days(7)),
+            TimeRange::Days30 => Some(Utc::now() - ChronoDuration::days(30)),
+        }
+    }
+
+    fn local_session_matches_search(session: &Session, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+
+        let title = session
+            .context
+            .title
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let tool = session.agent.tool.to_ascii_lowercase();
+        let model = session.agent.model.to_ascii_lowercase();
+        let sid = session.session_id.to_ascii_lowercase();
+        let tags = session.context.tags.join(" ").to_ascii_lowercase();
+
+        title.contains(query)
+            || tool.contains(query)
+            || model.contains(query)
+            || sid.contains(query)
+            || tags.contains(query)
+    }
+
+    fn local_session_matches_filters(
+        &self,
+        session: &Session,
+        search_query: &str,
+        cutoff: Option<&DateTime<Utc>>,
+        required_tool: Option<&str>,
+    ) -> bool {
+        if Self::is_internal_summary_session(session) {
+            return false;
+        }
+
+        if let Some(cutoff) = cutoff {
+            if session.context.created_at < *cutoff {
+                return false;
+            }
+        }
+
+        if let Some(required_tool) = required_tool {
+            if !session.agent.tool.eq_ignore_ascii_case(required_tool) {
+                return false;
+            }
+        }
+
+        Self::local_session_matches_search(session, search_query)
+    }
+
+    fn compare_local_sessions_for_sort(
+        sort_order: &SortOrder,
+        lhs: &Session,
+        rhs: &Session,
+    ) -> Ordering {
+        match sort_order {
+            SortOrder::Recent => rhs
+                .context
+                .created_at
+                .cmp(&lhs.context.created_at)
+                .then_with(|| rhs.session_id.cmp(&lhs.session_id)),
+            SortOrder::Popular => rhs
+                .stats
+                .message_count
+                .cmp(&lhs.stats.message_count)
+                .then_with(|| rhs.context.created_at.cmp(&lhs.context.created_at))
+                .then_with(|| rhs.session_id.cmp(&lhs.session_id)),
+            SortOrder::Longest => rhs
+                .stats
+                .duration_seconds
+                .cmp(&lhs.stats.duration_seconds)
+                .then_with(|| rhs.context.created_at.cmp(&lhs.context.created_at))
+                .then_with(|| rhs.session_id.cmp(&lhs.session_id)),
+        }
+    }
+
+    fn cycle_session_sort(&mut self) {
+        self.session_sort = match self.session_sort {
+            SortOrder::Recent => SortOrder::Popular,
+            SortOrder::Popular => SortOrder::Longest,
+            SortOrder::Longest => SortOrder::Recent,
+        };
+        self.page = 0;
+        self.apply_filter();
+    }
+
+    fn cycle_session_time_range(&mut self) {
+        self.session_time_range = match self.session_time_range {
+            TimeRange::All => TimeRange::Hours24,
+            TimeRange::Hours24 => TimeRange::Days7,
+            TimeRange::Days7 => TimeRange::Days30,
+            TimeRange::Days30 => TimeRange::All,
+        };
+        self.page = 0;
+        self.apply_filter();
     }
 
     // ── List navigation ─────────────────────────────────────────────────
@@ -2979,21 +3872,46 @@ impl App {
         if count == 0 {
             return;
         }
-        let i = self
-            .list_state
-            .selected()
-            .map(|i| (i + 1).min(count - 1))
-            .unwrap_or(0);
-        self.list_state.select(Some(i));
+        let selected = self.list_state.selected().unwrap_or(0);
+        if selected + 1 < count {
+            self.list_state.select(Some(selected + 1));
+            return;
+        }
+        if self.page + 1 < self.total_pages() {
+            self.next_page();
+        }
     }
 
     fn list_prev(&mut self) {
-        let i = self
-            .list_state
-            .selected()
-            .map(|i| i.saturating_sub(1))
-            .unwrap_or(0);
-        self.list_state.select(Some(i));
+        let count = self.page_count();
+        if count == 0 {
+            return;
+        }
+        let selected = self.list_state.selected().unwrap_or(0);
+        if selected > 0 {
+            self.list_state.select(Some(selected - 1));
+            return;
+        }
+        if self.page > 0 {
+            self.prev_page();
+            self.list_end();
+        }
+    }
+
+    fn list_page_down(&mut self) {
+        if self.page + 1 < self.total_pages() {
+            self.next_page();
+        } else {
+            self.list_end();
+        }
+    }
+
+    fn list_page_up(&mut self) {
+        if self.page > 0 {
+            self.prev_page();
+        } else {
+            self.list_start();
+        }
     }
 
     fn list_end(&mut self) {
@@ -3015,8 +3933,7 @@ impl App {
                 // For DB views, only enter if we have a matching parsed session
                 if self.is_db_view() && self.selected_session().is_none() {
                     let url = &self.daemon_config.server.url;
-                    let abs_idx = self.page * self.per_page + selected;
-                    if let Some(row) = self.db_sessions.get(abs_idx) {
+                    if let Some(row) = self.db_sessions.get(selected) {
                         self.flash_info(format!(
                             "Remote-only session — view at {}/sessions/{}",
                             url, row.id
@@ -3055,7 +3972,12 @@ impl App {
                     .as_ref()
                     .and_then(|p| std::fs::metadata(p).ok())
                     .and_then(|m| m.modified().ok());
+                self.detail_hydrate_pending = self
+                    .selected_session()
+                    .map(|session| session.events.is_empty() && session.stats.event_count > 0)
+                    .unwrap_or(false);
                 self.last_realtime_check = Instant::now();
+                self.detail_entered_at = Instant::now();
                 self.realtime_preview_enabled =
                     self.daemon_config.daemon.detail_realtime_preview_enabled;
                 if let Some(session) = self.selected_session().cloned() {
@@ -3349,11 +4271,8 @@ impl App {
     pub fn selected_session(&self) -> Option<&Session> {
         if self.is_db_view() {
             // In DB view, match by session_id against parsed sessions
-            let abs_idx = self
-                .list_state
-                .selected()
-                .map(|i| self.page * self.per_page + i)?;
-            let db_row = self.db_sessions.get(abs_idx)?;
+            let idx = self.list_state.selected()?;
+            let db_row = self.db_sessions.get(idx)?;
             self.sessions.iter().find(|s| s.session_id == db_row.id)
         } else {
             let abs_idx = self
@@ -3379,28 +4298,67 @@ impl App {
             .collect();
     }
 
-    /// Get nickname of the currently selected session (Team/Repo views only).
-    pub fn selected_session_nickname(&self) -> Option<&str> {
-        if self.is_db_view() {
-            let abs_idx = self
-                .list_state
-                .selected()
-                .map(|i| self.page * self.per_page + i)?;
-            self.db_sessions
-                .get(abs_idx)
-                .and_then(|row| row.nickname.as_deref())
-        } else {
-            None
+    fn short_user_id(user_id: &str) -> String {
+        user_id.chars().take(10).collect()
+    }
+
+    fn actor_label_from_session(session: &Session) -> Option<String> {
+        let attrs = &session.context.attributes;
+        if let Some(nickname) = attrs
+            .get("nickname")
+            .or_else(|| attrs.get("user_nickname"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(format!("@{nickname}"));
         }
+        if let Some(user_id) = attrs
+            .get("user_id")
+            .or_else(|| attrs.get("uid"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(format!("id:{}", Self::short_user_id(user_id)));
+        }
+        attrs
+            .get("originator")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+    }
+
+    /// Actor label for the currently selected session (nickname or user-id fallback).
+    pub fn selected_session_actor_label(&self) -> Option<String> {
+        if self.is_db_view() {
+            let row = self.selected_db_session()?;
+            if let Some(nickname) = row
+                .nickname
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(format!("@{nickname}"));
+            }
+            if let Some(user_id) = row
+                .user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(format!("id:{}", Self::short_user_id(user_id)));
+            }
+        }
+        self.selected_session()
+            .and_then(Self::actor_label_from_session)
     }
 
     /// Get the selected DB session row (for Team/Repo views).
     pub fn selected_db_session(&self) -> Option<&LocalSessionRow> {
-        let abs_idx = self
-            .list_state
-            .selected()
-            .map(|i| self.page * self.per_page + i)?;
-        self.db_sessions.get(abs_idx)
+        let idx = self.list_state.selected()?;
+        self.db_sessions.get(idx)
     }
 
     /// Check if the selected session's repo allows public upload.
@@ -3516,17 +4474,21 @@ impl App {
     }
 
     pub fn get_base_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
-        let after_task: Vec<DisplayEvent<'a>> =
-            build_lane_events(session, |event_type| self.matches_event_filter(event_type))
-                .into_iter()
-                .map(|lane_event| DisplayEvent::Single {
-                    event: lane_event.event,
-                    source_index: lane_event.source_index,
-                    lane: lane_event.lane,
-                    marker: lane_event.marker,
-                    active_lanes: lane_event.active_lanes,
-                })
-                .collect();
+        let hidden_task_ids = Self::hidden_claude_subagent_task_ids(session);
+        let after_task: Vec<DisplayEvent<'a>> = build_lane_events_with_filter(
+            session,
+            |event| !Self::hide_claude_subagent_event(event, &hidden_task_ids),
+            |event_type| self.matches_event_filter(event_type),
+        )
+        .into_iter()
+        .map(|lane_event| DisplayEvent::Single {
+            event: lane_event.event,
+            source_index: lane_event.source_index,
+            lane: lane_event.lane,
+            marker: lane_event.marker,
+            active_lanes: lane_event.active_lanes,
+        })
+        .collect();
         if self.collapse_consecutive {
             Self::collapse_consecutive_events(after_task)
         } else {
@@ -3608,6 +4570,8 @@ impl App {
         let configured_window = self.daemon_config.daemon.summary_event_window;
         let auto_turn_window_mode = configured_window == 0;
         let window = configured_window.max(1) as usize;
+        let include_window_anchors = self.detail_view_mode != DetailViewMode::Turn;
+        let include_turn_anchors = self.detail_view_mode == DetailViewMode::Turn;
         let mut seen: HashSet<TimelineSummaryWindowKey> = HashSet::new();
         let mut anchors: Vec<SummaryAnchor<'a>> = Vec::new();
         let source_to_event: HashMap<usize, &'a Event> = events
@@ -3615,102 +4579,114 @@ impl App {
             .map(|de| (de.source_index(), de.event()))
             .collect();
 
-        for (idx, de) in events.iter().enumerate() {
-            let event = de.event();
-            let is_boundary = matches!(
-                event.event_type,
-                EventType::TaskStart { .. } | EventType::TaskEnd { .. }
-            );
-            let is_checkpoint = !auto_turn_window_mode && (idx + 1) % window == 0;
-            if !is_boundary && !is_checkpoint {
-                continue;
-            }
+        if include_window_anchors {
+            for (idx, de) in events.iter().enumerate() {
+                let event = de.event();
+                let is_boundary = matches!(
+                    event.event_type,
+                    EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+                );
+                let is_checkpoint = !auto_turn_window_mode && (idx + 1) % window == 0;
+                let is_action_checkpoint = auto_turn_window_mode
+                    && !is_boundary
+                    && is_action_summary_event(&event.event_type);
+                if !is_boundary && !is_checkpoint && !is_action_checkpoint {
+                    continue;
+                }
 
-            let window_id = if is_boundary {
-                let tag = if matches!(event.event_type, EventType::TaskStart { .. }) {
-                    1u64
+                let window_id = if is_boundary {
+                    let tag = if matches!(event.event_type, EventType::TaskStart { .. }) {
+                        1u64
+                    } else {
+                        2u64
+                    };
+                    (tag << 56) | (de.source_index() as u64)
+                } else if is_action_checkpoint {
+                    // Keep action-scope windows distinct from fixed-size checkpoint windows.
+                    (4u64 << 56) | (de.source_index() as u64)
                 } else {
-                    2u64
+                    (idx / window) as u64
                 };
-                (tag << 56) | (de.source_index() as u64)
-            } else {
-                (idx / window) as u64
-            };
+                let span = if is_action_checkpoint { 1 } else { window };
 
-            let key = TimelineSummaryWindowKey {
-                session_id: session.session_id.clone(),
-                event_index: de.source_index(),
-                window_id,
-            };
-            if !seen.insert(key.clone()) {
-                continue;
+                let key = TimelineSummaryWindowKey {
+                    session_id: session.session_id.clone(),
+                    event_index: de.source_index(),
+                    window_id,
+                };
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+
+                anchors.push(SummaryAnchor {
+                    scope: SummaryScope::Window,
+                    key,
+                    anchor_event: event,
+                    anchor_source_index: de.source_index(),
+                    display_index: idx,
+                    start_display_index: idx.saturating_sub(span.saturating_sub(1)),
+                    end_display_index: idx,
+                    lane: de.lane(),
+                    active_lanes: de.active_lanes().to_vec(),
+                });
             }
-
-            anchors.push(SummaryAnchor {
-                scope: SummaryScope::Window,
-                key,
-                anchor_event: event,
-                anchor_source_index: de.source_index(),
-                display_index: idx,
-                start_display_index: idx.saturating_sub(window.saturating_sub(1)),
-                end_display_index: idx,
-                lane: de.lane(),
-                active_lanes: de.active_lanes().to_vec(),
-            });
         }
 
-        for turn in extract_visible_turns(events) {
-            if turn.user_events.is_empty() && turn.agent_events.is_empty() {
-                continue;
-            }
-            let control_only_user = !turn.user_events.is_empty()
-                && turn
-                    .user_events
-                    .iter()
-                    .all(|event| is_infra_warning_user_message(event));
-            if turn.agent_events.is_empty() && control_only_user {
-                continue;
-            }
-            let Some(anchor_event) = source_to_event.get(&turn.anchor_source_index).copied() else {
-                continue;
-            };
-            let key = TimelineSummaryWindowKey {
-                session_id: session.session_id.clone(),
-                event_index: turn.anchor_source_index,
-                window_id: (3u64 << 56) | (turn.turn_index as u64),
-            };
-            if !seen.insert(key.clone()) {
-                continue;
-            }
+        if include_turn_anchors {
+            for turn in extract_visible_turns(events) {
+                if turn.user_events.is_empty() && turn.agent_events.is_empty() {
+                    continue;
+                }
+                let control_only_user = !turn.user_events.is_empty()
+                    && turn
+                        .user_events
+                        .iter()
+                        .all(|event| is_infra_warning_user_message(event));
+                if turn.agent_events.is_empty() && control_only_user {
+                    continue;
+                }
+                let Some(anchor_event) = source_to_event.get(&turn.anchor_source_index).copied()
+                else {
+                    continue;
+                };
+                let key = TimelineSummaryWindowKey {
+                    session_id: session.session_id.clone(),
+                    event_index: turn.anchor_source_index,
+                    window_id: (3u64 << 56) | (turn.turn_index as u64),
+                };
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
 
-            let display_event = events
-                .get(turn.end_display_index)
-                .map(|de| de.event())
-                .unwrap_or(anchor_event);
-            let display_source = events
-                .get(turn.end_display_index)
-                .map(|de| de.source_index())
-                .unwrap_or(turn.anchor_source_index);
-            let lane = events
-                .get(turn.end_display_index)
-                .map(|de| de.lane())
-                .unwrap_or(0);
-            let active_lanes = events
-                .get(turn.end_display_index)
-                .map(|de| de.active_lanes().to_vec())
-                .unwrap_or_else(|| vec![0]);
+                let display_event = events
+                    .get(turn.end_display_index)
+                    .map(|de| de.event())
+                    .unwrap_or(anchor_event);
+                let display_source = events
+                    .get(turn.end_display_index)
+                    .map(|de| de.source_index())
+                    .unwrap_or(turn.anchor_source_index);
+                let lane = events
+                    .get(turn.end_display_index)
+                    .map(|de| de.lane())
+                    .unwrap_or(0);
+                let active_lanes = events
+                    .get(turn.end_display_index)
+                    .map(|de| de.active_lanes().to_vec())
+                    .unwrap_or_else(|| vec![0]);
 
-            anchors.push(SummaryAnchor {
-                scope: SummaryScope::Turn,
-                key,
-                anchor_event: display_event,
-                anchor_source_index: display_source,
-                display_index: turn.end_display_index,
-                start_display_index: turn.start_display_index,
-                end_display_index: turn.end_display_index,
-                lane,
-                active_lanes,
-            });
+                anchors.push(SummaryAnchor {
+                    scope: SummaryScope::Turn,
+                    key,
+                    anchor_event: display_event,
+                    anchor_source_index: display_source,
+                    display_index: turn.end_display_index,
+                    start_display_index: turn.start_display_index,
+                    end_display_index: turn.end_display_index,
+                    lane,
+                    active_lanes,
+                });
+            }
         }
 
         anchors
@@ -4048,6 +5024,8 @@ impl App {
         } else {
             prompt_text_lines.join(" | ")
         };
+        let inner_event_count = timeline_window.len();
+        let raw_event_count = slice.len();
         let prompt_intent = prompt_text_lines
             .first()
             .map(|line| clip(line, 180))
@@ -4075,6 +5053,8 @@ impl App {
         lines.push(format!("model: {}", session.agent.model));
         lines.push(format!("scope: {scope}"));
         lines.push(format!("summary_mode: {}", self.summary_content_mode_key()));
+        lines.push(format!("inner_event_count: {inner_event_count}"));
+        lines.push(format!("raw_event_count: {raw_event_count}"));
         lines.push(format!("card_cap: {card_cap}"));
         lines.push(format!(
             "turn_meta: turn_index={} anchor_event_index={} event_span={}..{}",
@@ -4172,6 +5152,11 @@ impl App {
         } else {
             "summary_mode_hint: normal (keep action-level detail)"
         };
+        let scope_mode_hint = if scope == "window" {
+            "scope_mode_hint: window (focus on one primary action and its immediate outcome; avoid turn-wide boilerplate ordering)"
+        } else {
+            "scope_mode_hint: turn (use stable card ordering to summarize the full turn)"
+        };
 
         format!(
             "Generate turn-summary JSON (v2) for this {scope}.\n\
@@ -4185,7 +5170,8 @@ impl App {
              - Keep agent_quotes verbatim (1~3 lines max).\n\
              - Prefer factual execution outcomes over meta-instructions.\n\
              {auto_mode_hint}\n\
-             {summary_mode_hint}\n\n{}",
+             {summary_mode_hint}\n\
+             {scope_mode_hint}\n\n{}",
             lines.join("\n")
         )
     }
@@ -4655,6 +5641,7 @@ impl App {
         self.detail_event_index = 0;
         self.detail_h_scroll = 0;
         self.detail_view_mode = DetailViewMode::Linear;
+        self.detail_hydrate_pending = false;
     }
 
     fn summary_inflight_timeout() -> Duration {
@@ -4836,6 +5823,15 @@ impl App {
         }
     }
 
+    fn detail_summary_warmup_duration() -> Duration {
+        let ms = std::env::var("OPS_TL_SUM_WARMUP_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(450)
+            .clamp(0, 5_000);
+        Duration::from_millis(ms)
+    }
+
     fn command_exists(binary: &str) -> bool {
         Command::new("sh")
             .arg("-lc")
@@ -4847,6 +5843,9 @@ impl App {
 
     pub fn schedule_detail_summary_jobs(&mut self) -> Option<AsyncCommand> {
         if self.view != View::SessionDetail {
+            return None;
+        }
+        if self.detail_entered_at.elapsed() < Self::detail_summary_warmup_duration() {
             return None;
         }
         self.prune_stale_summary_inflight();
@@ -4874,8 +5873,8 @@ impl App {
             .detail_event_index
             .saturating_add(viewport.saturating_mul(2));
 
-        let mut visible_new: Vec<(usize, TimelineSummaryWindowRequest)> = Vec::new();
-        let mut background_new: Vec<(usize, TimelineSummaryWindowRequest)> = Vec::new();
+        let mut visible_candidates: Vec<(usize, SummaryAnchor<'_>)> = Vec::new();
+        let mut background_candidates: Vec<(usize, SummaryAnchor<'_>)> = Vec::new();
         self.ensure_summary_disk_cache_loaded();
 
         for anchor in self.build_summary_anchors(&session, &base) {
@@ -4886,6 +5885,48 @@ impl App {
                 continue;
             }
 
+            let distance = anchor.display_index.abs_diff(self.detail_event_index);
+            let turn_focus_priority = self.detail_view_mode == DetailViewMode::Turn
+                && matches!(anchor.scope, SummaryScope::Turn)
+                && distance <= viewport;
+            if turn_focus_priority
+                || (anchor.display_index >= visible_start && anchor.display_index <= visible_end)
+            {
+                visible_candidates.push((distance, anchor));
+            } else {
+                background_candidates.push((distance, anchor));
+            }
+        }
+
+        if !visible_candidates.is_empty() {
+            const VISIBLE_ENQUEUE_BATCH: usize = 48;
+            visible_candidates.sort_by_key(|(distance, _)| *distance);
+            visible_candidates.truncate(VISIBLE_ENQUEUE_BATCH);
+            for (_, anchor) in visible_candidates.into_iter().rev() {
+                let context = self.build_summary_context(&session, &base, &anchor);
+                let cache_lookup_key = self.summary_cache_lookup_key(&anchor.key, &context);
+                if let Some(lookup_key) = cache_lookup_key.as_deref() {
+                    if self.maybe_use_summary_disk_cache(&anchor.key, lookup_key) {
+                        continue;
+                    }
+                }
+                let req = TimelineSummaryWindowRequest {
+                    context,
+                    key: anchor.key,
+                    visible_priority: true,
+                    cache_lookup_key,
+                };
+                self.timeline_summary_pending.push_front(req);
+            }
+        }
+
+        // Keep background fill lazy: only enqueue a small near-range batch per tick.
+        background_candidates.sort_by_key(|(distance, _)| *distance);
+        const BACKGROUND_ENQUEUE_BATCH: usize = 24;
+        for (_, anchor) in background_candidates
+            .into_iter()
+            .take(BACKGROUND_ENQUEUE_BATCH)
+        {
             let context = self.build_summary_context(&session, &base, &anchor);
             let cache_lookup_key = self.summary_cache_lookup_key(&anchor.key, &context);
             if let Some(lookup_key) = cache_lookup_key.as_deref() {
@@ -4893,37 +5934,12 @@ impl App {
                     continue;
                 }
             }
-
-            let distance = anchor.display_index.abs_diff(self.detail_event_index);
-            let turn_focus_priority = self.detail_view_mode == DetailViewMode::Turn
-                && matches!(anchor.scope, SummaryScope::Turn)
-                && distance <= viewport;
-            let in_visible_range =
-                anchor.display_index >= visible_start && anchor.display_index <= visible_end;
             let req = TimelineSummaryWindowRequest {
                 context,
                 key: anchor.key,
-                visible_priority: turn_focus_priority || in_visible_range,
+                visible_priority: false,
                 cache_lookup_key,
             };
-
-            if req.visible_priority {
-                visible_new.push((distance, req));
-            } else {
-                background_new.push((distance, req));
-            }
-        }
-
-        if !visible_new.is_empty() {
-            visible_new.sort_by_key(|(distance, _)| *distance);
-            for (_, req) in visible_new.into_iter().rev() {
-                self.timeline_summary_pending.push_front(req);
-            }
-        }
-        // Keep background fill lazy: only enqueue a small near-range batch per tick.
-        background_new.sort_by_key(|(distance, _)| *distance);
-        const BACKGROUND_ENQUEUE_BATCH: usize = 24;
-        for (_, req) in background_new.into_iter().take(BACKGROUND_ENQUEUE_BATCH) {
             self.timeline_summary_pending.push_back(req);
         }
 
@@ -5129,65 +6145,10 @@ impl App {
         .unwrap_or_else(|_| "backend:none".to_string())
     }
 
-    pub fn detail_summary_counters(&self) -> (usize, usize, usize, usize) {
-        let Some(session) = self.selected_session() else {
-            return (0, 0, 0, 0);
-        };
-        let sid = &session.session_id;
-        let queued = self
-            .timeline_summary_pending
-            .iter()
-            .filter(|req| &req.key.session_id == sid)
-            .count()
-            + self
-                .timeline_summary_inflight
-                .iter()
-                .filter(|key| &key.session_id == sid)
-                .count();
-        let done = self
-            .timeline_summary_cache
-            .keys()
-            .filter(|key| &key.session_id == sid)
-            .count();
-        let skipped = self
-            .timeline_summary_cache
-            .iter()
-            .filter(|(key, entry)| {
-                &key.session_id == sid
-                    && entry
-                        .compact
-                        .to_ascii_lowercase()
-                        .contains("summary unavailable")
-            })
-            .count();
-        let filtered_control = session
-            .events
-            .iter()
-            .filter(|event| is_control_event(event))
-            .count();
-        (queued, done, skipped, filtered_control)
-    }
-
     pub fn llm_summary_runtime_badge(&self) -> String {
         let status = self.llm_summary_status_label();
-        let (queued, done, skipped, filtered_control) = self.detail_summary_counters();
-        let mode = self.summary_content_mode_key();
-        let cache = if self.daemon_config.daemon.summary_disk_cache_enabled {
-            "disk-cache:on"
-        } else {
-            "disk-cache:off"
-        };
         match status.as_str() {
-            "on" => format!(
-                "summary:on {} mode:{} {} queued:{} done:{} skipped:{} filtered-control:{}",
-                self.llm_summary_engine_label(),
-                mode,
-                cache,
-                queued,
-                done,
-                skipped,
-                filtered_control
-            ),
+            "on" => format!("summary:on {}", self.llm_summary_engine_label()),
             "ignored(live-rule)" => "summary:ignored(live-rule)".to_string(),
             "off(no-backend)" => format!(
                 "summary:off(no-backend) {}",
@@ -5225,6 +6186,20 @@ impl App {
         }
     }
 
+    pub fn take_detail_hydrate_path(&mut self) -> Option<PathBuf> {
+        if self.view != View::SessionDetail || !self.detail_hydrate_pending {
+            return None;
+        }
+        self.detail_hydrate_pending = false;
+
+        let session = self.selected_session()?;
+        if !session.events.is_empty() || session.stats.event_count == 0 {
+            return None;
+        }
+
+        self.detail_source_path.clone()
+    }
+
     pub fn apply_reloaded_session(&mut self, reloaded: Session) {
         let sid = reloaded.session_id.clone();
         let max_agents = Self::compute_session_max_active_agents(&reloaded);
@@ -5245,6 +6220,7 @@ impl App {
             .retain(|key, _| key.session_id != sid);
         self.timeline_summary_lookup_keys
             .retain(|key, _| key.session_id != sid);
+        self.detail_hydrate_pending = false;
         self.remap_detail_selection_by_event_id();
     }
 
@@ -5252,11 +6228,16 @@ impl App {
         if session.events.is_empty() {
             return 0;
         }
-        let max_subagents = build_lane_events(session, |_| true)
-            .iter()
-            .map(|row| row.active_lanes.iter().filter(|lane| **lane > 0).count())
-            .max()
-            .unwrap_or(0);
+        let hidden_task_ids = Self::hidden_claude_subagent_task_ids(session);
+        let max_subagents = build_lane_events_with_filter(
+            session,
+            |event| !Self::hide_claude_subagent_event(event, &hidden_task_ids),
+            |_| true,
+        )
+        .iter()
+        .map(|row| row.active_lanes.iter().filter(|lane| **lane > 0).count())
+        .max()
+        .unwrap_or(0);
         max_subagents + 1
     }
 
@@ -5265,85 +6246,53 @@ impl App {
     }
 
     fn apply_filter(&mut self) {
-        let query = self.search_query.to_lowercase();
+        let search_query = self
+            .normalized_search_query()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         self.page = 0;
 
-        match &self.view_mode {
+        match self.view_mode.clone() {
             ViewMode::Local => {
-                if query.is_empty() {
-                    self.filtered_sessions = self
-                        .sessions
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| !Self::is_internal_summary_session(s))
-                        .map(|(i, _)| i)
-                        .collect();
-                } else {
-                    self.filtered_sessions = self
-                        .sessions
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| {
-                            if Self::is_internal_summary_session(s) {
-                                return false;
-                            }
-                            let title = s.context.title.as_deref().unwrap_or("").to_lowercase();
-                            let tool = s.agent.tool.to_lowercase();
-                            let model = s.agent.model.to_lowercase();
-                            let sid = s.session_id.to_lowercase();
-                            let tags = s.context.tags.join(" ").to_lowercase();
+                let required_tool = self.active_tool_filter();
+                let cutoff = self.local_time_cutoff();
 
-                            title.contains(&query)
-                                || tool.contains(&query)
-                                || model.contains(&query)
-                                || sid.contains(&query)
-                                || tags.contains(&query)
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                }
+                self.filtered_sessions = self
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| {
+                        self.local_session_matches_filters(
+                            s,
+                            &search_query,
+                            cutoff.as_ref(),
+                            required_tool,
+                        )
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
 
-                if self.filtered_sessions.is_empty() {
-                    self.list_state.select(None);
-                } else {
-                    self.list_state.select(Some(0));
-                }
-            }
-            ViewMode::Team(tid) => {
-                if let Some(ref db) = self.db {
-                    let filter = LocalSessionFilter {
-                        team_id: Some(tid.clone()),
-                        tool: self.tool_filter.clone(),
-                        search: if query.is_empty() { None } else { Some(query) },
-                        ..Default::default()
-                    };
-                    self.db_sessions = db
-                        .list_sessions(&filter)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|row| !Self::is_internal_summary_row(row))
-                        .collect();
-                }
-                self.list_state.select(if self.db_sessions.is_empty() {
-                    None
-                } else {
-                    Some(0)
+                let sort_order = self.session_sort.clone();
+                self.filtered_sessions.sort_by(|a, b| {
+                    let lhs = &self.sessions[*a];
+                    let rhs = &self.sessions[*b];
+                    Self::compare_local_sessions_for_sort(&sort_order, lhs, rhs)
                 });
+
+                self.list_state
+                    .select(if self.filtered_sessions.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
+                if self.list_layout == ListLayout::ByUser {
+                    self.rebuild_columns();
+                }
             }
-            ViewMode::Repo(repo) => {
-                if let Some(ref db) = self.db {
-                    let filter = LocalSessionFilter {
-                        git_repo_name: Some(repo.clone()),
-                        tool: self.tool_filter.clone(),
-                        search: if query.is_empty() { None } else { Some(query) },
-                        ..Default::default()
-                    };
-                    self.db_sessions = db
-                        .list_sessions(&filter)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|row| !Self::is_internal_summary_row(row))
-                        .collect();
+            ViewMode::Team(_) | ViewMode::Repo(_) => {
+                self.reload_db_sessions();
+                if self.list_layout == ListLayout::ByUser {
+                    self.rebuild_columns();
                 }
                 self.list_state.select(if self.db_sessions.is_empty() {
                     None

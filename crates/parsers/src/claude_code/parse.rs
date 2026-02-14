@@ -6,7 +6,7 @@ use opensession_core::trace::{Agent, Content, Event, EventType, Session, Session
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ── Raw JSONL deserialization types ──────────────────────────────────────────
 
@@ -260,6 +260,10 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
         };
 
     let mut attributes = HashMap::new();
+    attributes.insert(
+        "source_path".to_string(),
+        serde_json::Value::String(path.to_string_lossy().to_string()),
+    );
     if let Some(ref dir) = cwd {
         attributes.insert("cwd".to_string(), serde_json::Value::String(dir.clone()));
     }
@@ -299,45 +303,117 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
     session.events = events;
 
     // ── Merge subagent sessions ──────────────────────────────────────────
-    merge_subagent_sessions(path, &mut session);
+    let session_id = session.session_id.clone();
+    merge_subagent_sessions(path, &session_id, &mut session);
 
     session.recompute_stats();
 
     Ok(session)
 }
 
-/// Look for `<parent-file-stem>/subagents/agent-*.jsonl` files
-/// and merge their events into the parent session.
-fn merge_subagent_sessions(parent_path: &Path, session: &mut Session) {
-    let subagents_dir = parent_path.with_extension("").join("subagents");
-    if !subagents_dir.is_dir() {
+fn is_subagent_file_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("agent-")
+        || lower.starts_with("agent_")
+        || lower.starts_with("subagent-")
+        || lower.starts_with("subagent_")
+}
+
+fn collect_subagent_dirs(parent_path: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    // Parent default layout: `<parent-file-stem>/subagents/*.jsonl`
+    dirs.push(parent_path.with_extension("").join("subagents"));
+
+    // Fallback for legacy/alternate layouts in the same project folder.
+    if let Some(parent_dir) = parent_path.parent() {
+        dirs.push(parent_dir.join("subagents"));
+    }
+
+    dirs
+}
+
+fn merge_subagent_session_ids_match(
+    parent_session_id: &str,
+    file_name: &str,
+    meta: &SubagentMeta,
+) -> bool {
+    if is_subagent_file_name(file_name) {
+        return true;
+    }
+
+    meta.session_id
+        .as_deref()
+        .is_some_and(|id| id == parent_session_id)
+        || meta
+            .parent_session_id
+            .as_deref()
+            .is_some_and(|id| id == parent_session_id)
+}
+
+/// Look for likely subagent files and merge their events into the parent session.
+fn merge_subagent_sessions(parent_path: &Path, parent_session_id: &str, session: &mut Session) {
+    let mut subagent_files: Vec<_> = collect_subagent_dirs(parent_path)
+        .into_iter()
+        .filter(|dir| dir.is_dir())
+        .flat_map(|dir| match std::fs::read_dir(dir) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|p| p.extension().is_some_and(|ext| ext == "jsonl"))
+                .collect(),
+            Err(_) => Vec::new(),
+        })
+        .collect();
+
+    if subagent_files.is_empty() {
         return;
     }
 
-    let mut subagent_files: Vec<_> = match std::fs::read_dir(&subagents_dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension().is_some_and(|ext| ext == "jsonl")
-                    && p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("agent-"))
-            })
-            .collect(),
-        Err(_) => return,
-    };
+    subagent_files.retain(|path| {
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => return false,
+        };
+
+        if file_name.starts_with('.') {
+            return false;
+        }
+
+        let meta = read_subagent_meta(path);
+        if is_subagent_file_name(file_name) {
+            return true;
+        }
+
+        matches!(
+            meta,
+            Some(meta) if merge_subagent_session_ids_match(parent_session_id, file_name, &meta)
+        )
+    });
+
     subagent_files.sort();
+    if subagent_files.is_empty() {
+        return;
+    }
 
     for subagent_path in subagent_files {
-        let agent_id = subagent_path
+        let meta = read_subagent_meta(&subagent_path).unwrap_or(SubagentMeta {
+            slug: None,
+            agent_id: None,
+            session_id: None,
+            parent_session_id: None,
+        });
+        let file_agent_id = subagent_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
 
-        // Extract metadata from the first line of the subagent file
-        let meta = read_subagent_meta(&subagent_path);
+        let task_id = meta
+            .agent_id
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| file_agent_id.clone());
 
         // Parse the subagent JSONL (same format as parent, no recursive subagent merging)
         let sub_session = match parse_subagent_jsonl(&subagent_path) {
@@ -355,12 +431,11 @@ fn merge_subagent_sessions(parent_path: &Path, session: &mut Session) {
         if sub_session.events.is_empty() {
             continue;
         }
-
-        let task_id = agent_id.clone();
         let task_title = meta
+            .slug
             .as_ref()
-            .and_then(|m| m.slug.clone())
-            .unwrap_or_else(|| agent_id.clone());
+            .cloned()
+            .unwrap_or_else(|| task_id.clone());
 
         let sub_model = if sub_session.agent.model != "unknown" {
             Some(sub_session.agent.model.clone())
@@ -375,8 +450,9 @@ fn merge_subagent_sessions(parent_path: &Path, session: &mut Session) {
         let mut start_attrs = HashMap::new();
         start_attrs.insert(
             "subagent_id".to_string(),
-            serde_json::Value::String(agent_id.clone()),
+            serde_json::Value::String(task_id.clone()),
         );
+        start_attrs.insert("merged_subagent".to_string(), serde_json::Value::Bool(true));
         if let Some(ref model) = sub_model {
             start_attrs.insert(
                 "model".to_string(),
@@ -401,11 +477,24 @@ fn merge_subagent_sessions(parent_path: &Path, session: &mut Session) {
             event.task_id = Some(task_id.clone());
             // Prefix event_id to avoid collisions with parent
             event.event_id = format!("{}:{}", task_id, event.event_id);
+            event.attributes.insert(
+                "subagent_id".to_string(),
+                serde_json::Value::String(task_id.clone()),
+            );
+            event
+                .attributes
+                .insert("merged_subagent".to_string(), serde_json::Value::Bool(true));
             session.events.push(event);
         }
 
         // TaskEnd event
         let duration = (end_ts - start_ts).num_milliseconds().max(0) as u64;
+        let mut end_attrs = HashMap::new();
+        end_attrs.insert(
+            "subagent_id".to_string(),
+            serde_json::Value::String(task_id.clone()),
+        );
+        end_attrs.insert("merged_subagent".to_string(), serde_json::Value::Bool(true));
         session.events.push(Event {
             event_id: format!("{}-end", task_id),
             timestamp: end_ts,
@@ -418,7 +507,7 @@ fn merge_subagent_sessions(parent_path: &Path, session: &mut Session) {
             task_id: Some(task_id),
             content: Content::text(""),
             duration_ms: Some(duration),
-            attributes: HashMap::new(),
+            attributes: end_attrs,
         });
     }
 
@@ -429,6 +518,9 @@ fn merge_subagent_sessions(parent_path: &Path, session: &mut Session) {
 /// Metadata extracted from the first line of a subagent JSONL
 struct SubagentMeta {
     slug: Option<String>,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    parent_session_id: Option<String>,
 }
 
 fn read_subagent_meta(path: &Path) -> Option<SubagentMeta> {
@@ -442,14 +534,26 @@ fn read_subagent_meta(path: &Path) -> Option<SubagentMeta> {
     struct FirstLine {
         #[serde(default)]
         slug: Option<String>,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default, alias = "parentUuid", alias = "parentID", alias = "parentId")]
+        parent_session_id: Option<String>,
     }
 
     let parsed: FirstLine = serde_json::from_str(&first_line).ok()?;
-    Some(SubagentMeta { slug: parsed.slug })
+    Some(SubagentMeta {
+        slug: parsed.slug,
+        agent_id: parsed.agent_id,
+        session_id: parsed.session_id,
+        parent_session_id: parsed.parent_session_id,
+    })
 }
 
 /// Parse a subagent JSONL file (same format, but no recursive subagent merging)
 fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
+    let meta = read_subagent_meta(path);
     let file = std::fs::File::open(path)
         .with_context(|| format!("Failed to open subagent JSONL: {}", path.display()))?;
     let reader = std::io::BufReader::new(file);
@@ -527,8 +631,16 @@ fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
         tags: vec!["claude-code".to_string()],
         created_at,
         updated_at,
-        related_session_ids: Vec::new(),
-        attributes: HashMap::new(),
+        related_session_ids: meta
+            .as_ref()
+            .and_then(|value| value.parent_session_id.clone())
+            .filter(|value| !value.trim().is_empty())
+            .into_iter()
+            .collect(),
+        attributes: HashMap::from([(
+            "source_path".to_string(),
+            serde_json::Value::String(path.to_string_lossy().to_string()),
+        )]),
     };
 
     let mut session = Session::new(session_id, agent);
@@ -916,6 +1028,19 @@ pub(super) fn parse_lines_impl(lines: &[String]) -> ParsedLines {
 mod tests {
     use super::*;
     use chrono::Datelike;
+    use chrono::Duration;
+    use std::fs::{create_dir_all, write};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_temp_root() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("opensession-claude-parser-{nanos}"));
+        create_dir_all(&path).expect("create test temp root");
+        path
+    }
 
     #[test]
     fn test_parse_timestamp() {
@@ -956,5 +1081,130 @@ mod tests {
         let json = r#"{"type":"file-history-snapshot","messageId":"abc","snapshot":{},"isSnapshotUpdate":false}"#;
         let entry: RawEntry = serde_json::from_str(json).unwrap();
         matches!(entry, RawEntry::FileHistorySnapshot { .. });
+    }
+
+    #[test]
+    fn test_subagent_file_merge_handles_file_name_without_meta() {
+        let dir = test_temp_root();
+        let parent_path = dir.as_path().join("session-parent.jsonl");
+        let subagent_dir = parent_path.with_extension("").join("subagents");
+        create_dir_all(&subagent_dir).unwrap();
+
+        let parent_session = "sess-parent";
+        let subagent_session = "agent-abc123";
+
+        let parent_entry = serde_json::json!({
+            "type": "user",
+            "uuid": "u1",
+            "sessionId": parent_session,
+            "timestamp": Utc::now().to_rfc3339(),
+            "message": {
+                "role": "user",
+                "content": "parent prompt"
+            }
+        })
+        .to_string();
+        write(&parent_path, parent_entry).unwrap();
+
+        let subagent_entry = serde_json::json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "sessionId": subagent_session,
+            "timestamp": Utc::now()
+                .checked_add_signed(Duration::seconds(1))
+                .unwrap()
+                .to_rfc3339(),
+            "message": {
+                "role": "assistant",
+                "model": "claude-3-opus",
+                "content": [{
+                    "type": "text",
+                    "text": "subagent reply"
+                }]
+            }
+        })
+        .to_string();
+        write(
+            subagent_dir.join(format!("{subagent_session}.jsonl")),
+            subagent_entry,
+        )
+        .unwrap();
+
+        let session = parse_claude_code_jsonl(&parent_path).unwrap();
+        assert_eq!(session.events.len(), 4);
+        assert!(session
+            .events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::TaskStart { .. })));
+        assert!(session.events.iter().any(|e| {
+            e.attributes
+                .get("merged_subagent")
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        }));
+        assert!(session
+            .events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::AgentMessage)));
+        assert!(session
+            .events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::TaskEnd { .. })));
+        assert_eq!(session.stats.message_count, 2);
+    }
+
+    #[test]
+    fn test_subagent_meta_reads_parent_uuid_aliases() {
+        let dir = test_temp_root();
+        let subagent_path = dir.as_path().join("agent-xyz.jsonl");
+        let subagent_entry = serde_json::json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "sessionId": "sub-1",
+            "timestamp": Utc::now().to_rfc3339(),
+            "parentId": "parent-1",
+            "message": {
+                "role": "assistant",
+                "model": "claude-3-opus",
+                "content": [{
+                    "type": "text",
+                    "text": "sub"
+                }]
+            }
+        })
+        .to_string();
+        write(&subagent_path, subagent_entry).unwrap();
+
+        let meta = read_subagent_meta(&subagent_path).unwrap();
+        assert_eq!(meta.parent_session_id.as_deref(), Some("parent-1"));
+    }
+
+    #[test]
+    fn test_subagent_parse_sets_related_parent_session_id() {
+        let dir = test_temp_root();
+        let subagent_path = dir.as_path().join("agent-related.jsonl");
+        let subagent_entry = serde_json::json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "sessionId": "sub-2",
+            "timestamp": Utc::now().to_rfc3339(),
+            "parentId": "parent-2",
+            "message": {
+                "role": "assistant",
+                "model": "claude-3-opus",
+                "content": [{
+                    "type": "text",
+                    "text": "sub"
+                }]
+            }
+        })
+        .to_string();
+        write(&subagent_path, subagent_entry).unwrap();
+
+        let parsed = parse_subagent_jsonl(&subagent_path).unwrap();
+        assert_eq!(
+            parsed.context.related_session_ids,
+            vec!["parent-2".to_string()]
+        );
     }
 }

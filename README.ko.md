@@ -69,7 +69,7 @@ docker compose up -d
 | `opensession stats` | AI 사용 통계 |
 | `opensession handoff` | 다음 에이전트를 위한 핸드오프 요약 생성 |
 | `opensession diff <a> <b>` | 두 세션 비교 |
-| `opensession config` | 설정 조회/변경 |
+| `opensession account config` | 설정 조회/변경 |
 | `opensession daemon start\|stop\|status` | 백그라운드 데몬 관리 |
 | `opensession server status\|verify` | 서버 연결 확인 |
 | `opensession hooks install\|uninstall` | Git 훅 관리 |
@@ -82,7 +82,7 @@ docker compose up -d
 ### CLI 설정 (`~/.config/opensession/config.toml`)
 
 ```bash
-opensession config --server https://opensession.io --api-key osk_xxx --team-id my-team
+opensession account config --server https://opensession.io --api-key osk_xxx --team-id my-team
 ```
 
 ### 데몬 설정 (`~/.config/opensession/daemon.toml`)

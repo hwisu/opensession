@@ -21,8 +21,25 @@ pub struct LaneEventRef<'a> {
 ///
 /// Lane 0 is the main session lane. Sub-task lanes are allocated from 1..N.
 /// TaskStart/TaskEnd create fork/merge markers so TUI can render branch boundaries.
+#[allow(dead_code)]
 pub fn build_lane_events<'a, F>(session: &'a Session, mut include: F) -> Vec<LaneEventRef<'a>>
 where
+    F: FnMut(&EventType) -> bool,
+{
+    build_lane_events_with_filter(session, |_| true, |event_type| include(event_type))
+}
+
+/// Build lane-aware events for the session with an additional event-level filter.
+///
+/// `include_event` controls whether an event participates in lane state at all.
+/// Returning `false` removes that event from both rendering and lane bookkeeping.
+pub fn build_lane_events_with_filter<'a, E, F>(
+    session: &'a Session,
+    mut include_event: E,
+    mut include: F,
+) -> Vec<LaneEventRef<'a>>
+where
+    E: FnMut(&Event) -> bool,
     F: FnMut(&EventType) -> bool,
 {
     let mut out = Vec::new();
@@ -32,6 +49,9 @@ where
     let mut next_lane = 1usize;
 
     for (source_index, event) in session.events.iter().enumerate() {
+        if !include_event(event) {
+            continue;
+        }
         let mut lane = 0usize;
         let mut marker = LaneMarker::None;
         let task_id = event.task_id.as_ref();

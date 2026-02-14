@@ -27,7 +27,10 @@ pub fn discover_sessions() -> Vec<SessionLocation> {
 pub fn discover_for_tool(tool: &str) -> Vec<PathBuf> {
     let home = dirs_home();
     match tool {
-        "claude-code" => find_files_with_ext(&home.join(".claude").join("projects"), "jsonl"),
+        "claude-code" => find_files_with_ext(&home.join(".claude").join("projects"), "jsonl")
+            .into_iter()
+            .filter(|p| !crate::claude_code::is_claude_subagent_path(p))
+            .collect(),
         "codex" => find_codex_sessions(&home),
         "opencode" => find_opencode_sessions(&home),
         "cline" => find_cline_sessions(&home),
@@ -45,7 +48,10 @@ fn discover_claude_code(home: &std::path::Path, locations: &mut Vec<SessionLocat
     if !claude_path.exists() {
         return;
     }
-    let paths = find_files_with_ext(&claude_path, "jsonl");
+    let paths: Vec<_> = find_files_with_ext(&claude_path, "jsonl")
+        .into_iter()
+        .filter(|p| !crate::claude_code::is_claude_subagent_path(p))
+        .collect();
     if !paths.is_empty() {
         locations.push(SessionLocation {
             tool: "claude-code".to_string(),
@@ -262,13 +268,14 @@ fn cursor_db_has_composer_data(path: &std::path::Path) -> bool {
         Err(_) => return false,
     };
 
+    let mut found = false;
     if table_exists(&conn, "cursorDiskKV") {
-        return has_composer_rows(&conn, "cursorDiskKV");
+        found |= has_cursor_rows(&conn, "cursorDiskKV");
     }
     if table_exists(&conn, "ItemTable") {
-        return has_composer_rows(&conn, "ItemTable");
+        found |= has_cursor_rows(&conn, "ItemTable");
     }
-    false
+    found
 }
 
 fn table_exists(conn: &Connection, table: &str) -> bool {
@@ -280,8 +287,12 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
     .unwrap_or(false)
 }
 
-fn has_composer_rows(conn: &Connection, table: &str) -> bool {
-    let sql =
-        format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE key LIKE 'composerData:%' LIMIT 1)");
+fn has_cursor_rows(conn: &Connection, table: &str) -> bool {
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM {table} \
+         WHERE key LIKE 'composerData:%' \
+            OR key = 'composer.composerData' \
+         LIMIT 1)"
+    );
     conn.query_row(&sql, [], |row| row.get(0)).unwrap_or(false)
 }

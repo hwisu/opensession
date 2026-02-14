@@ -2412,6 +2412,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shellexpand",
+ "toml",
  "tracing",
  "uuid",
 ]
@@ -2457,6 +2458,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]

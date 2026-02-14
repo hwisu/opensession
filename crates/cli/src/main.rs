@@ -559,7 +559,7 @@ async fn main() {
     let command = match cli.command {
         Some(cmd) => cmd,
         None => {
-            if let Err(e) = opensession_tui::run(None) {
+            if let Err(e) = run_tui_blocking(None).await {
                 eprintln!("Error: {e:#}");
                 std::process::exit(1);
             }
@@ -588,7 +588,7 @@ async fn main() {
     let result = match command {
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,
-        Commands::Ui => opensession_tui::run(None),
+        Commands::Ui => run_tui_blocking(None).await,
         Commands::View {
             agent,
             active_within_minutes,
@@ -606,24 +606,29 @@ async fn main() {
             sum_style,
             sum_key,
             sum_key_header,
-        } => view_cmd::run_view(view_cmd::ViewArgs {
-            agent,
-            active_within_minutes,
-            limit,
-            non_interactive,
-            latest,
-            dry_run,
-            summary_provider,
-            summary_model,
-            summary_content_mode,
-            summary_disk_cache,
-            sum_endpoint,
-            sum_base,
-            sum_path,
-            sum_style,
-            sum_key,
-            sum_key_header,
-        }),
+        } => tokio::task::spawn_blocking(move || {
+            view_cmd::run_view(view_cmd::ViewArgs {
+                agent,
+                active_within_minutes,
+                limit,
+                non_interactive,
+                latest,
+                dry_run,
+                summary_provider,
+                summary_model,
+                summary_content_mode,
+                summary_disk_cache,
+                sum_endpoint,
+                sum_base,
+                sum_path,
+                sum_style,
+                sum_key,
+                sum_key_header,
+            })
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("view command panicked: {e}"))
+        .and_then(|result| result),
         Commands::Session { action } => run_session_action(action).await,
         Commands::Publish { action } => run_publish_action(action).await,
         Commands::Ops { action } => run_ops_action(action).await,
@@ -645,6 +650,12 @@ async fn main() {
         }
         std::process::exit(code as i32);
     }
+}
+
+async fn run_tui_blocking(paths: Option<Vec<String>>) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || opensession_tui::run(paths))
+        .await
+        .map_err(|e| anyhow::anyhow!("TUI thread panicked: {e}"))?
 }
 
 async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {

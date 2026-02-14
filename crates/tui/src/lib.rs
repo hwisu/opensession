@@ -16,9 +16,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use opensession_core::trace::{Agent, Session, SessionContext, Stats};
 use opensession_local_db::git::extract_git_context;
-use opensession_local_db::LocalDb;
+use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
 use ratatui::prelude::*;
+use std::collections::HashMap;
 use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -32,6 +34,12 @@ pub use cli_export::{
 enum BgEvent {
     SessionsLoaded(Vec<opensession_core::trace::Session>),
     DbReady { repos: Vec<String>, count: usize },
+}
+
+#[derive(Clone)]
+struct LoadedSession {
+    source_path: PathBuf,
+    session: opensession_core::trace::Session,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -81,6 +89,10 @@ pub fn run(paths: Option<Vec<String>>) -> Result<()> {
 
 /// Launch the TUI with startup/runtime overrides.
 pub fn run_with_options(options: RunOptions) -> Result<()> {
+    run_with_options_sync(options)
+}
+
+fn run_with_options_sync(options: RunOptions) -> Result<()> {
     // Start with empty sessions — they'll load in the background
     let mut app = App::new(vec![]);
     app.loading_sessions = true;
@@ -120,6 +132,23 @@ pub fn run_with_options(options: RunOptions) -> Result<()> {
         app.db = Some(Arc::new(db));
     }
 
+    // ── Fast bootstrap from local SQLite cache (avoid full repo scan on every start) ──
+    if options.paths.is_none() {
+        if let Some(db) = app.db.clone() {
+            app.sessions = load_cached_sessions_from_db(&db);
+            app.rebuild_session_agent_metrics();
+            app.filtered_sessions = (0..app.sessions.len()).collect();
+            app.rebuild_available_tools();
+            if !app.sessions.is_empty() {
+                app.list_state.select(Some(0));
+            }
+            app.repos = db.list_repos().unwrap_or_default();
+            app.startup_status.sessions_cached = app.sessions.len();
+            app.startup_status.repos_detected = app.repos.len();
+            app.loading_sessions = app.sessions.is_empty();
+        }
+    }
+
     // ── If config file doesn't exist yet, start in Setup view ──────
     if !config_exists && !options.auto_enter_detail {
         app.view = View::Setup;
@@ -137,27 +166,38 @@ pub fn run_with_options(options: RunOptions) -> Result<()> {
     // ── Spawn background session loading thread ─────────────────────
     let (tx, bg_rx) = mpsc::channel::<BgEvent>();
     let paths = options.paths.clone();
+    let should_refresh_from_disk =
+        paths.is_some() || app.sessions.is_empty() || refresh_discovery_on_start();
+    if should_refresh_from_disk {
+        std::thread::spawn(move || {
+            let sessions = match paths {
+                Some(ref paths) => load_from_paths(paths),
+                None => load_sessions(),
+            };
+            let sessions_for_ui = if paths.is_none() {
+                filter_visible_discovered_sessions(
+                    sessions.iter().map(|entry| entry.session.clone()).collect(),
+                )
+            } else {
+                sessions.iter().map(|entry| entry.session.clone()).collect()
+            };
+            let ui_sessions = sessions_for_ui;
+            let for_db = sessions.clone();
+            if tx.send(BgEvent::SessionsLoaded(ui_sessions)).is_err() {
+                return;
+            }
 
-    std::thread::spawn(move || {
-        let sessions = match paths {
-            Some(ref paths) => load_from_paths(paths),
-            None => load_sessions(),
-        };
-        let for_db = sessions.clone();
-        if tx.send(BgEvent::SessionsLoaded(sessions)).is_err() {
-            return;
-        }
-
-        // Separate DB connection for this thread (Connection is Send but not Sync)
-        if let Ok(bg_db) = LocalDb::open() {
-            cache_sessions_to_db(&bg_db, &for_db);
-            let repos = bg_db.list_repos().unwrap_or_default();
-            let _ = tx.send(BgEvent::DbReady {
-                repos,
-                count: for_db.len(),
-            });
-        }
-    });
+            // Separate DB connection for this thread (Connection is Send but not Sync)
+            if let Ok(bg_db) = LocalDb::open() {
+                cache_sessions_to_db(&bg_db, &for_db);
+                let repos = bg_db.list_repos().unwrap_or_default();
+                let _ = tx.send(BgEvent::DbReady {
+                    repos,
+                    count: for_db.len(),
+                });
+            }
+        });
+    }
 
     // Main loop
     let result = event_loop(&mut terminal, &mut app, bg_rx, options.auto_enter_detail);
@@ -246,6 +286,155 @@ fn build_server_info(config: &config::DaemonConfig) -> Option<ServerInfo> {
     })
 }
 
+fn parse_cached_datetime(value: &str) -> chrono::DateTime<chrono::Utc> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        return dt.with_timezone(&chrono::Utc);
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
+        return dt.and_utc();
+    }
+    chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH)
+}
+
+fn parse_cached_tags(tags: Option<&str>) -> Vec<String> {
+    let Some(raw) = tags.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Vec::new();
+    };
+    if let Ok(json_tags) = serde_json::from_str::<Vec<String>>(raw) {
+        return json_tags
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect();
+    }
+    raw.split_whitespace()
+        .map(|tag| tag.trim_start_matches('#').to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+fn session_from_cached_row(row: &LocalSessionRow) -> Session {
+    let created_at = parse_cached_datetime(&row.created_at);
+    let mut session = Session::new(
+        row.id.clone(),
+        Agent {
+            provider: row
+                .agent_provider
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("unknown")
+                .to_string(),
+            model: row
+                .agent_model
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("unknown")
+                .to_string(),
+            tool: row.tool.clone(),
+            tool_version: None,
+        },
+    );
+
+    let mut attributes: HashMap<String, serde_json::Value> = HashMap::new();
+    if let Some(source_path) = row.source_path.as_deref().filter(|v| !v.trim().is_empty()) {
+        attributes.insert(
+            "source_path".to_string(),
+            serde_json::Value::String(source_path.to_string()),
+        );
+    }
+    if let Some(working_directory) = row
+        .working_directory
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        attributes.insert(
+            "working_directory".to_string(),
+            serde_json::Value::String(working_directory.to_string()),
+        );
+    }
+    if let Some(nickname) = row.nickname.as_deref().filter(|v| !v.trim().is_empty()) {
+        attributes.insert(
+            "nickname".to_string(),
+            serde_json::Value::String(nickname.to_string()),
+        );
+    }
+    if let Some(user_id) = row.user_id.as_deref().filter(|v| !v.trim().is_empty()) {
+        attributes.insert(
+            "user_id".to_string(),
+            serde_json::Value::String(user_id.to_string()),
+        );
+    }
+    if let Some(team_id) = row.team_id.as_deref().filter(|v| !v.trim().is_empty()) {
+        attributes.insert(
+            "team_id".to_string(),
+            serde_json::Value::String(team_id.to_string()),
+        );
+    }
+    if let Some(git_repo) = row
+        .git_repo_name
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        attributes.insert(
+            "git_repo_name".to_string(),
+            serde_json::Value::String(git_repo.to_string()),
+        );
+    }
+    if let Some(git_branch) = row.git_branch.as_deref().filter(|v| !v.trim().is_empty()) {
+        attributes.insert(
+            "git_branch".to_string(),
+            serde_json::Value::String(git_branch.to_string()),
+        );
+    }
+
+    session.context = SessionContext {
+        title: row.title.clone(),
+        description: row.description.clone(),
+        tags: parse_cached_tags(row.tags.as_deref()),
+        created_at,
+        updated_at: created_at,
+        related_session_ids: Vec::new(),
+        attributes,
+    };
+    session.stats = Stats {
+        event_count: row.event_count.max(0) as u64,
+        message_count: row.message_count.max(0) as u64,
+        tool_call_count: 0,
+        task_count: row.task_count.max(0) as u64,
+        duration_seconds: row.duration_seconds.max(0) as u64,
+        total_input_tokens: row.total_input_tokens.max(0) as u64,
+        total_output_tokens: row.total_output_tokens.max(0) as u64,
+        user_message_count: row.user_message_count.max(0) as u64,
+        files_changed: 0,
+        lines_added: 0,
+        lines_removed: 0,
+    };
+    session
+}
+
+fn load_cached_sessions_from_db(db: &LocalDb) -> Vec<Session> {
+    let rows = db
+        .list_sessions(&LocalSessionFilter::default())
+        .unwrap_or_default();
+    let mut sessions: Vec<Session> = rows
+        .iter()
+        .map(session_from_cached_row)
+        .filter(|session| !App::is_internal_summary_session(session))
+        .collect();
+    sessions.sort_by(|a, b| b.context.created_at.cmp(&a.context.created_at));
+    sessions
+}
+
+fn refresh_discovery_on_start() -> bool {
+    let Ok(raw) = std::env::var("OPS_TUI_REFRESH_DISCOVERY_ON_START") else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 async fn check_health(server_url: &str) -> ServerStatus {
     let client = match opensession_api_client::ApiClient::new(server_url, Duration::from_secs(1)) {
         Ok(c) => c,
@@ -259,22 +448,25 @@ async fn check_health(server_url: &str) -> ServerStatus {
 
 /// Cache parsed sessions into the local DB with git context.
 /// Skips git extraction for sessions already in the DB (only updates stats).
-fn cache_sessions_to_db(db: &LocalDb, sessions: &[opensession_core::trace::Session]) {
+fn cache_sessions_to_db(db: &LocalDb, sessions: &[LoadedSession]) {
     let existing = db.existing_session_ids();
 
-    for session in sessions {
+    for item in sessions {
+        let session = &item.session;
+        let source = item.source_path.to_string_lossy();
+
         if App::is_internal_summary_session(session) {
             continue;
         }
 
         if existing.contains(&session.session_id) {
-            // Already cached → only update stats (skip expensive git subprocess calls)
+            // Already cached → only update stats and keep source path in sync.
             let _ = db.update_session_stats(session);
+            let _ = db.set_session_sync_path(&session.session_id, &source);
             continue;
         }
 
         // New session → full insert with git context extraction
-        let source = session.session_id.clone();
         let cwd = session
             .context
             .attributes
@@ -308,14 +500,11 @@ fn event_loop(
                         .collect();
                     app.rebuild_session_agent_metrics();
                     app.filtered_sessions = (0..app.sessions.len()).collect();
+                    app.rebuild_available_tools();
                     if !app.sessions.is_empty() {
                         app.list_state.select(Some(0));
                     }
                     app.loading_sessions = false;
-                    if auto_enter_detail_pending && !app.sessions.is_empty() {
-                        app.enter_detail_for_startup();
-                        auto_enter_detail_pending = false;
-                    }
                 }
                 BgEvent::DbReady { repos, count } => {
                     app.repos = repos;
@@ -323,6 +512,11 @@ fn event_loop(
                     app.startup_status.repos_detected = app.repos.len();
                 }
             }
+        }
+
+        if auto_enter_detail_pending && !app.loading_sessions && !app.sessions.is_empty() {
+            app.enter_detail_for_startup();
+            auto_enter_detail_pending = false;
         }
 
         if app.focus_detail_view
@@ -420,6 +614,13 @@ fn event_loop(
             app.apply_command_result(result);
         }
 
+        // ── Lazy hydrate stub sessions from source_path on first detail enter ──
+        if let Some(path) = app.take_detail_hydrate_path() {
+            if let Some(reloaded) = parse_single_session(&path) {
+                app.apply_reloaded_session(reloaded);
+            }
+        }
+
         // ── Realtime detail preview (mtime polling + selective reparse) ──
         if let Some(path) = app.take_realtime_reload_path() {
             if let Some(reloaded) = parse_single_session(&path) {
@@ -428,11 +629,6 @@ fn event_loop(
         }
 
         terminal.draw(|frame| ui::render(frame, app))?;
-
-        // ── Timeline summary queue (non-stream sessions, visible-first) ──
-        if let Some(cmd) = app.schedule_detail_summary_jobs() {
-            spawn_summary_worker(cmd, app.daemon_config.clone(), summary_tx.clone());
-        }
 
         // ── Deferred health check (runs once, after first render) ────
         if !app.health_check_done {
@@ -445,14 +641,24 @@ fn event_loop(
             }
         }
 
+        let mut handled_key_press = false;
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                handled_key_press = true;
                 if app.handle_key(key.code) {
                     break;
                 }
+            }
+        }
+
+        // ── Timeline summary queue (non-stream sessions, visible-first) ──
+        // Keep input responsive: only schedule heavy summary work when idle.
+        if !handled_key_press {
+            if let Some(cmd) = app.schedule_detail_summary_jobs() {
+                spawn_summary_worker(cmd, app.daemon_config.clone(), summary_tx.clone());
             }
         }
     }
@@ -545,7 +751,7 @@ fn try_git_store(
 }
 
 /// Load sessions from explicit file paths passed as CLI args.
-fn load_from_paths(args: &[String]) -> Vec<opensession_core::trace::Session> {
+fn load_from_paths(args: &[String]) -> Vec<LoadedSession> {
     let parsers = opensession_parsers::all_parsers();
     let mut sessions = Vec::new();
 
@@ -560,7 +766,10 @@ fn load_from_paths(args: &[String]) -> Vec<opensession_core::trace::Session> {
                 Ok(session) => {
                     if session.stats.event_count > 0 && !App::is_internal_summary_session(&session)
                     {
-                        sessions.push(session);
+                        sessions.push(LoadedSession {
+                            source_path: path.clone(),
+                            session,
+                        });
                     } else if session.stats.event_count == 0 {
                         eprintln!(
                             "Warning: skipping empty session from {} ({})",
@@ -576,12 +785,116 @@ fn load_from_paths(args: &[String]) -> Vec<opensession_core::trace::Session> {
         }
     }
 
-    sessions.sort_by(|a, b| b.context.created_at.cmp(&a.context.created_at));
+    sessions.sort_by(|a, b| {
+        b.session
+            .context
+            .created_at
+            .cmp(&a.session.context.created_at)
+    });
     sessions
 }
 
+fn is_hidden_opencode_child_session(session: &opensession_core::trace::Session) -> bool {
+    if session.agent.tool != "opencode" {
+        return false;
+    }
+
+    if !session.context.related_session_ids.is_empty() {
+        return true;
+    }
+
+    if session
+        .context
+        .attributes
+        .iter()
+        .any(|(key, value)| opencode_parent_session_id(value, key))
+    {
+        return true;
+    }
+
+    let session_id = session.session_id.to_ascii_lowercase();
+    if session_id.starts_with("agent-") || session_id.starts_with("agent_") {
+        return true;
+    }
+
+    if session.stats.user_message_count == 0
+        && session.stats.message_count <= 4
+        && session.stats.task_count <= 4
+        && session.stats.event_count > 0
+        && session.stats.event_count <= 16
+    {
+        return true;
+    }
+
+    if let Some(path) = session.context.attributes.get("source_path") {
+        let path = path.as_str().unwrap_or_default().to_ascii_lowercase();
+        if path.contains("/subagents/") || path.contains("\\subagents\\") {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn opencode_parent_session_id(value: &serde_json::Value, key: &str) -> bool {
+    if let Some(parent_id) = value.as_str() {
+        let compact_key = key
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if !parent_id.trim().is_empty() {
+            return matches!(
+                compact_key.as_str(),
+                "parentsessionid" | "parentid" | "parentuuid"
+            );
+        }
+    }
+    false
+}
+
+fn is_hidden_claude_code_child_session(session: &opensession_core::trace::Session) -> bool {
+    if session.agent.tool != "claude-code" {
+        return false;
+    }
+
+    if !session.context.related_session_ids.is_empty() {
+        return true;
+    }
+
+    let Some(path) = session.context.attributes.get("source_path") else {
+        return false;
+    };
+    let Some(path) = path.as_str() else {
+        return false;
+    };
+
+    opensession_parsers::claude_code::is_claude_subagent_path(std::path::Path::new(path))
+}
+
+fn is_hidden_codex_child_session(session: &opensession_core::trace::Session) -> bool {
+    if session.agent.tool != "codex" {
+        return false;
+    }
+
+    session.stats.user_message_count == 0
+}
+
+fn filter_visible_discovered_sessions(
+    sessions: Vec<opensession_core::trace::Session>,
+) -> Vec<opensession_core::trace::Session> {
+    sessions
+        .into_iter()
+        .filter(|session| {
+            !is_hidden_opencode_child_session(session)
+                && !is_hidden_codex_child_session(session)
+                && !is_hidden_claude_code_child_session(session)
+        })
+        .collect()
+}
+
 /// Auto-discover sessions from known local paths.
-fn load_sessions() -> Vec<opensession_core::trace::Session> {
+fn load_sessions() -> Vec<LoadedSession> {
     let locations = opensession_parsers::discover::discover_sessions();
     let parsers = opensession_parsers::all_parsers();
     let mut sessions = Vec::new();
@@ -589,14 +902,8 @@ fn load_sessions() -> Vec<opensession_core::trace::Session> {
     for location in &locations {
         for path in &location.paths {
             // Skip subagent session files
-            let path_str = path.to_string_lossy();
-            if path_str.contains("/subagents/") || path_str.contains("\\subagents\\") {
+            if opensession_parsers::claude_code::is_claude_subagent_path(path) {
                 continue;
-            }
-            if let Some(fname) = path.file_name().and_then(|f| f.to_str()) {
-                if fname.starts_with("agent-") {
-                    continue;
-                }
             }
 
             if let Some(parser) = parsers.iter().find(|p| p.can_parse(path)) {
@@ -604,14 +911,22 @@ fn load_sessions() -> Vec<opensession_core::trace::Session> {
                     // Skip empty sessions (0 events usually means parse was incomplete)
                     if session.stats.event_count > 0 && !App::is_internal_summary_session(&session)
                     {
-                        sessions.push(session);
+                        sessions.push(LoadedSession {
+                            source_path: path.clone(),
+                            session,
+                        });
                     }
                 }
             }
         }
     }
 
-    sessions.sort_by(|a, b| b.context.created_at.cmp(&a.context.created_at));
+    sessions.sort_by(|a, b| {
+        b.session
+            .context
+            .created_at
+            .cmp(&a.session.context.created_at)
+    });
     sessions
 }
 
@@ -627,7 +942,13 @@ fn parse_single_session(path: &PathBuf) -> Option<opensession_core::trace::Sessi
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_summary_launch_override, SummaryLaunchOverride};
+    use super::{
+        apply_summary_launch_override, is_hidden_codex_child_session,
+        is_hidden_opencode_child_session, SummaryLaunchOverride,
+    };
+    use chrono::Utc;
+    use opensession_core::trace::{Agent, Session, SessionContext};
+    use serde_json::json;
 
     #[test]
     fn summary_override_updates_runtime_config_only() {
@@ -675,5 +996,85 @@ mod tests {
             cfg.daemon.summary_openai_compat_key_header.as_deref(),
             Some("Authorization")
         );
+    }
+
+    fn make_opencode_session(session_id: &str, related_session_ids: Vec<&str>) -> Session {
+        let mut session = Session::new(
+            session_id.to_string(),
+            Agent {
+                provider: "provider".to_string(),
+                model: "model".to_string(),
+                tool: "opencode".to_string(),
+                tool_version: None,
+            },
+        );
+        session.context = SessionContext {
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            related_session_ids: related_session_ids
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ..SessionContext::default()
+        };
+        session
+    }
+
+    fn make_codex_session(session_id: &str, tool: &str, user_message_count: u64) -> Session {
+        let mut session = Session::new(
+            session_id.to_string(),
+            Agent {
+                provider: "provider".to_string(),
+                model: "model".to_string(),
+                tool: tool.to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.user_message_count = user_message_count;
+        session
+    }
+
+    #[test]
+    fn opencode_child_session_is_hidden_in_discovery_list() {
+        let child = make_opencode_session("ses_child", vec!["ses_parent"]);
+        let parent = make_opencode_session("ses_parent", vec![]);
+        assert!(is_hidden_opencode_child_session(&child));
+        assert!(!is_hidden_opencode_child_session(&parent));
+    }
+
+    #[test]
+    fn opencode_zero_user_message_short_session_is_hidden_in_discovery_list() {
+        let mut child = make_opencode_session("ses_short", vec![]);
+        child.stats.user_message_count = 0;
+        child.stats.event_count = 4;
+        child.stats.message_count = 0;
+        child.stats.task_count = 0;
+
+        let mut parent = make_opencode_session("ses_visible", vec![]);
+        parent.stats.user_message_count = 2;
+        parent.stats.message_count = 3;
+        parent.stats.event_count = 40;
+
+        assert!(is_hidden_opencode_child_session(&child));
+        assert!(!is_hidden_opencode_child_session(&parent));
+    }
+
+    #[test]
+    fn opencode_session_with_parent_id_attr_alias_is_hidden_in_discovery_list() {
+        let mut child = make_opencode_session("ses_short", vec![]);
+        child
+            .context
+            .attributes
+            .insert("parentSessionId".to_string(), json!("ses_parent_alias"));
+        assert!(is_hidden_opencode_child_session(&child));
+    }
+
+    #[test]
+    fn codex_session_without_user_message_is_hidden_in_discovery_list() {
+        let summary_session = make_codex_session("summary", "codex", 0);
+        let normal_session = make_codex_session("normal", "codex", 1);
+
+        assert!(is_hidden_codex_child_session(&summary_session));
+        assert!(!is_hidden_codex_child_session(&normal_session));
     }
 }

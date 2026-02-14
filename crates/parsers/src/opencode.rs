@@ -37,6 +37,19 @@ struct SessionInfo {
     version: Option<String>,
     #[serde(default)]
     title: Option<String>,
+    #[serde(
+        rename = "parentID",
+        alias = "parentId",
+        alias = "parent_id",
+        alias = "parentUUID",
+        alias = "parent_uuid",
+        alias = "parentSessionID",
+        alias = "parentSessionId",
+        alias = "parentSessionUuid",
+        alias = "parent_session_uuid",
+        default
+    )]
+    parent_id: Option<String>,
     #[serde(default)]
     time: Option<TimeRange>,
     #[serde(default)]
@@ -441,6 +454,22 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
     if let Some(ref dir) = info.directory {
         attributes.insert("cwd".to_string(), serde_json::Value::String(dir.clone()));
     }
+    attributes.insert(
+        "source_path".to_string(),
+        serde_json::Value::String(info_path.to_string_lossy().to_string()),
+    );
+
+    let mut related_session_ids = Vec::new();
+    if let Some(parent_id) = info.parent_id.as_ref() {
+        let trimmed = parent_id.trim();
+        if !trimmed.is_empty() && trimmed != info.id {
+            related_session_ids.push(parent_id.clone());
+            attributes.insert(
+                "parent_session_id".to_string(),
+                serde_json::Value::String(trimmed.to_string()),
+            );
+        }
+    }
 
     let context = SessionContext {
         title: info.title,
@@ -448,7 +477,7 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
         tags: vec!["opencode".to_string()],
         created_at,
         updated_at,
-        related_session_ids: Vec::new(),
+        related_session_ids,
         attributes,
     };
 
@@ -619,6 +648,8 @@ fn json_find_path(value: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{create_dir_all, write};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_millis_to_datetime() {
@@ -664,6 +695,55 @@ mod tests {
     }
 
     #[test]
+    fn test_session_info_parent_id_deser() {
+        let json = r#"{"id":"ses_child","version":"1.1.30","parentID":"ses_parent","directory":"/tmp/proj","time":{"created":1753359830903,"updated":1753360246507}}"#;
+        let info: SessionInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.parent_id, Some("ses_parent".to_string()));
+    }
+
+    #[test]
+    fn test_session_info_parent_id_alias_deser() {
+        let json = r#"{"id":"ses_child","version":"1.1.30","parentId":"ses_parent","directory":"/tmp/proj","time":{"created":1753359830903,"updated":1753360246507}}"#;
+        let info: SessionInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.parent_id, Some("ses_parent".to_string()));
+    }
+
+    #[test]
+    fn test_session_info_parent_uuid_alias_deser() {
+        let json = r#"{"id":"ses_child","version":"1.1.30","parentUUID":"ses_parent","directory":"/tmp/proj","time":{"created":1753359830903,"updated":1753360246507}}"#;
+        let info: SessionInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.parent_id, Some("ses_parent".to_string()));
+    }
+
+    #[test]
+    fn test_session_context_has_source_path() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "opensession-opencode-parser-source-path-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock ok")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let session_path = temp_dir.join("session.json");
+        write(
+            &session_path,
+            r#"{"id":"ses_parent","version":"1.1.30","directory":"/tmp/proj","time":{"created":1753359830903,"updated":1753360246507}}"#,
+        )
+        .unwrap();
+
+        let session = parse_opencode_session(&session_path).expect("parse session");
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get("source_path")
+                .and_then(|value| value.as_str()),
+            Some(session_path.to_str().unwrap())
+        );
+    }
+
+    #[test]
     fn test_message_info_deser() {
         let json = r#"{"id":"msg_abc","sessionID":"ses_abc","role":"user","model":{"providerID":"openai","modelID":"gpt-5.2-codex"},"time":{"created":1753359830903}}"#;
         let msg: MessageInfo = serde_json::from_str(json).unwrap();
@@ -683,6 +763,60 @@ mod tests {
         assert!(!parser.can_parse(Path::new(
             "/Users/test/.local/share/opencode/storage/message/ses_xyz/msg_abc.json"
         )));
+    }
+
+    fn tmp_test_root() -> std::path::PathBuf {
+        let since_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("opensession-opencode-parser-{since_epoch}"));
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        root
+    }
+
+    #[test]
+    fn test_parse_relates_child_session_to_parent() {
+        let root = tmp_test_root();
+        let project = root.join("proj-test");
+        let session_dir = project.join("storage").join("session").join("example");
+        let message_dir = project.join("storage").join("message").join("ses_child");
+        let part_dir = project.join("storage").join("part").join("msg_001");
+        create_dir_all(&session_dir).expect("create session dir");
+        create_dir_all(&message_dir).expect("create message dir");
+        create_dir_all(&part_dir).expect("create part dir");
+
+        write(
+            session_dir.join("ses_child.json"),
+            r#"{"id":"ses_child","version":"1.1.30","parentID":"ses_parent","directory":"/tmp/proj","time":{"created":1753359830903,"updated":1753360246507}}"#,
+        )
+        .expect("write session file");
+        write(
+            message_dir.join("msg_001.json"),
+            r#"{"id":"msg_001","sessionID":"ses_child","role":"user","time":{"created":1753359831000}}"#,
+        )
+        .expect("write message file");
+        write(
+            part_dir.join("part_001.json"),
+            r#"{"id":"part_001","messageID":"msg_001","type":"text","text":"hello","time":{"start":1753359831000,"end":1753359831000}}"#,
+        )
+        .expect("write part file");
+
+        let session =
+            parse_opencode_session(&session_dir.join("ses_child.json")).expect("parse session");
+        assert_eq!(
+            session.context.related_session_ids,
+            vec!["ses_parent".to_string()]
+        );
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get("parent_session_id")
+                .and_then(|v| v.as_str()),
+            Some("ses_parent")
+        );
+        assert_eq!(session.stats.event_count, 1);
     }
 
     use chrono::Datelike;

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { listSessions } from '../api';
-import type { SessionListItem } from '../types';
+import type { SessionListItem, SortOrder, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import SessionCard from './SessionCard.svelte';
 
@@ -12,14 +12,22 @@ let loading = $state(false);
 let error = $state<string | null>(null);
 let searchQuery = $state('');
 let toolFilter = $state('');
-let sortBy = $state('recent');
-let timeRange = $state('all');
+let sortBy = $state<SortOrder>('recent');
+let timeRange = $state<TimeRange>('all');
 let currentPage = $state(1);
 const perPage = 20;
 
 const hasMore = $derived(currentPage * perPage < total);
 let selectedIndex = $state(0);
 let searchInput: HTMLInputElement | undefined = $state();
+const sortCycle: readonly SortOrder[] = ['recent', 'popular', 'longest'];
+const rangeCycle: readonly TimeRange[] = ['all', '24h', '7d', '30d'];
+const timeRangeTabs: ReadonlyArray<{ value: TimeRange; label: string }> = [
+	{ value: 'all', label: 'All Time' },
+	{ value: '24h', label: '24h' },
+	{ value: '7d', label: '7d' },
+	{ value: '30d', label: '30d' },
+];
 
 async function fetchSessions(reset = false) {
 	if (reset) {
@@ -65,6 +73,11 @@ const tools = [
 	...Object.values(TOOL_CONFIGS).map((t) => ({ value: t.name, label: t.label })),
 ];
 
+function cycleFilterValue<T extends string>(current: T, options: readonly T[]): T {
+	const idx = options.indexOf(current);
+	return options[(idx + 1) % options.length] ?? options[0];
+}
+
 $effect(() => {
 	fetchSessions(true);
 });
@@ -87,6 +100,19 @@ function handleKeydown(e: KeyboardEvent) {
 	} else if (e.key === '/') {
 		e.preventDefault();
 		searchInput?.focus();
+	} else if (e.key === 't') {
+		e.preventDefault();
+		const toolValues = tools.map((t) => t.value);
+		toolFilter = cycleFilterValue(toolFilter, toolValues);
+		fetchSessions(true);
+	} else if (e.key === 'o') {
+		e.preventDefault();
+		sortBy = cycleFilterValue(sortBy, sortCycle);
+		fetchSessions(true);
+	} else if (e.key === 'r') {
+		e.preventDefault();
+		timeRange = cycleFilterValue(timeRange, rangeCycle);
+		fetchSessions(true);
 	}
 }
 
@@ -106,12 +132,7 @@ function scrollSelectedIntoView() {
 	<!-- Filter bar -->
 	<div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-2 py-1.5">
 		<div class="flex items-center gap-1" role="tablist" aria-label="Time range">
-			{#each [
-				{ value: 'all', label: 'All Time' },
-				{ value: '24h', label: '24h' },
-				{ value: '7d', label: '7d' },
-				{ value: '30d', label: '30d' }
-			] as tab}
+			{#each timeRangeTabs as tab}
 				<button
 					role="tab"
 					aria-selected={timeRange === tab.value}

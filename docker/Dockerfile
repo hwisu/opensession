@@ -1,44 +1,59 @@
-# Stage 1: Rust builder
-FROM rust:1.83 AS builder
+# ── Stage 1: Rust build ──────────────────────────────────────────────────────
+FROM rust:1.85-bookworm AS builder
 
-WORKDIR /build
-COPY Cargo.toml Cargo.lock* ./
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY migrations/ migrations/
+COPY docs.md ./
 
-# Build the server binary in release mode
-# The worker crate is excluded from the workspace, so this is fine.
-RUN cargo build --release --bin opensession-server
+RUN cargo build --release --bin opensession-server && \
+    strip /app/target/release/opensession-server
 
-# Stage 2: Node builder (web frontend)
-FROM node:22 AS web-builder
+# ── Stage 2: Frontend build ──────────────────────────────────────────────────
+FROM node:22-slim AS frontend
 
-WORKDIR /build
+WORKDIR /app
+
+COPY packages/ui/ packages/ui/
+RUN cd packages/ui && npm install
+
+COPY web/package.json web/package-lock.json web/
+RUN cd web && npm ci
+
 COPY web/ web/
-WORKDIR /build/web
-RUN npm install
-RUN npm run build
+RUN mkdir -p web/node_modules/@opensession && \
+    ln -sf /app/packages/ui web/node_modules/@opensession/ui && \
+    cd web && npm run build
 
-# Stage 3: Runtime
+# ── Stage 3: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+LABEL org.opencontainers.image.title="OpenSession"
+LABEL org.opencontainers.image.source="https://github.com/hwisu/opensession"
+LABEL org.opencontainers.image.licenses="MIT"
 
-# Copy server binary
-COPY --from=builder /build/target/release/opensession-server /usr/local/bin/opensession-server
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini && rm -rf /var/lib/apt/lists/*
 
-# Copy web build output
-COPY --from=web-builder /build/web/build /usr/share/opensession/web
+# Create non-root user
+RUN groupadd -r opensession && useradd -r -g opensession -s /bin/false opensession
 
-# Create data directory
-RUN mkdir -p /data
+RUN mkdir -p /data && chown opensession:opensession /data
+
+COPY --from=builder --chown=opensession:opensession /app/target/release/opensession-server /usr/local/bin/
+COPY --from=frontend --chown=opensession:opensession /app/web/build /var/www/opensession
 
 ENV OPENSESSION_DATA_DIR=/data
-ENV OPENSESSION_WEB_DIR=/usr/share/opensession/web
-ENV OPENSESSION_BASE_URL=http://localhost:3000
+ENV OPENSESSION_WEB_DIR=/var/www/opensession
 
 EXPOSE 3000
 
+VOLUME ["/data"]
+
+USER opensession
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:3000/api/health || exit 1
+
+ENTRYPOINT ["tini", "--"]
 CMD ["opensession-server"]

@@ -17,6 +17,9 @@ impl SessionParser for ClaudeCodeParser {
         if path.extension().is_none_or(|ext| ext != "jsonl") {
             return false;
         }
+        if is_claude_subagent_path(path) {
+            return false;
+        }
         path.to_str().is_some_and(|s| {
             s.contains(".claude/projects/")
                 || s.contains(".claude/projects\\")
@@ -58,6 +61,22 @@ pub(crate) use parse::{
     parse_timestamp, process_assistant_entry, process_user_entry, RawConversationEntry, RawEntry,
 };
 
+pub fn is_claude_subagent_path(path: &Path) -> bool {
+    let path_text = path.to_string_lossy();
+    if path_text.contains("/subagents/") || path_text.contains("\\subagents\\") {
+        return true;
+    }
+
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("agent-")
+        || lower.starts_with("agent_")
+        || lower.starts_with("subagent-")
+        || lower.starts_with("subagent_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +88,20 @@ mod tests {
         assert!(parser.can_parse(Path::new("/Users/test/.claude/projects/foo/session.jsonl")));
         assert!(!parser.can_parse(Path::new(
             "/Users/test/.codex/sessions/2026/02/14/rollout.jsonl"
+        )));
+    }
+
+    #[test]
+    fn can_parse_ignores_subagent_jsonl() {
+        let parser = ClaudeCodeParser;
+        assert!(!parser.can_parse(Path::new(
+            "/Users/test/.claude/projects/foo/subagents/agent-123.jsonl"
+        )));
+        assert!(!parser.can_parse(Path::new(
+            "/Users/test/.claude/projects/foo/subagents/agent_123.jsonl"
+        )));
+        assert!(!parser.can_parse(Path::new(
+            "/Users/test/.claude/projects/foo/subagents/subagent-alpha.jsonl"
         )));
     }
 }

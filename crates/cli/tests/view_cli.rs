@@ -5,6 +5,9 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::process::Command as StdCommand;
+
 fn make_home() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
@@ -26,6 +29,17 @@ fn create_claude_session(home: &Path, rel: &str) -> PathBuf {
     let path = home.join(".claude").join("projects").join(rel);
     write_file(&path, "{\"type\":\"noop\"}\n");
     path
+}
+
+#[cfg(unix)]
+fn set_file_mtime(path: &Path, timestamp: &str) {
+    let status = StdCommand::new("touch")
+        .arg("-t")
+        .arg(timestamp)
+        .arg(path)
+        .status()
+        .expect("set file mtime");
+    assert!(status.success(), "touch -t should succeed");
 }
 
 fn parse_dry_run(output: &[u8]) -> Value {
@@ -164,6 +178,42 @@ fn view_falls_back_to_latest_when_no_active_candidates() {
         json.get("selection_mode").and_then(|v| v.as_str()),
         Some("fallback-latest")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn view_sort_is_deterministic_for_tied_mtime_files() {
+    let tmp = make_home();
+    let home = tmp.path();
+
+    let later_by_name = create_codex_session(home, "2026/02/14/z-file.jsonl");
+    let earlier_by_name = create_codex_session(home, "2026/02/14/a-file.jsonl");
+
+    set_file_mtime(&later_by_name, "203012312359.00");
+    set_file_mtime(&earlier_by_name, "203012312359.00");
+
+    let output = run_view(
+        home,
+        &[
+            "view",
+            "codex",
+            "--dry-run",
+            "--non-interactive",
+            "--active-within-minutes",
+            "120",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_dry_run(&output.stdout);
+    let selected = json
+        .get("selected_path")
+        .and_then(|v| v.as_str())
+        .expect("selected path");
+    assert_eq!(selected, earlier_by_name.to_string_lossy());
 }
 
 #[test]

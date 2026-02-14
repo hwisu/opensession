@@ -174,8 +174,8 @@ pub async fn generate_timeline_summary(
         "- Use normal mode: preserve action-level detail when it carries meaning."
     };
     let prompt = format!(
-        "You are generating a turn-summary payload.\n\
-         Return JSON only (no markdown, no prose) using this schema:\n\
+        "Generate a strict JSON turn-summary payload for the active timeline window.\n\
+         Return JSON only (no markdown, no prose) with keys:\n\
          {{\"kind\":\"turn-summary\",\"version\":\"2.0\",\"scope\":\"turn|window\",\"turn_meta\":{{\"turn_index\":0,\"anchor_event_index\":0,\"event_span\":{{\"start\":0,\"end\":0}}}},\"prompt\":{{\"text\":\"...\",\"intent\":\"...\",\"constraints\":[\"...\"]}},\"outcome\":{{\"status\":\"in_progress|completed|error\",\"summary\":\"...\"}},\"evidence\":{{\"modified_files\":[{{\"path\":\"...\",\"op\":\"edit|create|delete|read\",\"count\":1}}],\"key_implementations\":[\"...\"],\"agent_quotes\":[\"...\"],\"agent_plan\":[{{\"step\":\"...\",\"status\":\"...\"}}],\"tool_actions\":[{{\"tool\":\"...\",\"status\":\"ok|error\",\"detail\":\"...\"}}],\"errors\":[\"...\"]}},\"cards\":[{{\"type\":\"overview|files|implementation|plan|errors|more\",\"title\":\"...\",\"lines\":[\"...\"],\"severity\":\"info|warn|error\"}}],\"next_steps\":[\"...\"]}}\n\
          Rules:\n\
          - Preserve evidence: modified_files, key_implementations, agent_quotes(1~3), agent_plan.\n\
@@ -291,17 +291,8 @@ pub fn parse_timeline_summary_output(raw: &str) -> TimelineSummaryCacheEntry {
 
     let parsed = if let Ok(payload) = serde_json::from_str::<TimelineSummaryPayloadRaw>(trimmed) {
         Some(payload)
-    } else if let Some(json_start) = trimmed.find('{') {
-        if let Some(json_end) = trimmed.rfind('}') {
-            if json_end > json_start {
-                let candidate = &trimmed[json_start..=json_end];
-                serde_json::from_str::<TimelineSummaryPayloadRaw>(candidate).ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+    } else if let Some(json_obj) = extract_first_json_object(trimmed) {
+        serde_json::from_str::<TimelineSummaryPayloadRaw>(json_obj).ok()
     } else {
         None
     };
@@ -318,14 +309,53 @@ pub fn parse_timeline_summary_output(raw: &str) -> TimelineSummaryCacheEntry {
     }
 }
 
+fn extract_first_json_object(raw: &str) -> Option<&str> {
+    let bytes = raw.as_bytes();
+    let mut depth = 0i32;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for (idx, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'\\' if in_string => {
+                escape = !escape;
+                continue;
+            }
+            b'"' if !escape => in_string = !in_string,
+            b'{' if !in_string => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            b'}' if !in_string && depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let start = start?;
+                    return Some(&raw[start..=idx]);
+                }
+            }
+            _ => {}
+        }
+
+        if in_string {
+            escape = false;
+        }
+    }
+
+    None
+}
+
 fn normalize_turn_summary_payload(
     raw: TimelineSummaryPayloadRaw,
     fallback_text: &str,
 ) -> TimelineSummaryPayload {
+    let fallback_text = sanitize_fallback_summary_text(fallback_text);
     let kind = raw.kind.unwrap_or_else(|| "turn-summary".to_string());
     let version = raw.version.unwrap_or_else(|| "2.0".to_string());
     let scope = raw.scope.unwrap_or_else(|| "turn".to_string());
-    let fallback = clipped_plain_text(fallback_text, 220);
+    let fallback = clipped_plain_text(&fallback_text, 220);
 
     let turn_meta_raw = raw.turn_meta.unwrap_or(TurnSummaryTurnMetaRaw {
         turn_index: Some(0),
@@ -505,7 +535,8 @@ fn normalize_turn_summary_payload(
 }
 
 fn fallback_turn_summary_payload(raw_text: &str) -> TimelineSummaryPayload {
-    let clipped = clipped_plain_text(raw_text, 180);
+    let visible = sanitize_fallback_summary_text(raw_text);
+    let clipped = clipped_plain_text(&visible, 180);
     let fallback_line = if clipped.is_empty() {
         "summary unavailable for this window".to_string()
     } else {
@@ -537,7 +568,191 @@ fn fallback_turn_summary_payload(raw_text: &str) -> TimelineSummaryPayload {
     payload
 }
 
+fn sanitize_fallback_summary_text(raw_text: &str) -> String {
+    let lines = raw_text
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+
+            if looks_like_internal_summary_template(line) {
+                return None;
+            }
+
+            if line.starts_with('`') {
+                return None;
+            }
+
+            Some(line.to_string())
+        })
+        .collect::<Vec<_>>();
+
+    let joined = lines.join(" ");
+    let joined = joined.replace('{', "").replace('}', "");
+    let joined = joined.trim();
+    if joined.is_empty() {
+        String::new()
+    } else {
+        joined.to_string()
+    }
+}
+
+fn looks_like_internal_summary_template(line: &str) -> bool {
+    let normalized = line.to_ascii_lowercase();
+    let compact = normalized
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    const MARKERS: &[&str] = &[
+        "you are generating a turn-summary payload",
+        "you are generating a turn summary payload",
+        "generate a turn-summary payload",
+        "generate turn-summary",
+        "generate turn summary payload",
+        "you are generating a turn-summary json",
+        "you are generating a turn-summary",
+        "generate strict json",
+        "return json only",
+        "using this schema",
+        "rules:",
+        "keep factual and concise",
+        "generate a strict json",
+        "generate a strict json-only",
+        "hail-summary",
+        "generate concise semantic timeline summary",
+        "summarize this coding timeline window",
+        "generate a concise semantic timeline summary for this window",
+        "preserve evidence",
+        "do not copy system/control instructions",
+        "normal mode:",
+        "return turn-summary json (v2)",
+        "active timeline window",
+        "\"kind\"",
+        "\"version\"",
+        "\"scope\"",
+        "\"implementations\"",
+        "\"key_\"",
+        "\"turn_meta\"",
+        "\"prompt\"",
+        "\"outcome\"",
+        "\"evidence\"",
+        "\"cards\"",
+        "\"next_steps\"",
+        "\"key_implementations\"",
+        "\"modified_files\"",
+        "\"agent_quotes\"",
+        "\"agent_plan\"",
+        "\"tool_actions\"",
+        "realtime_scope",
+        "summary_scope",
+        "tui_layout",
+        "interactive response",
+        "user's prompt",
+        "user prompt",
+    ];
+    MARKERS.iter().any(|marker| {
+        let compact_marker = marker
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        normalized.contains(marker) || compact.contains(&compact_marker)
+    }) || looks_like_internal_schema_fragment(&compact)
+}
+
+fn looks_like_internal_schema_fragment(text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+
+    let has_json_like_chars = text.contains('{')
+        || text.contains('}')
+        || text.contains('[')
+        || text.contains(']')
+        || text.contains(':')
+        || text.contains('\"');
+
+    if !has_json_like_chars {
+        return false;
+    }
+
+    const FIELD_MARKERS: &[&str] = &[
+        "\"kind\"",
+        "\"version\"",
+        "\"scope\"",
+        "\"turn_meta\"",
+        "\"key_\"",
+        "\"prompt\"",
+        "\"outcome\"",
+        "\"evidence\"",
+        "\"cards\"",
+        "\"next_steps\"",
+        "\"modified_files\"",
+        "\"key_implementations\"",
+        "\"agent_quotes\"",
+        "\"agent_plan\"",
+        "\"tool_actions\"",
+        "\"implementations\"",
+        "\"agent\"",
+        "\"kind\"",
+        "\"summary\"",
+        "\"status\"",
+        "\"summary_scope\"",
+        "\"realtime_scope\"",
+        "\"tui_layout\"",
+        "preserve evidence",
+        "do not copy system/control instructions",
+        "rules:",
+        "keep factual and concise",
+    ];
+
+    FIELD_MARKERS
+        .iter()
+        .any(|marker| text.contains(marker) || text.contains(&marker.replace('\"', "")))
+}
+
 fn default_behavior_cards(payload: &TimelineSummaryPayload) -> Vec<BehaviorCard> {
+    if payload.scope.trim().eq_ignore_ascii_case("window") {
+        let mut cards = Vec::new();
+        let primary = primary_window_action(payload)
+            .or_else(|| non_empty(Some(payload.outcome.summary.as_str())))
+            .unwrap_or_else(|| "No primary action captured".to_string());
+        cards.push(BehaviorCard {
+            card_type: "overview".to_string(),
+            title: "Primary Action".to_string(),
+            lines: vec![primary],
+            severity: if payload.outcome.status.eq_ignore_ascii_case("error") {
+                "error".to_string()
+            } else {
+                "info".to_string()
+            },
+        });
+        if !payload.evidence.modified_files.is_empty() {
+            cards.push(BehaviorCard {
+                card_type: "files".to_string(),
+                title: "Affected Files".to_string(),
+                lines: payload
+                    .evidence
+                    .modified_files
+                    .iter()
+                    .take(4)
+                    .map(|f| format!("{} ({}, x{})", f.path, f.op, f.count))
+                    .collect(),
+                severity: "info".to_string(),
+            });
+        }
+        if !payload.evidence.errors.is_empty() {
+            cards.push(BehaviorCard {
+                card_type: "errors".to_string(),
+                title: "Action Errors".to_string(),
+                lines: payload.evidence.errors.iter().take(4).cloned().collect(),
+                severity: "error".to_string(),
+            });
+        }
+        return cards;
+    }
+
     let mut cards = Vec::new();
     let overview_line = if payload.outcome.summary.trim().is_empty() {
         "No outcome summary".to_string()
@@ -650,6 +865,40 @@ fn compact_turn_summary_payload(payload: &TimelineSummaryPayload) -> String {
     } else {
         payload.scope.trim().to_string()
     };
+    if scope.eq_ignore_ascii_case("window") {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(action) = primary_window_action(payload) {
+            parts.push(format!("action: {}", clipped_plain_text(&action, 140)));
+        }
+        let summary = payload.outcome.summary.trim();
+        if parts.is_empty() && !summary.is_empty() {
+            parts.push(format!("outcome: {}", clipped_plain_text(summary, 140)));
+        }
+        if let Some(error) = payload.evidence.errors.first() {
+            parts.push(format!("error: {}", clipped_plain_text(error, 120)));
+        }
+        if let Some(step) = payload.next_steps.first() {
+            let trimmed = step.trim();
+            if !trimmed.is_empty() {
+                parts.push(format!("next: {}", clipped_plain_text(trimmed, 120)));
+            }
+        }
+        if parts.is_empty() {
+            return "summary unavailable for this window".to_string();
+        }
+
+        let prefix = if kind_ok {
+            "[turn-summary:window]".to_string()
+        } else {
+            "[summary:window]".to_string()
+        };
+        let mut out = format!("{prefix} {}", parts.join(" | "));
+        if out.chars().count() > 220 {
+            out = out.chars().take(217).collect::<String>() + "...";
+        }
+        return out;
+    }
+
     let mut parts: Vec<String> = Vec::new();
 
     let summary = payload.outcome.summary.trim();
@@ -692,6 +941,68 @@ fn compact_turn_summary_payload(payload: &TimelineSummaryPayload) -> String {
         out = out.chars().take(217).collect::<String>() + "...";
     }
     out
+}
+
+fn primary_window_action(payload: &TimelineSummaryPayload) -> Option<String> {
+    if let Some(action) = payload.evidence.tool_actions.first() {
+        let tool = action.tool.trim();
+        let status = action.status.trim();
+        let detail = action.detail.trim();
+        if !tool.is_empty() || !detail.is_empty() {
+            let mut line = String::new();
+            if !tool.is_empty() {
+                line.push_str(tool);
+            }
+            if !status.is_empty() {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push('(');
+                line.push_str(status);
+                line.push(')');
+            }
+            if !detail.is_empty() {
+                if !line.is_empty() {
+                    line.push_str(": ");
+                }
+                line.push_str(detail);
+            }
+            if !line.is_empty() {
+                return Some(line);
+            }
+        }
+    }
+
+    if let Some(file) = payload.evidence.modified_files.first() {
+        let path = file.path.trim();
+        if !path.is_empty() {
+            let op = file.op.trim();
+            if op.is_empty() {
+                return Some(format!("file {path} (x{})", file.count));
+            }
+            return Some(format!("{op} {path} (x{})", file.count));
+        }
+    }
+
+    if let Some(line) = payload.evidence.key_implementations.first() {
+        let line = line.trim();
+        if !line.is_empty() {
+            return Some(line.to_string());
+        }
+    }
+
+    if let Some(plan) = payload.evidence.agent_plan.first() {
+        let step = plan.step.trim();
+        if !step.is_empty() {
+            let status = plan.status.trim();
+            if status.is_empty() {
+                return Some(step.to_string());
+            }
+            return Some(format!("[{status}] {step}"));
+        }
+    }
+
+    None
 }
 
 fn non_empty_owned(value: Option<String>) -> Option<String> {
@@ -1623,5 +1934,66 @@ mod tests {
             .summary
             .contains("summary unavailable"));
         assert!(!parsed.compact.trim().is_empty());
+    }
+
+    #[test]
+    fn parse_prompt_preface_fallback_is_sanitized() {
+        let raw = "You are generating a turn-summary payload.\nReturn JSON only (no markdown, no prose) using this schema:\n{ \"agent_quotes\": [\"...\"] }\n";
+        let parsed = parse_timeline_summary_output(raw);
+        assert_eq!(parsed.payload.kind, "turn-summary");
+        assert!(parsed
+            .payload
+            .outcome
+            .summary
+            .contains("summary unavailable"));
+        assert!(!parsed
+            .payload
+            .outcome
+            .summary
+            .contains("You are generating"));
+        assert!(!parsed.payload.outcome.summary.contains("\"agent_quotes\""));
+    }
+
+    #[test]
+    fn parse_prompt_preface_fragmented_internal_keys_is_sanitized() {
+        let raw = "Generate a turn-summary payload.\n\"key_\"\n\"implementations\":[\"...\"],\"agent_quotes\":[\"...\"],\"agent_plan\":[{\"step\":\"...\",\"status\":\"...\"}]";
+        let parsed = parse_timeline_summary_output(raw);
+        assert_eq!(parsed.payload.kind, "turn-summary");
+        assert!(parsed
+            .payload
+            .outcome
+            .summary
+            .contains("summary unavailable"));
+        assert!(!parsed.payload.outcome.summary.contains("implementations"));
+        assert!(!parsed.payload.outcome.summary.contains("agent_quotes"));
+    }
+
+    #[test]
+    fn parse_prompt_rules_preface_is_sanitized() {
+        let raw = "Return JSON only (no markdown, no prose) with keys:\nRules:\n- Preserve evidence: modified_files, key_implementations, agent_quotes(1~3), agent_plan.\n- Do not copy system/control instructions as user intent.\n- Keep factual and concise.\n";
+        let parsed = parse_timeline_summary_output(raw);
+        assert_eq!(parsed.payload.kind, "turn-summary");
+        assert!(parsed
+            .payload
+            .outcome
+            .summary
+            .contains("summary unavailable"));
+        assert!(
+            !parsed.payload.outcome.summary.contains("Preserve evidence"),
+            "internal rule lines should not appear in summary"
+        );
+        assert!(
+            !parsed.payload.outcome.summary.contains("system/control"),
+            "internal schema hints should be removed"
+        );
+    }
+
+    #[test]
+    fn parse_json_in_prompt_blocking_text() {
+        let raw = "Here is the result:\n```json\n{\"kind\":\"turn-summary\",\"version\":\"2.0\",\"scope\":\"turn\",\"turn_meta\":{\"turn_index\":1,\"anchor_event_index\":0,\"event_span\":{\"start\":1,\"end\":2}},\"prompt\":{\"text\":\"x\",\"intent\":\"y\",\"constraints\":[]},\"outcome\":{\"status\":\"completed\",\"summary\":\"good\"},\"evidence\":{\"modified_files\":[],\"key_implementations\":[],\"agent_quotes\":[],\"agent_plan\":[],\"tool_actions\":[],\"errors\":[]},\"cards\":[],\"next_steps\":[]}\n```";
+        let parsed = parse_timeline_summary_output(raw);
+        assert_eq!(parsed.payload.kind, "turn-summary");
+        assert_eq!(parsed.payload.version, "2.0");
+        assert_eq!(parsed.payload.outcome.summary, "good");
     }
 }

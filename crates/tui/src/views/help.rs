@@ -67,11 +67,23 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  m         ", key_style),
-            Span::styled("Multi-column by user (Team/Repo)", desc_style),
+            Span::styled("Multi-column by active agent count", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  t         ", key_style),
+            Span::styled("Cycle tool filter (Local/Team/Repo)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  o         ", key_style),
+            Span::styled("Cycle sort (Recent/Popular/Longest)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  r         ", key_style),
+            Span::styled("Cycle time range (All/24h/7d/30d)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  f         ", key_style),
-            Span::styled("Cycle tool filter (Team/Repo)", desc_style),
+            Span::styled("Cycle tool filter (DB view, legacy)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  d         ", key_style),

@@ -7,7 +7,7 @@ use opensession_core::trace::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct CodexParser;
 
@@ -362,9 +362,10 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
             .to_string()
     });
 
+    let (provider, model) = load_codex_agent_identity();
     let agent = Agent {
-        provider: "openai".to_string(),
-        model: "unknown".to_string(),
+        provider,
+        model,
         tool: "codex".to_string(),
         tool_version,
     };
@@ -1103,6 +1104,112 @@ fn parse_timestamp(ts: &str) -> Result<DateTime<Utc>> {
         .with_context(|| format!("Failed to parse timestamp: {}", ts))
 }
 
+fn load_codex_agent_identity() -> (String, String) {
+    let model = read_codex_model_from_config().unwrap_or_else(|| "unknown".to_string());
+    let provider = read_codex_provider_from_config()
+        .or_else(|| infer_provider_from_model(&model))
+        .unwrap_or_else(|| "openai".to_string());
+    (provider, model)
+}
+
+fn codex_config_path() -> Option<PathBuf> {
+    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        let home = codex_home.trim();
+        if !home.is_empty() {
+            return Some(PathBuf::from(home).join("config.toml"));
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    let home = home.trim();
+    if home.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(home).join(".codex").join("config.toml"))
+}
+
+fn read_codex_model_from_config() -> Option<String> {
+    read_codex_setting_from_config("model")
+}
+
+fn read_codex_provider_from_config() -> Option<String> {
+    read_codex_setting_from_config("provider")
+        .or_else(|| read_codex_setting_from_config("model_provider"))
+        .and_then(|provider| {
+            let normalized = provider.trim().to_ascii_lowercase();
+            if normalized.is_empty() || normalized == "auto" {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+}
+
+fn read_codex_setting_from_config(key: &str) -> Option<String> {
+    let path = codex_config_path()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_codex_config_value(&text, key)
+}
+
+fn parse_codex_config_value(config_toml: &str, key: &str) -> Option<String> {
+    let value: toml::Value = toml::from_str(config_toml).ok()?;
+    let active_profile = value
+        .get("profile")
+        .or_else(|| value.get("default_profile"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(profile) = active_profile {
+        if let Some(profile_value) = value
+            .get("profiles")
+            .and_then(|profiles| profiles.get(profile))
+            .and_then(|entry| entry.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(profile_value.to_string());
+        }
+    }
+    if let Some(defaults_value) = value
+        .get("defaults")
+        .and_then(|defaults| defaults.get(key))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(defaults_value.to_string());
+    }
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn infer_provider_from_model(model: &str) -> Option<String> {
+    let lower = model.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower == "unknown" {
+        return None;
+    }
+    if lower.contains("claude") {
+        return Some("anthropic".to_string());
+    }
+    if lower.contains("gemini") {
+        return Some("google".to_string());
+    }
+    if lower.contains("gpt")
+        || lower.contains("openai")
+        || lower.contains("codex")
+        || lower.starts_with("o1")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+    {
+        return Some("openai".to_string());
+    }
+    None
+}
+
 /// Extract a shell command string from function arguments.
 /// Handles: `{cmd: "..."}`, `{command: ["bash", "-lc", "cmd"]}`, `{command: "cmd"}`.
 fn extract_shell_command(args: &serde_json::Value) -> String {
@@ -1189,6 +1296,54 @@ fn codex_function_content(name: &str, args: &serde_json::Value) -> Content {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_codex_config_value_model_root() {
+        let config = r#"
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+"#;
+        assert_eq!(
+            parse_codex_config_value(config, "model"),
+            Some("gpt-5.3-codex".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_codex_config_value_profile_override() {
+        let config = r#"
+profile = "work"
+model = "gpt-5.3-codex"
+[profiles.work]
+model = "claude-sonnet-4-5"
+provider = "anthropic"
+"#;
+        assert_eq!(
+            parse_codex_config_value(config, "model"),
+            Some("claude-sonnet-4-5".to_string())
+        );
+        assert_eq!(
+            parse_codex_config_value(config, "provider"),
+            Some("anthropic".to_string())
+        );
+    }
+
+    #[test]
+    fn test_infer_provider_from_model() {
+        assert_eq!(
+            infer_provider_from_model("gpt-5.3-codex"),
+            Some("openai".to_string())
+        );
+        assert_eq!(
+            infer_provider_from_model("claude-sonnet-4-5"),
+            Some("anthropic".to_string())
+        );
+        assert_eq!(
+            infer_provider_from_model("gemini-2.0-flash"),
+            Some("google".to_string())
+        );
+        assert_eq!(infer_provider_from_model("unknown"), None);
+    }
 
     #[test]
     fn test_session_header() {

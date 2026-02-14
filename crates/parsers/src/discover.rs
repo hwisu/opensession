@@ -16,8 +16,6 @@ pub fn discover_sessions() -> Vec<SessionLocation> {
     discover_opencode(&home, &mut locations);
     discover_cline(&home, &mut locations);
     discover_amp(&home, &mut locations);
-    discover_goose(&home, &mut locations);
-    discover_aider(&home, &mut locations);
     discover_cursor(&home, &mut locations);
     discover_gemini(&home, &mut locations);
 
@@ -33,19 +31,6 @@ pub fn discover_for_tool(tool: &str) -> Vec<PathBuf> {
         "opencode" => find_opencode_sessions(&home),
         "cline" => find_cline_sessions(&home),
         "amp" => find_amp_threads(&home),
-        "goose" => {
-            let db_path = home
-                .join(".local")
-                .join("share")
-                .join("goose")
-                .join("sessions.db");
-            if db_path.exists() {
-                vec![db_path]
-            } else {
-                Vec::new()
-            }
-        }
-        "aider" => find_aider_files(&home),
         "cursor" => find_cursor_vscdb(&home),
         "gemini" => find_gemini_sessions(&home),
         _ => Vec::new(),
@@ -103,30 +88,6 @@ fn discover_amp(home: &std::path::Path, locations: &mut Vec<SessionLocation>) {
     if !paths.is_empty() {
         locations.push(SessionLocation {
             tool: "amp".to_string(),
-            paths,
-        });
-    }
-}
-
-fn discover_goose(home: &std::path::Path, locations: &mut Vec<SessionLocation>) {
-    let goose_path = home
-        .join(".local")
-        .join("share")
-        .join("goose")
-        .join("sessions.db");
-    if goose_path.exists() {
-        locations.push(SessionLocation {
-            tool: "goose".to_string(),
-            paths: vec![goose_path],
-        });
-    }
-}
-
-fn discover_aider(home: &std::path::Path, locations: &mut Vec<SessionLocation>) {
-    let paths = find_aider_files(home);
-    if !paths.is_empty() {
-        locations.push(SessionLocation {
-            tool: "aider".to_string(),
             paths,
         });
     }
@@ -287,28 +248,5 @@ fn find_cursor_vscdb(home: &std::path::Path) -> Vec<PathBuf> {
         }
     }
 
-    results
-}
-
-/// Aider stores history in `.aider.chat.history.md` files in project directories.
-/// We search common project locations.
-fn find_aider_files(home: &std::path::Path) -> Vec<PathBuf> {
-    let mut results = Vec::new();
-    // Check home directory itself
-    let home_aider = home.join(".aider.chat.history.md");
-    if home_aider.exists() {
-        results.push(home_aider);
-    }
-    // Check common project directories
-    for dir_name in &["projects", "repos", "src", "code", "dev", "work"] {
-        let base = home.join(dir_name);
-        if !base.exists() {
-            continue;
-        }
-        let pattern = format!("{}/**/.aider.chat.history.md", base.display());
-        if let Ok(paths) = glob::glob(&pattern) {
-            results.extend(paths.filter_map(Result::ok));
-        }
-    }
     results
 }

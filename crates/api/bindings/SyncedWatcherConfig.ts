@@ -3,4 +3,4 @@
 /**
  * Watcher toggle settings synced from the team — which tools to monitor.
  */
-export type SyncedWatcherConfig = { claude_code: boolean | null, opencode: boolean | null, goose: boolean | null, aider: boolean | null, cursor: boolean | null, };
+export type SyncedWatcherConfig = { claude_code: boolean | null, opencode: boolean | null, cursor: boolean | null, };

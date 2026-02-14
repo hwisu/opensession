@@ -5,9 +5,22 @@ use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, Paragraph};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.is_local_mode() {
+        let block = Theme::block_dim()
+            .title(" Collaboration ")
+            .padding(Theme::PADDING_CARD);
+        let msg = Paragraph::new(
+            "Collaboration is unavailable in local mode.\nConfigure server/team in Settings > Workspace.",
+        )
+        .block(block)
+        .style(Style::new().fg(Theme::TEXT_MUTED));
+        frame.render_widget(msg, area);
+        return;
+    }
+
     if app.teams_loading {
         let block = Theme::block_dim()
-            .title(" Teams ")
+            .title(" Collaboration ")
             .padding(Theme::PADDING_CARD);
         let msg = Paragraph::new("Loading teams...")
             .block(block)
@@ -18,9 +31,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     if app.teams.is_empty() {
         let block = Theme::block_dim()
-            .title(" Teams ")
+            .title(" Collaboration ")
             .padding(Theme::PADDING_CARD);
-        let msg = Paragraph::new("No teams yet. Press 'n' to create one.")
+        let msg = Paragraph::new("No teams yet. Press 'n' to create one. Press 'i' for inbox.")
             .block(block)
             .style(Style::new().fg(Color::DarkGray));
         frame.render_widget(msg, area);

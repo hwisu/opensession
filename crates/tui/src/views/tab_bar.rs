@@ -4,12 +4,12 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mode: bool) {
-    let mut tabs = vec![(Tab::Sessions, "1:Sessions", "Sessions")];
-    if !local_mode {
-        tabs.push((Tab::Teams, "2:Teams", "Teams"));
-        tabs.push((Tab::TeamMgmt, "3:Team Mgmt", "Team Mgmt"));
-    }
-    tabs.push((Tab::Settings, "4:Settings", "Settings"));
+    let tabs = [
+        (Tab::Sessions, "1:Sessions", "Sessions"),
+        (Tab::Collaboration, "2:Collaboration", "Collaboration"),
+        (Tab::Operations, "3:Operations", "Operations"),
+        (Tab::Settings, "4:Settings", "Settings"),
+    ];
 
     // In detail views, hide number prefixes since 1-6 keys are used for event filters
     let hide_numbers = matches!(view, View::SessionDetail | View::TeamDetail);
@@ -29,6 +29,8 @@ pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mo
                 .bg(Theme::ACCENT_BLUE)
                 .bold()
                 .add_modifier(Modifier::UNDERLINED)
+        } else if local_mode && *tab == Tab::Collaboration {
+            Style::new().fg(Theme::TAB_DIM)
         } else if hide_numbers {
             // Dimmer style in detail views where tabs are not directly switchable
             Style::new().fg(Theme::TAB_DIM)

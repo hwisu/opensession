@@ -38,9 +38,28 @@ pub struct DaemonSettings {
     pub health_check_interval_secs: u64,
     #[serde(default = "default_realtime_debounce_ms")]
     pub realtime_debounce_ms: u64,
+    /// Enable realtime file preview refresh in TUI session detail.
+    #[serde(default = "default_detail_realtime_preview_enabled")]
+    pub detail_realtime_preview_enabled: bool,
     /// Agents using stream-write (PostToolUse hook): daemon skips upload for these.
     #[serde(default)]
     pub stream_write: Vec<String>,
+    /// Enable timeline summaries in TUI detail view.
+    #[serde(default = "default_summary_enabled")]
+    pub summary_enabled: bool,
+    /// Summary provider override:
+    /// auto | anthropic | openai | openai-compatible | gemini | cli:auto | cli:codex | cli:claude | cli:cursor | cli:gemini
+    #[serde(default)]
+    pub summary_provider: Option<String>,
+    /// Number of events per summary window. `0` means auto(turn-aware).
+    #[serde(default = "default_summary_event_window")]
+    pub summary_event_window: u32,
+    /// Debounce for summary requests / realtime checks, in milliseconds.
+    #[serde(default = "default_summary_debounce_ms")]
+    pub summary_debounce_ms: u64,
+    /// Max concurrent in-flight timeline summary jobs.
+    #[serde(default = "default_summary_max_inflight")]
+    pub summary_max_inflight: u32,
 }
 
 impl Default for DaemonSettings {
@@ -52,7 +71,13 @@ impl Default for DaemonSettings {
             max_retries: 3,
             health_check_interval_secs: 300,
             realtime_debounce_ms: 500,
+            detail_realtime_preview_enabled: false,
             stream_write: Vec::new(),
+            summary_enabled: true,
+            summary_provider: None,
+            summary_event_window: 8,
+            summary_debounce_ms: 1200,
+            summary_max_inflight: 1,
         }
     }
 }
@@ -147,10 +172,6 @@ pub struct WatcherSettings {
     pub claude_code: bool,
     #[serde(default = "default_true")]
     pub opencode: bool,
-    #[serde(default = "default_true")]
-    pub goose: bool,
-    #[serde(default = "default_true")]
-    pub aider: bool,
     #[serde(default)]
     pub cursor: bool,
     #[serde(default)]
@@ -162,8 +183,6 @@ impl Default for WatcherSettings {
         Self {
             claude_code: true,
             opencode: true,
-            goose: true,
-            aider: true,
             cursor: false,
             custom_paths: Vec::new(),
         }
@@ -217,6 +236,21 @@ fn default_health_check_interval() -> u64 {
 }
 fn default_realtime_debounce_ms() -> u64 {
     500
+}
+fn default_detail_realtime_preview_enabled() -> bool {
+    false
+}
+fn default_summary_enabled() -> bool {
+    true
+}
+fn default_summary_event_window() -> u32 {
+    8
+}
+fn default_summary_debounce_ms() -> u64 {
+    1200
+}
+fn default_summary_max_inflight() -> u32 {
+    1
 }
 fn default_publish_on() -> PublishMode {
     PublishMode::Manual

@@ -14,8 +14,11 @@ export interface LaneEvent {
 export interface TaskInfo {
 	taskId: string;
 	title: string;
+	purpose: string;
 	eventCount: number;
 	durationMs: number;
+	startedAt: string;
+	endedAt: string;
 	lane: number;
 	activeLanesAtStart: number[];
 	activeLanesAtEnd: number[];

@@ -19,7 +19,7 @@ fn render_local(frame: &mut Frame, app: &mut App, area: Rect) {
             if app.startup_status.config_exists {
                 "No sessions found. Make sure you have Claude Code sessions in ~/.claude/projects/"
             } else {
-                "No sessions yet. You can keep browsing locally, then configure sync in Settings > Config (4)."
+                "No sessions yet. You can keep browsing locally, then configure sync in Settings > Workspace (4)."
             }
         } else {
             "No sessions match your search query."

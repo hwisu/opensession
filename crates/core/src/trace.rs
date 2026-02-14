@@ -137,7 +137,7 @@ pub struct Agent {
     pub provider: String,
     /// Model: "claude-opus-4-6", "gpt-4o"
     pub model: String,
-    /// Tool: "claude-code", "cursor", "goose"
+    /// Tool: "claude-code", "codex", "cursor"
     pub tool: String,
     /// Tool version
     #[serde(skip_serializing_if = "Option::is_none")]

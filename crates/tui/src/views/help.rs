@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  1/2/3/4   ", key_style),
             Span::styled(
-                "Switch tabs (Sessions/Teams/Team Mgmt/Settings)",
+                "Switch tabs (Sessions/Collaboration/Operations/Settings)",
                 desc_style,
             ),
         ]),
@@ -88,6 +88,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Navigate events", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  h/l, ←/→  ", key_style),
+            Span::styled("Horizontal timeline scroll (x-scroll)", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  PgDn/PgUp ", key_style),
             Span::styled("Jump 10 events", desc_style),
         ]),
@@ -112,22 +116,53 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Filter: All/Msgs/Tools/Think/Files/Shell", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  t         ", key_style),
-            Span::styled("Toggle task view (Summary/Detail)", desc_style),
-        ]),
-        Line::from(vec![
             Span::styled("  c         ", key_style),
             Span::styled("Toggle consecutive collapse", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  LLM       ", key_style),
+            Span::styled(
+                "Timeline summary status (Settings > Timeline Intelligence)",
+                desc_style,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  RT        ", key_style),
+            Span::styled(
+                "Detail Live status (mtime watcher, Settings > Timeline Intelligence)",
+                desc_style,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc/q     ", key_style),
+            Span::styled("Back to session list", desc_style),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled("── Collaboration / Operations ──", header_style)),
+        Line::from(vec![
+            Span::styled("  i         ", key_style),
+            Span::styled("Open inbox from collaboration view", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  d/s/r     ", key_style),
+            Span::styled("Operations actions: daemon/save/refresh", desc_style),
         ]),
         Line::raw(""),
         Line::from(Span::styled("── Settings ──", header_style)),
         Line::from(vec![
             Span::styled("  [/]       ", key_style),
-            Span::styled("Switch section (Profile/Account/Config)", desc_style),
+            Span::styled(
+                "Switch section (Workspace/Capture/Timeline/Storage/Account)",
+                desc_style,
+            ),
         ]),
         Line::from(vec![
             Span::styled("  s         ", key_style),
             Span::styled("Save config", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  g         ", key_style),
+            Span::styled("Regenerate API key (Account)", desc_style),
         ]),
         Line::raw(""),
         Line::from(Span::styled(

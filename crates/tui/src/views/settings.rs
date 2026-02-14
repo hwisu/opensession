@@ -1,132 +1,29 @@
 use crate::app::{App, SettingsSection};
-use crate::config::{GitStorageMethod, SettingField, SettingItem, SETTINGS_LAYOUT};
+use crate::config::{self, SettingField, SettingItem, SettingsGroup};
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     match app.settings_section {
-        SettingsSection::Profile => render_profile(frame, app, area),
-        SettingsSection::Account => render_account(frame, app, area),
-        SettingsSection::DaemonConfig => render_daemon_config(frame, app, area),
-    }
-}
-
-// ── Profile section (read-only) ──────────────────────────────────────────
-
-fn render_profile(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Theme::block_dim().padding(Theme::PADDING_CARD);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if app.profile_loading {
-        let msg = Paragraph::new("Loading profile...").style(Style::new().fg(Theme::ACCENT_BLUE));
-        frame.render_widget(msg, inner);
-        return;
-    }
-
-    let mut lines = vec![
-        Line::from(Span::styled(
-            "── Profile ──",
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )),
-        Line::raw(""),
-    ];
-
-    if let Some(ref profile) = app.profile {
-        let fields: Vec<(&str, String)> = vec![
-            ("Handle", profile.nickname.clone()),
-            (
-                "Email",
-                profile.email.clone().unwrap_or_else(|| "-".to_string()),
-            ),
-            (
-                "API Key (personal)",
-                if profile.api_key.len() > 12 {
-                    format!("{}...", &profile.api_key[..12])
-                } else {
-                    profile.api_key.clone()
-                },
-            ),
-            (
-                "OAuth",
-                if profile.oauth_providers.is_empty() {
-                    "None".to_string()
-                } else {
-                    profile
-                        .oauth_providers
-                        .iter()
-                        .map(|p| p.display_name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                },
-            ),
-            (
-                "GitHub",
-                profile
-                    .github_username
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string()),
-            ),
-        ];
-
-        for (label, value) in &fields {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {:<16}", label),
-                    Style::new().fg(Theme::TEXT_SECONDARY),
-                ),
-                Span::styled(value.clone(), Style::new().fg(Theme::TEXT_PRIMARY)),
-            ]));
+        SettingsSection::Workspace => {
+            render_daemon_config(frame, app, area, SettingsGroup::Workspace, "Workspace")
         }
-
-        lines.push(Line::raw(""));
-        let url_hint = if app.daemon_config.server.url.is_empty() {
-            "  (read-only — edit via web UI)".to_string()
-        } else {
-            format!(
-                "  (read-only — edit at {}/settings)",
-                app.daemon_config.server.url
-            )
-        };
-        lines.push(Line::from(Span::styled(
-            url_hint,
-            Style::new().fg(Theme::TEXT_HINT),
-        )));
-    } else if let Some(ref err) = app.profile_error {
-        lines.push(Line::from(vec![
-            Span::styled("  Status:  ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(
-                format!("Failed to load profile: {}", err),
-                Style::new().fg(Theme::ACCENT_RED),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  Server:  ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(
-                &app.daemon_config.server.url,
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]));
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "  Press 'r' to retry, or check API key in Config tab.",
-            Style::new().fg(Theme::TEXT_HINT),
-        )));
-    } else if app.daemon_config.server.api_key.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  Personal API key not set. Go to Config tab to configure.",
-            Style::new().fg(Theme::TEXT_SECONDARY),
-        )));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  Press 'r' to load profile.",
-            Style::new().fg(Theme::TEXT_SECONDARY),
-        )));
+        SettingsSection::CaptureSync => {
+            render_daemon_config(frame, app, area, SettingsGroup::CaptureSync, "Capture & Sync")
+        }
+        SettingsSection::TimelineIntelligence => render_daemon_config(
+            frame,
+            app,
+            area,
+            SettingsGroup::TimelineIntelligence,
+            "Timeline Intelligence",
+        ),
+        SettingsSection::StoragePrivacy => {
+            render_daemon_config(frame, app, area, SettingsGroup::StoragePrivacy, "Storage & Privacy")
+        }
+        SettingsSection::Account => render_account(frame, app, area),
     }
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, inner);
 }
 
 // ── Account section (API key, password change) ───────────────────────────
@@ -145,6 +42,61 @@ fn render_account(frame: &mut Frame, app: &App, area: Rect) {
         .trim_start_matches("http://");
 
     let mut lines = vec![
+        Line::from(Span::styled(
+            "── Account Profile ──",
+            Style::new().fg(Theme::ACCENT_BLUE).bold(),
+        )),
+        Line::raw(""),
+    ];
+
+    if app.profile_loading {
+        lines.push(Line::from(Span::styled(
+            "  Loading profile...",
+            Style::new().fg(Theme::ACCENT_BLUE),
+        )));
+    } else if let Some(ref profile) = app.profile {
+        let oauth = if profile.oauth_providers.is_empty() {
+            "None".to_string()
+        } else {
+            profile
+                .oauth_providers
+                .iter()
+                .map(|p| p.display_name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Handle:         ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(profile.nickname.as_str(), Style::new().fg(Theme::TEXT_PRIMARY)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Email:          ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                profile.email.as_deref().unwrap_or("-"),
+                Style::new().fg(Theme::TEXT_PRIMARY),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  OAuth:          ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(oauth, Style::new().fg(Theme::TEXT_PRIMARY)),
+        ]));
+    } else if let Some(ref err) = app.profile_error {
+        lines.push(Line::from(vec![
+            Span::styled("  Profile:        ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                format!("load failed ({err})"),
+                Style::new().fg(Theme::ACCENT_RED),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  Press 'r' to fetch profile info.",
+            Style::new().fg(Theme::TEXT_HINT),
+        )));
+    }
+
+    lines.extend([
+        Line::raw(""),
         Line::from(vec![
             Span::styled("  Server:         ", Style::new().fg(Theme::TEXT_SECONDARY)),
             Span::styled(display_url, Style::new().fg(Theme::ACCENT_BLUE)),
@@ -155,7 +107,7 @@ fn render_account(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Theme::ACCENT_BLUE).bold(),
         )),
         Line::raw(""),
-    ];
+    ]);
 
     // Current API key (masked)
     let key_display = if app.daemon_config.server.api_key.is_empty() {
@@ -175,7 +127,7 @@ fn render_account(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(key_display, Style::new().fg(Theme::TEXT_PRIMARY)),
     ]));
     lines.push(Line::from(Span::styled(
-        "  Press 'r' to regenerate",
+        "  Press 'g' to regenerate",
         Style::new().fg(Theme::TEXT_HINT),
     )));
     lines.push(Line::from(Span::styled(
@@ -315,212 +267,270 @@ fn mask_password(s: &str) -> String {
 
 // ── DaemonConfig section (existing settings) ─────────────────────────────
 
-fn render_daemon_config(frame: &mut Frame, app: &App, area: Rect) {
+fn render_daemon_config(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    section: SettingsGroup,
+    section_title: &str,
+) {
     let body_block = Theme::block_dim().padding(Theme::PADDING_COMPACT);
     let inner = body_block.inner(area);
     frame.render_widget(body_block, area);
 
     let daemon_running = app.startup_status.daemon_pid.is_some();
+    let fields = config::selectable_fields(section);
 
-    let mut lines = Vec::new();
-    let mut selectable_idx: usize = 0;
+    let mut lines = vec![Line::from(Span::styled(
+        format!("── {} ──", section_title),
+        Style::new().fg(Theme::ACCENT_BLUE).bold(),
+    ))];
+    if section == SettingsGroup::CaptureSync {
+        let daemon_status = if daemon_running {
+            "daemon:on (d to stop)"
+        } else {
+            "daemon:off (d to start)"
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {}", daemon_status),
+            if daemon_running {
+                Style::new().fg(Theme::ACCENT_GREEN)
+            } else {
+                Style::new().fg(Theme::TEXT_MUTED)
+            },
+        )));
+    }
+    lines.push(Line::raw(""));
 
-    for item in SETTINGS_LAYOUT.iter() {
-        match item {
-            SettingItem::Header(title) => {
-                if !lines.is_empty() {
-                    lines.push(Line::raw(""));
-                }
+    let mut selected_line = 0usize;
 
-                // Check if this section should be grayed out when daemon is off
-                let is_daemon_dependent = matches!(*title, "Daemon" | "Watchers");
-                let header_style = if is_daemon_dependent && !daemon_running {
-                    Style::new().fg(Theme::TEXT_DISABLED)
-                } else {
-                    Style::new().fg(Theme::ACCENT_BLUE).bold()
-                };
-
-                let mut header_spans = vec![Span::styled(format!("── {} ──", title), header_style)];
-
-                // Show daemon status + start/stop hint
-                if *title == "Daemon" {
-                    if daemon_running {
-                        header_spans.push(Span::styled(
-                            "  [d: stop]",
-                            Style::new().fg(Theme::ACCENT_RED),
-                        ));
-                    } else {
-                        header_spans
-                            .push(Span::styled("  (off)", Style::new().fg(Theme::TEXT_MUTED)));
-                        header_spans.push(Span::styled(
-                            "  [d: start]",
-                            Style::new().fg(Theme::ACCENT_GREEN),
-                        ));
-                    }
-                } else if is_daemon_dependent && !daemon_running {
-                    header_spans.push(Span::styled(
-                        "  (daemon off)",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ));
-                }
-
-                lines.push(Line::from(header_spans));
-                lines.push(Line::raw(""));
-            }
+    for (selectable_idx, field) in fields.iter().copied().enumerate() {
+        let (label, description, dependency_hint) = match config::field_item(field) {
             SettingItem::Field {
-                field,
                 label,
                 description,
                 dependency_hint,
-            } => {
-                let is_selected = selectable_idx == app.settings_index;
-                let is_editing = is_selected && app.editing_field;
+                ..
+            } => (*label, *description, *dependency_hint),
+            SettingItem::Header(_) => continue,
+        };
 
-                let is_git_token_disabled = *field == SettingField::GitStorageToken
-                    && app.daemon_config.git_storage.method == GitStorageMethod::None;
-                let dimmed =
-                    is_git_token_disabled || (dependency_hint.is_some() && !daemon_running);
+        let is_selected = selectable_idx == app.settings_index;
+        if is_selected {
+            selected_line = lines.len();
+        }
+        let is_editing = is_selected && app.editing_field;
 
-                let pointer = if is_selected { "\u{25b8}" } else { " " };
-                let pointer_style = if dimmed {
-                    Style::new().fg(Theme::TEXT_DIMMER)
-                } else if is_selected {
-                    Style::new().fg(Color::Cyan).bold()
-                } else {
-                    Style::new().fg(Color::DarkGray)
-                };
+        let blocked_reason = app.daemon_config_field_block_reason(field);
+        let daemon_hint = !daemon_running
+            && matches!(
+                field,
+                SettingField::AutoPublish
+                    | SettingField::PublishMode
+                    | SettingField::DebounceSecs
+                    | SettingField::RealtimeDebounceMs
+                    | SettingField::HealthCheckSecs
+                    | SettingField::MaxRetries
+                    | SettingField::WatchClaudeCode
+                    | SettingField::WatchOpenCode
+                    | SettingField::WatchCursor
+            )
+            && dependency_hint.is_some();
+        let dimmed = blocked_reason.is_some();
 
-                let label_style = if dimmed {
-                    Style::new().fg(Theme::TEXT_DISABLED)
-                } else if is_selected {
-                    Style::new().fg(Theme::TEXT_PRIMARY).bold()
-                } else {
-                    Style::new().fg(Theme::TEXT_SECONDARY)
-                };
+        let pointer = if is_selected { "\u{25b8}" } else { " " };
+        let pointer_style = if dimmed {
+            Style::new().fg(Theme::TEXT_DIMMER)
+        } else if is_selected {
+            Style::new().fg(Color::Cyan).bold()
+        } else {
+            Style::new().fg(Color::DarkGray)
+        };
 
-                let value_text = if is_editing {
-                    format!("{}|", app.edit_buffer)
-                } else {
-                    field.display_value(&app.daemon_config)
-                };
+        let label_style = if dimmed {
+            Style::new().fg(Theme::TEXT_DISABLED)
+        } else if is_selected {
+            Style::new().fg(Theme::TEXT_PRIMARY).bold()
+        } else {
+            Style::new().fg(Theme::TEXT_SECONDARY)
+        };
 
-                let value_style = if dimmed {
-                    Style::new().fg(Theme::TEXT_DIMMER)
-                } else if is_editing {
-                    Style::new().fg(Theme::ACCENT_YELLOW)
-                } else if field.is_toggle() {
-                    let on = matches!(field.display_value(&app.daemon_config).as_str(), "ON");
-                    let s = if on {
-                        Style::new().fg(Theme::TOGGLE_ON)
-                    } else {
-                        Style::new().fg(Theme::TOGGLE_OFF)
-                    };
-                    if is_selected {
-                        s.underlined()
-                    } else {
-                        s
-                    }
-                } else if field.is_enum() {
-                    let s = Style::new().fg(Theme::ACCENT_PURPLE);
-                    if is_selected {
-                        s.underlined()
-                    } else {
-                        s
-                    }
-                } else if is_selected {
-                    Style::new().fg(Theme::TEXT_PRIMARY).underlined()
-                } else {
-                    Style::new().fg(Theme::FIELD_VALUE)
-                };
+        let value_text = if is_editing {
+            format!("{}|", app.edit_buffer)
+        } else {
+            field.display_value(&app.daemon_config)
+        };
 
-                let bg = if is_selected {
-                    Style::new().bg(Theme::BG_SURFACE)
-                } else {
-                    Style::new()
-                };
+        let value_style = if dimmed {
+            Style::new().fg(Theme::TEXT_DIMMER)
+        } else if is_editing {
+            Style::new().fg(Theme::ACCENT_YELLOW)
+        } else if field.is_toggle() {
+            let on = matches!(field.display_value(&app.daemon_config).as_str(), "ON");
+            let s = if on {
+                Style::new().fg(Theme::TOGGLE_ON)
+            } else {
+                Style::new().fg(Theme::TOGGLE_OFF)
+            };
+            if is_selected {
+                s.underlined()
+            } else {
+                s
+            }
+        } else if field.is_enum() {
+            let s = Style::new().fg(Theme::ACCENT_PURPLE);
+            if is_selected {
+                s.underlined()
+            } else {
+                s
+            }
+        } else if is_selected {
+            Style::new().fg(Theme::TEXT_PRIMARY).underlined()
+        } else {
+            Style::new().fg(Theme::FIELD_VALUE)
+        };
 
-                // Type hint for editing
-                let type_hint = if is_selected && !is_editing && !dimmed {
-                    if field.is_toggle() {
-                        Span::styled("  [Enter: toggle]", Style::new().fg(Theme::TEXT_HINT))
-                    } else if field.is_enum() {
-                        Span::styled("  [Enter: cycle]", Style::new().fg(Theme::TEXT_HINT))
-                    } else {
-                        Span::styled("  [Enter: edit]", Style::new().fg(Theme::TEXT_HINT))
-                    }
-                } else {
-                    Span::raw("")
-                };
+        let bg = if is_selected {
+            Style::new().bg(Theme::BG_SURFACE)
+        } else {
+            Style::new()
+        };
 
-                lines.push(
-                    Line::from(vec![
-                        Span::styled(format!(" {} ", pointer), pointer_style),
-                        Span::styled(format!("{:<22}", label), label_style),
-                        Span::styled(value_text, value_style),
-                        type_hint,
-                    ])
-                    .style(bg),
-                );
+        let type_hint = if is_selected && !is_editing && !dimmed {
+            if field.is_toggle() {
+                Span::styled("  [Enter: toggle]", Style::new().fg(Theme::TEXT_HINT))
+            } else if field.is_enum() {
+                Span::styled("  [Enter: cycle]", Style::new().fg(Theme::TEXT_HINT))
+            } else {
+                Span::styled("  [Enter: edit]", Style::new().fg(Theme::TEXT_HINT))
+            }
+        } else {
+            Span::raw("")
+        };
 
-                // Description / dependency hint below the field
-                if is_selected || dimmed {
-                    let desc_text = if dimmed {
-                        dependency_hint.unwrap_or(description)
-                    } else {
-                        description
-                    };
-                    let desc_style = if dimmed {
-                        Style::new().fg(Theme::ACCENT_YELLOW)
-                    } else {
-                        Style::new().fg(Theme::TEXT_HINT)
-                    };
+        lines.push(
+            Line::from(vec![
+                Span::styled(format!(" {} ", pointer), pointer_style),
+                Span::styled(format!("{:<22}", label), label_style),
+                Span::styled(value_text, value_style),
+                type_hint,
+            ])
+            .style(bg),
+        );
+
+        if is_selected || dimmed || daemon_hint {
+            let desc_text = if let Some(reason) = blocked_reason {
+                reason
+            } else if daemon_hint {
+                dependency_hint.unwrap_or(description)
+            } else {
+                description
+            };
+            let desc_style = if blocked_reason.is_some() {
+                Style::new().fg(Theme::ACCENT_YELLOW)
+            } else if daemon_hint {
+                Style::new().fg(Theme::TEXT_MUTED)
+            } else {
+                Style::new().fg(Theme::TEXT_HINT)
+            };
+            lines.push(Line::from(vec![
+                Span::raw("     "),
+                Span::styled(desc_text, desc_style),
+            ]));
+
+            if is_selected && field == SettingField::GitStorageMethod {
+                let detail_style = Style::new().fg(Theme::TEXT_MUTED);
+                for detail in [
+                    "\u{00b7} Platform API \u{2014} Push via GitHub/GitLab REST API (needs token)",
+                    "\u{00b7} Native       \u{2014} Write git objects directly (local git required)",
+                    "\u{00b7} None         \u{2014} Server-only, no git backup",
+                ] {
                     lines.push(Line::from(vec![
                         Span::raw("     "),
-                        Span::styled(desc_text, desc_style),
+                        Span::styled(detail, detail_style),
                     ]));
-
-                    // Show detailed descriptions for Git Storage Method
-                    if is_selected && *field == SettingField::GitStorageMethod {
-                        let detail_style = Style::new().fg(Theme::TEXT_MUTED);
-                        for detail in [
-                            "\u{00b7} Platform API \u{2014} Push via GitHub/GitLab REST API (needs token)",
-                            "\u{00b7} Native       \u{2014} Write git objects directly (local git required)",
-                            "\u{00b7} None         \u{2014} Server-only, no git backup",
-                        ] {
-                            lines.push(Line::from(vec![
-                                Span::raw("     "),
-                                Span::styled(detail, detail_style),
-                            ]));
-                        }
-                    }
-
-                    // Show exclude patterns when Privacy fields are selected
-                    if is_selected
-                        && matches!(field, SettingField::StripPaths | SettingField::StripEnvVars)
-                    {
-                        let patterns = app.daemon_config.privacy.exclude_patterns.join(", ");
-                        if !patterns.is_empty() {
-                            lines.push(Line::from(vec![
-                                Span::raw("     "),
-                                Span::styled(
-                                    format!("Exclude patterns: {}", patterns),
-                                    Style::new().fg(Theme::TEXT_MUTED),
-                                ),
-                            ]));
-                        }
-                    }
                 }
+            }
 
-                selectable_idx += 1;
+            if is_selected && matches!(field, SettingField::StripPaths | SettingField::StripEnvVars) {
+                let patterns = app.daemon_config.privacy.exclude_patterns.join(", ");
+                if !patterns.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("     "),
+                        Span::styled(
+                            format!("Exclude patterns: {}", patterns),
+                            Style::new().fg(Theme::TEXT_MUTED),
+                        ),
+                    ]));
+                }
+            }
+
+            if is_selected && field == SettingField::SummaryProvider {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Env(API): ANTHROPIC_API_KEY | OPENAI_API_KEY | GEMINI_API_KEY | OPS_TL_SUM_ENDPOINT/BASE/PATH",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::SummaryCliAgent {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Env(CLI): OPS_TL_SUM_CLI_BIN, OPS_TL_SUM_CLI_ARGS, OPS_TL_SUM_MODEL",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::SummaryEventWindow {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Tip: 0/auto = turn-aware auto segmentation mode",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::SummaryMaxInflight {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Debounce controls pacing; max inflight controls parallelism.",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::RealtimeDebounceMs {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Scope: daemon realtime publish cadence + detail live polling",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::DetailRealtimePreviewEnabled {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Scope: Session Detail Live only (separate from Realtime Publish)",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
             }
         }
     }
 
     // Calculate scroll
     let visible_height = inner.height as usize;
-    let current_line = find_selected_line(&lines, app.settings_index);
-    let scroll = if current_line >= visible_height {
-        current_line.saturating_sub(visible_height / 2)
+    let scroll = if selected_line >= visible_height {
+        selected_line.saturating_sub(visible_height / 2)
     } else {
         0
     };
@@ -545,25 +555,4 @@ fn render_daemon_config(frame: &mut Frame, app: &App, area: Rect) {
             &mut scrollbar_state,
         );
     }
-}
-
-/// Find the approximate line index for the nth selectable field.
-fn find_selected_line(lines: &[Line], selected_idx: usize) -> usize {
-    let mut sel_count = 0usize;
-    for (line_idx, line) in lines.iter().enumerate() {
-        // A selectable line starts with " > " or "   " and has a label
-        let text = line.to_string();
-        if text.starts_with(" > ")
-            || (text.starts_with("   ")
-                && text.len() > 5
-                && !text.trim().is_empty()
-                && !text.contains("──"))
-        {
-            if sel_count == selected_idx {
-                return line_idx;
-            }
-            sel_count += 1;
-        }
-    }
-    0
 }

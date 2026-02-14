@@ -757,8 +757,6 @@ pub struct SyncedPrivacyConfig {
 pub struct SyncedWatcherConfig {
     pub claude_code: Option<bool>,
     pub opencode: Option<bool>,
-    pub goose: Option<bool>,
-    pub aider: Option<bool>,
     pub cursor: Option<bool>,
 }
 

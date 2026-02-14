@@ -1,11 +1,11 @@
 use crate::app::{
     App, ConnectionContext, DetailViewMode, EventFilter, FlashLevel, ListLayout, ServerStatus,
-    SettingsSection, TaskViewMode, UploadPhase, View, ViewMode,
+    SettingsSection, UploadPhase, View, ViewMode,
 };
 use crate::theme::Theme;
 use crate::views::{
-    help, invitations, modal, session_detail, session_list, settings, setup, tab_bar, team_detail,
-    teams,
+    help, invitations, modal, operations, session_detail, session_list, settings, setup, tab_bar,
+    team_detail, teams,
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph};
@@ -46,6 +46,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SessionList => session_list::render(frame, app, body_area),
         View::SessionDetail => session_detail::render(frame, app, body_area),
         View::Settings => settings::render(frame, app, body_area),
+        View::Operations => operations::render(frame, app, body_area),
         View::Teams => teams::render(frame, app, body_area),
         View::TeamDetail => team_detail::render(frame, app, body_area),
         View::Invitations => invitations::render(frame, app, body_area),
@@ -56,7 +57,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Footer
     render_footer(frame, app, footer_area);
 
-    // Upload popup overlay (legacy)
+    // Upload popup overlay
     if app.upload_popup.is_some() {
         render_upload_popup(frame, app);
     }
@@ -215,31 +216,100 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled(" ", Style::new()));
             }
 
-            // Task view mode indicator (only when session has sub-agents)
-            if app.session_has_sub_agents() {
-                spans.push(Span::styled(" │ ", Style::new().fg(Theme::GUTTER)));
-                let (task_label, task_style) = match app.task_view_mode {
-                    TaskViewMode::Summary => (
-                        "Tasks:Summary",
-                        Style::new().fg(Color::Black).bg(Theme::ROLE_TASK).bold(),
-                    ),
-                    TaskViewMode::Detail => ("Tasks:Detail", Style::new().fg(Theme::ROLE_TASK)),
-                };
-                spans.push(Span::styled(format!(" {} ", task_label), task_style));
-            }
+            spans.push(Span::styled(" ", Style::new()));
+            let collapse_style = if app.collapse_consecutive {
+                Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
+            } else {
+                Style::new().fg(Theme::TEXT_MUTED)
+            };
+            let collapse_label = if app.collapse_consecutive {
+                "c:collapse on"
+            } else {
+                "c:collapse off"
+            };
+            spans.push(Span::styled(
+                format!(" {} ", collapse_label),
+                collapse_style,
+            ));
 
-            // Collapse indicator
-            if app.collapse_consecutive {
-                spans.push(Span::styled(" ", Style::new()));
-                spans.push(Span::styled(
-                    " c:on ",
+            spans.push(Span::styled(" │ ", Style::new().fg(Theme::GUTTER)));
+            let summary_status = app.llm_summary_status_label();
+            let (summary_label, summary_style) = match summary_status.as_str() {
+                "on" => (
+                    "summary:on",
+                    Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold(),
+                ),
+                "skip(stream)" => (
+                    "summary:skip(stream)",
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Theme::ACCENT_YELLOW)
+                        .bold(),
+                ),
+                "off(no-backend)" => (
+                    "summary:off(no-backend)",
+                    Style::new().fg(Theme::TEXT_MUTED),
+                ),
+                _ => ("summary:off", Style::new().fg(Theme::TEXT_MUTED)),
+            };
+            spans.push(Span::styled(format!(" {} ", summary_label), summary_style));
+
+            spans.push(Span::styled(" ", Style::new()));
+            let (rt_label, rt_style) = if !app.daemon_config.daemon.detail_realtime_preview_enabled
+            {
+                ("detail-live:off", Style::new().fg(Theme::TEXT_MUTED))
+            } else if app.should_skip_realtime_for_selected() {
+                (
+                    "detail-live:skip(stream)",
+                    Style::new().fg(Theme::TEXT_MUTED),
+                )
+            } else if app.realtime_preview_enabled {
+                (
+                    "detail-live:on",
                     Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold(),
-                ));
-            }
+                )
+            } else {
+                ("detail-live:off", Style::new().fg(Theme::TEXT_MUTED))
+            };
+            spans.push(Span::styled(format!(" {} ", rt_label), rt_style));
+            spans.push(Span::styled(
+                " config-only ",
+                Style::new().fg(Theme::TEXT_HINT),
+            ));
+            spans.push(Span::styled(
+                format!(" h-scroll:{} ", app.detail_h_scroll),
+                Style::new().fg(Theme::TEXT_MUTED),
+            ));
 
             let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());
             frame.render_widget(p, area);
+        }
+        View::Operations => {
+            let block = Theme::block();
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let daemon_label = if app.startup_status.daemon_pid.is_some() {
+                " daemon:on "
+            } else {
+                " daemon:off "
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    " Operations ",
+                    Style::new().fg(Theme::ACCENT_ORANGE).bold(),
+                ),
+                Span::styled(" ", Style::new()),
+                Span::styled(
+                    daemon_label,
+                    if app.startup_status.daemon_pid.is_some() {
+                        Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
+                    } else {
+                        Style::new().fg(Theme::TEXT_MUTED)
+                    },
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(line), inner);
         }
         View::Teams | View::TeamDetail => {
             let block = Theme::block();
@@ -252,7 +322,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                     .map(|d| format!(" Team: {} ", d.team.name))
                     .unwrap_or_else(|| " Team Detail ".to_string())
             } else {
-                " Teams ".to_string()
+                format!(" Collaboration ({} teams) ", app.teams.len())
             };
 
             let spans = vec![Span::styled(
@@ -285,9 +355,11 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
             // Section tabs
             let sections = [
-                (SettingsSection::Profile, "Profile"),
+                (SettingsSection::Workspace, "Workspace"),
+                (SettingsSection::CaptureSync, "Capture & Sync"),
+                (SettingsSection::TimelineIntelligence, "Timeline Intel"),
+                (SettingsSection::StoragePrivacy, "Storage & Privacy"),
                 (SettingsSection::Account, "Account"),
-                (SettingsSection::DaemonConfig, "Config"),
             ];
             let mut spans = vec![Span::styled(
                 " Settings  ",
@@ -386,6 +458,22 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::SessionDetail => {
+            let summary_state = app.llm_summary_status_label();
+            let realtime_state = if !app.daemon_config.daemon.detail_realtime_preview_enabled {
+                "off"
+            } else if app.should_skip_realtime_for_selected() {
+                "skip"
+            } else if app.realtime_preview_enabled {
+                "on"
+            } else {
+                "off"
+            };
+            let collapse_state = if app.collapse_consecutive {
+                "on"
+            } else {
+                "off"
+            };
+
             if app.detail_view_mode == DetailViewMode::Turn {
                 Line::from(vec![
                     Span::styled(" j/k ", key_style),
@@ -396,6 +484,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("expand  ", desc_style),
                     Span::styled("g/G ", key_style),
                     Span::styled("first/last  ", desc_style),
+                    Span::styled("summary ", key_style),
+                    Span::styled(format!("{summary_state}  "), desc_style),
+                    Span::styled("detail-live ", key_style),
+                    Span::styled(format!("{realtime_state}  "), desc_style),
+                    Span::styled("4 ", key_style),
+                    Span::styled("settings  ", desc_style),
                     Span::styled("v ", key_style),
                     Span::styled("linear  ", desc_style),
                     Span::styled("Esc ", key_style),
@@ -405,21 +499,43 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::styled(" j/k ", key_style),
                     Span::styled("scroll  ", desc_style),
+                    Span::styled("h/l ", key_style),
+                    Span::styled("h-scroll  ", desc_style),
                     Span::styled("u/U ", key_style),
                     Span::styled("user  ", desc_style),
                     Span::styled("n/N ", key_style),
                     Span::styled("type  ", desc_style),
+                    Span::styled("c ", key_style),
+                    Span::styled(format!("collapse:{collapse_state}  "), desc_style),
+                    Span::styled("summary ", key_style),
+                    Span::styled(format!("{summary_state}  "), desc_style),
+                    Span::styled("detail-live ", key_style),
+                    Span::styled(format!("{realtime_state}  "), desc_style),
+                    Span::styled("4 ", key_style),
+                    Span::styled("settings  ", desc_style),
                     Span::styled("Enter ", key_style),
                     Span::styled("expand  ", desc_style),
                     Span::styled("v ", key_style),
                     Span::styled("split  ", desc_style),
                     Span::styled("1-6 ", key_style),
                     Span::styled("filter  ", desc_style),
-                    Span::styled("Esc ", key_style),
+                    Span::styled("Esc/q ", key_style),
                     Span::styled("back", desc_style),
                 ])
             }
         }
+        View::Operations => Line::from(vec![
+            Span::styled(" d ", key_style),
+            Span::styled("daemon on/off  ", desc_style),
+            Span::styled("s ", key_style),
+            Span::styled("save config  ", desc_style),
+            Span::styled("r ", key_style),
+            Span::styled("refresh status  ", desc_style),
+            Span::styled("4 ", key_style),
+            Span::styled("settings  ", desc_style),
+            Span::styled("Esc ", key_style),
+            Span::styled("sessions", desc_style),
+        ]),
         View::Teams => Line::from(vec![
             Span::styled(" j/k ", key_style),
             Span::styled("navigate  ", desc_style),
@@ -427,6 +543,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("detail  ", desc_style),
             Span::styled("n ", key_style),
             Span::styled("new team  ", desc_style),
+            Span::styled("i ", key_style),
+            Span::styled("inbox  ", desc_style),
             Span::styled("r ", key_style),
             Span::styled("refresh  ", desc_style),
             Span::styled("q ", key_style),
@@ -462,27 +580,26 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("section  ", desc_style),
             ];
             match app.settings_section {
-                SettingsSection::Profile => {
-                    spans.push(Span::styled("r ", key_style));
-                    spans.push(Span::styled("refresh  ", desc_style));
-                }
                 SettingsSection::Account => {
                     spans.push(Span::styled("j/k ", key_style));
                     spans.push(Span::styled("navigate  ", desc_style));
                     spans.push(Span::styled("Enter ", key_style));
                     spans.push(Span::styled("edit  ", desc_style));
                     spans.push(Span::styled("r ", key_style));
+                    spans.push(Span::styled("profile refresh  ", desc_style));
+                    spans.push(Span::styled("g ", key_style));
                     spans.push(Span::styled("regen key  ", desc_style));
                 }
-                SettingsSection::DaemonConfig => {
+                SettingsSection::Workspace
+                | SettingsSection::CaptureSync
+                | SettingsSection::TimelineIntelligence
+                | SettingsSection::StoragePrivacy => {
                     spans.push(Span::styled("j/k ", key_style));
                     spans.push(Span::styled("navigate  ", desc_style));
                     spans.push(Span::styled("Enter ", key_style));
                     spans.push(Span::styled("edit  ", desc_style));
                     spans.push(Span::styled("s ", key_style));
                     spans.push(Span::styled("save  ", desc_style));
-                    spans.push(Span::styled("d ", key_style));
-                    spans.push(Span::styled("daemon  ", desc_style));
                 }
             }
             spans.push(Span::styled("Esc ", key_style));
@@ -497,7 +614,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     if matches!(app.view, View::SessionList) && !app.startup_status.config_exists {
         spans.push(Span::styled("  |  ", Style::new().fg(Theme::GUTTER)));
         spans.push(Span::styled(
-            "setup later: 4:Settings > Config",
+            "setup later: 4:Settings > Workspace",
             Style::new().fg(Theme::TEXT_HINT),
         ));
     }

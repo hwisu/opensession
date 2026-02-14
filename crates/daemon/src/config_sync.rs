@@ -31,8 +31,6 @@ pub struct SyncedPrivacy {
 pub struct SyncedWatchers {
     pub claude_code: Option<bool>,
     pub opencode: Option<bool>,
-    pub goose: Option<bool>,
-    pub aider: Option<bool>,
     pub cursor: Option<bool>,
 }
 
@@ -108,12 +106,6 @@ pub fn merge_configs(local: &DaemonConfig, synced: &SyncedConfig) -> DaemonConfi
         if let Some(false) = sw.opencode {
             merged.watchers.opencode = false;
         }
-        if let Some(false) = sw.goose {
-            merged.watchers.goose = false;
-        }
-        if let Some(false) = sw.aider {
-            merged.watchers.aider = false;
-        }
         if let Some(true) = sw.cursor {
             merged.watchers.cursor = true;
         }
@@ -169,8 +161,6 @@ pub async fn run_config_sync(
                             watchers: config.watchers.map(|w| SyncedWatchers {
                                 claude_code: w.claude_code,
                                 opencode: w.opencode,
-                                goose: w.goose,
-                                aider: w.aider,
                                 cursor: w.cursor,
                             }),
                             etag: new_etag,
@@ -223,8 +213,6 @@ struct SyncedPrivacyData {
 struct SyncedWatchersData {
     claude_code: Option<bool>,
     opencode: Option<bool>,
-    goose: Option<bool>,
-    aider: Option<bool>,
     cursor: Option<bool>,
 }
 
@@ -287,7 +275,7 @@ mod tests {
         let synced = SyncedConfig {
             privacy: Some(SyncedPrivacy {
                 exclude_patterns: Some(vec!["*secret*".to_string(), "*token*".to_string()]),
-                exclude_tools: Some(vec!["aider".to_string(), "cursor".to_string()]),
+                exclude_tools: Some(vec!["codex".to_string(), "cursor".to_string()]),
             }),
             ..Default::default()
         };
@@ -299,7 +287,7 @@ mod tests {
             merged.privacy.exclude_patterns,
             vec!["*.env", "*secret*", "*token*"]
         );
-        assert_eq!(merged.privacy.exclude_tools, vec!["cursor", "aider"]);
+        assert_eq!(merged.privacy.exclude_tools, vec!["cursor", "codex"]);
     }
 
     #[test]

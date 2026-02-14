@@ -2,41 +2,90 @@ use crossterm::event::KeyCode;
 use opensession_api::{
     InvitationResponse, MemberResponse, TeamDetailResponse, TeamResponse, UserSettingsResponse,
 };
-use opensession_core::trace::{Event, EventType, Session};
+use opensession_core::trace::{ContentBlock, Event, EventType, Session};
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
 use ratatui::widgets::ListState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::async_ops::{AsyncCommand, CommandResult};
 use crate::config::{self, DaemonConfig, GitStorageMethod, PublishMode, SettingField};
+use crate::session_timeline::{build_lane_events, LaneMarker};
+use crate::timeline_summary::{TimelineSummaryWindowKey, TimelineSummaryWindowRequest};
 pub use crate::views::modal::{ConfirmAction, InputAction, Modal};
 
 /// A display-level event for the timeline. Wraps real events with collapse/summary info.
 #[derive(Debug, Clone)]
 pub enum DisplayEvent<'a> {
     /// A single normal event.
-    Single(&'a Event),
+    Single {
+        event: &'a Event,
+        source_index: usize,
+        lane: usize,
+        marker: LaneMarker,
+        active_lanes: Vec<usize>,
+    },
     /// A collapsed group of consecutive similar events.
     Collapsed {
         first: &'a Event,
+        source_index: usize,
         count: u32,
         kind: String,
+        lane: usize,
+        marker: LaneMarker,
+        active_lanes: Vec<usize>,
     },
-    /// A sub-agent task collapsed into a summary line.
-    TaskSummary {
+    /// A semantic summary row inserted after key task/checkpoint events.
+    SummaryRow {
         event: &'a Event,
+        source_index: usize,
+        window_id: u64,
         summary: String,
-        inner_count: u32,
+        lane: usize,
+        active_lanes: Vec<usize>,
     },
 }
 
 impl<'a> DisplayEvent<'a> {
     pub fn event(&self) -> &'a Event {
         match self {
-            DisplayEvent::Single(e) => e,
+            DisplayEvent::Single { event, .. } => event,
             DisplayEvent::Collapsed { first, .. } => first,
-            DisplayEvent::TaskSummary { event, .. } => event,
+            DisplayEvent::SummaryRow { event, .. } => event,
+        }
+    }
+
+    pub fn source_index(&self) -> usize {
+        match self {
+            DisplayEvent::Single { source_index, .. }
+            | DisplayEvent::Collapsed { source_index, .. }
+            | DisplayEvent::SummaryRow { source_index, .. } => *source_index,
+        }
+    }
+
+    pub fn lane(&self) -> usize {
+        match self {
+            DisplayEvent::Single { lane, .. }
+            | DisplayEvent::Collapsed { lane, .. }
+            | DisplayEvent::SummaryRow { lane, .. } => *lane,
+        }
+    }
+
+    pub fn marker(&self) -> LaneMarker {
+        match self {
+            DisplayEvent::Single { marker, .. } | DisplayEvent::Collapsed { marker, .. } => *marker,
+            DisplayEvent::SummaryRow { .. } => LaneMarker::None,
+        }
+    }
+
+    pub fn active_lanes(&self) -> &[usize] {
+        match self {
+            DisplayEvent::Single { active_lanes, .. }
+            | DisplayEvent::Collapsed { active_lanes, .. }
+            | DisplayEvent::SummaryRow { active_lanes, .. } => active_lanes,
         }
     }
 }
@@ -54,6 +103,25 @@ fn consecutive_group_key(event_type: &EventType) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct SummaryAnchor<'a> {
+    scope: SummaryScope,
+    key: TimelineSummaryWindowKey,
+    anchor_event: &'a Event,
+    anchor_source_index: usize,
+    display_index: usize,
+    start_display_index: usize,
+    end_display_index: usize,
+    lane: usize,
+    active_lanes: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummaryScope {
+    Window,
+    Turn,
+}
+
 /// Which screen the user is viewing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -61,6 +129,7 @@ pub enum View {
     SessionDetail,
     Setup,
     Settings,
+    Operations,
     Teams,
     TeamDetail,
     #[allow(dead_code)]
@@ -72,8 +141,8 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Sessions,
-    Teams,
-    TeamMgmt,
+    Collaboration,
+    Operations,
     Settings,
 }
 
@@ -88,9 +157,11 @@ pub enum TeamDetailFocus {
 /// Settings sub-section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
-    Profile,
+    Workspace,
+    CaptureSync,
+    TimelineIntelligence,
+    StoragePrivacy,
     Account,
-    DaemonConfig,
 }
 
 /// Password change form state.
@@ -159,15 +230,6 @@ pub enum FlashLevel {
     Info,
 }
 
-/// How sub-agent (Task) events are displayed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskViewMode {
-    /// Collapse task into a summary line (default, matches Web "summary-start").
-    Summary,
-    /// Show all events in chronological order (matches Web "chronological").
-    Detail,
-}
-
 /// Layout for the session list (single vs multi-column by user).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListLayout {
@@ -187,6 +249,10 @@ pub enum DetailViewMode {
 
 /// A single conversational turn: user prompt + agent response.
 pub struct Turn<'a> {
+    pub turn_index: usize,
+    pub start_display_index: usize,
+    pub end_display_index: usize,
+    pub anchor_source_index: usize,
     pub user_events: Vec<&'a Event>,
     pub agent_events: Vec<&'a Event>,
 }
@@ -196,15 +262,31 @@ pub fn extract_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
     let mut turns = Vec::new();
     let mut current_user: Vec<&'a Event> = Vec::new();
     let mut current_agent: Vec<&'a Event> = Vec::new();
+    let mut current_start_display = 0usize;
+    let mut current_anchor_source = 0usize;
+    let mut current_turn_index = 0usize;
+    let mut seen_any = false;
 
-    for de in events {
+    for (display_idx, de) in events.iter().enumerate() {
         let event = de.event();
+        if !seen_any {
+            current_start_display = display_idx;
+            current_anchor_source = de.source_index();
+            seen_any = true;
+        }
         if matches!(event.event_type, EventType::UserMessage) {
             if !current_user.is_empty() || !current_agent.is_empty() {
                 turns.push(Turn {
+                    turn_index: current_turn_index,
+                    start_display_index: current_start_display,
+                    end_display_index: display_idx.saturating_sub(1),
+                    anchor_source_index: current_anchor_source,
                     user_events: std::mem::take(&mut current_user),
                     agent_events: std::mem::take(&mut current_agent),
                 });
+                current_turn_index += 1;
+                current_start_display = display_idx;
+                current_anchor_source = de.source_index();
             }
             current_user.push(event);
         } else {
@@ -214,6 +296,10 @@ pub fn extract_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
 
     if !current_user.is_empty() || !current_agent.is_empty() {
         turns.push(Turn {
+            turn_index: current_turn_index,
+            start_display_index: current_start_display,
+            end_display_index: events.len().saturating_sub(1),
+            anchor_source_index: current_anchor_source,
             user_events: current_user,
             agent_events: current_agent,
         });
@@ -293,12 +379,22 @@ pub struct App {
     // Session detail state
     pub detail_scroll: u16,
     pub detail_event_index: usize,
-    pub collapsed_tasks: HashSet<String>,
     pub event_filters: HashSet<EventFilter>,
-    pub task_view_mode: TaskViewMode,
     pub collapse_consecutive: bool,
     pub expanded_events: HashSet<usize>,
     pub detail_view_mode: DetailViewMode,
+    pub detail_h_scroll: u16,
+    pub detail_viewport_height: u16,
+    pub detail_selected_event_id: Option<String>,
+    pub detail_source_path: Option<PathBuf>,
+    pub detail_source_mtime: Option<SystemTime>,
+    pub realtime_preview_enabled: bool,
+    pub last_realtime_check: Instant,
+    pub timeline_summary_cache: HashMap<TimelineSummaryWindowKey, String>,
+    pub timeline_summary_pending: VecDeque<TimelineSummaryWindowRequest>,
+    pub timeline_summary_inflight: HashSet<TimelineSummaryWindowKey>,
+    pub last_summary_request_at: Option<Instant>,
+    pub summary_cli_prompted: bool,
     pub turn_index: usize,
     pub turn_agent_scroll: u16,
     pub turn_line_offsets: Vec<u16>,
@@ -424,12 +520,15 @@ pub struct TeamInfo {
 }
 
 impl App {
+    const DETAIL_SPLIT_MIN_WIDTH: u16 = 160;
+    const INTERNAL_SUMMARY_TITLE_PREFIX: &str = "summarize this coding timeline window";
+
     pub fn is_local_mode(&self) -> bool {
         matches!(self.connection_ctx, ConnectionContext::Local)
     }
 
     fn can_use_collab_tabs(&self) -> bool {
-        !self.is_local_mode()
+        true
     }
 
     fn apply_session_view_mode(&mut self, mode: ViewMode) {
@@ -445,9 +544,14 @@ impl App {
     }
 
     pub fn new(sessions: Vec<Session>) -> Self {
-        let filtered: Vec<usize> = (0..sessions.len()).collect();
+        let filtered: Vec<usize> = sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !Self::is_internal_summary_session(s))
+            .map(|(idx, _)| idx)
+            .collect();
         let mut list_state = ListState::default();
-        if !sessions.is_empty() {
+        if !filtered.is_empty() {
             list_state.select(Some(0));
         }
 
@@ -460,12 +564,22 @@ impl App {
             searching: false,
             detail_scroll: 0,
             detail_event_index: 0,
-            collapsed_tasks: HashSet::new(),
             event_filters: HashSet::from([EventFilter::All]),
-            task_view_mode: TaskViewMode::Summary,
-            collapse_consecutive: false,
+            collapse_consecutive: true,
             expanded_events: HashSet::new(),
             detail_view_mode: DetailViewMode::Linear,
+            detail_h_scroll: 0,
+            detail_viewport_height: 24,
+            detail_selected_event_id: None,
+            detail_source_path: None,
+            detail_source_mtime: None,
+            realtime_preview_enabled: false,
+            last_realtime_check: Instant::now(),
+            timeline_summary_cache: HashMap::new(),
+            timeline_summary_pending: VecDeque::new(),
+            timeline_summary_inflight: HashSet::new(),
+            last_summary_request_at: None,
+            summary_cli_prompted: false,
             turn_index: 0,
             turn_agent_scroll: 0,
             turn_line_offsets: Vec::new(),
@@ -515,7 +629,7 @@ impl App {
             invitations: Vec::new(),
             invitations_list_state: ListState::default(),
             invitations_loading: false,
-            settings_section: SettingsSection::DaemonConfig,
+            settings_section: SettingsSection::Workspace,
             profile: None,
             profile_loading: false,
             profile_error: None,
@@ -523,6 +637,39 @@ impl App {
             health_check_done: false,
             loading_sessions: false,
         }
+    }
+
+    fn is_internal_summary_title(title: &str) -> bool {
+        let normalized = title.trim().to_ascii_lowercase();
+        normalized.starts_with(Self::INTERNAL_SUMMARY_TITLE_PREFIX)
+            || normalized
+                .starts_with("generate a concise semantic timeline summary for this window")
+            || normalized.starts_with("you are generating a hail-summary payload")
+    }
+
+    pub(crate) fn is_internal_summary_session(session: &Session) -> bool {
+        if session
+            .context
+            .title
+            .as_deref()
+            .is_some_and(Self::is_internal_summary_title)
+        {
+            return true;
+        }
+
+        session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::UserMessage)
+                && event.content.blocks.iter().any(|block| match block {
+                    ContentBlock::Text { text } => Self::is_internal_summary_title(text),
+                    _ => false,
+                })
+        })
+    }
+
+    fn is_internal_summary_row(row: &LocalSessionRow) -> bool {
+        row.title
+            .as_deref()
+            .is_some_and(Self::is_internal_summary_title)
     }
 
     /// Returns true if the app should quit.
@@ -576,14 +723,12 @@ impl App {
                 }
                 KeyCode::Char('2') => {
                     if self.can_use_collab_tabs() {
-                        self.switch_tab(Tab::Teams);
+                        self.switch_tab(Tab::Collaboration);
                     }
                     return false;
                 }
                 KeyCode::Char('3') => {
-                    if self.can_use_collab_tabs() {
-                        self.switch_tab(Tab::TeamMgmt);
-                    }
+                    self.switch_tab(Tab::Operations);
                     return false;
                 }
                 KeyCode::Char('4') => {
@@ -599,6 +744,7 @@ impl App {
             View::SessionDetail => self.handle_detail_key(key),
             View::Setup => self.handle_setup_key(key),
             View::Settings => self.handle_settings_key(key),
+            View::Operations => self.handle_operations_key(key),
             View::Teams => self.handle_teams_key(key),
             View::TeamDetail => self.handle_team_detail_key(key),
             View::Invitations => self.handle_invitations_key(key),
@@ -612,11 +758,6 @@ impl App {
     }
 
     fn switch_tab(&mut self, tab: Tab) {
-        if !self.can_use_collab_tabs() && matches!(tab, Tab::Teams | Tab::TeamMgmt) {
-            self.active_tab = Tab::Sessions;
-            self.view = View::SessionList;
-            return;
-        }
         if self.active_tab == tab {
             return;
         }
@@ -626,21 +767,17 @@ impl App {
                 self.view = View::SessionList;
                 self.apply_session_view_mode(ViewMode::Local);
             }
-            Tab::Teams => {
-                self.view = View::SessionList;
-                if let Some(ref tid) = self.team_id {
-                    self.apply_session_view_mode(ViewMode::Team(tid.clone()));
-                } else {
-                    self.apply_session_view_mode(ViewMode::Local);
-                    self.flash_info("Set Team ID in Settings > Config to open Team Sessions");
-                }
-            }
-            Tab::TeamMgmt => {
+            Tab::Collaboration => {
                 self.view = View::Teams;
-                if self.teams.is_empty() && !self.teams_loading {
+                if self.is_local_mode() {
+                    self.flash_info("Collaboration requires a cloud/team server connection");
+                } else if self.teams.is_empty() && !self.teams_loading {
                     self.teams_loading = true;
                     self.pending_command = Some(AsyncCommand::FetchTeams);
                 }
+            }
+            Tab::Operations => {
+                self.view = View::Operations;
             }
             Tab::Settings => {
                 self.view = View::Settings;
@@ -817,11 +954,18 @@ impl App {
         }
 
         match key {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
                 self.view = View::SessionList;
                 self.detail_scroll = 0;
                 self.detail_event_index = 0;
+                self.detail_h_scroll = 0;
                 self.detail_view_mode = DetailViewMode::Linear;
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.detail_h_scroll = self.detail_h_scroll.saturating_sub(4);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.detail_h_scroll = self.detail_h_scroll.saturating_add(4);
             }
             KeyCode::Char('j') | KeyCode::Down => self.detail_next_event(),
             KeyCode::Char('k') | KeyCode::Up => self.detail_prev_event(),
@@ -829,11 +973,11 @@ impl App {
             KeyCode::Char('g') | KeyCode::Home => {
                 self.detail_event_index = 0;
                 self.detail_scroll = 0;
+                self.detail_h_scroll = 0;
             }
             KeyCode::PageDown => self.detail_page_down(),
             KeyCode::PageUp => self.detail_page_up(),
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_expanded(),
-            KeyCode::Tab => self.toggle_task_fold(),
             KeyCode::Char('u') => self.jump_to_next_user_message(),
             KeyCode::Char('U') => self.jump_to_prev_user_message(),
             KeyCode::Char('n') => self.jump_to_next_same_type(),
@@ -848,13 +992,13 @@ impl App {
             KeyCode::Char('4') => self.toggle_event_filter(EventFilter::Thinking),
             KeyCode::Char('5') => self.toggle_event_filter(EventFilter::FileOps),
             KeyCode::Char('6') => self.toggle_event_filter(EventFilter::Shell),
-            KeyCode::Char('t') => self.toggle_task_view_mode(),
             KeyCode::Char('c') => {
                 self.collapse_consecutive = !self.collapse_consecutive;
                 self.detail_event_index = 0;
             }
             _ => {}
         }
+        self.update_detail_selection_anchor();
         false
     }
 
@@ -889,7 +1033,7 @@ impl App {
                             self.view = View::SessionList;
                             self.active_tab = Tab::Sessions;
                             self.flash_info(
-                                "Local mode enabled. Configure cloud sync later in Settings > Config",
+                                "Local mode enabled. Configure cloud sync later in Settings > Workspace",
                             );
                         }
                         SetupScenario::Team | SetupScenario::Public => {
@@ -911,7 +1055,7 @@ impl App {
                 self.view = View::SessionList;
                 self.active_tab = Tab::Sessions;
                 self.flash_info(
-                    "You can configure this later in Settings > Config (~/.config/opensession/daemon.toml)",
+                    "You can configure this later in Settings > Workspace (~/.config/opensession/daemon.toml)",
                 );
             }
             _ => {}
@@ -991,7 +1135,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Config (~/.config/opensession/daemon.toml)",
+                        "You can configure this later in Settings > Workspace (~/.config/opensession/daemon.toml)",
                     );
                 }
             }
@@ -1062,7 +1206,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Config (~/.config/opensession/daemon.toml)",
+                        "You can configure this later in Settings > Workspace (~/.config/opensession/daemon.toml)",
                     );
                 }
             }
@@ -1173,6 +1317,29 @@ impl App {
 
     // ── Settings key handler ──────────────────────────────────────────
 
+    fn settings_group(&self) -> Option<config::SettingsGroup> {
+        match self.settings_section {
+            SettingsSection::Workspace => Some(config::SettingsGroup::Workspace),
+            SettingsSection::CaptureSync => Some(config::SettingsGroup::CaptureSync),
+            SettingsSection::TimelineIntelligence => {
+                Some(config::SettingsGroup::TimelineIntelligence)
+            }
+            SettingsSection::StoragePrivacy => Some(config::SettingsGroup::StoragePrivacy),
+            SettingsSection::Account => None,
+        }
+    }
+
+    fn settings_field_count(&self) -> usize {
+        self.settings_group()
+            .map(config::selectable_field_count)
+            .unwrap_or(0)
+    }
+
+    fn nth_settings_field(&self, index: usize) -> Option<SettingField> {
+        self.settings_group()
+            .and_then(|section| config::nth_selectable_field(section, index))
+    }
+
     fn handle_settings_key(&mut self, key: KeyCode) -> bool {
         // Password form editing
         if self.password_form.editing {
@@ -1210,7 +1377,7 @@ impl App {
                     self.edit_buffer.clear();
                 }
                 KeyCode::Enter => {
-                    if let Some(field) = config::nth_selectable_field(self.settings_index) {
+                    if let Some(field) = self.nth_settings_field(self.settings_index) {
                         field.set_value(&mut self.daemon_config, &self.edit_buffer);
                         self.config_dirty = true;
                     }
@@ -1244,39 +1411,35 @@ impl App {
             KeyCode::Char(']') => {
                 // Next settings section
                 self.settings_section = match self.settings_section {
-                    SettingsSection::Profile => SettingsSection::Account,
-                    SettingsSection::Account => SettingsSection::DaemonConfig,
-                    SettingsSection::DaemonConfig => SettingsSection::Profile,
+                    SettingsSection::Workspace => SettingsSection::CaptureSync,
+                    SettingsSection::CaptureSync => SettingsSection::TimelineIntelligence,
+                    SettingsSection::TimelineIntelligence => SettingsSection::StoragePrivacy,
+                    SettingsSection::StoragePrivacy => SettingsSection::Account,
+                    SettingsSection::Account => SettingsSection::Workspace,
                 };
                 self.settings_index = 0;
             }
             KeyCode::Char('[') => {
                 // Previous settings section
                 self.settings_section = match self.settings_section {
-                    SettingsSection::Profile => SettingsSection::DaemonConfig,
-                    SettingsSection::Account => SettingsSection::Profile,
-                    SettingsSection::DaemonConfig => SettingsSection::Account,
+                    SettingsSection::Workspace => SettingsSection::Account,
+                    SettingsSection::CaptureSync => SettingsSection::Workspace,
+                    SettingsSection::TimelineIntelligence => SettingsSection::CaptureSync,
+                    SettingsSection::StoragePrivacy => SettingsSection::TimelineIntelligence,
+                    SettingsSection::Account => SettingsSection::StoragePrivacy,
                 };
                 self.settings_index = 0;
             }
             _ => {
                 // Delegate to section-specific handling
                 match self.settings_section {
-                    SettingsSection::Profile => {
-                        // Profile is read-only, only r to refresh
-                        if matches!(key, KeyCode::Char('r')) {
-                            if self.daemon_config.server.api_key.is_empty() {
-                                self.flash_info("Set API key in Config to load profile");
-                            } else {
-                                self.profile_loading = true;
-                                self.pending_command = Some(AsyncCommand::FetchProfile);
-                            }
-                        }
-                    }
                     SettingsSection::Account => {
                         self.handle_account_settings_key(key);
                     }
-                    SettingsSection::DaemonConfig => {
+                    SettingsSection::Workspace
+                    | SettingsSection::CaptureSync
+                    | SettingsSection::TimelineIntelligence
+                    | SettingsSection::StoragePrivacy => {
                         self.handle_daemon_config_key(key);
                     }
                 }
@@ -1288,8 +1451,8 @@ impl App {
     fn handle_account_settings_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_index < 4 {
-                    // 0..4: current/new/confirm/submit + api_key_regen
+                if self.settings_index < 3 {
+                    // 0..3: current/new/confirm/submit
                     self.settings_index += 1;
                 }
             }
@@ -1327,6 +1490,14 @@ impl App {
                 }
             }
             KeyCode::Char('r') => {
+                if self.daemon_config.server.api_key.is_empty() {
+                    self.flash_info("Set API key in Workspace first");
+                } else {
+                    self.profile_loading = true;
+                    self.pending_command = Some(AsyncCommand::FetchProfile);
+                }
+            }
+            KeyCode::Char('g') => {
                 // Regenerate API key — confirm
                 self.modal = Some(Modal::Confirm {
                     title: "Regenerate API Key".to_string(),
@@ -1339,8 +1510,7 @@ impl App {
     }
 
     fn handle_daemon_config_key(&mut self, key: KeyCode) {
-        let field_count = config::selectable_field_count();
-        let daemon_running = self.startup_status.daemon_pid.is_some();
+        let field_count = self.settings_field_count();
 
         match key {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1352,17 +1522,9 @@ impl App {
                 self.settings_index = self.settings_index.saturating_sub(1);
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                if let Some(field) = config::nth_selectable_field(self.settings_index) {
-                    // Block editing daemon-dependent fields when daemon is off
-                    if !daemon_running && Self::is_daemon_dependent_field(field) {
-                        self.flash_info("Daemon is not running");
-                        return;
-                    }
-                    // Block editing Git Storage Token when method is None
-                    if field == SettingField::GitStorageToken
-                        && self.daemon_config.git_storage.method == GitStorageMethod::None
-                    {
-                        self.flash_info("Set Git Storage method first");
+                if let Some(field) = self.nth_settings_field(self.settings_index) {
+                    if let Some(reason) = self.daemon_config_field_block_reason(field) {
+                        self.flash_info(reason);
                         return;
                     }
                     if field.is_toggle() {
@@ -1381,10 +1543,63 @@ impl App {
             KeyCode::Char('s') => {
                 self.save_config();
             }
-            KeyCode::Char('d') => {
-                self.toggle_daemon();
+            _ => {}
+        }
+    }
+
+    fn handle_operations_key(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc => {
+                self.switch_tab(Tab::Sessions);
+            }
+            KeyCode::Char('d') => self.toggle_daemon(),
+            KeyCode::Char('s') => self.save_config(),
+            KeyCode::Char('r') => {
+                self.startup_status.daemon_pid = config::daemon_pid();
+                self.flash_info("Operations status refreshed");
             }
             _ => {}
+        }
+        false
+    }
+
+    fn summary_mode_is_cli(&self) -> bool {
+        matches!(
+            self.daemon_config
+                .daemon
+                .summary_provider
+                .as_deref()
+                .unwrap_or("auto")
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "cli" | "cli:auto" | "cli:codex" | "cli:claude" | "cli:cursor" | "cli:gemini"
+        )
+    }
+
+    pub fn daemon_config_field_block_reason(&self, field: SettingField) -> Option<&'static str> {
+        match field {
+            SettingField::GitStorageToken
+                if self.daemon_config.git_storage.method == GitStorageMethod::None =>
+            {
+                Some("Set Git Storage Method to Platform API or Native first")
+            }
+            SettingField::SummaryCliAgent if !self.daemon_config.daemon.summary_enabled => {
+                Some("Turn ON LLM Summary Enabled first")
+            }
+            SettingField::SummaryCliAgent if !self.summary_mode_is_cli() => {
+                Some("Set LLM Summary Mode to CLI first")
+            }
+            SettingField::SummaryEventWindow | SettingField::SummaryDebounceMs
+                if !self.daemon_config.daemon.summary_enabled =>
+            {
+                Some("Turn ON LLM Summary Enabled first")
+            }
+            SettingField::SummaryMaxInflight if !self.daemon_config.daemon.summary_enabled => {
+                Some("Turn ON LLM Summary Enabled first")
+            }
+            _ => None,
         }
     }
 
@@ -1470,29 +1685,14 @@ impl App {
         }
     }
 
-    fn is_daemon_dependent_field(field: SettingField) -> bool {
-        matches!(
-            field,
-            SettingField::AutoPublish
-                | SettingField::PublishMode
-                | SettingField::DebounceSecs
-                | SettingField::HealthCheckSecs
-                | SettingField::MaxRetries
-                | SettingField::WatchClaudeCode
-                | SettingField::WatchOpenCode
-                | SettingField::WatchGoose
-                | SettingField::WatchAider
-                | SettingField::WatchCursor
-        )
-    }
-
     // ── Teams key handler ─────────────────────────────────────────────
 
     fn handle_teams_key(&mut self, key: KeyCode) -> bool {
         match key {
             KeyCode::Char('q') => return true,
             KeyCode::Esc => {
-                self.switch_tab(Tab::Sessions);
+                self.active_tab = Tab::Collaboration;
+                self.view = View::Teams;
                 return false;
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1542,6 +1742,13 @@ impl App {
                 self.teams_loading = true;
                 self.pending_command = Some(AsyncCommand::FetchTeams);
             }
+            KeyCode::Char('i') => {
+                self.view = View::Invitations;
+                if self.invitations.is_empty() && !self.invitations_loading {
+                    self.invitations_loading = true;
+                    self.pending_command = Some(AsyncCommand::FetchInvitations);
+                }
+            }
             _ => {}
         }
         false
@@ -1581,7 +1788,7 @@ impl App {
         match key {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.view = View::Teams;
-                self.active_tab = Tab::Teams;
+                self.active_tab = Tab::Collaboration;
             }
             KeyCode::Tab => {
                 self.team_detail_focus = match self.team_detail_focus {
@@ -1717,7 +1924,11 @@ impl App {
         };
 
         match modal {
-            Modal::Confirm { action, .. } => match key {
+            Modal::Confirm {
+                title,
+                message,
+                action,
+            } => match key {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     // Execute the confirmed action
                     match action {
@@ -1739,6 +1950,28 @@ impl App {
                             self.view = View::SessionList;
                             self.active_tab = Tab::Sessions;
                         }
+                        ConfirmAction::ConfigureSummaryCli { provider } => {
+                            self.daemon_config.daemon.summary_enabled = true;
+                            self.daemon_config.daemon.summary_provider = Some(provider.clone());
+                            self.config_dirty = true;
+                            self.timeline_summary_cache.clear();
+                            self.timeline_summary_pending.clear();
+                            self.timeline_summary_inflight.clear();
+                            self.last_summary_request_at = None;
+                            self.save_config();
+                            self.flash_success(format!("LLM summary provider set to {provider}"));
+                        }
+                        ConfirmAction::ProbeSummaryCli { session_id } => {
+                            let agent_tool = self
+                                .session_tool_for_summary(&session_id)
+                                .map(|tool| tool.to_string())
+                                .unwrap_or_default();
+                            self.flash_info("Running LLM summary CLI hello probe...");
+                            self.pending_command = Some(AsyncCommand::ProbeSummaryCli {
+                                session_id,
+                                agent_tool,
+                            });
+                        }
                     }
                     // modal already taken
                 }
@@ -1758,13 +1991,17 @@ impl App {
                 _ => {
                     // Put modal back
                     self.modal = Some(Modal::Confirm {
-                        title: String::new(),
-                        message: String::new(),
+                        title,
+                        message,
                         action,
                     });
                 }
             },
-            Modal::TextInput { action, .. } => match key {
+            Modal::TextInput {
+                title,
+                label,
+                action,
+            } => match key {
                 KeyCode::Esc => {
                     self.edit_buffer.clear();
                 }
@@ -1783,23 +2020,23 @@ impl App {
                 KeyCode::Backspace => {
                     self.edit_buffer.pop();
                     self.modal = Some(Modal::TextInput {
-                        title: String::new(),
-                        label: String::new(),
+                        title,
+                        label,
                         action,
                     });
                 }
                 KeyCode::Char(c) => {
                     self.edit_buffer.push(c);
                     self.modal = Some(Modal::TextInput {
-                        title: String::new(),
-                        label: String::new(),
+                        title,
+                        label,
                         action,
                     });
                 }
                 _ => {
                     self.modal = Some(Modal::TextInput {
-                        title: String::new(),
-                        label: String::new(),
+                        title,
+                        label,
                         action,
                     });
                 }
@@ -1970,6 +2207,102 @@ impl App {
                 self.flash_error(format!("Error: {e}"));
             }
 
+            CommandResult::SummaryDone { key, result } => {
+                self.timeline_summary_inflight.remove(&key);
+                match result {
+                    Ok(summary) => {
+                        if !summary.trim().is_empty() {
+                            self.timeline_summary_cache.insert(key, summary);
+                        } else {
+                            self.timeline_summary_cache
+                                .insert(key, "summary unavailable for this window".to_string());
+                        }
+                    }
+                    Err(err) => {
+                        let fallback = format!("summary unavailable ({err})");
+                        self.timeline_summary_cache.insert(key.clone(), fallback);
+                        if Self::is_summary_setup_missing(&err)
+                            || Self::is_summary_cli_runtime_failure(&err)
+                        {
+                            if self.daemon_config.daemon.summary_enabled {
+                                self.daemon_config.daemon.summary_enabled = false;
+                                self.timeline_summary_pending.clear();
+                                self.timeline_summary_inflight.clear();
+                                self.last_summary_request_at = None;
+                                self.flash_info(
+                                    "LLM summary auto-disabled after summary backend failure",
+                                );
+                            }
+                        }
+                        self.maybe_prompt_summary_cli_setup(&key, &err);
+                    }
+                }
+                self.remap_detail_selection_by_event_id();
+            }
+
+            CommandResult::SummaryCliProbeDone { session_id, result } => match result {
+                Ok(report) => {
+                    let tested = report.attempted_providers.join(", ");
+                    if let Some(provider) = report.recommended_provider.clone() {
+                        let responsive = report.responsive_providers.join(", ");
+                        self.flash_info(format!(
+                            "Summary CLI probe complete. responsive: {}",
+                            if responsive.is_empty() {
+                                "none".to_string()
+                            } else {
+                                responsive
+                            }
+                        ));
+                        self.modal = Some(Modal::Confirm {
+                            title: "Configure LLM Summary".to_string(),
+                            message: format!(
+                                "Responsive CLI: {}. Set provider to {} now?",
+                                report.responsive_providers.join(", "),
+                                provider
+                            ),
+                            action: ConfirmAction::ConfigureSummaryCli { provider },
+                        });
+                    } else {
+                        let detail = if report.errors.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " ({})",
+                                report
+                                    .errors
+                                    .iter()
+                                    .map(|(provider, err)| format!("{provider}: {err}"))
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            )
+                        };
+                        self.flash_error(format!(
+                            "No responsive summary CLI found. tested: {}{}",
+                            if tested.is_empty() {
+                                "none".to_string()
+                            } else {
+                                tested
+                            },
+                            detail
+                        ));
+
+                        if let Some(provider) = self.recommended_summary_cli_provider(&session_id) {
+                            self.modal = Some(Modal::Confirm {
+                                title: "Configure LLM Summary".to_string(),
+                                message: format!(
+                                    "Probe found no responder. Set detected provider {} anyway?",
+                                    provider
+                                ),
+                                action: ConfirmAction::ConfigureSummaryCli { provider },
+                            });
+                        }
+                    }
+                }
+                Err(err) => {
+                    self.flash_error(format!("Summary CLI probe failed: {err}"));
+                }
+            },
+
             CommandResult::DeleteSession(Ok(session_id)) => {
                 if let Some(ref db) = self.db {
                     let _ = db.delete_session(&session_id);
@@ -2097,21 +2430,6 @@ impl App {
         self.detail_event_index = 0;
     }
 
-    fn toggle_task_view_mode(&mut self) {
-        self.task_view_mode = match self.task_view_mode {
-            TaskViewMode::Summary => TaskViewMode::Detail,
-            TaskViewMode::Detail => TaskViewMode::Summary,
-        };
-        self.detail_event_index = 0;
-    }
-
-    /// Returns true if the currently selected session has sub-agent tasks.
-    pub fn session_has_sub_agents(&self) -> bool {
-        self.selected_session()
-            .map(|s| s.stats.task_count > 0)
-            .unwrap_or(false)
-    }
-
     // ── View mode cycling ──────────────────────────────────────────
 
     fn cycle_view_mode(&mut self) {
@@ -2215,7 +2533,10 @@ impl App {
         };
         match db.list_sessions(&filter) {
             Ok(rows) => {
-                self.db_sessions = rows;
+                self.db_sessions = rows
+                    .into_iter()
+                    .filter(|row| !Self::is_internal_summary_row(row))
+                    .collect();
                 self.rebuild_available_tools();
             }
             Err(e) => {
@@ -2381,11 +2702,36 @@ impl App {
                 self.view = View::SessionDetail;
                 self.detail_scroll = 0;
                 self.detail_event_index = 0;
+                self.detail_h_scroll = 0;
                 self.event_filters = HashSet::from([EventFilter::All]);
                 self.expanded_events.clear();
-                self.detail_view_mode = DetailViewMode::Linear;
+                self.expanded_turns.clear();
+                self.detail_view_mode = match crossterm::terminal::size() {
+                    Ok((width, _)) if width >= Self::DETAIL_SPLIT_MIN_WIDTH => DetailViewMode::Turn,
+                    _ => DetailViewMode::Linear,
+                };
+                self.detail_selected_event_id = None;
                 self.turn_index = 0;
                 self.turn_agent_scroll = 0;
+                self.timeline_summary_pending.clear();
+                self.timeline_summary_inflight.clear();
+                self.summary_cli_prompted = false;
+                self.detail_source_path = self.resolve_selected_source_path();
+                self.detail_source_mtime = self
+                    .detail_source_path
+                    .as_ref()
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .and_then(|m| m.modified().ok());
+                self.last_realtime_check = Instant::now();
+                self.realtime_preview_enabled =
+                    self.daemon_config.daemon.detail_realtime_preview_enabled;
+                if let Some(session) = self.selected_session().cloned() {
+                    self.ensure_summary_ready_for_session(&session);
+                }
+                if self.detail_view_mode == DetailViewMode::Turn {
+                    self.sync_linear_to_turn();
+                }
+                self.update_detail_selection_anchor();
             }
         }
     }
@@ -2399,10 +2745,12 @@ impl App {
                 self.detail_event_index += 1;
             }
         }
+        self.update_detail_selection_anchor();
     }
 
     fn detail_prev_event(&mut self) {
         self.detail_event_index = self.detail_event_index.saturating_sub(1);
+        self.update_detail_selection_anchor();
     }
 
     fn detail_end(&mut self) {
@@ -2412,6 +2760,7 @@ impl App {
                 self.detail_event_index = visible - 1;
             }
         }
+        self.update_detail_selection_anchor();
     }
 
     fn detail_page_down(&mut self) {
@@ -2421,29 +2770,12 @@ impl App {
                 self.detail_event_index = (self.detail_event_index + 10).min(visible - 1);
             }
         }
+        self.update_detail_selection_anchor();
     }
 
     fn detail_page_up(&mut self) {
         self.detail_event_index = self.detail_event_index.saturating_sub(10);
-    }
-
-    fn toggle_task_fold(&mut self) {
-        let task_id = if let Some(session) = self.selected_session() {
-            let visible_events = self.get_visible_events(session);
-            visible_events
-                .get(self.detail_event_index)
-                .and_then(|e| e.event().task_id.clone())
-        } else {
-            None
-        };
-
-        if let Some(tid) = task_id {
-            if self.collapsed_tasks.contains(&tid) {
-                self.collapsed_tasks.remove(&tid);
-            } else {
-                self.collapsed_tasks.insert(tid);
-            }
-        }
+        self.update_detail_selection_anchor();
     }
 
     fn toggle_expanded(&mut self) {
@@ -2461,11 +2793,13 @@ impl App {
                 self.view = View::SessionList;
                 self.detail_scroll = 0;
                 self.detail_event_index = 0;
+                self.detail_h_scroll = 0;
                 self.detail_view_mode = DetailViewMode::Linear;
             }
             KeyCode::Esc | KeyCode::Char('v') | KeyCode::Char('h') | KeyCode::Left => {
                 self.detail_view_mode = DetailViewMode::Linear;
                 self.sync_turn_to_linear();
+                self.update_detail_selection_anchor();
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.turn_agent_scroll = self.turn_agent_scroll.saturating_add(1);
@@ -2752,17 +3086,58 @@ impl App {
     }
 
     pub fn get_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
-        // Step 1: filter by event type
-        let filtered: Vec<&'a Event> = session
-            .events
-            .iter()
-            .filter(|e| self.matches_event_filter(&e.event_type))
-            .collect();
+        let base = self.get_base_visible_events(session);
+        if base.is_empty() || !self.summary_allowed_for_session(session) {
+            return base;
+        }
 
-        // Step 2: apply task view mode (collapse sub-agent tasks)
-        let after_task = self.apply_task_view_mode(&filtered);
+        let anchors = self.build_summary_anchors(session, &base);
+        if anchors.is_empty() {
+            return base;
+        }
 
-        // Step 3: collapse consecutive similar actions
+        let mut by_source: HashMap<usize, Vec<SummaryAnchor<'a>>> = HashMap::new();
+        for anchor in anchors {
+            by_source
+                .entry(anchor.anchor_source_index)
+                .or_default()
+                .push(anchor);
+        }
+
+        let mut out = Vec::with_capacity(base.len() + by_source.len());
+        for event in base {
+            let source_index = event.source_index();
+            out.push(event.clone());
+            if let Some(rows) = by_source.get(&source_index) {
+                for row in rows {
+                    if let Some(summary) = self.timeline_summary_cache.get(&row.key) {
+                        out.push(DisplayEvent::SummaryRow {
+                            event: row.anchor_event,
+                            source_index: row.anchor_source_index,
+                            window_id: row.key.window_id,
+                            summary: summary.clone(),
+                            lane: row.lane,
+                            active_lanes: row.active_lanes.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn get_base_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
+        let after_task: Vec<DisplayEvent<'a>> =
+            build_lane_events(session, |event_type| self.matches_event_filter(event_type))
+                .into_iter()
+                .map(|lane_event| DisplayEvent::Single {
+                    event: lane_event.event,
+                    source_index: lane_event.source_index,
+                    lane: lane_event.lane,
+                    marker: lane_event.marker,
+                    active_lanes: lane_event.active_lanes,
+                })
+                .collect();
         if self.collapse_consecutive {
             Self::collapse_consecutive_events(after_task)
         } else {
@@ -2770,84 +3145,57 @@ impl App {
         }
     }
 
-    fn apply_task_view_mode<'a>(&self, events: &[&'a Event]) -> Vec<DisplayEvent<'a>> {
-        match self.task_view_mode {
-            TaskViewMode::Detail => events.iter().map(|e| DisplayEvent::Single(e)).collect(),
-            TaskViewMode::Summary => {
-                let mut result: Vec<DisplayEvent<'a>> = Vec::new();
-                let mut i = 0;
-                while i < events.len() {
-                    if let EventType::TaskStart { ref title } = events[i].event_type {
-                        let task_id = events[i].task_id.clone();
-                        let start_idx = i;
-                        let mut inner_count = 0u32;
-                        let mut end_summary: Option<String> = None;
-                        i += 1;
-                        // Collect until matching TaskEnd
-                        while i < events.len() {
-                            if let EventType::TaskEnd { ref summary } = events[i].event_type {
-                                if events[i].task_id == task_id {
-                                    end_summary = summary.clone().or_else(|| Some(String::new()));
-                                    i += 1;
-                                    break;
-                                }
-                            }
-                            inner_count += 1;
-                            i += 1;
-                        }
-                        let label = title.as_deref().unwrap_or("task");
-                        let summary_text = end_summary
-                            .map(|s| {
-                                if s.is_empty() {
-                                    format!("{} ({} events)", label, inner_count)
-                                } else {
-                                    format!("{}: {} ({} events)", label, s, inner_count)
-                                }
-                            })
-                            .unwrap_or_else(|| format!("{} ({} events)", label, inner_count));
-                        result.push(DisplayEvent::TaskSummary {
-                            event: events[start_idx],
-                            summary: summary_text,
-                            inner_count,
-                        });
-                    } else {
-                        result.push(DisplayEvent::Single(events[i]));
-                        i += 1;
-                    }
-                }
-                result
-            }
-        }
-    }
-
     fn collapse_consecutive_events<'a>(events: Vec<DisplayEvent<'a>>) -> Vec<DisplayEvent<'a>> {
         let mut result: Vec<DisplayEvent<'a>> = Vec::new();
         let mut i = 0;
         while i < events.len() {
-            let group_kind = match &events[i] {
-                DisplayEvent::Single(e) => consecutive_group_key(&e.event_type),
+            let group_seed = match &events[i] {
+                DisplayEvent::Single { event, lane, .. } => {
+                    consecutive_group_key(&event.event_type).map(|kind| (kind, *lane))
+                }
                 _ => None,
             };
-            if let Some(kind) = group_kind {
-                // Collect consecutive events of same kind
+
+            if let Some((kind, lane)) = group_seed {
                 let start = i;
-                let mut items: Vec<&'a Event> = Vec::new();
+                let mut items: Vec<&DisplayEvent<'a>> = Vec::new();
                 while i < events.len() {
-                    if let DisplayEvent::Single(e) = &events[i] {
-                        if consecutive_group_key(&e.event_type).as_deref() == Some(&kind) {
-                            items.push(e);
+                    if let DisplayEvent::Single {
+                        event,
+                        lane: current_lane,
+                        ..
+                    } = &events[i]
+                    {
+                        if *current_lane == lane
+                            && consecutive_group_key(&event.event_type).as_deref() == Some(&kind)
+                        {
+                            items.push(&events[i]);
                             i += 1;
                             continue;
                         }
                     }
                     break;
                 }
+
                 if items.len() > 1 {
-                    result.push(DisplayEvent::Collapsed {
-                        first: items[0],
-                        count: items.len() as u32,
-                        kind: kind.clone(),
-                    });
+                    if let DisplayEvent::Single {
+                        event,
+                        source_index,
+                        lane,
+                        marker,
+                        active_lanes,
+                    } = items[0]
+                    {
+                        result.push(DisplayEvent::Collapsed {
+                            first: event,
+                            source_index: *source_index,
+                            count: items.len() as u32,
+                            kind: kind.clone(),
+                            lane: *lane,
+                            marker: *marker,
+                            active_lanes: active_lanes.clone(),
+                        });
+                    }
                 } else {
                     result.push(events[start].clone());
                 }
@@ -2857,6 +3205,833 @@ impl App {
             }
         }
         result
+    }
+
+    fn build_summary_anchors<'a>(
+        &self,
+        session: &Session,
+        events: &[DisplayEvent<'a>],
+    ) -> Vec<SummaryAnchor<'a>> {
+        if events.is_empty() {
+            return Vec::new();
+        }
+
+        let configured_window = self.daemon_config.daemon.summary_event_window;
+        let auto_turn_window_mode = configured_window == 0;
+        let window = configured_window.max(1) as usize;
+        let mut seen: HashSet<TimelineSummaryWindowKey> = HashSet::new();
+        let mut anchors: Vec<SummaryAnchor<'a>> = Vec::new();
+        let source_to_event: HashMap<usize, &'a Event> = events
+            .iter()
+            .map(|de| (de.source_index(), de.event()))
+            .collect();
+
+        for (idx, de) in events.iter().enumerate() {
+            let event = de.event();
+            let is_boundary = matches!(
+                event.event_type,
+                EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+            );
+            let is_checkpoint = !auto_turn_window_mode && (idx + 1) % window == 0;
+            if !is_boundary && !is_checkpoint {
+                continue;
+            }
+
+            let window_id = if is_boundary {
+                let tag = if matches!(event.event_type, EventType::TaskStart { .. }) {
+                    1u64
+                } else {
+                    2u64
+                };
+                (tag << 56) | (de.source_index() as u64)
+            } else {
+                (idx / window) as u64
+            };
+
+            let key = TimelineSummaryWindowKey {
+                session_id: session.session_id.clone(),
+                event_index: de.source_index(),
+                window_id,
+            };
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+
+            anchors.push(SummaryAnchor {
+                scope: SummaryScope::Window,
+                key,
+                anchor_event: event,
+                anchor_source_index: de.source_index(),
+                display_index: idx,
+                start_display_index: idx.saturating_sub(window.saturating_sub(1)),
+                end_display_index: idx,
+                lane: de.lane(),
+                active_lanes: de.active_lanes().to_vec(),
+            });
+        }
+
+        for turn in extract_turns(events) {
+            if turn.anchor_source_index == 0
+                && turn.user_events.is_empty()
+                && turn.agent_events.is_empty()
+            {
+                continue;
+            }
+            let Some(anchor_event) = source_to_event.get(&turn.anchor_source_index).copied() else {
+                continue;
+            };
+            let key = TimelineSummaryWindowKey {
+                session_id: session.session_id.clone(),
+                event_index: turn.anchor_source_index,
+                window_id: (3u64 << 56) | (turn.turn_index as u64),
+            };
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+
+            let display_event = events
+                .get(turn.end_display_index)
+                .map(|de| de.event())
+                .unwrap_or(anchor_event);
+            let display_source = events
+                .get(turn.end_display_index)
+                .map(|de| de.source_index())
+                .unwrap_or(turn.anchor_source_index);
+            let lane = events
+                .get(turn.end_display_index)
+                .map(|de| de.lane())
+                .unwrap_or(0);
+            let active_lanes = events
+                .get(turn.end_display_index)
+                .map(|de| de.active_lanes().to_vec())
+                .unwrap_or_else(|| vec![0]);
+
+            anchors.push(SummaryAnchor {
+                scope: SummaryScope::Turn,
+                key,
+                anchor_event: display_event,
+                anchor_source_index: display_source,
+                display_index: turn.end_display_index,
+                start_display_index: turn.start_display_index,
+                end_display_index: turn.end_display_index,
+                lane,
+                active_lanes,
+            });
+        }
+
+        anchors
+    }
+
+    fn build_summary_context<'a>(
+        &self,
+        session: &Session,
+        events: &[DisplayEvent<'a>],
+        anchor: &SummaryAnchor<'a>,
+    ) -> String {
+        let start = anchor
+            .start_display_index
+            .min(events.len().saturating_sub(1));
+        let end = anchor.end_display_index.min(events.len().saturating_sub(1));
+        let (start, end) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let slice = &events[start..=end];
+        let scope = match anchor.scope {
+            SummaryScope::Turn => "turn",
+            SummaryScope::Window => "window",
+        };
+        let turn_auto_mode = matches!(anchor.scope, SummaryScope::Turn)
+            && self.daemon_config.daemon.summary_event_window == 0;
+
+        let mut lines: Vec<String> = Vec::with_capacity(slice.len() + 8);
+        lines.push(format!("session_id: {}", session.session_id));
+        lines.push(format!("tool: {}", session.agent.tool));
+        lines.push(format!("model: {}", session.agent.model));
+        lines.push(format!(
+            "anchor_event: {} ({})",
+            anchor.anchor_source_index,
+            Self::event_kind_label(&slice[slice.len() - 1].event().event_type)
+        ));
+        lines.push(format!("scope: {scope}"));
+        if turn_auto_mode {
+            lines.push("window_mode: auto-turn".to_string());
+        }
+        lines.push("timeline_window:".to_string());
+        for (offset, event) in slice.iter().enumerate() {
+            let e = event.event();
+            lines.push(format!(
+                "- [{}] {} {}",
+                start + offset,
+                Self::event_kind_label(&e.event_type),
+                Self::compact_event_line(e)
+            ));
+        }
+
+        let extra = if turn_auto_mode {
+            "Auto-turn mode rule:\n\
+             - Treat the whole turn as one unit and infer 2-4 semantic phases internally.\n\
+             - Reflect phase boundaries in `progress` and `changes` concisely.\n\n"
+        } else {
+            ""
+        };
+
+        format!(
+            "Generate HAIL-summary JSON for this {scope}.\n\
+             Return strict JSON only with keys:\n\
+             kind, version, scope, intent, progress, changes, next.\n\n{extra}{}",
+            lines.join("\n")
+        )
+    }
+
+    fn compact_event_line(event: &Event) -> String {
+        match &event.event_type {
+            EventType::UserMessage | EventType::AgentMessage | EventType::SystemMessage => {
+                let line = Self::first_text_block_line(&event.content.blocks, 96);
+                if line.is_empty() {
+                    "(message)".to_string()
+                } else {
+                    line
+                }
+            }
+            EventType::Thinking => "thinking".to_string(),
+            EventType::ToolCall { name } => format!("tool call: {name}"),
+            EventType::ToolResult {
+                name,
+                is_error,
+                call_id: _,
+            } => {
+                if *is_error {
+                    format!("tool error: {name}")
+                } else {
+                    format!("tool ok: {name}")
+                }
+            }
+            EventType::FileRead { path }
+            | EventType::FileCreate { path }
+            | EventType::FileDelete { path } => path.clone(),
+            EventType::FileEdit { path, .. } => format!("edit {path}"),
+            EventType::CodeSearch { query } | EventType::WebSearch { query } => query.clone(),
+            EventType::FileSearch { pattern } => pattern.clone(),
+            EventType::ShellCommand { command, exit_code } => match exit_code {
+                Some(code) => format!("{command} => {code}"),
+                None => command.clone(),
+            },
+            EventType::WebFetch { url } => url.clone(),
+            EventType::ImageGenerate { prompt }
+            | EventType::VideoGenerate { prompt }
+            | EventType::AudioGenerate { prompt } => prompt.clone(),
+            EventType::TaskStart { title } => {
+                title.clone().unwrap_or_else(|| "task start".to_string())
+            }
+            EventType::TaskEnd { summary } => {
+                summary.clone().unwrap_or_else(|| "task end".to_string())
+            }
+            EventType::Custom { kind } => kind.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn first_text_block_line(blocks: &[ContentBlock], max_len: usize) -> String {
+        for block in blocks {
+            if let ContentBlock::Text { text } = block {
+                if let Some(line) = text.lines().next() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        if trimmed.chars().count() <= max_len {
+                            return trimmed.to_string();
+                        }
+                        let mut out = String::new();
+                        for ch in trimmed.chars().take(max_len.saturating_sub(1)) {
+                            out.push(ch);
+                        }
+                        out.push('…');
+                        return out;
+                    }
+                }
+            }
+        }
+        String::new()
+    }
+
+    fn event_kind_label(event_type: &EventType) -> &'static str {
+        match event_type {
+            EventType::UserMessage => "user",
+            EventType::AgentMessage => "agent",
+            EventType::SystemMessage => "system",
+            EventType::Thinking => "thinking",
+            EventType::ToolCall { .. } => "tool_call",
+            EventType::ToolResult { .. } => "tool_result",
+            EventType::FileRead { .. } => "file_read",
+            EventType::CodeSearch { .. } => "code_search",
+            EventType::FileSearch { .. } => "file_search",
+            EventType::FileEdit { .. } => "file_edit",
+            EventType::FileCreate { .. } => "file_create",
+            EventType::FileDelete { .. } => "file_delete",
+            EventType::ShellCommand { .. } => "shell",
+            EventType::WebSearch { .. } => "web_search",
+            EventType::WebFetch { .. } => "web_fetch",
+            EventType::ImageGenerate { .. } => "image",
+            EventType::VideoGenerate { .. } => "video",
+            EventType::AudioGenerate { .. } => "audio",
+            EventType::TaskStart { .. } => "task_start",
+            EventType::TaskEnd { .. } => "task_end",
+            EventType::Custom { .. } => "custom",
+            _ => "other",
+        }
+    }
+
+    fn summary_allowed_for_session(&self, session: &Session) -> bool {
+        if !self.daemon_config.daemon.summary_enabled
+            || self.is_stream_write_tool(&session.agent.tool)
+        {
+            return false;
+        }
+        self.summary_backend_unavailable_reason(session).is_none()
+    }
+
+    fn summary_backend_unavailable_reason(&self, _session: &Session) -> Option<String> {
+        let provider = self
+            .daemon_config
+            .daemon
+            .summary_provider
+            .as_deref()
+            .unwrap_or("auto")
+            .trim()
+            .to_ascii_lowercase();
+
+        match provider.as_str() {
+            "" | "auto" => {
+                if Self::has_any_summary_api_key() || Self::has_openai_compatible_endpoint_config()
+                {
+                    None
+                } else if std::env::var("OPS_TL_SUM_CLI_BIN")
+                    .ok()
+                    .is_some_and(|v| !v.trim().is_empty())
+                {
+                    None
+                } else {
+                    Some(
+                        "no summary backend configured for auto mode; add API key, set OPS_TL_SUM_ENDPOINT/OPS_TL_SUM_BASE, set OPS_TL_SUM_CLI_BIN, or switch LLM Summary Mode".to_string(),
+                    )
+                }
+            }
+            "anthropic" => {
+                if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+                    None
+                } else {
+                    Some("ANTHROPIC_API_KEY is missing".to_string())
+                }
+            }
+            "openai" => {
+                if std::env::var("OPENAI_API_KEY").is_ok() {
+                    None
+                } else {
+                    Some("OPENAI_API_KEY is missing".to_string())
+                }
+            }
+            "openai-compatible" => {
+                if Self::has_openai_compatible_endpoint_config()
+                    || Self::has_openai_compatible_api_key()
+                {
+                    None
+                } else {
+                    Some(
+                        "OpenAI-compatible mode needs key or endpoint/base config (OPS_TL_SUM_KEY, OPS_TL_SUM_ENDPOINT, OPS_TL_SUM_BASE)"
+                            .to_string(),
+                    )
+                }
+            }
+            "gemini" => {
+                if std::env::var("GEMINI_API_KEY").is_ok()
+                    || std::env::var("GOOGLE_API_KEY").is_ok()
+                {
+                    None
+                } else {
+                    Some("GEMINI_API_KEY (or GOOGLE_API_KEY) is missing".to_string())
+                }
+            }
+            "cli" | "cli:auto" => {
+                if Self::any_summary_cli_available() {
+                    None
+                } else {
+                    Some("CLI mode selected but no summary CLI binary found".to_string())
+                }
+            }
+            "cli:codex" => {
+                if Self::command_exists("codex") {
+                    None
+                } else {
+                    Some("codex CLI is not installed".to_string())
+                }
+            }
+            "cli:claude" => {
+                if Self::command_exists("claude") {
+                    None
+                } else {
+                    Some("claude CLI is not installed".to_string())
+                }
+            }
+            "cli:cursor" => {
+                if Self::command_exists("cursor") || Self::command_exists("cursor-agent") {
+                    None
+                } else {
+                    Some("cursor CLI is not installed".to_string())
+                }
+            }
+            "cli:gemini" => {
+                if Self::command_exists("gemini") {
+                    None
+                } else {
+                    Some("gemini CLI is not installed".to_string())
+                }
+            }
+            other => Some(format!("unsupported summary provider: {other}")),
+        }
+    }
+
+    fn has_any_summary_api_key() -> bool {
+        std::env::var("ANTHROPIC_API_KEY").is_ok()
+            || std::env::var("OPENAI_API_KEY").is_ok()
+            || std::env::var("GEMINI_API_KEY").is_ok()
+            || std::env::var("GOOGLE_API_KEY").is_ok()
+    }
+
+    fn has_openai_compatible_endpoint_config() -> bool {
+        std::env::var("OPS_TL_SUM_ENDPOINT")
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty())
+            || std::env::var("OPS_TL_SUM_BASE")
+                .ok()
+                .is_some_and(|v| !v.trim().is_empty())
+            || std::env::var("OPENAI_BASE_URL")
+                .ok()
+                .is_some_and(|v| !v.trim().is_empty())
+    }
+
+    fn has_openai_compatible_api_key() -> bool {
+        std::env::var("OPS_TL_SUM_KEY")
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty())
+            || std::env::var("OPENAI_API_KEY")
+                .ok()
+                .is_some_and(|v| !v.trim().is_empty())
+    }
+
+    fn any_summary_cli_available() -> bool {
+        Self::command_exists("codex")
+            || Self::command_exists("claude")
+            || Self::command_exists("cursor")
+            || Self::command_exists("cursor-agent")
+            || Self::command_exists("gemini")
+    }
+
+    fn ensure_summary_ready_for_session(&mut self, session: &Session) {
+        if !self.daemon_config.daemon.summary_enabled
+            || self.is_stream_write_tool(&session.agent.tool)
+        {
+            return;
+        }
+
+        if let Some(reason) = self.summary_backend_unavailable_reason(session) {
+            self.daemon_config.daemon.summary_enabled = false;
+            self.timeline_summary_cache.clear();
+            self.timeline_summary_pending.clear();
+            self.timeline_summary_inflight.clear();
+            self.last_summary_request_at = None;
+            self.flash_info(format!(
+                "LLM summary auto-disabled: {} (Settings > Timeline Intelligence)",
+                reason
+            ));
+        }
+    }
+
+    fn pending_summary_contains(&self, key: &TimelineSummaryWindowKey) -> bool {
+        self.timeline_summary_pending.iter().any(|r| &r.key == key)
+    }
+
+    pub fn is_stream_write_tool(&self, tool: &str) -> bool {
+        self.daemon_config
+            .daemon
+            .stream_write
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(tool))
+    }
+
+    fn maybe_prompt_summary_cli_setup(&mut self, key: &TimelineSummaryWindowKey, err: &str) {
+        if self.summary_cli_prompted || self.modal.is_some() {
+            return;
+        }
+        let missing_setup = Self::is_summary_setup_missing(err);
+        let runtime_failure = Self::is_summary_cli_runtime_failure(err);
+        if !missing_setup && !runtime_failure {
+            return;
+        }
+
+        self.summary_cli_prompted = true;
+        let available = self.available_summary_cli_providers(&key.session_id);
+        if !available.is_empty() {
+            let message = if missing_setup {
+                format!(
+                    "Summary is not configured. Run hello probe on installed CLIs ({})?",
+                    available.join(", ")
+                )
+            } else {
+                format!(
+                    "Summary CLI failed. Run hello probe to pick a responsive CLI ({})?",
+                    available.join(", ")
+                )
+            };
+            self.modal = Some(Modal::Confirm {
+                title: "Configure LLM Summary".to_string(),
+                message,
+                action: ConfirmAction::ProbeSummaryCli {
+                    session_id: key.session_id.clone(),
+                },
+            });
+        } else {
+            if missing_setup {
+                self.flash_info(
+                    "Summary is not configured. Install one CLI (codex/claude/cursor/gemini) or add an API key.",
+                );
+            } else {
+                self.flash_info(
+                    "Summary CLI failed. Ensure the selected CLI is authenticated, or switch provider in Settings.",
+                );
+            }
+        }
+    }
+
+    fn is_summary_setup_missing(err: &str) -> bool {
+        let lower = err.to_ascii_lowercase();
+        (lower.contains("no summary api key found")
+            && lower.contains("no cli summary binary configured"))
+            || lower.contains("could not resolve cli summary binary")
+    }
+
+    fn is_summary_cli_runtime_failure(err: &str) -> bool {
+        let lower = err.to_ascii_lowercase();
+        lower.contains("summary cli failed")
+            || lower.contains("failed to execute summary cli")
+            || lower.contains("summary cli probe timed out")
+    }
+
+    fn recommended_summary_cli_provider(&self, session_id: &str) -> Option<String> {
+        self.available_summary_cli_providers(session_id)
+            .into_iter()
+            .next()
+            .map(|provider| provider.to_string())
+    }
+
+    fn available_summary_cli_providers(&self, session_id: &str) -> Vec<&'static str> {
+        let preferred = self
+            .session_tool_for_summary(session_id)
+            .and_then(Self::tool_to_summary_cli_provider);
+
+        let mut order = Vec::new();
+        if let Some(provider) = preferred {
+            order.push(provider);
+        }
+        for provider in ["cli:codex", "cli:claude", "cli:cursor", "cli:gemini"] {
+            if !order.contains(&provider) {
+                order.push(provider);
+            }
+        }
+
+        order
+            .into_iter()
+            .filter(|provider| Self::summary_cli_provider_available(provider))
+            .collect()
+    }
+
+    fn session_tool_for_summary<'a>(&'a self, session_id: &str) -> Option<&'a str> {
+        self.sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .map(|session| session.agent.tool.as_str())
+            .or_else(|| {
+                self.selected_session()
+                    .map(|session| session.agent.tool.as_str())
+            })
+    }
+
+    fn tool_to_summary_cli_provider(tool: &str) -> Option<&'static str> {
+        let lower = tool.to_ascii_lowercase();
+        if lower.contains("codex") {
+            Some("cli:codex")
+        } else if lower.contains("claude") {
+            Some("cli:claude")
+        } else if lower.contains("cursor") {
+            Some("cli:cursor")
+        } else if lower.contains("gemini") {
+            Some("cli:gemini")
+        } else {
+            None
+        }
+    }
+
+    fn summary_cli_provider_available(provider: &str) -> bool {
+        match provider {
+            "cli:codex" => Self::command_exists("codex"),
+            "cli:claude" => Self::command_exists("claude"),
+            "cli:cursor" => Self::command_exists("cursor") || Self::command_exists("cursor-agent"),
+            "cli:gemini" => Self::command_exists("gemini"),
+            _ => false,
+        }
+    }
+
+    fn command_exists(binary: &str) -> bool {
+        Command::new("sh")
+            .arg("-lc")
+            .arg(format!("command -v {binary} >/dev/null 2>&1"))
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    pub fn schedule_detail_summary_jobs(&mut self) -> Option<AsyncCommand> {
+        if self.view != View::SessionDetail {
+            return None;
+        }
+        let max_inflight = self.daemon_config.daemon.summary_max_inflight.max(1) as usize;
+        if self.timeline_summary_inflight.len() >= max_inflight {
+            return None;
+        }
+
+        let Some(session) = self.selected_session().cloned() else {
+            return None;
+        };
+        self.ensure_summary_ready_for_session(&session);
+        if !self.summary_allowed_for_session(&session) {
+            return None;
+        }
+
+        let base = self.get_base_visible_events(&session);
+        if base.is_empty() {
+            return None;
+        }
+
+        let viewport = self.detail_viewport_height.max(6) as usize;
+        let visible_start = self.detail_event_index.saturating_sub(viewport / 2);
+        let visible_end = self
+            .detail_event_index
+            .saturating_add(viewport.saturating_mul(2));
+
+        let mut visible_new: Vec<(usize, TimelineSummaryWindowRequest)> = Vec::new();
+        let mut background_new: Vec<TimelineSummaryWindowRequest> = Vec::new();
+
+        for anchor in self.build_summary_anchors(&session, &base) {
+            if self.timeline_summary_cache.contains_key(&anchor.key)
+                || self.timeline_summary_inflight.contains(&anchor.key)
+                || self.pending_summary_contains(&anchor.key)
+            {
+                continue;
+            }
+
+            let req = TimelineSummaryWindowRequest {
+                context: self.build_summary_context(&session, &base, &anchor),
+                key: anchor.key,
+                visible_priority: anchor.display_index >= visible_start
+                    && anchor.display_index <= visible_end,
+            };
+
+            if req.visible_priority {
+                let distance = anchor.display_index.abs_diff(self.detail_event_index);
+                visible_new.push((distance, req));
+            } else {
+                background_new.push(req);
+            }
+        }
+
+        if !visible_new.is_empty() {
+            visible_new.sort_by_key(|(distance, _)| *distance);
+            for (_, req) in visible_new.into_iter().rev() {
+                self.timeline_summary_pending.push_front(req);
+            }
+        }
+        for req in background_new {
+            self.timeline_summary_pending.push_back(req);
+        }
+
+        let req = self.timeline_summary_pending.pop_front()?;
+        let debounce_ms = self.daemon_config.daemon.summary_debounce_ms.max(100);
+        if !req.visible_priority
+            && self
+                .last_summary_request_at
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(debounce_ms))
+        {
+            self.timeline_summary_pending.push_front(req);
+            return None;
+        }
+
+        self.timeline_summary_inflight.insert(req.key.clone());
+        self.last_summary_request_at = Some(Instant::now());
+        Some(AsyncCommand::GenerateTimelineSummary {
+            key: req.key,
+            provider: self.daemon_config.daemon.summary_provider.clone(),
+            context: req.context,
+            agent_tool: session.agent.tool.clone(),
+        })
+    }
+
+    pub fn turn_summary_key(
+        session_id: &str,
+        turn_index: usize,
+        anchor_source_index: usize,
+    ) -> TimelineSummaryWindowKey {
+        TimelineSummaryWindowKey {
+            session_id: session_id.to_string(),
+            event_index: anchor_source_index,
+            window_id: (3u64 << 56) | (turn_index as u64),
+        }
+    }
+
+    fn resolve_selected_source_path(&self) -> Option<PathBuf> {
+        if let Some(row) = self.selected_db_session() {
+            if let Some(path) = row.source_path.as_ref().map(PathBuf::from) {
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+
+        if let (Some(db), Some(session)) = (&self.db, self.selected_session()) {
+            if let Ok(Some(path)) = db.get_session_source_path(&session.session_id) {
+                let path = PathBuf::from(path);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+
+        let session = self.selected_session()?;
+        for key in ["source_path", "source_file", "session_path", "path"] {
+            let maybe = session
+                .context
+                .attributes
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from);
+            if let Some(path) = maybe {
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn update_detail_selection_anchor(&mut self) {
+        if self.view != View::SessionDetail {
+            return;
+        }
+        let Some(session) = self.selected_session().cloned() else {
+            return;
+        };
+        let visible = self.get_visible_events(&session);
+        if visible.is_empty() {
+            self.detail_selected_event_id = None;
+            self.detail_event_index = 0;
+            return;
+        }
+        self.detail_event_index = self.detail_event_index.min(visible.len() - 1);
+        self.detail_selected_event_id = visible
+            .get(self.detail_event_index)
+            .map(|de| de.event().event_id.clone());
+    }
+
+    pub fn remap_detail_selection_by_event_id(&mut self) {
+        if self.view != View::SessionDetail {
+            return;
+        }
+        let Some(session) = self.selected_session().cloned() else {
+            return;
+        };
+        let visible = self.get_visible_events(&session);
+        if visible.is_empty() {
+            self.detail_event_index = 0;
+            self.detail_selected_event_id = None;
+            return;
+        }
+
+        if let Some(anchor) = self.detail_selected_event_id.clone() {
+            if let Some(idx) = visible.iter().position(|de| de.event().event_id == anchor) {
+                self.detail_event_index = idx;
+                return;
+            }
+        }
+        self.detail_event_index = self.detail_event_index.min(visible.len() - 1);
+        self.detail_selected_event_id = visible
+            .get(self.detail_event_index)
+            .map(|de| de.event().event_id.clone());
+    }
+
+    pub fn should_skip_realtime_for_selected(&self) -> bool {
+        let Some(session) = self.selected_session() else {
+            return true;
+        };
+        self.is_stream_write_tool(&session.agent.tool)
+    }
+
+    pub fn llm_summary_status_label(&self) -> String {
+        let Some(session) = self.selected_session() else {
+            return "off".to_string();
+        };
+        if !self.daemon_config.daemon.summary_enabled {
+            return "off".to_string();
+        }
+        if self.is_stream_write_tool(&session.agent.tool) {
+            return "skip(stream)".to_string();
+        }
+        if self.summary_backend_unavailable_reason(session).is_some() {
+            return "off(no-backend)".to_string();
+        }
+        "on".to_string()
+    }
+
+    pub fn take_realtime_reload_path(&mut self) -> Option<PathBuf> {
+        if self.view != View::SessionDetail
+            || !self.daemon_config.daemon.detail_realtime_preview_enabled
+            || !self.realtime_preview_enabled
+        {
+            return None;
+        }
+        if self.should_skip_realtime_for_selected() {
+            return None;
+        }
+        let debounce_ms = self.daemon_config.daemon.realtime_debounce_ms.max(300);
+        if self.last_realtime_check.elapsed() < Duration::from_millis(debounce_ms) {
+            return None;
+        }
+        self.last_realtime_check = Instant::now();
+
+        let path = self.detail_source_path.clone()?;
+        let metadata = std::fs::metadata(&path).ok()?;
+        let modified = metadata.modified().ok()?;
+        match self.detail_source_mtime {
+            Some(prev) if modified <= prev => None,
+            _ => {
+                self.detail_source_mtime = Some(modified);
+                Some(path)
+            }
+        }
+    }
+
+    pub fn apply_reloaded_session(&mut self, reloaded: Session) {
+        let sid = reloaded.session_id.clone();
+        if let Some(existing) = self.sessions.iter_mut().find(|s| s.session_id == sid) {
+            *existing = reloaded;
+        } else {
+            self.sessions.push(reloaded);
+        }
+        self.timeline_summary_cache
+            .retain(|key, _| key.session_id != sid);
+        self.timeline_summary_pending
+            .retain(|request| request.key.session_id != sid);
+        self.timeline_summary_inflight
+            .retain(|key| key.session_id != sid);
+        self.remap_detail_selection_by_event_id();
     }
 
     fn visible_event_count(&self, session: &Session) -> usize {
@@ -2870,13 +4045,22 @@ impl App {
         match &self.view_mode {
             ViewMode::Local => {
                 if query.is_empty() {
-                    self.filtered_sessions = (0..self.sessions.len()).collect();
+                    self.filtered_sessions = self
+                        .sessions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| !Self::is_internal_summary_session(s))
+                        .map(|(i, _)| i)
+                        .collect();
                 } else {
                     self.filtered_sessions = self
                         .sessions
                         .iter()
                         .enumerate()
                         .filter(|(_, s)| {
+                            if Self::is_internal_summary_session(s) {
+                                return false;
+                            }
                             let title = s.context.title.as_deref().unwrap_or("").to_lowercase();
                             let tool = s.agent.tool.to_lowercase();
                             let model = s.agent.model.to_lowercase();
@@ -2907,7 +4091,12 @@ impl App {
                         search: if query.is_empty() { None } else { Some(query) },
                         ..Default::default()
                     };
-                    self.db_sessions = db.list_sessions(&filter).unwrap_or_default();
+                    self.db_sessions = db
+                        .list_sessions(&filter)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|row| !Self::is_internal_summary_row(row))
+                        .collect();
                 }
                 self.list_state.select(if self.db_sessions.is_empty() {
                     None
@@ -2923,7 +4112,12 @@ impl App {
                         search: if query.is_empty() { None } else { Some(query) },
                         ..Default::default()
                     };
-                    self.db_sessions = db.list_sessions(&filter).unwrap_or_default();
+                    self.db_sessions = db
+                        .list_sessions(&filter)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|row| !Self::is_internal_summary_row(row))
+                        .collect();
                 }
                 self.list_state.select(if self.db_sessions.is_empty() {
                     None

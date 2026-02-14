@@ -1,8 +1,11 @@
 mod app;
 mod async_ops;
+mod cli_export;
 mod config;
 mod platform_api_storage;
+mod session_timeline;
 mod theme;
+mod timeline_summary;
 mod ui;
 mod views;
 
@@ -21,6 +24,10 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
+
+pub use cli_export::{
+    export_session_timeline, CliTimelineExport, CliTimelineExportOptions, CliTimelineView,
+};
 
 enum BgEvent {
     SessionsLoaded(Vec<opensession_core::trace::Session>),
@@ -47,6 +54,7 @@ pub fn run(paths: Option<Vec<String>>) -> Result<()> {
         Some(daemon_config.identity.team_id.clone())
     };
     app.daemon_config = daemon_config;
+    app.realtime_preview_enabled = app.daemon_config.daemon.detail_realtime_preview_enabled;
     app.connection_ctx = App::derive_connection_ctx(&app.daemon_config);
 
     // ── Build startup status ─────────────────────────────────────────
@@ -125,7 +133,7 @@ fn build_server_info(config: &config::DaemonConfig) -> Option<ServerInfo> {
         return None;
     }
 
-    // Try to read last upload time from state.json (legacy)
+    // Try to read last upload time from state.json fallback.
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();
@@ -169,6 +177,10 @@ fn cache_sessions_to_db(db: &LocalDb, sessions: &[opensession_core::trace::Sessi
     let existing = db.existing_session_ids();
 
     for session in sessions {
+        if App::is_internal_summary_session(session) {
+            continue;
+        }
+
         if existing.contains(&session.session_id) {
             // Already cached → only update stats (skip expensive git subprocess calls)
             let _ = db.update_session_stats(session);
@@ -195,13 +207,17 @@ fn event_loop(
     bg_rx: mpsc::Receiver<BgEvent>,
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
+    let (summary_tx, summary_rx) = mpsc::channel::<async_ops::CommandResult>();
 
     loop {
         // ── Poll background session loading ──────────────────────────
         while let Ok(ev) = bg_rx.try_recv() {
             match ev {
                 BgEvent::SessionsLoaded(sessions) => {
-                    app.sessions = sessions;
+                    app.sessions = sessions
+                        .into_iter()
+                        .filter(|session| !App::is_internal_summary_session(session))
+                        .collect();
                     app.filtered_sessions = (0..app.sessions.len()).collect();
                     if !app.sessions.is_empty() {
                         app.list_state.select(Some(0));
@@ -215,6 +231,10 @@ fn event_loop(
                 }
             }
         }
+        // ── Poll summary worker results ─────────────────────────────
+        while let Ok(result) = summary_rx.try_recv() {
+            app.apply_command_result(result);
+        }
 
         // ── Handle pending async command ─────────────────────────────
         if let Some(cmd) = app.pending_command.take() {
@@ -222,7 +242,7 @@ fn event_loop(
             app.apply_command_result(result);
         }
 
-        // ── Handle legacy upload popup async ops ─────────────────────
+        // ── Handle upload popup async ops ────────────────────────────
         // Login (triggered from Setup view)
         if app.login_state.loading {
             app.pending_command = Some(async_ops::AsyncCommand::Login {
@@ -295,7 +315,19 @@ fn event_loop(
             app.apply_command_result(result);
         }
 
+        // ── Realtime detail preview (mtime polling + selective reparse) ──
+        if let Some(path) = app.take_realtime_reload_path() {
+            if let Some(reloaded) = parse_single_session(&path) {
+                app.apply_reloaded_session(reloaded);
+            }
+        }
+
         terminal.draw(|frame| ui::render(frame, app))?;
+
+        // ── Timeline summary queue (non-stream sessions, visible-first) ──
+        if let Some(cmd) = app.schedule_detail_summary_jobs() {
+            spawn_summary_worker(cmd, app.daemon_config.clone(), summary_tx.clone());
+        }
 
         // ── Deferred health check (runs once, after first render) ────
         if !app.health_check_done {
@@ -320,6 +352,44 @@ fn event_loop(
         }
     }
     Ok(())
+}
+
+fn spawn_summary_worker(
+    cmd: async_ops::AsyncCommand,
+    config: config::DaemonConfig,
+    tx: mpsc::Sender<async_ops::CommandResult>,
+) {
+    std::thread::spawn(move || {
+        let result = match cmd {
+            async_ops::AsyncCommand::GenerateTimelineSummary {
+                key,
+                provider,
+                context,
+                agent_tool,
+            } => {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                match runtime {
+                    Ok(rt) => rt.block_on(async_ops::execute(
+                        async_ops::AsyncCommand::GenerateTimelineSummary {
+                            key,
+                            provider,
+                            context,
+                            agent_tool,
+                        },
+                        &config,
+                    )),
+                    Err(err) => async_ops::CommandResult::SummaryDone {
+                        key,
+                        result: Err(format!("failed to start summary runtime: {err}")),
+                    },
+                }
+            }
+            _ => return,
+        };
+        let _ = tx.send(result);
+    });
 }
 
 /// Try to store a session via platform API and return the body_url.
@@ -379,7 +449,11 @@ fn load_from_paths(args: &[String]) -> Vec<opensession_core::trace::Session> {
         }
         if let Some(parser) = parsers.iter().find(|p| p.can_parse(&path)) {
             match parser.parse(&path) {
-                Ok(session) => sessions.push(session),
+                Ok(session) => {
+                    if !App::is_internal_summary_session(&session) {
+                        sessions.push(session);
+                    }
+                }
                 Err(e) => eprintln!("Warning: failed to parse {}: {}", path.display(), e),
             }
         } else {
@@ -413,7 +487,8 @@ fn load_sessions() -> Vec<opensession_core::trace::Session> {
             if let Some(parser) = parsers.iter().find(|p| p.can_parse(path)) {
                 if let Ok(session) = parser.parse(path) {
                     // Skip empty sessions (0 events usually means parse was incomplete)
-                    if session.stats.event_count > 0 {
+                    if session.stats.event_count > 0 && !App::is_internal_summary_session(&session)
+                    {
                         sessions.push(session);
                     }
                 }
@@ -423,4 +498,14 @@ fn load_sessions() -> Vec<opensession_core::trace::Session> {
 
     sessions.sort_by(|a, b| b.context.created_at.cmp(&a.context.created_at));
     sessions
+}
+
+fn parse_single_session(path: &PathBuf) -> Option<opensession_core::trace::Session> {
+    let parsers = opensession_parsers::all_parsers();
+    let parser = parsers.iter().find(|p| p.can_parse(path))?;
+    let session = parser.parse(path).ok()?;
+    if App::is_internal_summary_session(&session) {
+        return None;
+    }
+    Some(session)
 }

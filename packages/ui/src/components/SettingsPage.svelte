@@ -49,6 +49,16 @@ let changingPassword = $state(false);
 let passwordError = $state<string | null>(null);
 let passwordSuccess = $state(false);
 
+type SettingsTab = 'account' | 'access' | 'invitations' | 'local_ops';
+let activeTab = $state<SettingsTab>('account');
+
+const settingsTabs: { id: SettingsTab; label: string }[] = [
+	{ id: 'account', label: 'Account' },
+	{ id: 'access', label: 'Access (API/OAuth)' },
+	{ id: 'invitations', label: 'Invitations' },
+	{ id: 'local_ops', label: 'Local Ops' },
+];
+
 async function fetchSettings() {
 	loading = true;
 	error = null;
@@ -243,193 +253,216 @@ $effect(() => {
 		<div class="py-8 text-center text-xs text-text-muted">Loading...</div>
 	{:else if settings}
 		<div class="space-y-4">
-			<!-- Profile -->
-			<div class="border border-border bg-bg-secondary p-3">
-				<h2 class="mb-2 text-sm font-medium text-text-primary">Profile</h2>
-				<div class="flex items-center justify-between">
-					<div class="flex items-center gap-3">
-						{#if settings.avatar_url}
-							<img src={settings.avatar_url} alt="{settings.nickname} avatar" class="h-8 w-8 rounded-full" />
+			<div class="flex flex-wrap gap-2 border border-border bg-bg-secondary p-2">
+				{#each settingsTabs as tab}
+					<button
+						onclick={() => (activeTab = tab.id)}
+						class={activeTab === tab.id
+							? 'bg-accent px-2 py-1 text-xs font-medium text-white'
+							: 'bg-bg-primary px-2 py-1 text-xs text-text-secondary hover:text-text-primary'}
+					>
+						{tab.label}
+						{#if tab.id === 'invitations' && invitations.length > 0}
+							<span class="ml-1 rounded bg-white/20 px-1">{invitations.length}</span>
 						{/if}
-						<div>
-							<p class="text-xs text-text-primary">{settings.nickname}</p>
-							{#if settings.email}
-								<p class="text-xs text-text-muted">{settings.email}</p>
+					</button>
+				{/each}
+			</div>
+
+			{#if activeTab === 'account'}
+				<div class="border border-border bg-bg-secondary p-3">
+					<h2 class="mb-2 text-sm font-medium text-text-primary">Account</h2>
+					<div class="flex items-center justify-between">
+						<div class="flex items-center gap-3">
+							{#if settings.avatar_url}
+								<img src={settings.avatar_url} alt="{settings.nickname} avatar" class="h-8 w-8 rounded-full" />
+							{/if}
+							<div>
+								<p class="text-xs text-text-primary">{settings.nickname}</p>
+								{#if settings.email}
+									<p class="text-xs text-text-muted">{settings.email}</p>
+								{/if}
+							</div>
+						</div>
+						<button
+							onclick={handleLogout}
+							class="bg-bg-hover px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+						>
+							Logout
+						</button>
+					</div>
+				</div>
+
+				{#if settings.email}
+					<div class="border border-border bg-bg-secondary p-3">
+						<h2 class="mb-2 text-sm font-medium text-text-primary">Change Password</h2>
+						<form onsubmit={(e) => { e.preventDefault(); handleChangePassword(); }} class="space-y-2">
+							<label for="current-pw" class="sr-only">Current password</label>
+							<input
+								id="current-pw"
+								type="password"
+								placeholder="Current password"
+								bind:value={currentPassword}
+								class="w-full border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+							/>
+							<label for="new-pw" class="sr-only">New password</label>
+							<input
+								id="new-pw"
+								type="password"
+								placeholder="New password"
+								bind:value={newPassword}
+								class="w-full border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+							/>
+							<label for="confirm-pw" class="sr-only">Confirm new password</label>
+							<input
+								id="confirm-pw"
+								type="password"
+								placeholder="Confirm new password"
+								bind:value={confirmPassword}
+								class="w-full border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+							/>
+							{#if passwordError}
+								<p class="text-xs text-error">{passwordError}</p>
+							{/if}
+							{#if passwordSuccess}
+								<p class="text-xs text-success">Password changed successfully</p>
+							{/if}
+							<button
+								type="submit"
+								disabled={changingPassword || !currentPassword || !newPassword || !confirmPassword}
+								class="bg-accent px-2 py-1 text-xs text-white hover:bg-accent/80 disabled:opacity-50"
+							>
+								{changingPassword ? 'Changing...' : 'Change Password'}
+							</button>
+						</form>
+					</div>
+				{/if}
+			{/if}
+
+			{#if activeTab === 'access'}
+				<div class="border border-border bg-bg-secondary p-3">
+					<h2 class="mb-2 text-sm font-medium text-text-primary">Access (API/OAuth)</h2>
+
+					{#if settings.oauth_providers && settings.oauth_providers.length > 0}
+						<div class="mb-3">
+							<p class="mb-1.5 text-xs text-text-muted">Linked accounts</p>
+							{#each settings.oauth_providers as lp}
+								<p class="text-xs text-text-secondary">
+									{lp.display_name}: <span class="text-text-primary">{lp.provider_username}</span>
+								</p>
+							{/each}
+						</div>
+					{/if}
+
+					{#if unlinkableProviders.length > 0}
+						<div class="mb-3 border-t border-border pt-3">
+							{#each unlinkableProviders as provider}
+								<button
+									onclick={() => handleLinkOAuth(provider.id)}
+									disabled={linkingProvider === provider.id}
+									class="mr-2 flex items-center gap-2 bg-bg-hover px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
+								>
+									{linkingProvider === provider.id ? 'Redirecting...' : `Link ${provider.display_name}`}
+								</button>
+							{/each}
+							{#if oauthLinkError}
+								<p class="mt-1 text-xs text-error">{oauthLinkError}</p>
+							{/if}
+							{#if oauthLinked}
+								<p class="mt-2 text-xs text-success">Account linked successfully!</p>
 							{/if}
 						</div>
-					</div>
-					<button
-						onclick={handleLogout}
-						class="bg-bg-hover px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
-					>
-						Logout
-					</button>
-				</div>
+					{/if}
 
-				<!-- Linked OAuth providers -->
-				{#if settings.oauth_providers && settings.oauth_providers.length > 0}
-					<div class="mt-3 border-t border-border pt-3">
-						<p class="mb-1.5 text-xs text-text-muted">Linked accounts</p>
-						{#each settings.oauth_providers as lp}
-							<p class="text-xs text-text-secondary">
-								{lp.display_name}: <span class="text-text-primary">{lp.provider_username}</span>
-							</p>
-						{/each}
-					</div>
-				{/if}
-
-				<!-- Link additional providers -->
-				{#if unlinkableProviders.length > 0}
-					<div class="mt-3 border-t border-border pt-3">
-						{#each unlinkableProviders as provider}
+					<div class="mb-2 border-t border-border pt-3">
+						<p class="mb-2 text-xs text-text-muted">API Key</p>
+						<div class="mb-2 flex items-center gap-2">
+							<code class="flex-1 bg-bg-primary px-3 py-1.5 text-xs text-text-secondary">
+								{showKey ? settings.api_key : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
+							</code>
 							<button
-								onclick={() => handleLinkOAuth(provider.id)}
-								disabled={linkingProvider === provider.id}
-								class="mr-2 flex items-center gap-2 bg-bg-hover px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
+								onclick={() => (showKey = !showKey)}
+								class="bg-bg-hover px-2 py-1.5 text-xs text-text-secondary hover:text-text-primary"
 							>
-								{linkingProvider === provider.id ? 'Redirecting...' : `Link ${provider.display_name}`}
+								{showKey ? 'Hide' : 'Show'}
 							</button>
-						{/each}
-						{#if oauthLinkError}
-							<p class="mt-1 text-xs text-error">{oauthLinkError}</p>
-						{/if}
-					</div>
-				{/if}
-				{#if oauthLinked}
-					<p class="mt-2 text-xs text-success">Account linked successfully!</p>
-				{/if}
-			</div>
-
-			<!-- Pending Invitations -->
-		{#if invitations.length > 0}
-			<div class="border border-border bg-bg-secondary p-3">
-				<h2 class="mb-2 text-sm font-medium text-text-primary">Pending Invitations</h2>
-				{#if invitationError}
-					<p class="mb-2 text-xs text-error">{invitationError}</p>
-				{/if}
-				<div class="space-y-2">
-					{#each invitations as inv (inv.id)}
-						<div class="flex items-center justify-between border border-border bg-bg-primary p-2">
-							<div>
-								<p class="text-xs font-medium text-text-primary">{inv.team_name}</p>
-								<p class="text-xs text-text-muted">
-									Invited by {inv.invited_by_nickname} as {inv.role}
-								</p>
-							</div>
-							<div class="flex gap-2">
-								<button
-									onclick={() => handleAcceptInvitation(inv)}
-									disabled={invitationLoading === inv.id}
-									class="bg-accent px-2 py-1 text-xs text-white hover:bg-accent/80 disabled:opacity-50"
-								>
-									Accept
-								</button>
-								<button
-									onclick={() => handleDeclineInvitation(inv)}
-									disabled={invitationLoading === inv.id}
-									class="bg-bg-hover px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
-								>
-									Decline
-								</button>
-							</div>
+							<button
+								onclick={() => navigator.clipboard.writeText(settings!.api_key)}
+								class="bg-bg-hover px-2 py-1.5 text-xs text-text-secondary hover:text-text-primary"
+							>
+								Copy
+							</button>
 						</div>
-					{/each}
-				</div>
-			</div>
-		{/if}
-
-		<!-- API Key -->
-			<div class="border border-border bg-bg-secondary p-3">
-				<h2 class="mb-2 text-sm font-medium text-text-primary">API Key</h2>
-				<div class="mb-2">
-					<div class="flex items-center gap-2">
-						<code class="flex-1 bg-bg-primary px-3 py-1.5 text-xs text-text-secondary">
-							{showKey ? settings.api_key : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
-						</code>
 						<button
-							onclick={() => (showKey = !showKey)}
-							class="bg-bg-hover px-2 py-1.5 text-xs text-text-secondary hover:text-text-primary"
+							onclick={handleRegenerateKey}
+							disabled={regenerating}
+							class="bg-error/10 px-2 py-1 text-xs text-error hover:bg-error/20 disabled:opacity-50"
 						>
-							{showKey ? 'Hide' : 'Show'}
-						</button>
-						<button
-							onclick={() => navigator.clipboard.writeText(settings!.api_key)}
-							class="bg-bg-hover px-2 py-1.5 text-xs text-text-secondary hover:text-text-primary"
-						>
-							Copy
+							{regenerating ? 'Regenerating...' : 'Regenerate Key'}
 						</button>
 					</div>
-				</div>
-				<button
-					onclick={handleRegenerateKey}
-					disabled={regenerating}
-					class="bg-error/10 px-2 py-1 text-xs text-error hover:bg-error/20 disabled:opacity-50"
-				>
-					{regenerating ? 'Regenerating...' : 'Regenerate Key'}
-				</button>
-			</div>
-
-			<!-- Password Change (only if user has email/password) -->
-			{#if settings.email}
-				<div class="border border-border bg-bg-secondary p-3">
-					<h2 class="mb-2 text-sm font-medium text-text-primary">Change Password</h2>
-					<form onsubmit={(e) => { e.preventDefault(); handleChangePassword(); }} class="space-y-2">
-						<label for="current-pw" class="sr-only">Current password</label>
-						<input
-							id="current-pw"
-							type="password"
-							placeholder="Current password"
-							bind:value={currentPassword}
-							class="w-full border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-						/>
-						<label for="new-pw" class="sr-only">New password</label>
-						<input
-							id="new-pw"
-							type="password"
-							placeholder="New password"
-							bind:value={newPassword}
-							class="w-full border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-						/>
-						<label for="confirm-pw" class="sr-only">Confirm new password</label>
-						<input
-							id="confirm-pw"
-							type="password"
-							placeholder="Confirm new password"
-							bind:value={confirmPassword}
-							class="w-full border border-border bg-bg-primary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-						/>
-						{#if passwordError}
-							<p class="text-xs text-error">{passwordError}</p>
-						{/if}
-						{#if passwordSuccess}
-							<p class="text-xs text-success">Password changed successfully</p>
-						{/if}
-						<button
-							type="submit"
-							disabled={changingPassword || !currentPassword || !newPassword || !confirmPassword}
-							class="bg-accent px-2 py-1 text-xs text-white hover:bg-accent/80 disabled:opacity-50"
-						>
-							{changingPassword ? 'Changing...' : 'Change Password'}
-						</button>
-					</form>
 				</div>
 			{/if}
 
-			<!-- Daemon Setup -->
-			<div class="border border-border bg-bg-secondary p-3">
-				<h2 class="mb-2 text-sm font-medium text-text-primary">Daemon Setup</h2>
-				<p class="mb-2 text-xs text-text-secondary">
-					The opensession daemon watches your AI tool sessions and automatically uploads them.
-				</p>
-				<div class="space-y-1 bg-bg-primary p-3 font-mono text-xs text-text-secondary">
-					<p class="text-text-muted"># Install</p>
-					<p>cargo install opensession</p>
-					<p class="mt-2 text-text-muted"># Configure</p>
-					<p>opensession config --api-key {showKey ? settings.api_key : '<your-api-key>'}</p>
-					<p class="mt-2 text-text-muted"># Start daemon</p>
-					<p>opensession daemon start</p>
+			{#if activeTab === 'invitations'}
+				<div class="border border-border bg-bg-secondary p-3">
+					<h2 class="mb-2 text-sm font-medium text-text-primary">Invitations</h2>
+					{#if invitationError}
+						<p class="mb-2 text-xs text-error">{invitationError}</p>
+					{/if}
+					{#if invitations.length === 0}
+						<p class="text-xs text-text-muted">No pending invitations.</p>
+					{:else}
+						<div class="space-y-2">
+							{#each invitations as inv (inv.id)}
+								<div class="flex items-center justify-between border border-border bg-bg-primary p-2">
+									<div>
+										<p class="text-xs font-medium text-text-primary">{inv.team_name}</p>
+										<p class="text-xs text-text-muted">
+											Invited by {inv.invited_by_nickname} as {inv.role}
+										</p>
+									</div>
+									<div class="flex gap-2">
+										<button
+											onclick={() => handleAcceptInvitation(inv)}
+											disabled={invitationLoading === inv.id}
+											class="bg-accent px-2 py-1 text-xs text-white hover:bg-accent/80 disabled:opacity-50"
+										>
+											Accept
+										</button>
+										<button
+											onclick={() => handleDeclineInvitation(inv)}
+											disabled={invitationLoading === inv.id}
+											class="bg-bg-hover px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
+										>
+											Decline
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
 				</div>
-			</div>
+			{/if}
+
+			{#if activeTab === 'local_ops'}
+				<div class="border border-border bg-bg-secondary p-3">
+					<h2 class="mb-2 text-sm font-medium text-text-primary">Local Ops</h2>
+					<p class="mb-2 text-xs text-text-secondary">
+						Web cannot directly control local daemon settings. Use CLI/TUI with the same terms:
+						`Realtime Publish`, `Detail Live`, `LLM Summary`, `Stream-write Tool`.
+					</p>
+					<div class="space-y-1 bg-bg-primary p-3 font-mono text-xs text-text-secondary">
+						<p class="text-text-muted"># Open TUI</p>
+						<p>opensession ui</p>
+						<p class="mt-2 text-text-muted"># Start/stop daemon</p>
+						<p>opensession ops daemon start</p>
+						<p>opensession ops daemon stop</p>
+						<p class="mt-2 text-text-muted"># Configure account key</p>
+						<p>opensession account config --api-key {showKey ? settings.api_key : '<your-api-key>'}</p>
+					</div>
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<!-- Not authenticated -->

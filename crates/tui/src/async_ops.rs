@@ -4,6 +4,10 @@ use opensession_api::*;
 
 use crate::app::TeamInfo;
 use crate::config::DaemonConfig;
+use crate::timeline_summary::{
+    generate_timeline_summary, probe_summary_cli_providers, SummaryCliProbeResult,
+    TimelineSummaryWindowKey,
+};
 
 /// Commands that require async I/O (network calls).
 pub enum AsyncCommand {
@@ -59,6 +63,18 @@ pub enum AsyncCommand {
     DeleteSession {
         session_id: String,
     },
+
+    // ── Timeline summary ──────────────────────────────────────────────
+    GenerateTimelineSummary {
+        key: TimelineSummaryWindowKey,
+        provider: Option<String>,
+        context: String,
+        agent_tool: String,
+    },
+    ProbeSummaryCli {
+        session_id: String,
+        agent_tool: String,
+    },
 }
 
 /// Results returned by async commands.
@@ -90,6 +106,16 @@ pub enum CommandResult {
 
     // Delete
     DeleteSession(Result<String, String>), // Ok(session_id) or Err(msg)
+
+    // Timeline summary
+    SummaryDone {
+        key: TimelineSummaryWindowKey,
+        result: Result<String, String>,
+    },
+    SummaryCliProbeDone {
+        session_id: String,
+        result: Result<SummaryCliProbeResult, String>,
+    },
 }
 
 fn make_client(config: &DaemonConfig) -> Result<opensession_api_client::ApiClient, String> {
@@ -342,6 +368,29 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
             }
             .await;
             CommandResult::ApiKey(result)
+        }
+
+        // ── Timeline summary ──────────────────────────────────────────
+        AsyncCommand::GenerateTimelineSummary {
+            key,
+            provider,
+            context,
+            agent_tool,
+        } => {
+            let result =
+                generate_timeline_summary(&context, provider.as_deref(), Some(&agent_tool))
+                    .await
+                    .map_err(|e| format!("{e}"));
+            CommandResult::SummaryDone { key, result }
+        }
+        AsyncCommand::ProbeSummaryCli {
+            session_id,
+            agent_tool,
+        } => {
+            let result = probe_summary_cli_providers(Some(&agent_tool))
+                .await
+                .map_err(|e| format!("{e}"));
+            CommandResult::SummaryCliProbeDone { session_id, result }
         }
 
         // ── Delete ─────────────────────────────────────────────────────

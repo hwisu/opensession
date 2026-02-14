@@ -121,8 +121,6 @@ pub fn tool_flag_to_name(flag: &str) -> &str {
         "claude" => "claude-code",
         "gemini" => "gemini",
         "cursor" => "cursor",
-        "aider" => "aider",
-        "goose" => "goose",
         "codex" => "codex",
         "opencode" => "opencode",
         "cline" => "cline",
@@ -350,8 +348,6 @@ mod tests {
         assert_eq!(tool_flag_to_name("claude"), "claude-code");
         assert_eq!(tool_flag_to_name("gemini"), "gemini");
         assert_eq!(tool_flag_to_name("cursor"), "cursor");
-        assert_eq!(tool_flag_to_name("aider"), "aider");
-        assert_eq!(tool_flag_to_name("goose"), "goose");
         assert_eq!(tool_flag_to_name("codex"), "codex");
         assert_eq!(tool_flag_to_name("opencode"), "opencode");
         assert_eq!(tool_flag_to_name("cline"), "cline");

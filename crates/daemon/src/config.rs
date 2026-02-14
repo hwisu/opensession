@@ -53,8 +53,6 @@ pub fn resolve_watch_paths(config: &DaemonConfig) -> Vec<PathBuf> {
     let builtins: &[(bool, &[&str])] = &[
         (config.watchers.claude_code, &[".claude", "projects"]),
         (config.watchers.opencode, &[".local", "share", "opencode"]),
-        (config.watchers.goose, &[".local", "share", "goose"]),
-        (config.watchers.aider, &[".aider"]),
         (config.watchers.cursor, &[".cursor"]),
     ];
 
@@ -441,7 +439,7 @@ team_id = "team-abc"
                 strip_paths: None,
                 strip_env_vars: None,
                 exclude_patterns: Some(vec!["*secret*".to_string(), "*.log".to_string()]),
-                exclude_tools: Some(vec!["aider".to_string(), "cursor".to_string()]),
+                exclude_tools: Some(vec!["codex".to_string(), "cursor".to_string()]),
             }),
             ..Default::default()
         };
@@ -452,7 +450,7 @@ team_id = "team-abc"
             merged.privacy.exclude_patterns,
             vec!["*.env", "*secret*", "*.log"]
         );
-        assert_eq!(merged.privacy.exclude_tools, vec!["cursor", "aider"]);
+        assert_eq!(merged.privacy.exclude_tools, vec!["cursor", "codex"]);
     }
 
     #[test]

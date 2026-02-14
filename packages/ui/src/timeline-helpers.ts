@@ -93,21 +93,37 @@ export function computeTaskInfoMap(laneEvents: LaneEvent[]): Map<string, TaskInf
 	const map = new Map<string, TaskInfo>();
 	const startTimes = new Map<string, number>();
 
+	function extractTaskPurpose(event: Event): string {
+		if ('data' in event.event_type) {
+			const data = event.event_type.data as { title?: string };
+			if (data.title?.trim()) {
+				return data.title.trim();
+			}
+		}
+
+		for (const block of event.content.blocks) {
+			if (block.type === 'Text' && block.text.trim()) return block.text.trim();
+		}
+
+		return 'Sub-agent';
+	}
+
 	for (const laneEvent of laneEvents) {
 		const eventTypeName = laneEvent.event.event_type.type;
 		const taskId = laneEvent.event.task_id;
 		if (!taskId) continue;
 
 		if (eventTypeName === 'TaskStart') {
-			const title =
-				'data' in laneEvent.event.event_type
-					? ((laneEvent.event.event_type.data as { title?: string }).title ?? '')
-					: '';
+			const startedAt = laneEvent.event.timestamp;
+			const purpose = extractTaskPurpose(laneEvent.event);
 			map.set(taskId, {
 				taskId,
-				title,
+				title: purpose,
+				purpose,
 				eventCount: 0,
 				durationMs: 0,
+				startedAt,
+				endedAt: '',
 				lane: laneEvent.forkLane ?? 0,
 				activeLanesAtStart: [...laneEvent.activeLanes],
 				activeLanesAtEnd: [],
@@ -117,6 +133,7 @@ export function computeTaskInfoMap(laneEvents: LaneEvent[]): Map<string, TaskInf
 			const info = map.get(taskId);
 			if (info) {
 				const startTime = startTimes.get(taskId);
+				info.endedAt = laneEvent.event.timestamp;
 				if (startTime) {
 					info.durationMs = new Date(laneEvent.event.timestamp).getTime() - startTime;
 				}

@@ -24,7 +24,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
     let parser = match parser {
         Some(p) => p,
         None => bail!(
-            "No parser found for file: {}\nSupported formats: Claude Code (.jsonl), OpenCode (.json), Goose (.db), Aider, Cursor",
+            "No parser found for file: {}\nSupported formats: Claude Code (.jsonl), Codex (.jsonl), OpenCode (.json), Cline, Amp, Cursor, Gemini",
             file.display()
         ),
     };

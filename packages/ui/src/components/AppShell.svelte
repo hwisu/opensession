@@ -1,16 +1,19 @@
 <script lang="ts">
 import type { Snippet } from 'svelte';
-import { getSettings } from '../api';
+import { getSettings, isAuthenticated, listInvitations } from '../api';
 import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
 const { currentPath, children }: { currentPath: string; children: Snippet } = $props();
 
 let user = $state<UserSettings | null>(null);
+let inboxCount = $state(0);
 
 const navLinks = [
-	{ href: '/docs', label: 'Docs' },
 	{ href: '/', label: 'Sessions' },
+	{ href: '/teams', label: 'Teams' },
+	{ href: '/invitations', label: 'Inbox' },
+	{ href: '/docs', label: 'Docs' },
 ];
 
 $effect(() => {
@@ -23,10 +26,28 @@ $effect(() => {
 		.catch(() => {
 			user = null;
 		});
+
+	if (isAuthenticated()) {
+		listInvitations()
+			.then((resp) => {
+				inboxCount = resp.invitations.length;
+			})
+			.catch(() => {
+				inboxCount = 0;
+			});
+	} else {
+		inboxCount = 0;
+	}
 });
 
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/');
+
+function isLinkActive(href: string): boolean {
+	if (href === '/') return currentPath === '/' || currentPath.startsWith('/session/');
+	if (href === '/teams') return currentPath === '/teams' || currentPath.startsWith('/teams/');
+	return currentPath === href;
+}
 
 function handleGlobalKey(e: KeyboardEvent) {
 	if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -53,9 +74,14 @@ function handleGlobalKey(e: KeyboardEvent) {
 				<a
 					href={link.href}
 					class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
-					class:text-accent={currentPath === link.href}
+					class:text-accent={isLinkActive(link.href)}
 				>
 					{link.label}
+					{#if link.href === '/invitations' && inboxCount > 0}
+						<span class="ml-1 inline-block min-w-[1.25rem] rounded bg-accent px-1 text-center text-[10px] font-semibold text-white">
+							{inboxCount}
+						</span>
+					{/if}
 				</a>
 			{/each}
 			{#if user}

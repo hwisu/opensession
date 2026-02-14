@@ -1,6 +1,7 @@
-use crate::app::{extract_turns, App, DetailViewMode, DisplayEvent, TaskViewMode};
+use crate::app::{extract_turns, App, DetailViewMode, DisplayEvent};
+use crate::session_timeline::LaneMarker;
 use crate::theme::{self, Theme};
-use opensession_core::trace::{ContentBlock, EventType};
+use opensession_core::trace::{ContentBlock, Event, EventType};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
@@ -23,13 +24,47 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     ])
     .areas(area);
 
-    // ── Session header (ampcode style) ────────────────────────────────
+    render_session_header(frame, app, &session, header_area);
+    app.detail_viewport_height = timeline_area.height.saturating_sub(2);
+
+    let mut visible_events = app.get_visible_events(&session);
+    let mut base_events = app.get_base_visible_events(&session);
+    if visible_events.is_empty() {
+        let p = Paragraph::new("No events match the current filter.")
+            .block(Theme::block_dim().title(" Timeline "))
+            .style(Style::new().fg(Color::DarkGray));
+        frame.render_widget(p, timeline_area);
+        return;
+    }
+
+    if app.detail_event_index >= visible_events.len() {
+        app.detail_event_index = visible_events.len() - 1;
+    }
+
+    render_timeline_bar(frame, bar_area, &visible_events, app.detail_event_index);
+
+    if app.detail_view_mode == DetailViewMode::Turn {
+        if base_events.is_empty() {
+            base_events = visible_events.clone();
+        }
+        render_turn_view(frame, app, &session.session_id, &base_events, timeline_area);
+        return;
+    }
+
+    render_lane_timeline(frame, app, &mut visible_events, timeline_area);
+}
+
+fn render_session_header(
+    frame: &mut Frame,
+    app: &App,
+    session: &opensession_core::trace::Session,
+    area: Rect,
+) {
     let title = session
         .context
         .title
         .as_deref()
         .unwrap_or(&session.session_id);
-
     let attrs = &session.context.attributes;
     let repo = attrs
         .get("git_repo_name")
@@ -40,16 +75,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .or_else(|| attrs.get("branch"))
         .and_then(|v| v.as_str());
 
-    // Line 1: title + optional user badge
     let mut line1 = vec![Span::styled(
         title,
         Style::new().fg(Theme::TEXT_PRIMARY).bold(),
     )];
     if let Some(nick) = app.selected_session_nickname() {
-        let color = theme::user_color(nick);
+        line1.push(Span::styled("  @", Style::new().fg(Theme::TEXT_MUTED)));
         line1.push(Span::styled(
-            format!("  @{nick}"),
-            Style::new().fg(color).bold(),
+            nick,
+            Style::new().fg(theme::user_color(nick)).bold(),
         ));
     }
     if let Some(r) = repo {
@@ -63,64 +97,48 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    // Line 2: tool · model · duration
-    let duration = format_duration(session.stats.duration_seconds);
     let line2 = vec![
         Span::styled(&session.agent.tool, Style::new().fg(Theme::ACCENT_ORANGE)),
-        Span::styled(" · ", Style::new().fg(Theme::GUTTER)),
+        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
         Span::styled(&session.agent.model, Style::new().fg(Theme::ROLE_AGENT)),
-        Span::styled(" · ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(duration, Style::new().fg(Theme::TEXT_SECONDARY)),
-    ];
-
-    // Line 3: prompts · files · +N −N lines
-    let prompts = session.stats.user_message_count;
-    let files = session.stats.files_changed;
-    let added = session.stats.lines_added;
-    let removed = session.stats.lines_removed;
-    let mut line3 = vec![
+        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
         Span::styled(
-            format!("{} prompts", prompts),
+            format_duration(session.stats.duration_seconds),
             Style::new().fg(Theme::TEXT_SECONDARY),
         ),
-        Span::styled(" · ", Style::new().fg(Theme::GUTTER)),
+    ];
+
+    let line3 = vec![
         Span::styled(
-            format!("{} files", files),
+            format!("{} prompts", session.stats.user_message_count),
+            Style::new().fg(Theme::TEXT_SECONDARY),
+        ),
+        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
+        Span::styled(
+            format!("{} events", session.stats.event_count),
+            Style::new().fg(Theme::TEXT_SECONDARY),
+        ),
+        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
+        Span::styled(
+            format!("{} files", session.stats.files_changed),
             Style::new().fg(Theme::ACCENT_PURPLE),
         ),
+        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
+        Span::styled(
+            format!(
+                "+{} -{}",
+                session.stats.lines_added, session.stats.lines_removed
+            ),
+            Style::new().fg(Theme::TEXT_MUTED),
+        ),
     ];
-    if added > 0 || removed > 0 {
-        line3.push(Span::styled(" · ", Style::new().fg(Theme::GUTTER)));
-        line3.push(Span::styled(
-            format!("+{}", added),
-            Style::new().fg(Theme::ACCENT_GREEN),
-        ));
-        line3.push(Span::styled(" ", Style::new()));
-        line3.push(Span::styled(
-            format!("−{}", removed),
-            Style::new().fg(Theme::ACCENT_RED),
-        ));
-    }
 
-    // Token usage
-    let input_tokens = session.stats.total_input_tokens;
-    let output_tokens = session.stats.total_output_tokens;
-    if input_tokens > 0 || output_tokens > 0 {
-        line3.push(Span::styled(" · ", Style::new().fg(Theme::GUTTER)));
-        line3.push(Span::styled(
-            format!("{}in", format_token_count(input_tokens)),
-            Style::new().fg(Theme::TOKEN_IN),
-        ));
-        line3.push(Span::styled(" ", Style::new()));
-        line3.push(Span::styled(
-            format!("{}out", format_token_count(output_tokens)),
-            Style::new().fg(Theme::TOKEN_OUT),
-        ));
-    }
-
-    // Line 4: timestamp · tags
     let mut line4 = vec![Span::styled(
-        format!("{}", session.context.created_at.format("%Y-%m-%d %H:%M")),
+        session
+            .context
+            .created_at
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
         Style::new().fg(Color::DarkGray),
     )];
     if !session.context.tags.is_empty() {
@@ -135,290 +153,129 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         line4.push(Span::styled(tags, Style::new().fg(Theme::TAG_COLOR)));
     }
 
-    let header_text = vec![
+    let header = Paragraph::new(vec![
         Line::from(line1),
         Line::from(line2),
         Line::from(line3),
         Line::from(line4),
-    ];
+    ])
+    .block(Theme::block().padding(ratatui::widgets::Padding::new(1, 1, 0, 0)));
 
-    let header = Paragraph::new(header_text)
-        .block(Theme::block().padding(ratatui::widgets::Padding::new(1, 1, 0, 0)));
-    frame.render_widget(header, header_area);
+    frame.render_widget(header, area);
+}
 
-    // ── Timeline ────────────────────────────────────────────────────────
-    let visible_events = app.get_visible_events(&session);
-    let total_visible = visible_events.len();
+fn render_lane_timeline(
+    frame: &mut Frame,
+    app: &mut App,
+    events: &mut [DisplayEvent<'_>],
+    area: Rect,
+) {
+    let total_visible = events.len();
+    let current_idx = app.detail_event_index.min(total_visible.saturating_sub(1));
+    let max_lane = events
+        .iter()
+        .flat_map(|de| {
+            de.active_lanes()
+                .iter()
+                .copied()
+                .chain(std::iter::once(de.lane()))
+        })
+        .max()
+        .unwrap_or(0);
+    let lane_count = max_lane + 1;
 
-    // Timeline density bar
-    render_timeline_bar(frame, bar_area, &visible_events, app.detail_event_index);
-
-    // Turn view mode
-    if app.detail_view_mode == DetailViewMode::Turn {
-        render_turn_view(frame, app, &visible_events, timeline_area);
-        return;
-    }
-
-    if total_visible == 0 {
-        let p = Paragraph::new("No events match the current filter.")
-            .block(Theme::block_dim().title(" Timeline "))
-            .style(Style::new().fg(Color::DarkGray));
-        frame.render_widget(p, timeline_area);
-        return;
-    }
-
-    let inner_width = timeline_area.width.saturating_sub(2) as usize;
-    let current_idx = app.detail_event_index;
-
-    // Build lines with clear turn boundaries, tracking event->line mapping
     let mut lines: Vec<Line> = Vec::new();
-    let mut event_line_positions: Vec<usize> = Vec::new();
-    let mut prev_role: Option<&str> = None;
-    let mut task_stack: Vec<String> = Vec::new();
-    let is_chrono = app.task_view_mode == TaskViewMode::Detail;
-    let mut prev_category: Option<&str> = None;
+    let mut event_line_positions: Vec<usize> = Vec::with_capacity(total_visible);
 
-    for (i, display_event) in visible_events.iter().enumerate() {
+    for (i, display_event) in events.iter().enumerate() {
         let event = display_event.event();
-        let is_selected = i == current_idx;
-        let role = event_role(&event.event_type);
+        let selected = i == current_idx;
+        event_line_positions.push(lines.len());
 
-        // Track task tree depth (only in chronological mode)
-        // Calculate depth before push/pop so TaskEnd shows at correct nesting level
-        let depth = if is_chrono { task_stack.len() } else { 0 };
-        if is_chrono {
-            match &event.event_type {
-                EventType::TaskStart { .. } => {
-                    task_stack.push(event.task_id.clone().unwrap_or_else(|| format!("t{}", i)));
+        let mut spans = Vec::new();
+        spans.push(Span::styled(
+            if selected { ">" } else { " " },
+            Style::new().fg(if selected {
+                Theme::ACCENT_BLUE
+            } else {
+                Theme::TEXT_MUTED
+            }),
+        ));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            event.timestamp.format("%H:%M:%S").to_string(),
+            Style::new().fg(Theme::TEXT_MUTED),
+        ));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            lane_cells(display_event, lane_count),
+            Style::new().fg(Theme::TREE),
+        ));
+        spans.push(Span::raw(" "));
+
+        match display_event {
+            DisplayEvent::SummaryRow {
+                summary, window_id, ..
+            } => {
+                spans.push(Span::styled(
+                    format!("[llm #{window_id}] "),
+                    Style::new().fg(Theme::ACCENT_BLUE).bold(),
+                ));
+                spans.push(Span::styled(summary, Style::new().fg(Theme::TEXT_PRIMARY)));
+            }
+            DisplayEvent::Collapsed { count, kind, .. } => {
+                spans.push(Span::styled(
+                    format!("{kind} x{count}"),
+                    Style::new().fg(Theme::ROLE_AGENT).bold(),
+                ));
+            }
+            DisplayEvent::Single {
+                event,
+                lane,
+                marker,
+                ..
+            } => {
+                let (kind, kind_color) = event_type_display(&event.event_type);
+                spans.push(Span::styled(
+                    format!("{kind:>10} "),
+                    Style::new().fg(kind_color).bold(),
+                ));
+                spans.push(Span::styled(
+                    event_summary(&event.event_type, &event.content.blocks),
+                    Style::new().fg(Theme::TEXT_PRIMARY),
+                ));
+                if let Some(badge) = lane_assignment_badge(event, *lane, *marker) {
+                    spans.push(Span::styled(
+                        format!(" {badge}"),
+                        Style::new().fg(Theme::ACCENT_CYAN),
+                    ));
                 }
-                EventType::TaskEnd { .. } => {
-                    task_stack.pop();
-                }
-                _ => {}
             }
         }
 
-        // Insert turn separator when role changes
-        let role_changed = prev_role != Some(role);
-        if role_changed && i > 0 {
-            let sep = "─".repeat(inner_width.saturating_sub(2).min(120));
-            lines.push(Line::from(Span::styled(
-                sep,
-                Style::new().fg(Theme::SEPARATOR),
-            )));
-            lines.push(Line::raw(""));
-        }
-
-        if role_changed {
-            let (role_label, role_color) = role_display(role);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", role_label),
-                    Style::new().fg(Color::Black).bg(role_color).bold(),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    event.timestamp.format("%H:%M:%S").to_string(),
-                    Style::new().fg(Color::DarkGray),
-                ),
-            ]));
-            lines.push(Line::raw(""));
-        }
-
-        // Sub-divider for category change within agent turn (Think→Agent→Tool)
-        let category = event_type_category(&event.event_type);
-        if !role_changed && prev_role == Some("agent") {
-            if let Some(pc) = prev_category {
-                if pc != category {
-                    let sub_sep = "· ".repeat(inner_width.saturating_sub(6).min(40) / 2);
-                    lines.push(Line::from(Span::styled(
-                        format!("    {}", sub_sep.trim_end()),
-                        Style::new().fg(Theme::SEPARATOR),
-                    )));
-                }
-            }
-        }
-        prev_category = Some(category);
-        prev_role = Some(role);
-
-        // User message gets subtle green background
-        let base_bg = if matches!(event.event_type, EventType::UserMessage) {
-            Style::new().bg(Theme::BG_USER_MSG)
+        let line_style = if selected {
+            Style::new().bg(Theme::BG_SURFACE)
         } else {
             Style::new()
         };
-        let highlight_bg = if is_selected {
-            Style::new().bg(Theme::BG_SURFACE)
-        } else {
-            base_bg
-        };
-        let pointer = if is_selected { "▸" } else { " " };
-        let pointer_color = if is_selected {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        };
+        lines.push(Line::from(spans).style(line_style));
 
-        // Build tree prefix for nested tasks
-        let tree_color = Style::new().fg(Theme::TREE);
-        let tree_prefix = if depth == 0 {
-            String::new()
-        } else {
-            let mut prefix = String::new();
-            for _ in 0..depth.saturating_sub(1) {
-                prefix.push_str("│ ");
-            }
-            match &event.event_type {
-                EventType::TaskStart { .. } => prefix.push_str("┬─"),
-                EventType::TaskEnd { .. } => prefix.push_str("└─"),
-                _ => prefix.push_str("│ "),
-            }
-            prefix
-        };
-
-        event_line_positions.push(lines.len());
-
-        // Render based on DisplayEvent variant
-        match display_event {
-            DisplayEvent::Collapsed { count, kind, .. } => {
-                let (_, collapsed_type_color) = event_type_display(&event.event_type);
-                let mut spans = vec![
-                    Span::styled(format!(" {} ", pointer), Style::new().fg(pointer_color)),
-                    Span::styled("│ ", Style::new().fg(collapsed_type_color)),
-                    Span::styled(
-                        format!("{:<6}", kind),
-                        Style::new().fg(Theme::ROLE_AGENT).bold(),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        format!("×{} collapsed", count),
-                        Style::new().fg(Theme::TEXT_SECONDARY),
-                    ),
-                ];
-                // Show first item path as hint
-                if let EventType::FileRead { path } = &event.event_type {
-                    spans.push(Span::styled(
-                        format!("  {}, …", short_path(path)),
-                        Style::new().fg(Color::DarkGray),
-                    ));
-                }
-                lines.push(Line::from(spans).style(highlight_bg));
-            }
-            DisplayEvent::TaskSummary {
-                summary,
-                inner_count,
-                ..
-            } => {
-                let mut spans = vec![
-                    Span::styled(format!(" {} ", pointer), Style::new().fg(pointer_color)),
-                    Span::styled("│ ", Style::new().fg(Theme::ROLE_TASK)),
-                    Span::styled("Task  ", Style::new().fg(Theme::ROLE_TASK).bold()),
-                    Span::styled(summary.clone(), Style::new().fg(Theme::TEXT_PRIMARY)),
-                ];
-                if *inner_count > 0 {
-                    spans.push(Span::styled(
-                        format!("  [{} events]", inner_count),
-                        Style::new().fg(Color::DarkGray),
-                    ));
-                }
-                lines.push(Line::from(spans).style(highlight_bg));
-            }
-            DisplayEvent::Single(_) => {
-                let (type_label, type_color) = event_type_display(&event.event_type);
-                let summary = event_summary(&event.event_type, &event.content.blocks);
-                let summary_style = if summary.contains("interrupted") {
-                    Style::new().fg(Theme::ACCENT_YELLOW)
-                } else if matches!(&event.event_type, EventType::ToolResult { is_error, .. } if !is_error)
-                    && event.content.blocks.is_empty()
-                {
-                    Style::new().fg(Theme::TEXT_MUTED)
-                } else {
-                    Style::new().fg(Theme::TEXT_PRIMARY)
-                };
-                let mut spans = vec![Span::styled(
-                    format!(" {} ", pointer),
-                    Style::new().fg(pointer_color),
-                )];
-                if !tree_prefix.is_empty() {
-                    spans.push(Span::styled(tree_prefix, tree_color));
-                } else {
-                    spans.push(Span::styled("│ ", Style::new().fg(type_color)));
-                }
-                // Skip type label for UserMessage/AgentMessage (role separator already shows it)
-                if matches!(
-                    event.event_type,
-                    EventType::UserMessage | EventType::AgentMessage
-                ) {
-                    spans.push(Span::raw("       "));
-                } else {
-                    spans.push(Span::styled(
-                        format!("{:<6}", type_label),
-                        Style::new().fg(type_color).bold(),
-                    ));
-                    spans.push(Span::raw(" "));
-                }
-                spans.push(Span::styled(summary, summary_style));
-                lines.push(Line::from(spans).style(highlight_bg));
-
-                // Content preview for expanded events
-                let explicitly_expanded = app.expanded_events.contains(&i);
-                let should_expand = is_selected
-                    || explicitly_expanded
-                    || matches!(
-                        event.event_type,
-                        EventType::AgentMessage | EventType::Thinking
-                    );
-                if should_expand {
-                    let max_lines = if explicitly_expanded {
-                        100
-                    } else if is_selected {
-                        10
-                    } else {
-                        5
-                    };
-                    let max_diff = if explicitly_expanded { 100 } else { 20 };
-                    if let EventType::FileEdit {
-                        diff: Some(ref d), ..
-                    } = &event.event_type
-                    {
-                        render_diff_preview(d, &mut lines, max_diff);
-                    } else if matches!(&event.event_type, EventType::FileEdit { diff: None, .. }) {
-                        lines.push(Line::from(vec![
-                            Span::styled("   │ ", Style::new().fg(Theme::GUTTER)),
-                            Span::styled(
-                                "(no diff available)",
-                                Style::new().fg(Color::DarkGray).italic(),
-                            ),
-                        ]));
-                        render_content_preview(
-                            &event.content.blocks,
-                            &mut lines,
-                            inner_width,
-                            max_lines,
-                        );
-                    } else {
-                        render_content_preview(
-                            &event.content.blocks,
-                            &mut lines,
-                            inner_width,
-                            max_lines,
-                        );
-                    }
-                    // Breathing room after expanded content
-                    lines.push(Line::raw(""));
-                }
+        let expanded = app.expanded_events.contains(&i) || selected;
+        if expanded {
+            if let DisplayEvent::Single { event, .. } = display_event {
+                append_content_preview(&mut lines, event, 3);
             }
         }
     }
 
-    // Calculate scroll using tracked positions
-    let visible_height = timeline_area.height.saturating_sub(2) as usize;
+    let visible_height = area.height.saturating_sub(2) as usize;
     let target_line = event_line_positions.get(current_idx).copied().unwrap_or(0);
     let scroll = if target_line >= visible_height {
         target_line.saturating_sub(visible_height / 3)
     } else {
         0
     };
+    app.detail_scroll = scroll as u16;
 
     let timeline = Paragraph::new(lines.clone())
         .block(Theme::block().title(format!(
@@ -427,21 +284,18 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             total_visible
         )))
         .wrap(Wrap { trim: false })
-        .scroll((scroll as u16, 0));
+        .scroll((app.detail_scroll, app.detail_h_scroll));
+    frame.render_widget(timeline, area);
 
-    frame.render_widget(timeline, timeline_area);
-
-    // Scrollbar
-    let total_lines = lines.len();
-    if total_lines > visible_height {
-        let mut scrollbar_state = ScrollbarState::new(total_lines).position(scroll);
+    if lines.len() > visible_height {
+        let mut scrollbar_state = ScrollbarState::new(lines.len()).position(scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
             .thumb_style(Style::new().fg(Theme::TEXT_MUTED));
         frame.render_stateful_widget(
             scrollbar,
-            timeline_area.inner(Margin {
+            area.inner(Margin {
                 vertical: 1,
                 horizontal: 0,
             }),
@@ -450,189 +304,174 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_diff_preview(diff: &str, lines: &mut Vec<Line>, max_diff_lines: usize) {
-    let gutter = "   │ ";
-    let bg = Style::new().bg(Theme::BG_SURFACE);
-
-    for line in diff.lines().take(max_diff_lines) {
-        let style = if line.starts_with("+++") || line.starts_with("---") {
-            Style::new().fg(Theme::DIFF_HEADER).bold()
-        } else if line.starts_with('+') {
-            Style::new().fg(Theme::ACCENT_GREEN).bg(Theme::BG_DIFF_ADD)
-        } else if line.starts_with('-') {
-            Style::new().fg(Theme::ACCENT_RED).bg(Theme::BG_DIFF_DEL)
-        } else if line.starts_with("@@") {
-            Style::new().fg(Theme::DIFF_HUNK)
+fn lane_cells(event: &DisplayEvent<'_>, lane_count: usize) -> String {
+    let mut out = String::with_capacity(lane_count * 2);
+    for lane in 0..lane_count {
+        let active = event.active_lanes().contains(&lane);
+        let ch = if lane == event.lane() {
+            match event {
+                DisplayEvent::SummaryRow { .. } => 'S',
+                _ => match event.marker() {
+                    LaneMarker::Fork => '+',
+                    LaneMarker::Merge => '-',
+                    LaneMarker::None => '*',
+                },
+            }
+        } else if active {
+            '|'
         } else {
-            Style::new().fg(Theme::TEXT_SECONDARY)
+            ' '
         };
-        let truncated = if line.chars().count() > 100 {
-            let t: String = line.chars().take(97).collect();
-            format!("{t}…")
-        } else {
-            line.to_string()
-        };
-        lines.push(
-            Line::from(vec![
-                Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                Span::styled(truncated, style),
-            ])
-            .style(bg),
-        );
-    }
-    let total = diff.lines().count();
-    if total > max_diff_lines {
-        lines.push(
-            Line::from(vec![
-                Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                Span::styled(
-                    format!("…{} more lines", total - max_diff_lines),
-                    Style::new().fg(Color::DarkGray),
-                ),
-            ])
-            .style(bg),
-        );
-    }
-}
-
-fn render_content_preview(
-    blocks: &[ContentBlock],
-    lines: &mut Vec<Line<'static>>,
-    _width: usize,
-    max_lines: usize,
-) {
-    let gutter = "   │   ";
-    let bg = Style::new().bg(Theme::BG_SURFACE);
-
-    for block in blocks {
-        match block {
-            ContentBlock::Text { text } => {
-                let limit = max_lines;
-                let total_lines = text.lines().count();
-                for (li, line) in text.lines().take(limit).enumerate() {
-                    let truncated = if line.chars().count() > 100 {
-                        let t: String = line.chars().take(97).collect();
-                        format!("{}…", t)
-                    } else {
-                        line.to_string()
-                    };
-                    let mut spans = vec![Span::styled(gutter, Style::new().fg(Theme::GUTTER))];
-                    spans.extend(parse_text_line_to_spans(&truncated));
-                    lines.push(Line::from(spans).style(bg));
-                    if li == limit - 1 && total_lines > limit {
-                        lines.push(
-                            Line::from(vec![
-                                Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                                Span::styled("…more", Style::new().fg(Color::DarkGray)),
-                            ])
-                            .style(bg),
-                        );
-                    }
-                }
-            }
-            ContentBlock::Code { code, language, .. } => {
-                let lang = language.as_deref().unwrap_or("");
-                let code_limit = max_lines.saturating_sub(2);
-                lines.push(
-                    Line::from(vec![
-                        Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                        Span::styled(format!("```{}", lang), Style::new().fg(Color::DarkGray)),
-                    ])
-                    .style(bg),
-                );
-                for line in code.lines().take(code_limit) {
-                    let truncated = if line.chars().count() > 100 {
-                        let t: String = line.chars().take(97).collect();
-                        format!("{}…", t)
-                    } else {
-                        line.to_string()
-                    };
-                    lines.push(
-                        Line::from(vec![
-                            Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                            Span::styled(truncated, Style::new().fg(Theme::CODE_TEXT)),
-                        ])
-                        .style(bg),
-                    );
-                }
-                lines.push(
-                    Line::from(vec![
-                        Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                        Span::styled("```", Style::new().fg(Color::DarkGray)),
-                    ])
-                    .style(bg),
-                );
-            }
-            ContentBlock::Json { data } => {
-                render_json_kv(data, lines, gutter, max_lines);
-            }
-            _ => {}
+        out.push(ch);
+        if lane + 1 < lane_count {
+            out.push(' ');
         }
     }
+    out
 }
 
-/// Map event type to a high-level "role" for turn boundary detection.
-fn event_role(event_type: &EventType) -> &'static str {
-    match event_type {
-        EventType::UserMessage => "user",
-        EventType::AgentMessage | EventType::Thinking => "agent",
-        EventType::ToolCall { .. }
-        | EventType::ToolResult { .. }
-        | EventType::FileRead { .. }
-        | EventType::CodeSearch { .. }
-        | EventType::FileSearch { .. }
-        | EventType::FileEdit { .. }
-        | EventType::FileCreate { .. }
-        | EventType::FileDelete { .. }
-        | EventType::ShellCommand { .. }
-        | EventType::WebSearch { .. }
-        | EventType::WebFetch { .. }
-        | EventType::ImageGenerate { .. }
-        | EventType::VideoGenerate { .. }
-        | EventType::AudioGenerate { .. } => "agent",
-        EventType::SystemMessage => "system",
-        EventType::TaskStart { .. } | EventType::TaskEnd { .. } => "task",
-        EventType::Custom { .. } => "other",
-        _ => "other",
+fn append_content_preview<'a>(lines: &mut Vec<Line<'a>>, event: &Event, max_lines: usize) {
+    if let EventType::FileEdit {
+        diff: Some(diff), ..
+    } = &event.event_type
+    {
+        for line in diff.lines().take(max_lines) {
+            let style = if line.starts_with('+') {
+                Style::new().fg(Theme::ACCENT_GREEN)
+            } else if line.starts_with('-') {
+                Style::new().fg(Theme::ACCENT_RED)
+            } else {
+                Style::new().fg(Theme::TEXT_MUTED)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
+                Span::styled(truncate(line, 120), style),
+            ]));
+        }
+        return;
     }
-}
 
-fn role_display(role: &str) -> (&str, Color) {
-    match role {
-        "user" => ("USER", Theme::ROLE_USER),
-        "agent" => ("AGENT", Theme::ROLE_AGENT),
-        "system" => ("SYSTEM", Theme::ROLE_SYSTEM),
-        "task" => ("TASK", Theme::ROLE_TASK),
-        _ => ("OTHER", Color::Gray),
+    for block in &event.content.blocks {
+        if let ContentBlock::Text { text } = block {
+            for line in text.lines().take(max_lines) {
+                lines.push(Line::from(vec![
+                    Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
+                    Span::styled(truncate(line, 120), Style::new().fg(Theme::TEXT_SECONDARY)),
+                ]));
+            }
+            return;
+        }
     }
 }
 
 fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
     match event_type {
-        EventType::UserMessage => ("User", Theme::ROLE_USER),
-        EventType::AgentMessage => ("Agent", Theme::ROLE_AGENT_BRIGHT),
-        EventType::SystemMessage => ("Sys", Theme::ROLE_SYSTEM),
-        EventType::Thinking => ("Think", Color::Rgb(180, 120, 220)),
-        EventType::ToolCall { .. } => ("Tool", Theme::ACCENT_YELLOW),
-        EventType::ToolResult { is_error: true, .. } => ("Error", Theme::ACCENT_RED),
-        EventType::ToolResult { .. } => ("Result", Color::DarkGray),
-        EventType::FileRead { .. } => ("Read", Theme::ROLE_AGENT_BRIGHT),
-        EventType::CodeSearch { .. } => ("Search", Theme::ACCENT_CYAN),
-        EventType::FileSearch { .. } => ("Find", Theme::ACCENT_TEAL),
-        EventType::FileEdit { .. } => ("Edit", Theme::ACCENT_CYAN),
-        EventType::FileCreate { .. } => ("Create", Theme::ACCENT_GREEN),
-        EventType::FileDelete { .. } => ("Delete", Color::Rgb(220, 100, 100)),
-        EventType::ShellCommand { .. } => ("Shell", Color::Rgb(220, 200, 80)),
-        EventType::WebSearch { .. } => ("Search", Theme::ACCENT_PURPLE),
-        EventType::WebFetch { .. } => ("Fetch", Theme::ACCENT_PURPLE),
-        EventType::ImageGenerate { .. } => ("Image", Color::Cyan),
-        EventType::VideoGenerate { .. } => ("Video", Color::Cyan),
-        EventType::AudioGenerate { .. } => ("Audio", Color::Cyan),
-        EventType::TaskStart { .. } => ("Start", Color::Rgb(120, 180, 80)),
-        EventType::TaskEnd { .. } => ("End", Color::Rgb(120, 180, 80)),
-        EventType::Custom { .. } => ("Custom", Color::Gray),
-        _ => ("?", Color::Gray),
+        EventType::UserMessage => ("user", Theme::ROLE_USER),
+        EventType::AgentMessage => ("agent", Theme::ROLE_AGENT_BRIGHT),
+        EventType::SystemMessage => ("system", Theme::ROLE_SYSTEM),
+        EventType::Thinking => ("think", Theme::ACCENT_PURPLE),
+        EventType::ToolCall { .. } => ("tool", Theme::ACCENT_YELLOW),
+        EventType::ToolResult { is_error: true, .. } => ("error", Theme::ACCENT_RED),
+        EventType::ToolResult { .. } => ("result", Theme::TEXT_MUTED),
+        EventType::FileRead { .. } => ("read", Theme::ROLE_AGENT_BRIGHT),
+        EventType::CodeSearch { .. } => ("search", Theme::ACCENT_CYAN),
+        EventType::FileSearch { .. } => ("find", Theme::ACCENT_TEAL),
+        EventType::FileEdit { .. } => ("edit", Theme::ACCENT_CYAN),
+        EventType::FileCreate { .. } => ("create", Theme::ACCENT_GREEN),
+        EventType::FileDelete { .. } => ("delete", Theme::ACCENT_RED),
+        EventType::ShellCommand { .. } => ("shell", Theme::ACCENT_YELLOW),
+        EventType::WebSearch { .. } => ("web", Theme::ACCENT_PURPLE),
+        EventType::WebFetch { .. } => ("fetch", Theme::ACCENT_PURPLE),
+        EventType::ImageGenerate { .. } => ("image", Theme::ACCENT_BLUE),
+        EventType::VideoGenerate { .. } => ("video", Theme::ACCENT_BLUE),
+        EventType::AudioGenerate { .. } => ("audio", Theme::ACCENT_BLUE),
+        EventType::TaskStart { .. } => ("start", Theme::ROLE_TASK),
+        EventType::TaskEnd { .. } => ("end", Theme::ROLE_TASK),
+        EventType::Custom { .. } => ("custom", Theme::TEXT_MUTED),
+        _ => ("other", Theme::TEXT_MUTED),
     }
+}
+
+fn event_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
+    match event_type {
+        EventType::UserMessage | EventType::AgentMessage => first_text_line(blocks, 80),
+        EventType::SystemMessage => String::new(),
+        EventType::Thinking => "thinking".to_string(),
+        EventType::ToolCall { name } => format!("{name}()"),
+        EventType::ToolResult { name, is_error, .. } => {
+            if *is_error {
+                format!("{name} failed")
+            } else {
+                format!("{name} ok")
+            }
+        }
+        EventType::FileRead { path } => short_path(path).to_string(),
+        EventType::CodeSearch { query } => truncate(query, 70),
+        EventType::FileSearch { pattern } => truncate(pattern, 70),
+        EventType::FileEdit { path, diff } => {
+            if let Some(d) = diff {
+                let (add, del) = count_diff_lines(d);
+                format!("{} +{} -{}", short_path(path), add, del)
+            } else {
+                short_path(path).to_string()
+            }
+        }
+        EventType::FileCreate { path } => short_path(path).to_string(),
+        EventType::FileDelete { path } => short_path(path).to_string(),
+        EventType::ShellCommand { command, exit_code } => match exit_code {
+            Some(code) => format!("{} => {}", truncate(command, 70), code),
+            None => truncate(command, 70),
+        },
+        EventType::WebSearch { query } => truncate(query, 70),
+        EventType::WebFetch { url } => truncate(url, 70),
+        EventType::ImageGenerate { prompt }
+        | EventType::VideoGenerate { prompt }
+        | EventType::AudioGenerate { prompt } => truncate(prompt, 70),
+        EventType::TaskStart { title } => format!("start {}", title.clone().unwrap_or_default()),
+        EventType::TaskEnd { summary } => format!("end {}", summary.clone().unwrap_or_default()),
+        EventType::Custom { kind } => kind.clone(),
+        _ => String::new(),
+    }
+}
+
+fn lane_assignment_badge(event: &Event, lane: usize, marker: LaneMarker) -> Option<String> {
+    if lane == 0 || marker != LaneMarker::Fork {
+        return None;
+    }
+    if !matches!(event.event_type, EventType::TaskStart { .. }) {
+        return None;
+    }
+
+    let task = event
+        .task_id
+        .as_deref()
+        .map(compact_task_id)
+        .unwrap_or_default();
+    if task.is_empty() {
+        Some(format!("[L{lane}]"))
+    } else {
+        Some(format!("[L{lane} {task}]"))
+    }
+}
+
+fn compact_task_id(task_id: &str) -> String {
+    let trimmed = task_id.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.chars().count() <= 18 {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(12).collect();
+    let tail: String = trimmed
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}…{tail}")
 }
 
 fn first_text_line(blocks: &[ContentBlock], max_chars: usize) -> String {
@@ -649,92 +488,6 @@ fn first_text_line(blocks: &[ContentBlock], max_chars: usize) -> String {
     String::new()
 }
 
-fn event_type_category(et: &EventType) -> &'static str {
-    match et {
-        EventType::Thinking => "thinking",
-        EventType::AgentMessage => "message",
-        EventType::UserMessage | EventType::SystemMessage => "message",
-        EventType::ToolCall { .. }
-        | EventType::ToolResult { .. }
-        | EventType::FileRead { .. }
-        | EventType::CodeSearch { .. }
-        | EventType::FileSearch { .. }
-        | EventType::FileEdit { .. }
-        | EventType::FileCreate { .. }
-        | EventType::FileDelete { .. }
-        | EventType::ShellCommand { .. }
-        | EventType::WebSearch { .. }
-        | EventType::WebFetch { .. }
-        | EventType::ImageGenerate { .. }
-        | EventType::VideoGenerate { .. }
-        | EventType::AudioGenerate { .. } => "tool",
-        EventType::TaskStart { .. } | EventType::TaskEnd { .. } => "task",
-        EventType::Custom { .. } => "other",
-        _ => "other",
-    }
-}
-
-fn event_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
-    match event_type {
-        EventType::UserMessage => first_text_line(blocks, 60),
-        EventType::AgentMessage => first_text_line(blocks, 60),
-        EventType::SystemMessage => String::new(),
-        EventType::Thinking => "…".to_string(),
-        EventType::ToolCall { name } => format!("{}()", name),
-        EventType::ToolResult { name, is_error, .. } => {
-            if *is_error {
-                let err_preview = first_text_line(blocks, 40);
-                if err_preview.is_empty() {
-                    format!("{} failed", name)
-                } else {
-                    format!("{} failed: {}", name, err_preview)
-                }
-            } else {
-                format!("{} ok", name)
-            }
-        }
-        EventType::FileRead { path } => short_path(path).to_string(),
-        EventType::CodeSearch { query } => truncate(query, 40),
-        EventType::FileSearch { pattern } => pattern.clone(),
-        EventType::FileEdit { path, diff } => {
-            let path_str = short_path(path).to_string();
-            if let Some(d) = diff {
-                let (a, r) = count_diff_lines(d);
-                format!("{} +{} −{}", path_str, a, r)
-            } else {
-                path_str
-            }
-        }
-        EventType::FileCreate { path } => short_path(path).to_string(),
-        EventType::FileDelete { path } => short_path(path).to_string(),
-        EventType::ShellCommand { command, exit_code } => {
-            let cmd = if command.chars().count() > 50 {
-                let t: String = command.chars().take(47).collect();
-                format!("{}…", t)
-            } else {
-                command.clone()
-            };
-            match exit_code {
-                Some(code) => format!("$ {} → {}", cmd, code),
-                None => format!("$ {}", cmd),
-            }
-        }
-        EventType::WebSearch { query } => query.clone(),
-        EventType::WebFetch { url } => url.clone(),
-        EventType::ImageGenerate { prompt } => truncate(prompt, 40),
-        EventType::VideoGenerate { prompt } => truncate(prompt, 40),
-        EventType::AudioGenerate { prompt } => truncate(prompt, 40),
-        EventType::TaskStart { title } => {
-            format!("▶ {}", title.as_deref().unwrap_or("unnamed"))
-        }
-        EventType::TaskEnd { summary } => {
-            format!("■ {}", summary.as_deref().unwrap_or(""))
-        }
-        EventType::Custom { kind } => kind.clone(),
-        _ => String::new(),
-    }
-}
-
 fn short_path(path: &str) -> &str {
     let parts: Vec<&str> = path.rsplitn(3, '/').collect();
     if parts.len() >= 2 {
@@ -749,8 +502,12 @@ fn truncate(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        let t: String = s.chars().take(max_len.saturating_sub(1)).collect();
-        format!("{}…", t)
+        let mut out = String::new();
+        for ch in s.chars().take(max_len.saturating_sub(1)) {
+            out.push(ch);
+        }
+        out.push('…');
+        out
     }
 }
 
@@ -767,29 +524,15 @@ fn count_diff_lines(diff: &str) -> (usize, usize) {
     (added, removed)
 }
 
-fn format_token_count(n: u64) -> String {
-    if n == 0 {
-        "0".to_string()
-    } else if n < 1_000 {
-        format!("{}", n)
-    } else if n < 1_000_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    }
-}
-
 fn format_duration(secs: u64) -> String {
     if secs < 60 {
-        format!("{}s", secs)
+        format!("{secs}s")
     } else if secs < 3600 {
         format!("{}m {}s", secs / 60, secs % 60)
     } else {
         format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
 }
-
-// ── Timeline density bar ──────────────────────────────────────────────
 
 fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], current_idx: usize) {
     if events.is_empty() || area.width < 10 {
@@ -802,12 +545,15 @@ fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], c
         return;
     }
 
-    // Get time range for density calculation
-    let first_ts = events.first().unwrap().event().timestamp;
-    let last_ts = events.last().unwrap().event().timestamp;
+    let first_ts = events
+        .first()
+        .map(|e| e.event().timestamp)
+        .unwrap_or_else(chrono::Utc::now);
+    let last_ts = events
+        .last()
+        .map(|e| e.event().timestamp)
+        .unwrap_or(first_ts);
     let total_secs = (last_ts - first_ts).num_seconds().max(1) as f64;
-
-    // Count events per bucket (by timestamp)
     let mut buckets = vec![0u32; bar_width];
     let mut current_bucket_idx = 0;
 
@@ -822,37 +568,34 @@ fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], c
     }
 
     let max_count = *buckets.iter().max().unwrap_or(&1).max(&1);
-    let density_chars = [' ', '░', '▒', '▓', '█'];
-
+    let density_chars = [' ', '.', ':', '=', '#'];
     let mut spans = vec![Span::styled(" ", Style::new())];
-
-    for (b, &count) in buckets.iter().enumerate() {
-        let level = if count == 0 {
+    for (idx, count) in buckets.iter().enumerate() {
+        let level = if *count == 0 {
             0
         } else {
-            ((count as f64 / max_count as f64) * 4.0).ceil() as usize
-        };
-        let ch = density_chars[level.min(4)];
-
-        let style = if b == current_bucket_idx {
+            ((*count as f64 / max_count as f64) * 4.0).ceil() as usize
+        }
+        .min(4);
+        let style = if idx == current_bucket_idx {
             Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE)
         } else {
             Style::new().fg(Theme::BAR_DIM)
         };
-
-        spans.push(Span::styled(ch.to_string(), style));
+        spans.push(Span::styled(density_chars[level].to_string(), style));
     }
-
     spans.push(Span::styled(counter, Style::new().fg(Color::DarkGray)));
-
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-// ── Turn View ─────────────────────────────────────────────────────────
-
-fn render_turn_view(frame: &mut Frame, app: &mut App, events: &[DisplayEvent], area: Rect) {
+fn render_turn_view(
+    frame: &mut Frame,
+    app: &mut App,
+    session_id: &str,
+    events: &[DisplayEvent],
+    area: Rect,
+) {
     let turns = extract_turns(events);
-
     if turns.is_empty() {
         let p = Paragraph::new("No turns found.")
             .block(Theme::block_dim().title(" Split View "))
@@ -861,101 +604,112 @@ fn render_turn_view(frame: &mut Frame, app: &mut App, events: &[DisplayEvent], a
         return;
     }
 
-    app.turn_index = app.turn_index.min(turns.len() - 1);
+    app.turn_index = app.turn_index.min(turns.len().saturating_sub(1));
 
-    // Split area horizontally 50/50
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
-
-    let left_width = left_area.width.saturating_sub(2) as usize;
-    let right_width = right_area.width.saturating_sub(2) as usize;
 
     let mut left_lines: Vec<Line> = Vec::new();
     let mut right_lines: Vec<Line> = Vec::new();
     let mut line_offsets: Vec<u16> = Vec::new();
 
-    for (ti, turn) in turns.iter().enumerate() {
-        // Record turn start line offset
+    for (turn_idx, turn) in turns.iter().enumerate() {
         line_offsets.push(left_lines.len() as u16);
 
-        // Turn separator
-        if ti > 0 {
-            let l_sep = "─".repeat(left_width.min(60));
-            let r_sep = "─".repeat(right_width.min(60));
-            left_lines.push(Line::from(Span::styled(
-                l_sep,
-                Style::new().fg(Theme::SEPARATOR),
-            )));
-            right_lines.push(Line::from(Span::styled(
-                r_sep,
-                Style::new().fg(Theme::SEPARATOR),
-            )));
-        }
-
-        // Turn header
-        let is_focused = ti == app.turn_index;
-        let turn_header_style = if is_focused {
+        let focused = turn_idx == app.turn_index;
+        let expanded = app.expanded_turns.contains(&turn_idx);
+        let style = if focused {
             Style::new().fg(Theme::ACCENT_BLUE).bold()
         } else {
             Style::new().fg(Theme::TEXT_SECONDARY)
         };
-        let focus_marker = if is_focused { "▸" } else { " " };
+        let turn_key = App::turn_summary_key(session_id, turn.turn_index, turn.anchor_source_index);
+        let llm_summary = app
+            .timeline_summary_cache
+            .get(&turn_key)
+            .cloned()
+            .unwrap_or_else(|| {
+                if !app.daemon_config.daemon.summary_enabled {
+                    "(LLM summary off)".to_string()
+                } else if app.should_skip_realtime_for_selected() {
+                    "(LLM summary skipped: stream-write tool)".to_string()
+                } else {
+                    "(LLM summary pending)".to_string()
+                }
+            });
+
         left_lines.push(Line::from(vec![
-            Span::styled(focus_marker, turn_header_style),
-            Span::styled(format!(" Turn {}", ti + 1), turn_header_style),
+            Span::styled(if focused { ">" } else { " " }, style),
+            Span::styled(
+                format!(
+                    " Turn {} {}",
+                    turn_idx + 1,
+                    if expanded {
+                        "[expanded]"
+                    } else {
+                        "[collapsed]"
+                    }
+                ),
+                style,
+            ),
         ]));
         right_lines.push(Line::from(vec![
             Span::styled(" ", Style::new()),
             Span::styled(
-                format!("{} events", turn.agent_events.len()),
-                Style::new().fg(Theme::TEXT_SECONDARY),
+                truncate(&llm_summary, 110),
+                Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]));
 
-        let expanded = app.expanded_turns.contains(&ti);
-        let user_lines = render_turn_user_content(turn);
-        let agent_lines = render_turn_agent_content(turn, expanded);
+        if !expanded {
+            left_lines.push(Line::from(Span::styled(
+                turn_user_preview(turn),
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            )));
+            right_lines.push(Line::from(Span::styled(
+                format!("{} agent events", turn.agent_events.len()),
+                Style::new().fg(Theme::TEXT_MUTED),
+            )));
+        } else {
+            let user_lines = render_turn_user_content(turn);
+            let agent_lines = render_turn_agent_content(turn);
+            left_lines.extend(user_lines);
+            right_lines.extend(agent_lines);
+        }
 
-        left_lines.extend(user_lines);
-        right_lines.extend(agent_lines);
-
-        // Pad shorter side
         while left_lines.len() < right_lines.len() {
             left_lines.push(Line::raw(""));
         }
         while right_lines.len() < left_lines.len() {
             right_lines.push(Line::raw(""));
         }
+
+        left_lines.push(Line::raw(""));
+        right_lines.push(Line::raw(""));
     }
 
     app.turn_line_offsets = line_offsets;
-
     let visible_h = left_area.height.saturating_sub(2);
     let total = left_lines.len() as u16;
     let max_scroll = total.saturating_sub(visible_h);
     app.turn_agent_scroll = app.turn_agent_scroll.min(max_scroll);
     let scroll = (app.turn_agent_scroll, 0);
 
-    let left_block = Theme::block().title(" User ");
-    let right_block = Theme::block().title(" Agent ");
-
     let left_para = Paragraph::new(left_lines.clone())
-        .block(left_block)
+        .block(Theme::block().title(" User "))
         .wrap(Wrap { trim: false })
         .scroll(scroll);
     let right_para = Paragraph::new(right_lines.clone())
-        .block(right_block)
+        .block(Theme::block().title(" Agent "))
         .wrap(Wrap { trim: false })
         .scroll(scroll);
 
     frame.render_widget(left_para, left_area);
     frame.render_widget(right_para, right_area);
 
-    // Scrollbar on right panel
-    let total_lines = right_lines.len();
-    if total_lines > visible_h as usize {
+    if right_lines.len() > visible_h as usize {
         let mut scrollbar_state =
-            ScrollbarState::new(total_lines).position(app.turn_agent_scroll as usize);
+            ScrollbarState::new(right_lines.len()).position(app.turn_agent_scroll as usize);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
@@ -976,8 +730,11 @@ fn render_turn_user_content(turn: &crate::app::Turn<'_>) -> Vec<Line<'static>> {
     for event in &turn.user_events {
         for block in &event.content.blocks {
             if let ContentBlock::Text { text } = block {
-                for line in text.lines() {
-                    lines.push(Line::from(parse_text_line_to_spans(line)));
+                for line in text.lines().take(5) {
+                    lines.push(Line::from(Span::styled(
+                        truncate(line, 90),
+                        Style::new().fg(Theme::TEXT_PRIMARY),
+                    )));
                 }
             }
         }
@@ -985,364 +742,46 @@ fn render_turn_user_content(turn: &crate::app::Turn<'_>) -> Vec<Line<'static>> {
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "(no user message)",
-            Style::new().fg(Color::DarkGray),
+            Style::new().fg(Theme::TEXT_MUTED),
         )));
     }
     lines
 }
 
-fn render_turn_agent_content(turn: &crate::app::Turn<'_>, expanded: bool) -> Vec<Line<'static>> {
+fn turn_user_preview(turn: &crate::app::Turn<'_>) -> String {
+    for event in &turn.user_events {
+        for block in &event.content.blocks {
+            if let ContentBlock::Text { text } = block {
+                if let Some(line) = text.lines().next() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        return truncate(trimmed, 90);
+                    }
+                }
+            }
+        }
+    }
+    "(no user message)".to_string()
+}
+
+fn render_turn_agent_content(turn: &crate::app::Turn<'_>) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let max_content_lines = if expanded { 100 } else { 8 };
-    let max_diff_lines = if expanded { 100 } else { 10 };
-
     for event in &turn.agent_events {
-        // Skip trivial success ToolResults (non-error, empty content)
-        if matches!(&event.event_type, EventType::ToolResult { is_error, .. } if !is_error)
-            && event.content.blocks.is_empty()
-        {
-            continue;
-        }
-
-        let (type_label, type_color) = event_type_display(&event.event_type);
-        let summary = event_summary(&event.event_type, &event.content.blocks);
-
+        let (kind, kind_color) = event_type_display(&event.event_type);
         lines.push(Line::from(vec![
-            Span::styled("│ ", Style::new().fg(type_color)),
+            Span::styled("| ", Style::new().fg(kind_color)),
+            Span::styled(format!("{kind:>8} "), Style::new().fg(kind_color).bold()),
             Span::styled(
-                format!("{:<6}", type_label),
-                Style::new().fg(type_color).bold(),
+                event_summary(&event.event_type, &event.content.blocks),
+                Style::new().fg(Theme::TEXT_PRIMARY),
             ),
-            Span::raw(" "),
-            Span::styled(summary, Style::new().fg(Theme::TEXT_PRIMARY)),
         ]));
-
-        // Content preview — all event types with content blocks
-        let should_show_content = matches!(
-            event.event_type,
-            EventType::AgentMessage
-                | EventType::Thinking
-                | EventType::ToolResult { .. }
-                | EventType::ShellCommand { .. }
-        );
-
-        if should_show_content {
-            render_split_content_blocks(&event.content.blocks, &mut lines, max_content_lines);
-        }
-
-        // Diff preview for file edits
-        match &event.event_type {
-            EventType::FileEdit {
-                diff: Some(ref d), ..
-            } => {
-                for line in d.lines().take(max_diff_lines) {
-                    let style = if line.starts_with("+++") || line.starts_with("---") {
-                        Style::new().fg(Theme::DIFF_HEADER).bold()
-                    } else if line.starts_with('+') {
-                        Style::new().fg(Theme::ACCENT_GREEN).bg(Theme::BG_DIFF_ADD)
-                    } else if line.starts_with('-') {
-                        Style::new().fg(Theme::ACCENT_RED).bg(Theme::BG_DIFF_DEL)
-                    } else if line.starts_with("@@") {
-                        Style::new().fg(Theme::DIFF_HUNK)
-                    } else {
-                        Style::new().fg(Theme::TEXT_SECONDARY)
-                    };
-                    let truncated = truncate(line, 80);
-                    lines.push(Line::from(vec![
-                        Span::styled("  │   ", Style::new().fg(Theme::GUTTER)),
-                        Span::styled(truncated, style),
-                    ]));
-                }
-                let total = d.lines().count();
-                if total > max_diff_lines {
-                    lines.push(Line::from(vec![
-                        Span::styled("  │   ", Style::new().fg(Theme::GUTTER)),
-                        Span::styled(
-                            format!("…{} more lines", total - max_diff_lines),
-                            Style::new().fg(Color::DarkGray),
-                        ),
-                    ]));
-                }
-            }
-            EventType::FileEdit { diff: None, .. } => {
-                lines.push(Line::from(vec![
-                    Span::styled("  │   ", Style::new().fg(Theme::GUTTER)),
-                    Span::styled(
-                        "(no diff available)",
-                        Style::new().fg(Color::DarkGray).italic(),
-                    ),
-                ]));
-                render_split_content_blocks(&event.content.blocks, &mut lines, max_content_lines);
-            }
-            _ => {}
-        }
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "(no agent events)",
-            Style::new().fg(Color::DarkGray),
+            Style::new().fg(Theme::TEXT_MUTED),
         )));
     }
     lines
-}
-
-/// Render content blocks for the split view with a gutter prefix.
-fn render_split_content_blocks(
-    blocks: &[ContentBlock],
-    lines: &mut Vec<Line<'static>>,
-    max_lines: usize,
-) {
-    let gutter = "  │   ";
-    for block in blocks {
-        match block {
-            ContentBlock::Text { text } => {
-                let total = text.lines().count();
-                for (li, line) in text.lines().take(max_lines).enumerate() {
-                    let truncated = truncate(line.trim(), 80);
-                    lines.push(Line::from(vec![
-                        Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                        Span::styled(truncated, Style::new().fg(Theme::TEXT_CONTENT)),
-                    ]));
-                    if li == max_lines - 1 && total > max_lines {
-                        lines.push(Line::from(vec![
-                            Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                            Span::styled(
-                                format!("…{} more lines", total - max_lines),
-                                Style::new().fg(Color::DarkGray),
-                            ),
-                        ]));
-                    }
-                }
-            }
-            ContentBlock::Code { code, language, .. } => {
-                let lang = language.as_deref().unwrap_or("");
-                lines.push(Line::from(vec![
-                    Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                    Span::styled(format!("```{}", lang), Style::new().fg(Color::DarkGray)),
-                ]));
-                let code_limit = max_lines.saturating_sub(2);
-                for line in code.lines().take(code_limit) {
-                    let truncated = truncate(line, 80);
-                    lines.push(Line::from(vec![
-                        Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                        Span::styled(truncated, Style::new().fg(Theme::CODE_TEXT)),
-                    ]));
-                }
-                lines.push(Line::from(vec![
-                    Span::styled(gutter, Style::new().fg(Theme::GUTTER)),
-                    Span::styled("```", Style::new().fg(Color::DarkGray)),
-                ]));
-            }
-            ContentBlock::Json { data } => {
-                render_json_kv(data, lines, gutter, max_lines);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Render JSON as key:value table for flat objects, or pretty-print otherwise.
-fn render_json_kv(
-    data: &serde_json::Value,
-    lines: &mut Vec<Line<'static>>,
-    gutter: &str,
-    max_lines: usize,
-) {
-    let bg = Style::new().bg(Theme::BG_SURFACE);
-    let gutter_s = gutter.to_string();
-
-    if let serde_json::Value::Object(map) = data {
-        // Check if flat (all values are scalars)
-        let is_flat = map.values().all(|v| {
-            matches!(
-                v,
-                serde_json::Value::Null
-                    | serde_json::Value::Bool(_)
-                    | serde_json::Value::Number(_)
-                    | serde_json::Value::String(_)
-            )
-        });
-        if is_flat && !map.is_empty() {
-            let max_key_len = map.keys().map(|k| k.len()).max().unwrap_or(0).min(20);
-            for (i, (key, val)) in map.iter().enumerate() {
-                if i >= max_lines {
-                    lines.push(
-                        Line::from(vec![
-                            Span::styled(gutter_s.clone(), Style::new().fg(Theme::GUTTER)),
-                            Span::styled(
-                                format!("…{} more", map.len() - i),
-                                Style::new().fg(Color::DarkGray),
-                            ),
-                        ])
-                        .style(bg),
-                    );
-                    break;
-                }
-                let val_str = match val {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                let val_truncated = truncate(&val_str, 60);
-                lines.push(
-                    Line::from(vec![
-                        Span::styled(gutter_s.clone(), Style::new().fg(Theme::GUTTER)),
-                        Span::styled(
-                            format!("{:>width$}", key, width = max_key_len),
-                            Style::new().fg(Theme::ACCENT_CYAN),
-                        ),
-                        Span::styled(": ", Style::new().fg(Theme::TEXT_MUTED)),
-                        Span::styled(val_truncated, Style::new().fg(Theme::JSON_TEXT)),
-                    ])
-                    .style(bg),
-                );
-            }
-            return;
-        }
-    }
-
-    // Fallback: pretty-print
-    let formatted = serde_json::to_string_pretty(data).unwrap_or_else(|_| format!("{:?}", data));
-    for (i, line) in formatted.lines().enumerate() {
-        if i >= max_lines {
-            lines.push(
-                Line::from(vec![
-                    Span::styled(gutter_s.clone(), Style::new().fg(Theme::GUTTER)),
-                    Span::styled("…more", Style::new().fg(Color::DarkGray)),
-                ])
-                .style(bg),
-            );
-            break;
-        }
-        lines.push(
-            Line::from(vec![
-                Span::styled(gutter_s.clone(), Style::new().fg(Theme::GUTTER)),
-                Span::styled(line.to_string(), Style::new().fg(Theme::JSON_TEXT)),
-            ])
-            .style(bg),
-        );
-    }
-}
-
-/// Parse a text line into styled spans with basic markdown highlighting.
-fn parse_text_line_to_spans(line: &str) -> Vec<Span<'static>> {
-    let trimmed = line.trim();
-
-    // Heading: # ...
-    if let Some(rest) = trimmed.strip_prefix("# ") {
-        return vec![Span::styled(
-            format!("# {}", rest),
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )];
-    }
-    if let Some(rest) = trimmed.strip_prefix("## ") {
-        return vec![Span::styled(
-            format!("## {}", rest),
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )];
-    }
-    if let Some(rest) = trimmed.strip_prefix("### ") {
-        return vec![Span::styled(
-            format!("### {}", rest),
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )];
-    }
-
-    // Inline parsing for `code` and **bold**
-    let mut spans = Vec::new();
-    let mut chars = line.char_indices().peekable();
-    let mut buf = String::new();
-    let owned = line.to_string();
-
-    while let Some(&(pos, ch)) = chars.peek() {
-        if ch == '`' {
-            // Flush buffer
-            if !buf.is_empty() {
-                spans.push(Span::styled(
-                    std::mem::take(&mut buf),
-                    Style::new().fg(Theme::TEXT_PRIMARY),
-                ));
-            }
-            chars.next(); // consume opening `
-            let start = pos + 1;
-            let mut found_end = false;
-            while let Some(&(end_pos, c)) = chars.peek() {
-                if c == '`' {
-                    let code_str = owned[start..end_pos].to_string();
-                    spans.push(Span::styled(code_str, Style::new().fg(Theme::CODE_TEXT)));
-                    chars.next(); // consume closing `
-                    found_end = true;
-                    break;
-                }
-                chars.next();
-            }
-            if !found_end {
-                buf.push('`');
-                buf.push_str(&owned[start..]);
-                break;
-            }
-        } else if ch == '*' {
-            // Check for **bold**
-            let next_is_star = {
-                let mut p = chars.clone();
-                p.next();
-                p.peek().map(|&(_, c)| c) == Some('*')
-            };
-            if next_is_star {
-                if !buf.is_empty() {
-                    spans.push(Span::styled(
-                        std::mem::take(&mut buf),
-                        Style::new().fg(Theme::TEXT_PRIMARY),
-                    ));
-                }
-                chars.next(); // first *
-                chars.next(); // second *
-                let bold_start = pos + 2;
-                let mut found_end = false;
-                while let Some(&(end_pos, c)) = chars.peek() {
-                    if c == '*' {
-                        let next_star = {
-                            let mut p = chars.clone();
-                            p.next();
-                            p.peek().map(|&(_, c2)| c2) == Some('*')
-                        };
-                        if next_star {
-                            let bold_str = owned[bold_start..end_pos].to_string();
-                            spans.push(Span::styled(
-                                bold_str,
-                                Style::new().fg(Theme::TEXT_PRIMARY).bold(),
-                            ));
-                            chars.next(); // first *
-                            chars.next(); // second *
-                            found_end = true;
-                            break;
-                        }
-                    }
-                    chars.next();
-                }
-                if !found_end {
-                    buf.push_str("**");
-                    buf.push_str(&owned[bold_start..]);
-                    break;
-                }
-            } else {
-                buf.push(ch);
-                chars.next();
-            }
-        } else {
-            buf.push(ch);
-            chars.next();
-        }
-    }
-
-    if !buf.is_empty() {
-        spans.push(Span::styled(buf, Style::new().fg(Theme::TEXT_PRIMARY)));
-    }
-
-    if spans.is_empty() {
-        spans.push(Span::styled(
-            line.to_string(),
-            Style::new().fg(Theme::TEXT_PRIMARY),
-        ));
-    }
-    spans
 }

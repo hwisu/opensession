@@ -12,6 +12,7 @@ mod stream_push;
 mod summarize;
 #[cfg(feature = "e2e")]
 mod test_cmd;
+mod tui_cmd;
 mod upload;
 mod upload_all;
 
@@ -95,98 +96,50 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// List all local AI sessions found on this machine
-    Discover,
+    /// Launch the interactive terminal UI
+    Ui,
 
-    /// Upload a session file to the server (or git branch with --git)
-    Upload {
-        /// Path to the session file
-        file: PathBuf,
-
-        /// Link to parent session(s) by ID (can be specified multiple times)
-        #[arg(long)]
-        parent: Vec<String>,
-
-        /// Store to git branch (opensession/sessions) instead of server
-        #[arg(long)]
-        git: bool,
-    },
-
-    /// Discover and upload ALL local sessions to the server
-    UploadAll,
-
-    /// Show or set configuration
-    Config {
-        /// Set the server URL
-        #[arg(long)]
-        server: Option<String>,
-
-        /// Set the API key
-        #[arg(long)]
-        api_key: Option<String>,
-
-        /// Set the team ID for uploads
-        #[arg(long)]
-        team_id: Option<String>,
-    },
-
-    /// Manage the background daemon
-    Daemon {
+    /// Session workflows (discover/history/diff/timeline)
+    Session {
         #[command(subcommand)]
-        action: DaemonAction,
+        action: SessionAction,
     },
 
-    /// Check server connection and authentication
-    Server {
+    /// Publish workflows (single upload / bulk upload)
+    Publish {
         #[command(subcommand)]
-        action: ServerAction,
+        action: PublishAction,
+    },
+
+    /// Runtime operations (daemon/stream/hooks)
+    Ops {
+        #[command(subcommand)]
+        action: OpsAction,
+    },
+
+    /// Account and server connectivity
+    Account {
+        #[command(subcommand)]
+        action: AccountAction,
+    },
+
+    /// Documentation helpers
+    Docs {
+        #[command(subcommand)]
+        action: DocsAction,
     },
 
     /// Run E2E tests against a server (requires --features e2e)
     #[cfg(feature = "e2e")]
     Test(test_cmd::TestArgs),
+}
 
-    /// Generate a session handoff summary for the next agent
-    Handoff {
-        /// Session file(s). Multiple files can be specified for merged handoff
-        files: Vec<PathBuf>,
-
-        /// Use the most recent session
-        #[arg(short, long)]
-        last: bool,
-
-        /// Write output to a file instead of stdout
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-
-        /// Output format
-        #[arg(long, value_enum, default_value = "markdown")]
-        format: OutputFormat,
-
-        /// Generate additional LLM-powered summary (requires API key)
-        #[arg(long)]
-        summarize: bool,
-
-        /// Claude Code session reference (e.g. HEAD, HEAD~2)
-        #[arg(long)]
-        claude: Option<String>,
-
-        /// Gemini session reference (e.g. HEAD, HEAD~1)
-        #[arg(long)]
-        gemini: Option<String>,
-
-        /// Generic tool session reference (e.g. "amp HEAD~2")
-        #[arg(long)]
-        tool: Vec<String>,
-
-        /// AI provider for summarization: "claude", "openai", "gemini"
-        #[arg(long)]
-        ai: Option<String>,
-    },
-
+#[derive(Subcommand)]
+enum SessionAction {
+    /// List all local AI sessions found on this machine
+    Discover,
     /// Build/update the local session index from discovered session files
     Index,
-
     /// Show session history (git-log style)
     Log {
         /// Show sessions from the last N hours/days (e.g. "3 hours", "2 days", "1 week")
@@ -237,7 +190,6 @@ enum Commands {
         #[arg(long)]
         jq: Option<String>,
     },
-
     /// Show AI session usage statistics
     Stats {
         /// Time period
@@ -248,7 +200,6 @@ enum Commands {
         #[arg(long, value_enum, default_value = "text")]
         format: OutputFormat,
     },
-
     /// Compare two sessions side-by-side
     Diff {
         /// First session (ID, file path, or reference like HEAD^2)
@@ -261,31 +212,157 @@ enum Commands {
         #[arg(long)]
         ai: bool,
     },
+    /// Generate a session handoff summary for the next agent
+    Handoff {
+        /// Session file(s). Multiple files can be specified for merged handoff
+        files: Vec<PathBuf>,
 
-    /// Manage git hooks integration
-    Hooks {
+        /// Use the most recent session
+        #[arg(short, long)]
+        last: bool,
+
+        /// Write output to a file instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Output format
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: OutputFormat,
+
+        /// Generate additional LLM-powered summary (requires API key)
+        #[arg(long)]
+        summarize: bool,
+
+        /// Claude Code session reference (e.g. HEAD, HEAD~2)
+        #[arg(long)]
+        claude: Option<String>,
+
+        /// Gemini session reference (e.g. HEAD, HEAD~1)
+        #[arg(long)]
+        gemini: Option<String>,
+
+        /// Generic tool session reference (e.g. "amp HEAD~2")
+        #[arg(long)]
+        tool: Vec<String>,
+
+        /// AI provider for summarization: "claude", "openai", "gemini"
+        #[arg(long)]
+        ai: Option<String>,
+    },
+    /// Print timeline output as strings (pipe-friendly)
+    Timeline {
+        /// Session reference (HEAD, HEAD^N, ID) or direct session file path
+        #[arg(default_value = "HEAD")]
+        session: String,
+
+        /// Restrict HEAD/ID lookup to a specific tool (e.g. claude, codex)
+        #[arg(long)]
+        tool: Option<String>,
+
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: tui_cmd::TuiOutputFormatArg,
+
+        /// Timeline view mode
+        #[arg(long, value_enum, default_value = "linear")]
+        view: tui_cmd::TimelineViewArg,
+
+        /// Disable collapsing of consecutive events
+        #[arg(long)]
+        no_collapse: bool,
+
+        /// Actively generate timeline summaries before printing
+        #[arg(long)]
+        summaries: bool,
+
+        /// Force summaries off for this render
+        #[arg(long)]
+        no_summary: bool,
+
+        /// Override summary provider for this render
+        #[arg(long)]
+        summary_provider: Option<String>,
+
+        /// Truncate rendered output to the first N rows
+        #[arg(long)]
+        max_rows: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PublishAction {
+    /// Upload a session file to the server (or git branch with --git)
+    Upload {
+        /// Path to the session file
+        file: PathBuf,
+
+        /// Link to parent session(s) by ID (can be specified multiple times)
+        #[arg(long)]
+        parent: Vec<String>,
+
+        /// Store to git branch (opensession/sessions) instead of server
+        #[arg(long)]
+        git: bool,
+    },
+    /// Discover and upload ALL local sessions to the server
+    UploadAll,
+}
+
+#[derive(Subcommand)]
+enum OpsAction {
+    /// Manage the background daemon
+    Daemon {
         #[command(subcommand)]
-        action: HooksAction,
+        action: DaemonAction,
     },
-
-    /// Generate shell completions
-    Completion {
-        /// Shell to generate completions for
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
-    },
-
     /// Real-time session streaming
     Stream {
         #[command(subcommand)]
         action: StreamAction,
     },
-
     /// Stream new events from a local session file (called by hooks)
     StreamPush {
         /// Agent name (e.g. "claude-code")
         #[arg(long)]
         agent: String,
+    },
+    /// Manage git hooks integration
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountAction {
+    /// Show or set configuration
+    Config {
+        /// Set the server URL
+        #[arg(long)]
+        server: Option<String>,
+
+        /// Set the API key
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Set the team ID for uploads
+        #[arg(long)]
+        team_id: Option<String>,
+    },
+    /// Check server connection and authentication
+    Server {
+        #[command(subcommand)]
+        action: ServerAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DocsAction {
+    /// Generate shell completions
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -293,16 +370,23 @@ impl Commands {
     /// Whether this subcommand wants JSON-formatted error output.
     fn wants_json_errors(&self) -> bool {
         match self {
-            Commands::Log { format, json, .. } => {
-                matches!(format, OutputFormat::Json | OutputFormat::Stream) || json.is_some()
-            }
-            Commands::Handoff { format, .. } => {
-                matches!(
+            Commands::Session { action } => match action {
+                SessionAction::Log { format, json, .. } => {
+                    matches!(format, OutputFormat::Json | OutputFormat::Stream) || json.is_some()
+                }
+                SessionAction::Handoff { format, .. } => {
+                    matches!(
+                        format,
+                        OutputFormat::Json | OutputFormat::Stream | OutputFormat::Jsonl
+                    )
+                }
+                SessionAction::Stats { format, .. } => matches!(format, OutputFormat::Json),
+                SessionAction::Timeline { format, .. } => matches!(
                     format,
-                    OutputFormat::Json | OutputFormat::Stream | OutputFormat::Jsonl
-                )
-            }
-            Commands::Stats { format, .. } => matches!(format, OutputFormat::Json),
+                    tui_cmd::TuiOutputFormatArg::Json | tui_cmd::TuiOutputFormatArg::Jsonl
+                ),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -310,9 +394,9 @@ impl Commands {
 
 fn suggestion_for_code(code: &ExitCode) -> Option<&'static str> {
     match code {
-        ExitCode::AuthError => Some("opensession config --api-key <key>"),
-        ExitCode::NoData => Some("opensession index"),
-        ExitCode::NetworkError => Some("opensession server status"),
+        ExitCode::AuthError => Some("opensession account config --api-key <key>"),
+        ExitCode::NoData => Some("opensession session index"),
+        ExitCode::NetworkError => Some("opensession account server status"),
         ExitCode::UsageError => Some("opensession --help"),
         _ => None,
     }
@@ -402,7 +486,15 @@ async fn main() {
 
     // Auto-start daemon for commands that benefit from it
     match &command {
-        Commands::Discover | Commands::Upload { .. } | Commands::UploadAll => {
+        Commands::Session {
+            action: SessionAction::Discover,
+        }
+        | Commands::Publish {
+            action: PublishAction::Upload { .. },
+        }
+        | Commands::Publish {
+            action: PublishAction::UploadAll,
+        } => {
             maybe_auto_start_daemon();
         }
         _ => {}
@@ -413,99 +505,133 @@ async fn main() {
     let result = match command {
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,
-        Commands::Discover => discover::run_discover(),
-        Commands::Upload { file, parent, git } => upload::run_upload(&file, &parent, git).await,
-        Commands::UploadAll => upload_all::run_upload_all().await,
-        Commands::Config {
-            server,
-            api_key,
-            team_id,
-        } => {
-            if server.is_none() && api_key.is_none() && team_id.is_none() {
-                config::show_config()
-            } else {
-                config::set_config(server, api_key, team_id)
-            }
-        }
-        Commands::Daemon { action } => match action {
-            DaemonAction::Start => daemon_ctl::daemon_start(),
-            DaemonAction::Stop => daemon_ctl::daemon_stop(),
-            DaemonAction::Status => daemon_ctl::daemon_status(),
-            DaemonAction::Health => run_daemon_health().await,
-        },
-        Commands::Server { action } => match action {
-            ServerAction::Status => server::run_status().await,
-            ServerAction::Verify => server::run_verify().await,
-        },
-        Commands::Handoff {
-            files,
-            last,
-            output,
-            format,
-            summarize,
-            claude,
-            gemini,
-            tool,
-            ai,
-        } => {
-            handoff::run_handoff(
-                &files,
+        Commands::Ui => opensession_tui::run(None),
+        Commands::Session { action } => match action {
+            SessionAction::Discover => discover::run_discover(),
+            SessionAction::Index => index::run_index(),
+            SessionAction::Log {
+                since,
+                before,
+                tool,
+                model,
+                touches,
+                grep,
+                has_errors,
+                project,
+                format,
+                limit,
+                json,
+                jq,
+            } => log_cmd::run_log(
+                since.as_deref(),
+                before.as_deref(),
+                tool.as_deref(),
+                model.as_deref(),
+                touches.as_deref(),
+                grep.as_deref(),
+                has_errors,
+                project.as_deref(),
+                &format,
+                limit,
+                json.as_deref(),
+                jq.as_deref(),
+            ),
+            SessionAction::Stats { period, format } => stats::run_stats(period, &format),
+            SessionAction::Diff {
+                session_a,
+                session_b,
+                ai,
+            } => handoff::run_diff(&session_a, &session_b, ai).await,
+            SessionAction::Handoff {
+                files,
                 last,
-                output.as_deref(),
+                output,
                 format,
                 summarize,
-                claude.as_deref(),
-                gemini.as_deref(),
-                &tool,
-                ai.as_deref(),
-            )
-            .await
-        }
-        Commands::Index => index::run_index(),
-        Commands::Log {
-            since,
-            before,
-            tool,
-            model,
-            touches,
-            grep,
-            has_errors,
-            project,
-            format,
-            limit,
-            json,
-            jq,
-        } => log_cmd::run_log(
-            since.as_deref(),
-            before.as_deref(),
-            tool.as_deref(),
-            model.as_deref(),
-            touches.as_deref(),
-            grep.as_deref(),
-            has_errors,
-            project.as_deref(),
-            &format,
-            limit,
-            json.as_deref(),
-            jq.as_deref(),
-        ),
-        Commands::Stats { period, format } => stats::run_stats(period, &format),
-        Commands::Diff {
-            session_a,
-            session_b,
-            ai,
-        } => handoff::run_diff(&session_a, &session_b, ai).await,
-        Commands::Hooks { action } => match action {
-            HooksAction::Install => handoff::run_hooks_install(),
-            HooksAction::Uninstall => handoff::run_hooks_uninstall(),
+                claude,
+                gemini,
+                tool,
+                ai,
+            } => {
+                handoff::run_handoff(
+                    &files,
+                    last,
+                    output.as_deref(),
+                    format,
+                    summarize,
+                    claude.as_deref(),
+                    gemini.as_deref(),
+                    &tool,
+                    ai.as_deref(),
+                )
+                .await
+            }
+            SessionAction::Timeline {
+                session,
+                tool,
+                format,
+                view,
+                no_collapse,
+                summaries,
+                no_summary,
+                summary_provider,
+                max_rows,
+            } => tui_cmd::run_tui_timeline(
+                &session,
+                tool.as_deref(),
+                format,
+                view,
+                no_collapse,
+                summaries,
+                no_summary,
+                summary_provider.as_deref(),
+                max_rows,
+            ),
         },
-        Commands::Stream { action } => run_stream_action(action),
-        Commands::Completion { shell } => {
-            let mut cmd = <Cli as clap::CommandFactory>::command();
-            clap_complete::generate(shell, &mut cmd, "opensession", &mut std::io::stdout());
-            Ok(())
-        }
-        Commands::StreamPush { agent } => stream_push::run_stream_push(&agent),
+        Commands::Publish { action } => match action {
+            PublishAction::Upload { file, parent, git } => {
+                upload::run_upload(&file, &parent, git).await
+            }
+            PublishAction::UploadAll => upload_all::run_upload_all().await,
+        },
+        Commands::Ops { action } => match action {
+            OpsAction::Daemon { action } => match action {
+                DaemonAction::Start => daemon_ctl::daemon_start(),
+                DaemonAction::Stop => daemon_ctl::daemon_stop(),
+                DaemonAction::Status => daemon_ctl::daemon_status(),
+                DaemonAction::Health => run_daemon_health().await,
+            },
+            OpsAction::Stream { action } => run_stream_action(action),
+            OpsAction::StreamPush { agent } => stream_push::run_stream_push(&agent),
+            OpsAction::Hooks { action } => match action {
+                HooksAction::Install => handoff::run_hooks_install(),
+                HooksAction::Uninstall => handoff::run_hooks_uninstall(),
+            },
+        },
+        Commands::Account { action } => match action {
+            AccountAction::Config {
+                server,
+                api_key,
+                team_id,
+            } => {
+                if server.is_none() && api_key.is_none() && team_id.is_none() {
+                    config::show_config()
+                } else {
+                    config::set_config(server, api_key, team_id)
+                }
+            }
+            AccountAction::Server { action } => match action {
+                ServerAction::Status => server::run_status().await,
+                ServerAction::Verify => server::run_verify().await,
+            },
+        },
+        Commands::Docs { action } => match action {
+            DocsAction::Completion { shell } => {
+                let mut cmd = <Cli as clap::CommandFactory>::command();
+                clap_complete::generate(shell, &mut cmd, "opensession", &mut std::io::stdout());
+                Ok(())
+            }
+        },
     };
 
     if let Err(e) = result {

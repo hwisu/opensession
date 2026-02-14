@@ -16,7 +16,7 @@ use opensession_core::trace::Session;
 
 /// Trait for parsing AI tool session data into HAIL format
 pub trait SessionParser: Send + Sync {
-    /// Parser name (e.g. "claude-code", "goose")
+    /// Parser name (e.g. "claude-code", "codex")
     fn name(&self) -> &str;
 
     /// Check if this parser can handle the given path

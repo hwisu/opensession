@@ -5,6 +5,7 @@ use opensession_api::db::migrations::{LOCAL_MIGRATIONS, MIGRATIONS};
 use opensession_api::SessionSummary;
 use opensession_core::trace::Session;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -122,29 +123,26 @@ impl LocalDb {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create dir for {}", path.display()))?;
         }
-        let conn = Connection::open(path).with_context(|| format!("open db {}", path.display()))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-
-        // Disable FK constraints for local DB (it's a cache, not source of truth)
-        conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
-
-        // Run migrations, ignoring benign schema-already-applied errors.
-        // SQLite lacks ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so re-running
-        // ADD COLUMN on an existing DB hits "duplicate column name" errors.
-        for (_name, sql) in MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
-            if let Err(e) = conn.execute_batch(sql) {
-                let msg = e.to_string();
-                if msg.contains("duplicate column name") || msg.contains("no such column") {
-                    // Schema already has the column or it was already dropped — skip
-                    continue;
+        match open_connection_with_latest_schema(path) {
+            Ok(conn) => Ok(Self {
+                conn: Mutex::new(conn),
+            }),
+            Err(err) => {
+                if !is_schema_compat_error(&err) {
+                    return Err(err);
                 }
-                return Err(e.into());
+
+                // Local DB is a cache. If schema migration cannot safely reconcile
+                // a legacy/corrupted file, rotate it out and recreate with latest schema.
+                rotate_legacy_db(path)?;
+
+                let conn = open_connection_with_latest_schema(path)
+                    .with_context(|| format!("recreate db {}", path.display()))?;
+                Ok(Self {
+                    conn: Mutex::new(conn),
+                })
             }
         }
-
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -558,6 +556,20 @@ impl LocalDb {
         Ok(row)
     }
 
+    /// Fetch the source path used when the session was last parsed/loaded.
+    pub fn get_session_source_path(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.conn();
+        let result = conn
+            .query_row(
+                "SELECT source_path FROM session_sync WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(result)
+    }
+
     /// Count total sessions in the local DB.
     pub fn session_count(&self) -> Result<i64> {
         let count = self
@@ -870,6 +882,136 @@ impl LocalDb {
     }
 }
 
+// ── Legacy schema backfill ─────────────────────────────────────────────
+
+fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
+    let conn = Connection::open(path).with_context(|| format!("open db {}", path.display()))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
+    // Disable FK constraints for local DB (it's a cache, not source of truth)
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+
+    // Run migrations, ignoring benign schema-already-applied errors.
+    // SQLite lacks ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so re-running
+    // ADD COLUMN on an existing DB hits "duplicate column name" errors.
+    for (_name, sql) in MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
+        if let Err(e) = conn.execute_batch(sql) {
+            let msg = e.to_string();
+            if msg.contains("duplicate column name") || msg.contains("no such column") {
+                // Schema already has the column or it was already dropped — skip
+                continue;
+            }
+            return Err(e.into());
+        }
+    }
+
+    // Backfill missing columns for legacy local DBs where `sessions` already
+    // existed before newer fields were introduced.
+    ensure_sessions_columns(&conn)?;
+    validate_local_schema(&conn)?;
+
+    Ok(conn)
+}
+
+fn validate_local_schema(conn: &Connection) -> Result<()> {
+    let sql = format!("SELECT {LOCAL_SESSION_COLUMNS} {FROM_CLAUSE} WHERE 1=0");
+    conn.prepare(&sql)
+        .map(|_| ())
+        .context("validate local session schema")
+}
+
+fn is_schema_compat_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}").to_ascii_lowercase();
+    msg.contains("no such column")
+        || msg.contains("no such table")
+        || msg.contains("cannot add a column")
+        || msg.contains("already exists")
+        || msg.contains("views may not be indexed")
+        || msg.contains("malformed database schema")
+        || msg.contains("duplicate column name")
+}
+
+fn rotate_legacy_db(path: &PathBuf) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
+    let backup_name = format!(
+        "{}.legacy-{}.bak",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("local.db"),
+        ts
+    );
+    let backup_path = path.with_file_name(backup_name);
+    std::fs::rename(path, &backup_path).with_context(|| {
+        format!(
+            "rotate legacy db {} -> {}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+
+    let wal = PathBuf::from(format!("{}-wal", path.display()));
+    let shm = PathBuf::from(format!("{}-shm", path.display()));
+    let _ = std::fs::remove_file(wal);
+    let _ = std::fs::remove_file(shm);
+    Ok(())
+}
+
+const REQUIRED_SESSION_COLUMNS: &[(&str, &str)] = &[
+    ("user_id", "TEXT"),
+    ("team_id", "TEXT DEFAULT 'personal'"),
+    ("tool", "TEXT DEFAULT ''"),
+    ("agent_provider", "TEXT"),
+    ("agent_model", "TEXT"),
+    ("title", "TEXT"),
+    ("description", "TEXT"),
+    ("tags", "TEXT"),
+    ("created_at", "TEXT DEFAULT ''"),
+    ("uploaded_at", "TEXT DEFAULT ''"),
+    ("message_count", "INTEGER DEFAULT 0"),
+    ("user_message_count", "INTEGER DEFAULT 0"),
+    ("task_count", "INTEGER DEFAULT 0"),
+    ("event_count", "INTEGER DEFAULT 0"),
+    ("duration_seconds", "INTEGER DEFAULT 0"),
+    ("total_input_tokens", "INTEGER DEFAULT 0"),
+    ("total_output_tokens", "INTEGER DEFAULT 0"),
+    ("body_storage_key", "TEXT DEFAULT ''"),
+    ("body_url", "TEXT"),
+    ("git_remote", "TEXT"),
+    ("git_branch", "TEXT"),
+    ("git_commit", "TEXT"),
+    ("git_repo_name", "TEXT"),
+    ("pr_number", "INTEGER"),
+    ("pr_url", "TEXT"),
+    ("working_directory", "TEXT"),
+    ("files_modified", "TEXT"),
+    ("files_read", "TEXT"),
+    ("has_errors", "BOOLEAN DEFAULT 0"),
+];
+
+fn ensure_sessions_columns(conn: &Connection) -> Result<()> {
+    let mut existing = HashSet::new();
+    let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        existing.insert(row?);
+    }
+
+    for (name, decl) in REQUIRED_SESSION_COLUMNS {
+        if existing.contains(*name) {
+            continue;
+        }
+        let sql = format!("ALTER TABLE sessions ADD COLUMN {name} {decl};");
+        conn.execute_batch(&sql)
+            .with_context(|| format!("add legacy sessions column '{name}'"))?;
+    }
+
+    Ok(())
+}
+
 /// Column list for SELECT queries against sessions + session_sync + users.
 pub const LOCAL_SESSION_COLUMNS: &str = "\
 s.id, ss.source_path, COALESCE(ss.sync_status, 'unknown') AS sync_status, ss.last_synced_at, \
@@ -942,6 +1084,51 @@ mod tests {
     #[test]
     fn test_open_and_schema() {
         let _db = test_db();
+    }
+
+    #[test]
+    fn test_open_backfills_legacy_sessions_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY);
+                 INSERT INTO sessions (id) VALUES ('legacy-1');",
+            )
+            .unwrap();
+        }
+
+        let db = LocalDb::open_path(&path).unwrap();
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "legacy-1");
+        assert_eq!(rows[0].user_message_count, 0);
+    }
+
+    #[test]
+    fn test_open_rotates_incompatible_legacy_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE VIEW sessions AS SELECT 'x' AS id;")
+                .unwrap();
+        }
+
+        let db = LocalDb::open_path(&path).unwrap();
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert!(rows.is_empty());
+
+        let rotated = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("broken.db.legacy-") && name.ends_with(".bak")
+            });
+        assert!(rotated, "expected rotated legacy backup file");
     }
 
     #[test]

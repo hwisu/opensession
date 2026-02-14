@@ -18,6 +18,7 @@ const sections: TocItem[] = [
 		children: [
 			{ id: 'cli-config', title: 'config' },
 			{ id: 'cli-discover', title: 'discover' },
+			{ id: 'cli-view', title: 'view' },
 			{ id: 'cli-upload', title: 'upload' },
 			{ id: 'cli-log', title: 'log' },
 			{ id: 'cli-stats', title: 'stats' },
@@ -353,6 +354,62 @@ $ opensession account config --team-id my-team</pre>
 <span class="text-tool-opencode">  opencode</span>     <span class="text-text-muted"> 3 sessions  ~/.local/share/opencode/</span></pre>
 				</div>
 				<p class="mt-2 text-xs text-text-muted">Supported: Claude Code, Cursor, Codex, OpenCode, Cline, Amp, Gemini</p>
+			</div>
+
+			<!-- view -->
+			<div id="cli-view" class="docs-section border-t border-border pt-5">
+				<h3 class="mb-1 text-sm font-bold text-text-primary">
+					<code class="text-accent">opensession view &lt;agent&gt;</code>
+				</h3>
+				<p>Open a real-time Session Detail view focused on one active agent session.</p>
+
+				<div class="mt-3 space-y-2">
+					<div class="cli-flags">
+						<code>&lt;agent&gt;</code> <span>claude | codex | cursor | gemini | opencode | cline | amp</span>
+					</div>
+					<div class="cli-flags">
+						<code>--active-within-minutes &lt;N&gt;</code> <span>Active window by file mtime (default: 20)</span>
+					</div>
+					<div class="cli-flags">
+						<code>--latest</code> <span>Ignore active window and always choose latest</span>
+					</div>
+					<div class="cli-flags">
+						<code>--non-interactive</code> <span>Skip picker and auto-select latest candidate</span>
+					</div>
+					<div class="cli-flags">
+						<code>--dry-run</code> <span>Print selected session/runtime overrides and exit</span>
+					</div>
+					<div class="cli-flags">
+						<code>--summary-provider &lt;PROVIDER&gt;</code> <span>Runtime-only summary provider override</span>
+					</div>
+					<div class="cli-flags">
+						<code>--summary-model &lt;MODEL&gt;</code> <span>Runtime-only model override</span>
+					</div>
+					<div class="cli-flags">
+						<code>--sum-endpoint / --sum-base / --sum-path</code> <span>OpenAI-compatible endpoint overrides</span>
+					</div>
+					<div class="cli-flags">
+						<code>--sum-style &lt;chat|responses&gt;</code> <span>OpenAI-compatible payload style</span>
+					</div>
+					<div class="cli-flags">
+						<code>--sum-key / --sum-key-header</code> <span>Runtime-only API key/header override</span>
+					</div>
+				</div>
+
+				<div class="mt-3 border border-border bg-bg-secondary p-4">
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Open active Claude session in live detail view</span>
+$ opensession view claude
+
+<span class="text-text-muted"># Prefer latest only, no picker</span>
+$ opensession view codex --latest --non-interactive
+
+<span class="text-text-muted"># Dry-run selection and runtime summary settings</span>
+$ opensession view cursor --dry-run --non-interactive
+
+<span class="text-text-muted"># Runtime summary API override (not persisted)</span>
+$ opensession view gemini --summary-provider openai-compatible --sum-endpoint https://example.com/v1/responses --sum-style responses</pre>
+				</div>
 			</div>
 
 			<!-- upload / upload-all -->

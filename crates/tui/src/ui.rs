@@ -21,6 +21,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    // `opensession view` focus mode: hide global tab/header/footer chrome.
+    if app.focus_detail_view {
+        if matches!(app.view, View::Help) {
+            help::render(frame, frame.area());
+        } else if app.selected_session().is_some() {
+            app.view = View::SessionDetail;
+            session_detail::render(frame, app, frame.area());
+        } else {
+            let waiting = Paragraph::new("Waiting for session data...")
+                .block(Theme::block_dim().title(" View "))
+                .style(Style::new().fg(Theme::TEXT_MUTED));
+            frame.render_widget(waiting, frame.area());
+        }
+        if let Some(ref m) = app.modal {
+            modal::render(frame, m, &app.edit_buffer);
+        }
+        return;
+    }
+
     let [tab_area, header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(3),
@@ -217,50 +236,76 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             }
 
             spans.push(Span::styled(" ", Style::new()));
-            let collapse_style = if app.collapse_consecutive {
+            let turn_mode_label = if app.detail_view_mode == DetailViewMode::Turn {
+                "turn-mode:thread"
+            } else {
+                "turn-mode:linear"
+            };
+            let turn_mode_style = if app.detail_view_mode == DetailViewMode::Turn {
                 Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
             } else {
                 Style::new().fg(Theme::TEXT_MUTED)
             };
-            let collapse_label = if app.collapse_consecutive {
-                "c:collapse on"
-            } else {
-                "c:collapse off"
-            };
             spans.push(Span::styled(
-                format!(" {} ", collapse_label),
-                collapse_style,
+                format!(" {} ", turn_mode_label),
+                turn_mode_style,
             ));
+
+            if app.detail_view_mode != DetailViewMode::Turn {
+                spans.push(Span::styled(" ", Style::new()));
+                let collapse_style = if app.collapse_consecutive {
+                    Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
+                } else {
+                    Style::new().fg(Theme::TEXT_MUTED)
+                };
+                let collapse_label = if app.collapse_consecutive {
+                    "collapse:on"
+                } else {
+                    "collapse:off"
+                };
+                spans.push(Span::styled(
+                    format!(" {} ", collapse_label),
+                    collapse_style,
+                ));
+            }
 
             spans.push(Span::styled(" │ ", Style::new().fg(Theme::GUTTER)));
             let summary_status = app.llm_summary_status_label();
+            let summary_badge = app.llm_summary_runtime_badge();
             let (summary_label, summary_style) = match summary_status.as_str() {
                 "on" => (
-                    "summary:on",
+                    summary_badge.as_str(),
                     Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold(),
                 ),
-                "skip(stream)" => (
-                    "summary:skip(stream)",
+                "ignored(live-rule)" => (
+                    summary_badge.as_str(),
                     Style::new()
                         .fg(Color::Black)
                         .bg(Theme::ACCENT_YELLOW)
                         .bold(),
                 ),
-                "off(no-backend)" => (
-                    "summary:off(no-backend)",
-                    Style::new().fg(Theme::TEXT_MUTED),
-                ),
-                _ => ("summary:off", Style::new().fg(Theme::TEXT_MUTED)),
+                "off(no-backend)" => (summary_badge.as_str(), Style::new().fg(Theme::TEXT_MUTED)),
+                _ => (summary_badge.as_str(), Style::new().fg(Theme::TEXT_MUTED)),
             };
             spans.push(Span::styled(format!(" {} ", summary_label), summary_style));
 
+            spans.push(Span::styled(" ", Style::new()));
+            let phases_label = if app.daemon_config.daemon.summary_event_window == 0 {
+                "phases:auto".to_string()
+            } else {
+                format!("phases:w{}", app.daemon_config.daemon.summary_event_window)
+            };
+            spans.push(Span::styled(
+                format!(" {} ", phases_label),
+                Style::new().fg(Theme::TEXT_MUTED),
+            ));
             spans.push(Span::styled(" ", Style::new()));
             let (rt_label, rt_style) = if !app.daemon_config.daemon.detail_realtime_preview_enabled
             {
                 ("detail-live:off", Style::new().fg(Theme::TEXT_MUTED))
             } else if app.should_skip_realtime_for_selected() {
                 (
-                    "detail-live:skip(stream)",
+                    "detail-live:ignored(live-rule)",
                     Style::new().fg(Theme::TEXT_MUTED),
                 )
             } else if app.realtime_preview_enabled {
@@ -272,14 +317,12 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 ("detail-live:off", Style::new().fg(Theme::TEXT_MUTED))
             };
             spans.push(Span::styled(format!(" {} ", rt_label), rt_style));
-            spans.push(Span::styled(
-                " config-only ",
-                Style::new().fg(Theme::TEXT_HINT),
-            ));
-            spans.push(Span::styled(
-                format!(" h-scroll:{} ", app.detail_h_scroll),
-                Style::new().fg(Theme::TEXT_MUTED),
-            ));
+            if app.detail_view_mode != DetailViewMode::Turn {
+                spans.push(Span::styled(
+                    format!(" h-scroll:{} ", app.detail_h_scroll),
+                    Style::new().fg(Theme::TEXT_MUTED),
+                ));
+            }
 
             let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());
@@ -295,10 +338,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 " daemon:off "
             };
             let line = Line::from(vec![
-                Span::styled(
-                    " Operations ",
-                    Style::new().fg(Theme::ACCENT_ORANGE).bold(),
-                ),
+                Span::styled(" Operations ", Style::new().fg(Theme::ACCENT_ORANGE).bold()),
                 Span::styled(" ", Style::new()),
                 Span::styled(
                     daemon_label,
@@ -452,10 +492,21 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         }
         View::SessionDetail => {
             let summary_state = app.llm_summary_status_label();
+            let summary_engine = app.llm_summary_engine_label();
+            let (summary_queued, summary_done, summary_skipped, filtered_control) =
+                app.detail_summary_counters();
+            let summary_queue = format!(
+                "queued:{summary_queued} done:{summary_done} skipped:{summary_skipped} filtered-control:{filtered_control}"
+            );
+            let phases_state = if app.daemon_config.daemon.summary_event_window == 0 {
+                "auto".to_string()
+            } else {
+                format!("w{}", app.daemon_config.daemon.summary_event_window)
+            };
             let realtime_state = if !app.daemon_config.daemon.detail_realtime_preview_enabled {
                 "off"
             } else if app.should_skip_realtime_for_selected() {
-                "skip"
+                "ignored(live-rule)"
             } else if app.realtime_preview_enabled {
                 "on"
             } else {
@@ -474,11 +525,14 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("n/N ", key_style),
                     Span::styled("turn  ", desc_style),
                     Span::styled("Enter ", key_style),
-                    Span::styled("expand  ", desc_style),
+                    Span::styled("raw toggle  ", desc_style),
                     Span::styled("g/G ", key_style),
                     Span::styled("first/last  ", desc_style),
                     Span::styled("summary ", key_style),
-                    Span::styled(format!("{summary_state}  "), desc_style),
+                    Span::styled(
+                        format!("{summary_state}/{summary_engine} {summary_queue} phases:{phases_state}  "),
+                        desc_style,
+                    ),
                     Span::styled("detail-live ", key_style),
                     Span::styled(format!("{realtime_state}  "), desc_style),
                     Span::styled("4 ", key_style),
@@ -501,7 +555,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("c ", key_style),
                     Span::styled(format!("collapse:{collapse_state}  "), desc_style),
                     Span::styled("summary ", key_style),
-                    Span::styled(format!("{summary_state}  "), desc_style),
+                    Span::styled(
+                        format!("{summary_state}/{summary_engine} {summary_queue} phases:{phases_state}  "),
+                        desc_style,
+                    ),
                     Span::styled("detail-live ", key_style),
                     Span::styled(format!("{realtime_state}  "), desc_style),
                     Span::styled("4 ", key_style),

@@ -53,7 +53,10 @@ fn render_account(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(vec![
             Span::styled("  Handle:         ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(profile.nickname.as_str(), Style::new().fg(Theme::TEXT_PRIMARY)),
+            Span::styled(
+                profile.nickname.as_str(),
+                Style::new().fg(Theme::TEXT_PRIMARY),
+            ),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  Email:          ", Style::new().fg(Theme::TEXT_SECONDARY)),
@@ -438,7 +441,8 @@ fn render_daemon_config(
                 }
             }
 
-            if is_selected && matches!(field, SettingField::StripPaths | SettingField::StripEnvVars) {
+            if is_selected && matches!(field, SettingField::StripPaths | SettingField::StripEnvVars)
+            {
                 let patterns = app.daemon_config.privacy.exclude_patterns.join(", ");
                 if !patterns.is_empty() {
                     lines.push(Line::from(vec![
@@ -455,7 +459,7 @@ fn render_daemon_config(
                 lines.push(Line::from(vec![
                     Span::raw("     "),
                     Span::styled(
-                        "Env(API): ANTHROPIC_API_KEY | OPENAI_API_KEY | GEMINI_API_KEY | OPS_TL_SUM_ENDPOINT/BASE/PATH",
+                        "Settings override env when set. Env fallback: ANTHROPIC_API_KEY | OPENAI_API_KEY | GEMINI_API_KEY",
                         Style::new().fg(Theme::TEXT_MUTED),
                     ),
                 ]));
@@ -465,7 +469,37 @@ fn render_daemon_config(
                 lines.push(Line::from(vec![
                     Span::raw("     "),
                     Span::styled(
-                        "Env(CLI): OPS_TL_SUM_CLI_BIN, OPS_TL_SUM_CLI_ARGS, OPS_TL_SUM_MODEL",
+                        "CLI env fallback: OPS_TL_SUM_CLI_BIN, OPS_TL_SUM_CLI_ARGS. Model can be set below.",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::SummaryModel {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Applies to API requests and CLI --model when not already specified in CLI args.",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected
+                && matches!(
+                    field,
+                    SettingField::SummaryOpenAiCompatEndpoint
+                        | SettingField::SummaryOpenAiCompatBase
+                        | SettingField::SummaryOpenAiCompatPath
+                        | SettingField::SummaryOpenAiCompatStyle
+                        | SettingField::SummaryOpenAiCompatApiKey
+                        | SettingField::SummaryOpenAiCompatApiKeyHeader
+                )
+            {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Used by LLM Summary Mode = API:OpenAI-Compatible (or Auto when selected).",
                         Style::new().fg(Theme::TEXT_MUTED),
                     ),
                 ]));

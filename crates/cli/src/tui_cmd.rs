@@ -40,7 +40,11 @@ pub fn run_tui_timeline(
     summaries: bool,
     no_summary: bool,
     summary_provider: Option<&str>,
+    summary_content_mode: Option<&str>,
+    summary_disk_cache: Option<bool>,
     max_rows: Option<usize>,
+    summary_budget: Option<usize>,
+    summary_timeout_ms: Option<u64>,
 ) -> Result<()> {
     if summaries && no_summary {
         bail!("--summaries and --no-summary cannot be used together");
@@ -56,7 +60,11 @@ pub fn run_tui_timeline(
             include_summaries: !no_summary,
             generate_summaries: summaries && !no_summary,
             summary_provider_override: summary_provider.map(str::to_string),
+            summary_content_mode_override: summary_content_mode.map(str::to_string),
+            summary_disk_cache_override: summary_disk_cache,
             max_rows,
+            summary_budget,
+            summary_timeout_ms,
         },
     )?;
 

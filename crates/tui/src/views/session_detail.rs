@@ -1,6 +1,7 @@
-use crate::app::{extract_turns, App, DetailViewMode, DisplayEvent};
+use crate::app::{extract_visible_turns, App, DetailViewMode, DisplayEvent};
 use crate::session_timeline::LaneMarker;
 use crate::theme::{self, Theme};
+use crate::timeline_summary::TimelineSummaryPayload;
 use opensession_core::trace::{ContentBlock, Event, EventType};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
@@ -16,6 +17,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             return;
         }
     };
+
+    if app.focus_detail_view && app.detail_view_mode == DetailViewMode::Turn {
+        let mut base_events = app.get_base_visible_events(&session);
+        if base_events.is_empty() {
+            base_events = app.get_visible_events(&session);
+        }
+        render_turn_view(frame, app, &session.session_id, &base_events, area);
+        return;
+    }
 
     let [header_area, bar_area, timeline_area] = Layout::vertical([
         Constraint::Length(7),
@@ -534,6 +544,100 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use opensession_core::trace::{Agent, Content, Event, EventType, Session};
+
+    fn make_event(event_type: EventType, text: &str) -> Event {
+        Event {
+            event_id: format!("event-{event_type:?}"),
+            timestamp: Utc::now(),
+            event_type,
+            task_id: None,
+            content: Content::text(text),
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn collect_turn_user_lines_keeps_full_multiline_prompt() {
+        let long_line = "A".repeat(200);
+        let text = format!("line1\nline2\nline3\nline4\nline5\nline6\n{long_line}");
+        let user_event = make_event(EventType::UserMessage, &text);
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 0,
+            anchor_source_index: 0,
+            user_events: vec![&user_event],
+            agent_events: vec![],
+        };
+
+        let lines = collect_turn_user_lines(&turn);
+        assert_eq!(lines.len(), 7);
+        assert_eq!(lines[6], long_line);
+    }
+
+    #[test]
+    fn summary_payload_prefers_cards_over_raw_thread() {
+        let session = Session::new(
+            "test-session".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let app = App::new(vec![session]);
+        let user_event = make_event(EventType::UserMessage, "prompt");
+        let agent_event = make_event(EventType::AgentMessage, "response");
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 1,
+            anchor_source_index: 0,
+            user_events: vec![&user_event],
+            agent_events: vec![&agent_event],
+        };
+        let payload = TimelineSummaryPayload {
+            kind: "turn-summary".to_string(),
+            version: "2.0".to_string(),
+            scope: "turn".to_string(),
+            turn_meta: crate::timeline_summary::TurnSummaryTurnMeta::default(),
+            prompt: crate::timeline_summary::TurnSummaryPrompt {
+                text: "prompt".to_string(),
+                intent: "Implement fix".to_string(),
+                constraints: vec![],
+            },
+            outcome: crate::timeline_summary::TurnSummaryOutcome {
+                status: "completed".to_string(),
+                summary: "done".to_string(),
+            },
+            evidence: crate::timeline_summary::TurnSummaryEvidence::default(),
+            cards: vec![crate::timeline_summary::BehaviorCard {
+                card_type: "overview".to_string(),
+                title: "Overview".to_string(),
+                lines: vec!["updated renderer".to_string()],
+                severity: "info".to_string(),
+            }],
+            next_steps: vec!["verify".to_string()],
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, Some(&payload), false, true);
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Turn Summary"));
+        assert!(!rendered.contains("Agent Thread"));
+    }
+}
+
 fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], current_idx: usize) {
     if events.is_empty() || area.width < 10 {
         return;
@@ -595,7 +699,7 @@ fn render_turn_view(
     events: &[DisplayEvent],
     area: Rect,
 ) {
-    let turns = extract_turns(events);
+    let turns = extract_visible_turns(events);
     if turns.is_empty() {
         let p = Paragraph::new("No turns found.")
             .block(Theme::block_dim().title(" Split View "))
@@ -617,71 +721,21 @@ fn render_turn_view(
         line_offsets.push(left_lines.len() as u16);
 
         let focused = turn_idx == app.turn_index;
-        let expanded = app.expanded_turns.contains(&turn_idx);
-        let style = if focused {
-            Style::new().fg(Theme::ACCENT_BLUE).bold()
-        } else {
-            Style::new().fg(Theme::TEXT_SECONDARY)
-        };
-        let turn_key = App::turn_summary_key(session_id, turn.turn_index, turn.anchor_source_index);
-        let llm_summary = app
-            .timeline_summary_cache
-            .get(&turn_key)
-            .cloned()
-            .unwrap_or_else(|| {
-                if !app.daemon_config.daemon.summary_enabled {
-                    "(LLM summary off)".to_string()
-                } else if app.should_skip_realtime_for_selected() {
-                    "(LLM summary skipped: stream-write tool)".to_string()
-                } else {
-                    "(LLM summary pending)".to_string()
-                }
-            });
+        let raw_override = app.turn_raw_overrides.contains(&turn_idx);
+        let summary_payload =
+            app.turn_summary_payload(session_id, turn.turn_index, turn.anchor_source_index);
 
-        left_lines.push(Line::from(vec![
-            Span::styled(if focused { ">" } else { " " }, style),
-            Span::styled(
-                format!(
-                    " Turn {} {}",
-                    turn_idx + 1,
-                    if expanded {
-                        "[expanded]"
-                    } else {
-                        "[collapsed]"
-                    }
-                ),
-                style,
-            ),
-        ]));
-        right_lines.push(Line::from(vec![
-            Span::styled(" ", Style::new()),
-            Span::styled(
-                truncate(&llm_summary, 110),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]));
-
-        if !expanded {
-            left_lines.push(Line::from(Span::styled(
-                turn_user_preview(turn),
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            )));
-            right_lines.push(Line::from(Span::styled(
-                format!("{} agent events", turn.agent_events.len()),
-                Style::new().fg(Theme::TEXT_MUTED),
-            )));
-        } else {
-            let user_lines = render_turn_user_content(turn);
-            let agent_lines = render_turn_agent_content(turn);
-            left_lines.extend(user_lines);
-            right_lines.extend(agent_lines);
-        }
-
-        while left_lines.len() < right_lines.len() {
-            left_lines.push(Line::raw(""));
-        }
-        while right_lines.len() < left_lines.len() {
+        let prompt_rows = render_turn_prompt_card(turn_idx, turn, focused);
+        for line in prompt_rows {
+            left_lines.push(line);
             right_lines.push(Line::raw(""));
+        }
+
+        let right_rows =
+            render_turn_response_panel(app, turn, summary_payload, raw_override, focused);
+        for line in right_rows {
+            left_lines.push(Line::raw(""));
+            right_lines.push(line);
         }
 
         left_lines.push(Line::raw(""));
@@ -693,15 +747,13 @@ fn render_turn_view(
     let total = left_lines.len() as u16;
     let max_scroll = total.saturating_sub(visible_h);
     app.turn_agent_scroll = app.turn_agent_scroll.min(max_scroll);
-    let scroll = (app.turn_agent_scroll, 0);
+    let scroll = (app.turn_agent_scroll, app.turn_h_scroll);
 
     let left_para = Paragraph::new(left_lines.clone())
-        .block(Theme::block().title(" User "))
-        .wrap(Wrap { trim: false })
+        .block(Theme::block().title(" User Prompts "))
         .scroll(scroll);
     let right_para = Paragraph::new(right_lines.clone())
-        .block(Theme::block().title(" Agent "))
-        .wrap(Wrap { trim: false })
+        .block(Theme::block().title(" Turn Summaries "))
         .scroll(scroll);
 
     frame.render_widget(left_para, left_area);
@@ -725,63 +777,255 @@ fn render_turn_view(
     }
 }
 
-fn render_turn_user_content(turn: &crate::app::Turn<'_>) -> Vec<Line<'static>> {
+fn render_turn_prompt_card(
+    turn_idx: usize,
+    turn: &crate::app::Turn<'_>,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    let title_style = if focused {
+        Style::new().fg(Theme::ACCENT_BLUE).bold()
+    } else {
+        Style::new().fg(Theme::TEXT_SECONDARY).bold()
+    };
+    let border_style = if focused {
+        Style::new().fg(Theme::ACCENT_BLUE)
+    } else {
+        Style::new().fg(Theme::GUTTER)
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(if focused { ">" } else { " " }, title_style),
+        Span::styled(format!(" #{} User's prompt", turn_idx + 1), title_style),
+    ]));
+    lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));
+
+    let prompt_lines = collect_turn_user_lines(turn);
+    for text in prompt_lines {
+        lines.push(Line::from(vec![
+            Span::styled("  │ ", border_style),
+            Span::styled(text, Style::new().fg(Theme::TEXT_PRIMARY)),
+        ]));
+    }
+
+    lines.push(Line::from(vec![Span::styled("  └", border_style)]));
+    lines
+}
+
+fn collect_turn_user_lines(turn: &crate::app::Turn<'_>) -> Vec<String> {
     let mut lines = Vec::new();
     for event in &turn.user_events {
+        let mut pushed_any = false;
         for block in &event.content.blocks {
             if let ContentBlock::Text { text } = block {
-                for line in text.lines().take(5) {
-                    lines.push(Line::from(Span::styled(
-                        truncate(line, 90),
-                        Style::new().fg(Theme::TEXT_PRIMARY),
-                    )));
+                for line in text.lines() {
+                    lines.push(line.to_string());
+                    pushed_any = true;
                 }
             }
         }
+        if !pushed_any {
+            lines.push(event_summary(&event.event_type, &event.content.blocks));
+        }
     }
+
     if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "(no user message)",
-            Style::new().fg(Theme::TEXT_MUTED),
-        )));
+        lines.push("(no user message)".to_string());
     }
     lines
 }
 
-fn turn_user_preview(turn: &crate::app::Turn<'_>) -> String {
-    for event in &turn.user_events {
-        for block in &event.content.blocks {
-            if let ContentBlock::Text { text } = block {
-                if let Some(line) = text.lines().next() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        return truncate(trimmed, 90);
+fn render_turn_response_panel(
+    app: &App,
+    turn: &crate::app::Turn<'_>,
+    summary_payload: Option<&TimelineSummaryPayload>,
+    raw_override: bool,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    if let Some(payload) = summary_payload {
+        if !raw_override {
+            return render_turn_summary_cards(payload, focused);
+        }
+    }
+
+    if raw_override {
+        return render_turn_raw_thread(app, turn, summary_payload.is_some(), raw_override, focused);
+    }
+
+    render_turn_pending_row(app, turn, focused)
+}
+
+fn render_turn_pending_row(
+    app: &App,
+    turn: &crate::app::Turn<'_>,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    let border_style = if focused {
+        Style::new().fg(Theme::ACCENT_YELLOW)
+    } else {
+        Style::new().fg(Theme::GUTTER)
+    };
+    let pending = if !app.daemon_config.daemon.summary_enabled {
+        "LLM summary is off"
+    } else if app.should_skip_realtime_for_selected() {
+        "LLM summary skipped by Neglect Live Session rule"
+    } else {
+        "LLM summary pending"
+    };
+    vec![
+        Line::from(vec![Span::styled(
+            " Summary Status",
+            Style::new().fg(Theme::TEXT_SECONDARY).bold(),
+        )]),
+        Line::from(vec![Span::styled("  ┌", border_style)]),
+        Line::from(vec![
+            Span::styled("  │ ", border_style),
+            Span::styled(pending, Style::new().fg(Theme::TEXT_MUTED)),
+        ]),
+        Line::from(vec![
+            Span::styled("  │ ", border_style),
+            Span::styled(
+                format!("{} agent events captured", turn.agent_events.len()),
+                Style::new().fg(Theme::TEXT_MUTED),
+            ),
+        ]),
+        Line::from(vec![Span::styled("  └", border_style)]),
+    ]
+}
+
+fn render_turn_raw_thread(
+    _app: &App,
+    turn: &crate::app::Turn<'_>,
+    has_summary: bool,
+    raw_override: bool,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    let title_style = if focused {
+        Style::new().fg(Theme::ACCENT_ORANGE).bold()
+    } else {
+        Style::new().fg(Theme::TEXT_SECONDARY).bold()
+    };
+    let border_style = if focused {
+        Style::new().fg(Theme::ACCENT_ORANGE)
+    } else {
+        Style::new().fg(Theme::GUTTER)
+    };
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![Span::styled(
+        " Agent Thread (raw override)",
+        title_style,
+    )]));
+    if has_summary && raw_override {
+        lines.push(Line::from(vec![Span::styled(
+            " [Enter: return to summary cards]",
+            Style::new().fg(Theme::TEXT_MUTED),
+        )]));
+    }
+    lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));
+    if turn.agent_events.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  │ ", border_style),
+            Span::styled("(no agent events)", Style::new().fg(Theme::TEXT_MUTED)),
+        ]));
+    } else {
+        for event in &turn.agent_events {
+            let (kind, kind_color) = event_type_display(&event.event_type);
+            lines.push(Line::from(vec![
+                Span::styled("  │ ", border_style),
+                Span::styled(format!("{kind:>8} "), Style::new().fg(kind_color).bold()),
+                Span::styled(
+                    event_summary(&event.event_type, &event.content.blocks),
+                    Style::new().fg(Theme::TEXT_PRIMARY),
+                ),
+            ]));
+
+            for block in &event.content.blocks {
+                if let ContentBlock::Text { text } = block {
+                    for line in text.lines().take(3) {
+                        lines.push(Line::from(vec![
+                            Span::styled("  │   ", border_style),
+                            Span::styled(line.to_string(), Style::new().fg(Theme::TEXT_SECONDARY)),
+                        ]));
                     }
+                    break;
                 }
             }
         }
     }
-    "(no user message)".to_string()
+    lines.push(Line::from(vec![Span::styled("  └", border_style)]));
+    lines
 }
 
-fn render_turn_agent_content(turn: &crate::app::Turn<'_>) -> Vec<Line<'static>> {
+fn render_turn_summary_cards(
+    payload: &TimelineSummaryPayload,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    let title_style = if focused {
+        Style::new().fg(Theme::ACCENT_BLUE).bold()
+    } else {
+        Style::new().fg(Theme::TEXT_SECONDARY).bold()
+    };
     let mut lines = Vec::new();
-    for event in &turn.agent_events {
-        let (kind, kind_color) = event_type_display(&event.event_type);
+    lines.push(Line::from(vec![Span::styled(
+        format!(" Turn Summary ({})", payload.version),
+        title_style,
+    )]));
+    for (idx, card) in payload.cards.iter().enumerate() {
+        if idx > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(render_behavior_card(card, focused));
+    }
+    lines
+}
+
+fn render_behavior_card(
+    card: &crate::timeline_summary::BehaviorCard,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    let border_style = if focused {
+        Style::new().fg(Theme::ACCENT_BLUE)
+    } else {
+        Style::new().fg(Theme::GUTTER)
+    };
+    let kind_style = match card.card_type.as_str() {
+        "errors" => Style::new().fg(Theme::ACCENT_RED).bold(),
+        "plan" => Style::new().fg(Theme::ACCENT_CYAN).bold(),
+        "files" => Style::new().fg(Theme::ACCENT_GREEN).bold(),
+        "implementation" => Style::new().fg(Theme::ACCENT_ORANGE).bold(),
+        _ => Style::new().fg(Theme::ACCENT_BLUE).bold(),
+    };
+    let severity_style = match card.severity.as_str() {
+        "error" => Style::new().fg(Theme::ACCENT_RED),
+        "warn" => Style::new().fg(Theme::ACCENT_YELLOW),
+        _ => Style::new().fg(Theme::TEXT_MUTED),
+    };
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));
+    lines.push(Line::from(vec![
+        Span::styled("  │ ", border_style),
+        Span::styled(format!("[{}] ", card.card_type), kind_style),
+        Span::styled(
+            card.title.clone(),
+            Style::new().fg(Theme::TEXT_PRIMARY).bold(),
+        ),
+        Span::styled(format!(" ({})", card.severity), severity_style),
+    ]));
+    for entry in card.lines.iter().filter_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }) {
         lines.push(Line::from(vec![
-            Span::styled("| ", Style::new().fg(kind_color)),
-            Span::styled(format!("{kind:>8} "), Style::new().fg(kind_color).bold()),
-            Span::styled(
-                event_summary(&event.event_type, &event.content.blocks),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
+            Span::styled("  │ ", border_style),
+            Span::styled(format!("- {entry}"), Style::new().fg(Theme::TEXT_PRIMARY)),
         ]));
     }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "(no agent events)",
-            Style::new().fg(Theme::TEXT_MUTED),
-        )));
-    }
+    lines.push(Line::from(vec![Span::styled("  └", border_style)]));
     lines
 }

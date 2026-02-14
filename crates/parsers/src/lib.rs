@@ -29,12 +29,12 @@ pub trait SessionParser: Send + Sync {
 /// Get all available parsers
 pub fn all_parsers() -> Vec<Box<dyn SessionParser>> {
     vec![
-        Box::new(claude_code::ClaudeCodeParser),
         Box::new(codex::CodexParser),
         Box::new(opencode::OpenCodeParser),
         Box::new(cline::ClineParser),
         Box::new(amp::AmpParser),
         Box::new(cursor::CursorParser),
         Box::new(gemini::GeminiParser),
+        Box::new(claude_code::ClaudeCodeParser),
     ]
 }

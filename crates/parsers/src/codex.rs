@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use opensession_core::trace::{
     Agent, Content, ContentBlock, Event, EventType, Session, SessionContext,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::BufRead;
 use std::path::Path;
 
@@ -26,6 +26,18 @@ impl SessionParser for CodexParser {
     fn parse(&self, path: &Path) -> Result<Session> {
         parse_codex_jsonl(path)
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RequestUserInputCallMeta {
+    questions: Vec<InteractiveQuestionMeta>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct InteractiveQuestionMeta {
+    id: String,
+    header: Option<String>,
+    question: Option<String>,
 }
 
 // ── Parsing logic ───────────────────────────────────────────────────────────
@@ -55,6 +67,8 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
     let mut tool_version: Option<String> = None;
     let mut originator: Option<String> = None;
     let mut is_desktop = false;
+    let mut open_tasks: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut interactive_call_meta: HashMap<String, RequestUserInputCallMeta> = HashMap::new();
 
     for line_result in reader.lines() {
         let line = match line_result {
@@ -158,7 +172,7 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
                 } else {
                     &mut first_user_text
                 };
-                process_item(
+                process_item_with_options(
                     payload,
                     entry_ts,
                     &mut events,
@@ -166,6 +180,8 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
                     user_text_target,
                     &mut last_function_name,
                     &mut call_map,
+                    &mut interactive_call_meta,
+                    is_desktop,
                 );
             }
             continue;
@@ -175,17 +191,122 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
         if top_type == "event_msg" {
             if let Some(payload) = obj.get("payload") {
                 let payload_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if payload_type == "user_message" {
-                    if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
-                        let text = msg.trim().to_string();
-                        if !text.is_empty() {
-                            // For Desktop, event_msg/user_message is the authoritative
-                            // source for user text. Overwrite even if already set.
-                            if first_user_text.is_none() {
-                                first_user_text = Some(text);
+                match payload_type {
+                    "user_message" => {
+                        if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                            let text = msg.trim().to_string();
+                            if text.is_empty() || looks_like_injected_codex_user_text(&text) {
+                                continue;
                             }
+                            set_first(&mut first_user_text, Some(text.clone()));
+                            push_user_message_event(
+                                &mut events,
+                                &mut event_counter,
+                                entry_ts,
+                                &text,
+                                Some("event_msg"),
+                            );
                         }
                     }
+                    "turn_aborted" => {
+                        event_counter += 1;
+                        let mut attributes = HashMap::new();
+                        if let Some(reason) = payload
+                            .get("reason")
+                            .or_else(|| payload.get("message"))
+                            .or_else(|| payload.get("error"))
+                            .and_then(|v| v.as_str())
+                        {
+                            attributes.insert(
+                                "reason".to_string(),
+                                serde_json::Value::String(reason.to_string()),
+                            );
+                        }
+                        let task_id = payload
+                            .get("turn_id")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        events.push(Event {
+                            event_id: format!("codex-{}", event_counter),
+                            timestamp: entry_ts,
+                            event_type: EventType::Custom {
+                                kind: "turn_aborted".to_string(),
+                            },
+                            task_id,
+                            content: Content::text("turn aborted"),
+                            duration_ms: None,
+                            attributes,
+                        });
+                    }
+                    "task_started" => {
+                        let turn_id = payload
+                            .get("turn_id")
+                            .or_else(|| payload.get("task_id"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(String::from);
+                        if let Some(task_id) = turn_id {
+                            let title = payload
+                                .get("title")
+                                .or_else(|| payload.get("task"))
+                                .or_else(|| payload.get("name"))
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(String::from);
+                            open_tasks.insert(task_id.clone(), title.clone());
+                            event_counter += 1;
+                            events.push(Event {
+                                event_id: format!("codex-{}", event_counter),
+                                timestamp: entry_ts,
+                                event_type: EventType::TaskStart {
+                                    title: title.clone(),
+                                },
+                                task_id: Some(task_id),
+                                content: Content::text(
+                                    title.unwrap_or_else(|| "task started".to_string()),
+                                ),
+                                duration_ms: None,
+                                attributes: HashMap::new(),
+                            });
+                        }
+                    }
+                    "task_complete" | "task_completed" | "task_finished" => {
+                        let turn_id = payload
+                            .get("turn_id")
+                            .or_else(|| payload.get("task_id"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(String::from);
+                        if let Some(task_id) = turn_id {
+                            let summary = payload
+                                .get("last_agent_message")
+                                .or_else(|| payload.get("summary"))
+                                .or_else(|| payload.get("message"))
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(String::from);
+                            open_tasks.remove(&task_id);
+                            event_counter += 1;
+                            events.push(Event {
+                                event_id: format!("codex-{}", event_counter),
+                                timestamp: entry_ts,
+                                event_type: EventType::TaskEnd {
+                                    summary: summary.clone(),
+                                },
+                                task_id: Some(task_id),
+                                content: Content::text(
+                                    summary.unwrap_or_else(|| "task completed".to_string()),
+                                ),
+                                duration_ms: None,
+                                attributes: HashMap::new(),
+                            });
+                        }
+                    }
+                    _ => {}
                 }
             }
             continue;
@@ -197,7 +318,7 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
         }
 
         // Legacy flat entry with type field (message, reasoning, function_call, etc.)
-        process_item(
+        process_item_with_options(
             &v,
             entry_ts,
             &mut events,
@@ -205,7 +326,31 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
             &mut first_user_text,
             &mut last_function_name,
             &mut call_map,
+            &mut interactive_call_meta,
+            is_desktop,
         );
+    }
+
+    if !open_tasks.is_empty() {
+        let synthetic_ts = events
+            .last()
+            .map(|event| event.timestamp)
+            .or(session_ts)
+            .unwrap_or_else(Utc::now);
+        for (task_id, title) in open_tasks {
+            event_counter += 1;
+            events.push(Event {
+                event_id: format!("codex-{}", event_counter),
+                timestamp: synthetic_ts,
+                event_type: EventType::TaskEnd {
+                    summary: Some("synthetic end (missing task_complete)".to_string()),
+                },
+                task_id: Some(task_id),
+                content: Content::text(title.unwrap_or_else(|| "synthetic task end".to_string())),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            });
+        }
     }
 
     // ── Build Session ───────────────────────────────────────────────────────
@@ -274,6 +419,7 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
 }
 
 /// Process a flat entry with `type` at the top level.
+#[cfg(test)]
 fn process_item(
     item: &serde_json::Value,
     ts: DateTime<Utc>,
@@ -283,35 +429,97 @@ fn process_item(
     last_function_name: &mut String,
     call_map: &mut HashMap<String, (String, String)>,
 ) {
+    let mut interactive_call_meta = HashMap::new();
+    process_item_with_options(
+        item,
+        ts,
+        events,
+        counter,
+        first_user_text,
+        last_function_name,
+        call_map,
+        &mut interactive_call_meta,
+        false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_item_with_options(
+    item: &serde_json::Value,
+    ts: DateTime<Utc>,
+    events: &mut Vec<Event>,
+    counter: &mut u64,
+    first_user_text: &mut Option<String>,
+    last_function_name: &mut String,
+    call_map: &mut HashMap<String, (String, String)>,
+    interactive_call_meta: &mut HashMap<String, RequestUserInputCallMeta>,
+    filter_injected_user_text: bool,
+) {
     let item_type = match item.get("type").and_then(|v| v.as_str()) {
         Some(t) => t,
         None => return,
     };
 
     match item_type {
+        "user" | "assistant" => {
+            let message = item.get("message").unwrap_or(item);
+            let role = message
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or(item_type);
+            let text = extract_message_text_blocks(message.get("content"));
+            if text.is_empty() {
+                return;
+            }
+            if role == "user"
+                && filter_injected_user_text
+                && looks_like_injected_codex_user_text(&text)
+            {
+                return;
+            }
+
+            let event_type = match role {
+                "user" => EventType::UserMessage,
+                "assistant" => EventType::AgentMessage,
+                _ => return,
+            };
+
+            if role == "user" {
+                set_first(first_user_text, Some(text.clone()));
+            }
+
+            if matches!(event_type, EventType::UserMessage) {
+                let source = if filter_injected_user_text {
+                    Some("response_fallback")
+                } else {
+                    None
+                };
+                push_user_message_event(events, counter, ts, &text, source);
+            } else {
+                *counter += 1;
+                events.push(Event {
+                    event_id: format!("codex-{}", counter),
+                    timestamp: ts,
+                    event_type,
+                    task_id: None,
+                    content: Content::text(text),
+                    duration_ms: None,
+                    attributes: HashMap::new(),
+                });
+            }
+        }
         "message" => {
             let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("");
-            let content_blocks = item
-                .get("content")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            let text: String = content_blocks
-                .iter()
-                .filter_map(|b| {
-                    let btype = b.get("type").and_then(|v| v.as_str())?;
-                    match btype {
-                        "output_text" | "input_text" => {
-                            b.get("text").and_then(|v| v.as_str()).map(String::from)
-                        }
-                        _ => None,
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text = extract_message_text_blocks(item.get("content"));
 
             if text.is_empty() {
+                return;
+            }
+
+            if role == "user"
+                && filter_injected_user_text
+                && looks_like_injected_codex_user_text(&text)
+            {
                 return;
             }
 
@@ -326,16 +534,25 @@ fn process_item(
                 set_first(first_user_text, Some(text.clone()));
             }
 
-            *counter += 1;
-            events.push(Event {
-                event_id: format!("codex-{}", counter),
-                timestamp: ts,
-                event_type,
-                task_id: None,
-                content: Content::text(&text),
-                duration_ms: None,
-                attributes: HashMap::new(),
-            });
+            if matches!(event_type, EventType::UserMessage) {
+                let source = if filter_injected_user_text {
+                    Some("response_fallback")
+                } else {
+                    None
+                };
+                push_user_message_event(events, counter, ts, &text, source);
+            } else {
+                *counter += 1;
+                events.push(Event {
+                    event_id: format!("codex-{}", counter),
+                    timestamp: ts,
+                    event_type,
+                    task_id: None,
+                    content: Content::text(&text),
+                    duration_ms: None,
+                    attributes: HashMap::new(),
+                });
+            }
         }
         "reasoning" => {
             let summaries = item
@@ -384,6 +601,19 @@ fn process_item(
             let args: serde_json::Value =
                 serde_json::from_str(args_str).unwrap_or(serde_json::Value::Null);
 
+            let call_id = item
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if name == "request_user_input" {
+                if let Some(call_id) = call_id.as_ref() {
+                    let meta = parse_request_user_input_call_meta(&args);
+                    if !meta.questions.is_empty() {
+                        interactive_call_meta.insert(call_id.clone(), meta);
+                    }
+                }
+            }
+
             let event_type = classify_codex_function(&name, &args);
             let content = if item_type == "custom_tool_call" {
                 // Custom tools store input as raw text (e.g. patch content)
@@ -396,7 +626,7 @@ fn process_item(
             *counter += 1;
             let event_id = format!("codex-{}", counter);
 
-            if let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) {
+            if let Some(call_id) = call_id.as_deref() {
                 call_map.insert(call_id.to_string(), (event_id.clone(), name.clone()));
             }
             *last_function_name = name;
@@ -432,6 +662,79 @@ fn process_item(
                     };
                     (prev_id, last_function_name.clone())
                 };
+
+            if call_name == "request_user_input" {
+                let call_meta = item
+                    .get("call_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|call_id| interactive_call_meta.remove(call_id));
+                if let Some((interactive_text, question_ids, raw_answers)) =
+                    parse_request_user_input_answers(&output_text)
+                {
+                    if let Some(meta) = call_meta {
+                        if !meta.questions.is_empty() {
+                            *counter += 1;
+                            let mut attributes = HashMap::new();
+                            attributes.insert(
+                                "source".to_string(),
+                                serde_json::Value::String("interactive_question".to_string()),
+                            );
+                            if let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) {
+                                attributes.insert(
+                                    "call_id".to_string(),
+                                    serde_json::Value::String(call_id.to_string()),
+                                );
+                            }
+                            attributes.insert(
+                                "question_ids".to_string(),
+                                serde_json::Value::Array(
+                                    meta.questions
+                                        .iter()
+                                        .map(|q| serde_json::Value::String(q.id.clone()))
+                                        .collect(),
+                                ),
+                            );
+                            events.push(Event {
+                                event_id: format!("codex-{}", counter),
+                                timestamp: ts,
+                                event_type: EventType::SystemMessage,
+                                task_id: None,
+                                content: Content::text(render_interactive_questions(
+                                    &meta.questions,
+                                )),
+                                duration_ms: None,
+                                attributes,
+                            });
+                        }
+                    }
+                    set_first(first_user_text, Some(interactive_text.clone()));
+                    *counter += 1;
+                    let mut attributes = HashMap::new();
+                    attributes.insert(
+                        "source".to_string(),
+                        serde_json::Value::String("interactive".to_string()),
+                    );
+                    attributes.insert(
+                        "question_ids".to_string(),
+                        serde_json::Value::Array(
+                            question_ids
+                                .iter()
+                                .map(|id| serde_json::Value::String(id.clone()))
+                                .collect(),
+                        ),
+                    );
+                    attributes.insert("raw_answers".to_string(), raw_answers);
+                    events.push(Event {
+                        event_id: format!("codex-{}", counter),
+                        timestamp: ts,
+                        event_type: EventType::UserMessage,
+                        task_id: None,
+                        content: Content::text(interactive_text),
+                        duration_ms: None,
+                        attributes,
+                    });
+                }
+            }
 
             *counter += 1;
             events.push(Event {
@@ -473,6 +776,232 @@ fn process_item(
     }
 }
 
+fn push_user_message_event(
+    events: &mut Vec<Event>,
+    counter: &mut u64,
+    ts: DateTime<Utc>,
+    text: &str,
+    source: Option<&str>,
+) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if matches!(source, Some("event_msg")) {
+        remove_duplicate_response_fallback(events, ts, trimmed);
+    }
+    if should_skip_duplicate_user_event(events, ts, trimmed, source) {
+        return;
+    }
+
+    *counter += 1;
+    let mut attributes = HashMap::new();
+    if let Some(source) = source {
+        attributes.insert(
+            "source".to_string(),
+            serde_json::Value::String(source.to_string()),
+        );
+    }
+    events.push(Event {
+        event_id: format!("codex-{}", counter),
+        timestamp: ts,
+        event_type: EventType::UserMessage,
+        task_id: None,
+        content: Content::text(trimmed),
+        duration_ms: None,
+        attributes,
+    });
+}
+
+fn remove_duplicate_response_fallback(events: &mut Vec<Event>, ts: DateTime<Utc>, text: &str) {
+    let normalized = normalize_user_text(text);
+    events.retain(|event| {
+        if !matches!(event.event_type, EventType::UserMessage) {
+            return true;
+        }
+        if event
+            .attributes
+            .get("source")
+            .and_then(|value| value.as_str())
+            != Some("response_fallback")
+        {
+            return true;
+        }
+        if (event.timestamp - ts).num_seconds().abs() > 2 {
+            return true;
+        }
+        event_user_text(event)
+            .map(|existing| normalize_user_text(&existing) != normalized)
+            .unwrap_or(true)
+    });
+}
+
+fn should_skip_duplicate_user_event(
+    events: &[Event],
+    ts: DateTime<Utc>,
+    text: &str,
+    source: Option<&str>,
+) -> bool {
+    let source = match source {
+        Some(source) => source,
+        None => return false,
+    };
+    let opposite = match source {
+        "event_msg" => "response_fallback",
+        "response_fallback" => "event_msg",
+        _ => return false,
+    };
+    let normalized = normalize_user_text(text);
+    events.iter().any(|event| {
+        if !matches!(event.event_type, EventType::UserMessage) {
+            return false;
+        }
+        if event
+            .attributes
+            .get("source")
+            .and_then(|value| value.as_str())
+            != Some(opposite)
+        {
+            return false;
+        }
+        if (event.timestamp - ts).num_seconds().abs() > 2 {
+            return false;
+        }
+        event_user_text(event)
+            .map(|existing| normalize_user_text(&existing) == normalized)
+            .unwrap_or(false)
+    })
+}
+
+fn event_user_text(event: &Event) -> Option<String> {
+    if !matches!(event.event_type, EventType::UserMessage) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for block in &event.content.blocks {
+        if let ContentBlock::Text { text } = block {
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.join("\n"))
+    }
+}
+
+fn normalize_user_text(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn parse_request_user_input_call_meta(args: &serde_json::Value) -> RequestUserInputCallMeta {
+    let mut questions = Vec::new();
+    let Some(items) = args.get("questions").and_then(|v| v.as_array()) else {
+        return RequestUserInputCallMeta { questions };
+    };
+
+    for item in items {
+        let id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("question")
+            .to_string();
+        let header = item
+            .get("header")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        let question = item
+            .get("question")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        questions.push(InteractiveQuestionMeta {
+            id,
+            header,
+            question,
+        });
+    }
+
+    RequestUserInputCallMeta { questions }
+}
+
+fn render_interactive_questions(questions: &[InteractiveQuestionMeta]) -> String {
+    let mut lines = vec!["Interactive prompt".to_string()];
+    for q in questions {
+        let mut label = q.id.clone();
+        if let Some(header) = q.header.as_deref() {
+            label = format!("{label} ({header})");
+        }
+        let body = q.question.as_deref().unwrap_or("(no question text)");
+        lines.push(format!("- {label}: {body}"));
+    }
+    lines.join("\n")
+}
+
+fn parse_request_user_input_answers(
+    output_text: &str,
+) -> Option<(String, Vec<String>, serde_json::Value)> {
+    let parsed: serde_json::Value = serde_json::from_str(output_text).ok()?;
+    let answers = parsed.get("answers").and_then(|v| v.as_object())?;
+    if answers.is_empty() {
+        return None;
+    }
+
+    let mut question_ids: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    for (question_id, value) in answers {
+        question_ids.push(question_id.clone());
+        let mut picks: Vec<String> = Vec::new();
+        if let Some(arr) = value.get("answers").and_then(|v| v.as_array()) {
+            for answer in arr {
+                let rendered = answer
+                    .as_str()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        answer
+                            .as_object()
+                            .and_then(|obj| obj.get("value").and_then(|v| v.as_str()))
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .unwrap_or_else(|| answer.to_string());
+                if !rendered.trim().is_empty() {
+                    picks.push(rendered);
+                }
+            }
+        } else if let Some(s) = value.as_str() {
+            if !s.trim().is_empty() {
+                picks.push(s.trim().to_string());
+            }
+        } else if !value.is_null() {
+            picks.push(value.to_string());
+        }
+        if picks.is_empty() {
+            lines.push(format!("{question_id}: (no answer)"));
+        } else {
+            lines.push(format!("{question_id}: {}", picks.join(" | ")));
+        }
+    }
+
+    let rendered = format!("Interactive response\n{}", lines.join("\n"));
+    Some((rendered, question_ids, parsed))
+}
+
 /// Parse the output string from function_call_output.
 /// Format: `{"output":"command output\n","metadata":{"exit_code":0,"duration_seconds":0.5}}`
 /// Returns (text, is_error, duration_ms).
@@ -497,6 +1026,71 @@ fn parse_function_output(raw: &str) -> (String, bool, Option<u64>) {
     } else {
         (raw.to_string(), false, None)
     }
+}
+
+fn extract_message_text_blocks(content: Option<&serde_json::Value>) -> String {
+    let Some(content) = content else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.trim().to_string();
+    }
+    let Some(blocks) = content.as_array() else {
+        return String::new();
+    };
+
+    blocks
+        .iter()
+        .filter_map(|block| {
+            if let Some(text) = block.as_str() {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                return Some(trimmed.to_string());
+            }
+            let btype = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match btype {
+                "text" | "input_text" | "output_text" => block
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(String::from),
+                _ => block
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(String::from),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn looks_like_injected_codex_user_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+
+    if lower.contains("apply_patch was requested via exec_command")
+        && lower.contains("use the apply_patch tool instead")
+    {
+        return true;
+    }
+
+    lower == "agents.md instructions"
+        || lower.starts_with("# agents.md instructions")
+        || lower.contains("<instructions>")
+        || lower.contains("</instructions>")
+        || lower.contains("<environment_context>")
+        || lower.contains("</environment_context>")
+        || lower.contains("<turn_aborted>")
+        || lower.contains("</turn_aborted>")
 }
 
 fn parse_timestamp(ts: &str) -> Result<DateTime<Utc>> {
@@ -662,6 +1256,44 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event_type, EventType::AgentMessage));
+    }
+
+    #[test]
+    fn test_legacy_user_and_assistant_records() {
+        let user_line = r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"legacy user prompt"}}"#;
+        let assistant_line = r#"{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"legacy assistant response"}]}}"#;
+        let mut events = Vec::new();
+        let mut counter = 0u64;
+        let mut first_text = None;
+        let mut last_fn = "unknown".to_string();
+        let mut call_map = HashMap::new();
+        let ts = Utc::now();
+
+        let user: serde_json::Value = serde_json::from_str(user_line).unwrap();
+        process_item(
+            &user,
+            ts,
+            &mut events,
+            &mut counter,
+            &mut first_text,
+            &mut last_fn,
+            &mut call_map,
+        );
+        let assistant: serde_json::Value = serde_json::from_str(assistant_line).unwrap();
+        process_item(
+            &assistant,
+            ts,
+            &mut events,
+            &mut counter,
+            &mut first_text,
+            &mut last_fn,
+            &mut call_map,
+        );
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].event_type, EventType::UserMessage));
+        assert!(matches!(events[1].event_type, EventType::AgentMessage));
+        assert_eq!(first_text.as_deref(), Some("legacy user prompt"));
     }
 
     #[test]
@@ -839,7 +1471,7 @@ mod tests {
     #[test]
     fn test_desktop_format_response_item() {
         // Desktop wraps entries in response_item with payload
-        let lines = vec![
+        let lines = [
             r#"{"timestamp":"2026-02-03T04:11:00.097Z","type":"session_meta","payload":{"id":"desktop-test","timestamp":"2026-02-03T04:11:00.075Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
             r#"{"timestamp":"2026-02-03T04:11:00.097Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"system instructions"}]}}"#,
             r#"{"timestamp":"2026-02-03T04:11:00.097Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"AGENTS.md instructions"}]}}"#,
@@ -863,9 +1495,15 @@ mod tests {
         assert_eq!(session.agent.tool, "codex");
         // Title should come from event_msg/user_message, not AGENTS.md
         assert_eq!(session.context.title.as_deref(), Some("fix the bug"));
-        // developer messages are skipped, user messages from response_item are kept
-        // Events: user(AGENTS.md) + reasoning + shell_command + tool_result + assistant
+        // developer and injected user instruction messages are skipped.
+        // Events: reasoning + shell_command + tool_result + assistant (+optional user)
         assert!(session.events.len() >= 4);
+        assert!(!session.events.iter().any(|e| {
+            matches!(e.event_type, EventType::UserMessage)
+                && e.content.blocks.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text } if text.contains("AGENTS.md instructions"))
+                })
+        }));
         // Check originator attribute
         assert_eq!(
             session
@@ -875,6 +1513,194 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("Codex Desktop")
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_warning_prompt_not_parsed_as_user_message() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T10:00:00.097Z","type":"session_meta","payload":{"id":"desktop-test-2","timestamp":"2026-02-14T10:00:00.075Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.119Z","type":"event_msg","payload":{"type":"user_message","message":"Warning: apply_patch was requested via exec_command. Use the apply_patch tool instead of exec_command."}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.120Z","type":"event_msg","payload":{"type":"user_message","message":"actual task please continue"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_warning_filter_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert_eq!(
+            session.context.title.as_deref(),
+            Some("actual task please continue")
+        );
+        assert!(!session.events.iter().any(|e| {
+            matches!(e.event_type, EventType::UserMessage)
+                && e.content.blocks.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text } if text.contains("apply_patch was requested via exec_command"))
+                })
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_turn_aborted_filtered_from_user_messages() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T10:00:00.097Z","type":"session_meta","payload":{"id":"desktop-test-3","timestamp":"2026-02-14T10:00:00.075Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.119Z","type":"event_msg","payload":{"type":"user_message","message":"<turn_aborted>Request interrupted by user for tool use</turn_aborted>"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.150Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn_1","message":"user interrupted"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.200Z","type":"event_msg","payload":{"type":"user_message","message":"real user prompt"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_turn_aborted_filter_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert_eq!(session.context.title.as_deref(), Some("real user prompt"));
+        assert!(session.events.iter().any(|event| {
+            matches!(
+                event.event_type,
+                EventType::Custom { ref kind } if kind == "turn_aborted"
+            )
+        }));
+        assert!(!session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::UserMessage)
+                && event.content.blocks.iter().any(
+                    |block| matches!(block, ContentBlock::Text { text } if text.contains("turn_aborted"))
+                )
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_task_lifecycle_event_msg_maps_to_task_events() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T10:00:00.097Z","type":"session_meta","payload":{"id":"desktop-task-map","timestamp":"2026-02-14T10:00:00.075Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.120Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn_42","title":"Investigate bug"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"working"}]}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.900Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn_42","last_agent_message":"fixed and validated"}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_task_map_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert!(session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::TaskStart { .. })
+                && event.task_id.as_deref() == Some("turn_42")
+        }));
+        assert!(session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::TaskEnd { .. })
+                && event.task_id.as_deref() == Some("turn_42")
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_unmatched_task_started_is_synthetically_closed() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T10:00:00.097Z","type":"session_meta","payload":{"id":"desktop-task-close","timestamp":"2026-02-14T10:00:00.075Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.120Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn_99","title":"Long task"}}"#,
+            r#"{"timestamp":"2026-02-14T10:00:00.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"still running"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_task_close_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        let maybe_end = session.events.iter().find(|event| {
+            matches!(
+                event.event_type,
+                EventType::TaskEnd {
+                    summary: Some(ref s)
+                } if s.contains("synthetic end")
+            ) && event.task_id.as_deref() == Some("turn_99")
+        });
+        assert!(maybe_end.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_event_msg_user_message_preferred_over_response_fallback() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T11:00:00.000Z","type":"session_meta","payload":{"id":"desktop-user-priority","timestamp":"2026-02-14T11:00:00.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T11:00:00.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"same user prompt"}]}}"#,
+            r#"{"timestamp":"2026-02-14T11:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"same user prompt"}}"#,
+            r#"{"timestamp":"2026-02-14T11:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_user_priority_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        let user_events: Vec<&Event> = session
+            .events
+            .iter()
+            .filter(|event| matches!(event.event_type, EventType::UserMessage))
+            .collect();
+        assert_eq!(user_events.len(), 1);
+        assert_eq!(
+            user_events[0]
+                .attributes
+                .get("source")
+                .and_then(|value| value.as_str()),
+            Some("event_msg")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_request_user_input_output_promoted_to_interactive_user_message() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T12:00:00.000Z","type":"session_meta","payload":{"id":"desktop-request-user-input","timestamp":"2026-02-14T12:00:00.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T12:00:00.100Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"layout_mode\",\"header\":\"Layout\",\"question\":\"Select mode\"}] }","call_id":"call_req_1"}}"#,
+            r#"{"timestamp":"2026-02-14T12:00:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_req_1","output":"{\"answers\":{\"layout_mode\":{\"answers\":[\"Always multi-column\"]}}}"}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_request_user_input_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert!(session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::UserMessage)
+                && event
+                    .attributes
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    == Some("interactive")
+        }));
+        assert!(session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::SystemMessage)
+                && event
+                    .attributes
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    == Some("interactive_question")
+                && event.content.blocks.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text } if text.contains("Select mode"))
+                })
+        }));
+        assert!(session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::ToolResult { ref name, .. } if name == "request_user_input")
+        }));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

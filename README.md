@@ -19,6 +19,7 @@ from Claude Code, Cursor, Codex, Goose, Aider, and other AI tools.
 cargo install opensession
 
 opensession ui                    # Launch TUI
+opensession view claude           # Open live detail view for active Claude session
 opensession session discover      # Find AI sessions on this machine
 opensession publish upload-all    # Upload all discovered sessions
 ```
@@ -63,6 +64,7 @@ Single Cargo workspace with 12 crates:
 | Command | Description |
 |---------|-------------|
 | `opensession ui` | Launch TUI |
+| `opensession view <agent>` | Open real-time summary detail view for an active agent session |
 | `opensession session discover` | List all local AI sessions |
 | `opensession session index` | Build local session index |
 | `opensession session log` | Show session history (git-log style) |

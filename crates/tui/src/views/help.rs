@@ -89,7 +89,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  h/l, ←/→  ", key_style),
-            Span::styled("Horizontal timeline scroll (x-scroll)", desc_style),
+            Span::styled("Horizontal scroll/drag (Turn + Linear)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  PgDn/PgUp ", key_style),
@@ -105,7 +105,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Enter/Spc ", key_style),
-            Span::styled("Expand/collapse event", desc_style),
+            Span::styled("Linear: expand event · Turn: raw thread toggle", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  v         ", key_style),
@@ -117,7 +117,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  c         ", key_style),
-            Span::styled("Toggle consecutive collapse", desc_style),
+            Span::styled("Linear only: toggle consecutive collapse", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  LLM       ", key_style),
@@ -129,7 +129,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  RT        ", key_style),
             Span::styled(
-                "Detail Live status (mtime watcher, Settings > Timeline Intelligence)",
+                "Detail Live status (ignored when Neglect Live Session rule matches)",
                 desc_style,
             ),
         ]),
@@ -138,7 +138,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Back to session list", desc_style),
         ]),
         Line::raw(""),
-        Line::from(Span::styled("── Collaboration / Operations ──", header_style)),
+        Line::from(Span::styled(
+            "── Collaboration / Operations ──",
+            header_style,
+        )),
         Line::from(vec![
             Span::styled("  i         ", key_style),
             Span::styled("Open inbox from collaboration view", desc_style),

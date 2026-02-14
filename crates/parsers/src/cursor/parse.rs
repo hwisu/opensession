@@ -472,6 +472,13 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                 // Handle tool call (toolFormerData)
                 if let Some(tool_data) = &bubble.tool_former_data {
                     let tool_name = resolve_tool_name(tool_data.tool, tool_data.name.as_deref());
+                    let task_id = format!("cursor-task-{}", bubble_id);
+                    let task_title = tool_data
+                        .name
+                        .as_ref()
+                        .filter(|name| !name.trim().is_empty())
+                        .cloned()
+                        .or_else(|| Some(tool_name.clone()));
 
                     // Parse rawArgs as JSON for structured tool info
                     let args: serde_json::Value = tool_data
@@ -497,12 +504,22 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                         );
                     }
 
+                    events.push(Event {
+                        event_id: format!("{}-task-start", bubble_id),
+                        timestamp: ts,
+                        event_type: EventType::TaskStart { title: task_title },
+                        task_id: Some(task_id.clone()),
+                        content: Content::empty(),
+                        duration_ms: None,
+                        attributes: HashMap::new(),
+                    });
+
                     // Emit ToolCall event
                     events.push(Event {
                         event_id: format!("{}-call", bubble_id),
                         timestamp: ts,
                         event_type,
-                        task_id: None,
+                        task_id: Some(task_id.clone()),
                         content,
                         duration_ms,
                         attributes: attrs.clone(),
@@ -524,12 +541,30 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                                 is_error,
                                 call_id: Some(format!("{}-call", bubble_id)),
                             },
-                            task_id: None,
+                            task_id: Some(task_id.clone()),
                             content: result_content,
                             duration_ms: None,
                             attributes: attrs,
                         });
                     }
+
+                    let task_summary = tool_data
+                        .status
+                        .as_ref()
+                        .filter(|status| !status.trim().is_empty())
+                        .map(|status| format!("{tool_name} {status}"))
+                        .or_else(|| Some(format!("{tool_name} finished")));
+                    events.push(Event {
+                        event_id: format!("{}-task-end", bubble_id),
+                        timestamp: ts,
+                        event_type: EventType::TaskEnd {
+                            summary: task_summary,
+                        },
+                        task_id: Some(task_id),
+                        content: Content::empty(),
+                        duration_ms: None,
+                        attributes: HashMap::new(),
+                    });
 
                     event_counter += 1;
                     continue; // toolFormerData bubbles don't have text content
@@ -697,9 +732,11 @@ mod tests {
             checkpoint: None,
         }];
         let events = convert_bubbles_to_events(&bubbles, Utc::now());
-        assert_eq!(events.len(), 2); // ToolCall + ToolResult
-        assert!(matches!(events[0].event_type, EventType::FileEdit { .. }));
-        assert!(matches!(events[1].event_type, EventType::ToolResult { .. }));
+        assert_eq!(events.len(), 4); // TaskStart + ToolCall + ToolResult + TaskEnd
+        assert!(matches!(events[0].event_type, EventType::TaskStart { .. }));
+        assert!(matches!(events[1].event_type, EventType::FileEdit { .. }));
+        assert!(matches!(events[2].event_type, EventType::ToolResult { .. }));
+        assert!(matches!(events[3].event_type, EventType::TaskEnd { .. }));
     }
 
     #[test]

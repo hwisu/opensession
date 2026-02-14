@@ -1,3 +1,4 @@
+use rusqlite::{Connection, OpenFlags};
 use std::path::PathBuf;
 
 /// Metadata about a discovered session location for a specific AI tool.
@@ -234,7 +235,7 @@ fn find_cursor_vscdb(home: &std::path::Path) -> Vec<PathBuf> {
 
         // Global state.vscdb
         let global_db = base.join("globalStorage").join("state.vscdb");
-        if global_db.exists() {
+        if global_db.exists() && cursor_db_has_composer_data(&global_db) {
             results.push(global_db);
         }
 
@@ -243,10 +244,44 @@ fn find_cursor_vscdb(home: &std::path::Path) -> Vec<PathBuf> {
         if workspace_dir.exists() {
             let pattern = format!("{}/*/state.vscdb", workspace_dir.display());
             if let Ok(paths) = glob::glob(&pattern) {
-                results.extend(paths.filter_map(Result::ok));
+                results.extend(
+                    paths
+                        .filter_map(Result::ok)
+                        .filter(|path| cursor_db_has_composer_data(path)),
+                );
             }
         }
     }
 
     results
+}
+
+fn cursor_db_has_composer_data(path: &std::path::Path) -> bool {
+    let conn = match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(conn) => conn,
+        Err(_) => return false,
+    };
+
+    if table_exists(&conn, "cursorDiskKV") {
+        return has_composer_rows(&conn, "cursorDiskKV");
+    }
+    if table_exists(&conn, "ItemTable") {
+        return has_composer_rows(&conn, "ItemTable");
+    }
+    false
+}
+
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+fn has_composer_rows(conn: &Connection, table: &str) -> bool {
+    let sql =
+        format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE key LIKE 'composerData:%' LIMIT 1)");
+    conn.query_row(&sql, [], |row| row.get(0)).unwrap_or(false)
 }

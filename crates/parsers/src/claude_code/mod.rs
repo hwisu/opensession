@@ -14,7 +14,15 @@ impl SessionParser for ClaudeCodeParser {
     }
 
     fn can_parse(&self, path: &Path) -> bool {
-        path.extension().is_some_and(|ext| ext == "jsonl")
+        if path.extension().is_none_or(|ext| ext != "jsonl") {
+            return false;
+        }
+        path.to_str().is_some_and(|s| {
+            s.contains(".claude/projects/")
+                || s.contains(".claude/projects\\")
+                || s.contains("/.claude/projects/")
+                || s.contains("\\.claude\\projects\\")
+        })
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {
@@ -49,3 +57,18 @@ impl ClaudeCodeParser {
 pub(crate) use parse::{
     parse_timestamp, process_assistant_entry, process_user_entry, RawConversationEntry, RawEntry,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn can_parse_only_matches_claude_projects_jsonl() {
+        let parser = ClaudeCodeParser;
+        assert!(parser.can_parse(Path::new("/Users/test/.claude/projects/foo/session.jsonl")));
+        assert!(!parser.can_parse(Path::new(
+            "/Users/test/.codex/sessions/2026/02/14/rollout.jsonl"
+        )));
+    }
+}

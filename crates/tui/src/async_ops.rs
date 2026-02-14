@@ -6,7 +6,7 @@ use crate::app::TeamInfo;
 use crate::config::DaemonConfig;
 use crate::timeline_summary::{
     generate_timeline_summary, probe_summary_cli_providers, SummaryCliProbeResult,
-    TimelineSummaryWindowKey,
+    SummaryRuntimeConfig, TimelineSummaryCacheEntry, TimelineSummaryWindowKey,
 };
 
 /// Commands that require async I/O (network calls).
@@ -67,6 +67,7 @@ pub enum AsyncCommand {
     // ── Timeline summary ──────────────────────────────────────────────
     GenerateTimelineSummary {
         key: TimelineSummaryWindowKey,
+        epoch: u64,
         provider: Option<String>,
         context: String,
         agent_tool: String,
@@ -110,7 +111,8 @@ pub enum CommandResult {
     // Timeline summary
     SummaryDone {
         key: TimelineSummaryWindowKey,
-        result: Result<String, String>,
+        epoch: u64,
+        result: Result<TimelineSummaryCacheEntry, String>,
     },
     SummaryCliProbeDone {
         session_id: String,
@@ -373,15 +375,21 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
         // ── Timeline summary ──────────────────────────────────────────
         AsyncCommand::GenerateTimelineSummary {
             key,
+            epoch,
             provider,
             context,
             agent_tool,
         } => {
-            let result =
-                generate_timeline_summary(&context, provider.as_deref(), Some(&agent_tool))
-                    .await
-                    .map_err(|e| format!("{e}"));
-            CommandResult::SummaryDone { key, result }
+            let runtime = summary_runtime_config(config);
+            let result = generate_timeline_summary(
+                &context,
+                provider.as_deref(),
+                Some(&agent_tool),
+                Some(&runtime),
+            )
+            .await
+            .map_err(|e| format!("{e}"));
+            CommandResult::SummaryDone { key, epoch, result }
         }
         AsyncCommand::ProbeSummaryCli {
             session_id,
@@ -419,5 +427,18 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
             .await;
             CommandResult::ServerSessions(result)
         }
+    }
+}
+
+fn summary_runtime_config(config: &DaemonConfig) -> SummaryRuntimeConfig {
+    SummaryRuntimeConfig {
+        model: config.daemon.summary_model.clone(),
+        content_mode: Some(config.daemon.summary_content_mode.clone()),
+        openai_compat_endpoint: config.daemon.summary_openai_compat_endpoint.clone(),
+        openai_compat_base: config.daemon.summary_openai_compat_base.clone(),
+        openai_compat_path: config.daemon.summary_openai_compat_path.clone(),
+        openai_compat_style: config.daemon.summary_openai_compat_style.clone(),
+        openai_compat_api_key: config.daemon.summary_openai_compat_key.clone(),
+        openai_compat_api_key_header: config.daemon.summary_openai_compat_key_header.clone(),
     }
 }

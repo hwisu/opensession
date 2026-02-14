@@ -15,6 +15,7 @@ mod test_cmd;
 mod tui_cmd;
 mod upload;
 mod upload_all;
+mod view_cmd;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -98,6 +99,72 @@ struct Cli {
 enum Commands {
     /// Launch the interactive terminal UI
     Ui,
+
+    /// Open a live summary-focused detail view for an agent session
+    View {
+        /// Agent alias (claude|codex|cursor|gemini|opencode|cline|amp)
+        agent: String,
+
+        /// Active-session window in minutes (mtime-based)
+        #[arg(long, default_value_t = 20)]
+        active_within_minutes: u32,
+
+        /// Max candidates to keep before interactive selection
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// Skip interactive picker and choose latest candidate automatically
+        #[arg(long)]
+        non_interactive: bool,
+
+        /// Ignore active window and pick by latest mtime only
+        #[arg(long)]
+        latest: bool,
+
+        /// Print chosen candidate + runtime summary config and exit
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Override summary provider for this run only
+        #[arg(long)]
+        summary_provider: Option<String>,
+
+        /// Override summary model for this run only
+        #[arg(long)]
+        summary_model: Option<String>,
+
+        /// Override summary content mode for this run only
+        #[arg(long, value_enum)]
+        summary_content_mode: Option<view_cmd::SummaryContentModeArg>,
+
+        /// Override summary disk cache for this run only
+        #[arg(long, value_enum)]
+        summary_disk_cache: Option<view_cmd::ToggleArg>,
+
+        /// Override OpenAI-compatible full endpoint for this run only
+        #[arg(long)]
+        sum_endpoint: Option<String>,
+
+        /// Override OpenAI-compatible base URL for this run only
+        #[arg(long)]
+        sum_base: Option<String>,
+
+        /// Override OpenAI-compatible path for this run only
+        #[arg(long)]
+        sum_path: Option<String>,
+
+        /// Override OpenAI-compatible style for this run only
+        #[arg(long, value_enum)]
+        sum_style: Option<view_cmd::SummaryStyleArg>,
+
+        /// Override OpenAI-compatible API key for this run only
+        #[arg(long)]
+        sum_key: Option<String>,
+
+        /// Override OpenAI-compatible API key header for this run only
+        #[arg(long)]
+        sum_key_header: Option<String>,
+    },
 
     /// Session workflows (discover/history/diff/timeline)
     Session {
@@ -283,9 +350,25 @@ enum SessionAction {
         #[arg(long)]
         summary_provider: Option<String>,
 
+        /// Override summary content mode for this render
+        #[arg(long, value_enum)]
+        summary_content_mode: Option<view_cmd::SummaryContentModeArg>,
+
+        /// Override summary disk cache for this render
+        #[arg(long, value_enum)]
+        summary_disk_cache: Option<view_cmd::ToggleArg>,
+
         /// Truncate rendered output to the first N rows
         #[arg(long)]
         max_rows: Option<usize>,
+
+        /// Max number of summaries to generate in this export run (default: 96)
+        #[arg(long)]
+        summary_budget: Option<usize>,
+
+        /// Max time budget (ms) to spend generating summaries (default: 12000, 0=unbounded)
+        #[arg(long)]
+        summary_timeout_ms: Option<u64>,
     },
 }
 
@@ -506,6 +589,41 @@ async fn main() {
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,
         Commands::Ui => opensession_tui::run(None),
+        Commands::View {
+            agent,
+            active_within_minutes,
+            limit,
+            non_interactive,
+            latest,
+            dry_run,
+            summary_provider,
+            summary_model,
+            summary_content_mode,
+            summary_disk_cache,
+            sum_endpoint,
+            sum_base,
+            sum_path,
+            sum_style,
+            sum_key,
+            sum_key_header,
+        } => view_cmd::run_view(view_cmd::ViewArgs {
+            agent,
+            active_within_minutes,
+            limit,
+            non_interactive,
+            latest,
+            dry_run,
+            summary_provider,
+            summary_model,
+            summary_content_mode,
+            summary_disk_cache,
+            sum_endpoint,
+            sum_base,
+            sum_path,
+            sum_style,
+            sum_key,
+            sum_key_header,
+        }),
         Commands::Session { action } => run_session_action(action).await,
         Commands::Publish { action } => run_publish_action(action).await,
         Commands::Ops { action } => run_ops_action(action).await,
@@ -599,7 +717,11 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
             summaries,
             no_summary,
             summary_provider,
+            summary_content_mode,
+            summary_disk_cache,
             max_rows,
+            summary_budget,
+            summary_timeout_ms,
         } => tui_cmd::run_tui_timeline(
             &session,
             tool.as_deref(),
@@ -609,14 +731,20 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
             summaries,
             no_summary,
             summary_provider.as_deref(),
+            summary_content_mode.map(|mode| mode.as_str()),
+            summary_disk_cache.map(|toggle| toggle.as_bool()),
             max_rows,
+            summary_budget,
+            summary_timeout_ms,
         ),
     }
 }
 
 async fn run_publish_action(action: PublishAction) -> anyhow::Result<()> {
     match action {
-        PublishAction::Upload { file, parent, git } => upload::run_upload(&file, &parent, git).await,
+        PublishAction::Upload { file, parent, git } => {
+            upload::run_upload(&file, &parent, git).await
+        }
         PublishAction::UploadAll => upload_all::run_upload_all().await,
     }
 }

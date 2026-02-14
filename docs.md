@@ -25,8 +25,8 @@ There are two ways to upload sessions:
 **CLI Upload**
 
 ```bash
-opensession upload ./session.jsonl
-opensession upload-all     # discover and upload all local sessions
+opensession publish upload ./session.jsonl
+opensession publish upload-all     # discover and upload all local sessions
 ```
 
 **Web Upload**
@@ -104,7 +104,7 @@ Running `opensession` without arguments launches the TUI. Subcommands run CLI op
 
 ---
 
-### `opensession config`
+### `opensession account config`
 
 Show or set CLI configuration.
 
@@ -120,27 +120,27 @@ Show or set CLI configuration.
 
 ```bash
 # Show current configuration
-opensession config
+opensession account config
 
 # Set server URL and API key
-opensession config --server https://opensession.io --api-key osk_abc123
+opensession account config --server https://opensession.io --api-key osk_abc123
 
 # Set default team for uploads
-opensession config --team-id my-team
+opensession account config --team-id my-team
 ```
 
 Config file: `~/.config/opensession/config.toml`
 
 ---
 
-### `opensession discover`
+### `opensession session discover`
 
 Scan this machine for AI sessions from all supported tools.
 
 **Example:**
 
 ```bash
-opensession discover
+opensession session discover
 
 # Output:
 # Found 47 sessions:
@@ -154,7 +154,7 @@ Supported: Claude Code, Cursor, Codex, Goose, Aider, OpenCode, Amp.
 
 ---
 
-### `opensession upload` / `upload-all`
+### `opensession publish upload` / `publish upload-all`
 
 Upload session files to the server.
 
@@ -170,23 +170,23 @@ Upload session files to the server.
 
 ```bash
 # Upload a single session
-opensession upload ./session.jsonl
+opensession publish upload ./session.jsonl
 
 # Upload with parent session linkage
-opensession upload ./followup.jsonl --parent abc123
+opensession publish upload ./followup.jsonl --parent abc123
 
 # Discover and upload all sessions at once
-opensession upload-all
+opensession publish upload-all
 
 # Store session in git branch instead of server
-opensession upload ./session.jsonl --git
+opensession publish upload ./session.jsonl --git
 ```
 
 `upload-all` skips subagent files and already-uploaded sessions automatically.
 
 ---
 
-### `opensession log`
+### `opensession session log`
 
 Show session history in a git-log style format.
 
@@ -213,35 +213,35 @@ Show session history in a git-log style format.
 
 ```bash
 # Show recent sessions
-opensession log
+opensession session log
 
 # Sessions from the last 3 hours
-opensession log --since "3 hours"
+opensession session log --since "3 hours"
 
 # Only Claude Code sessions with errors
-opensession log --tool claude-code --has-errors
+opensession session log --tool claude-code --has-errors
 
 # Search for sessions about authentication
-opensession log --grep "auth" --limit 5
+opensession session log --grep "auth" --limit 5
 
 # Sessions that touched a specific file
-opensession log --touches src/auth.rs
+opensession session log --touches src/auth.rs
 
 # Filter by model using wildcards
-opensession log --model "opus*"
+opensession session log --model "opus*"
 
 # Export as JSON with specific fields
-opensession log --json "id,tool,title,created_at"
+opensession session log --json "id,tool,title,created_at"
 
 # Pipe through jq for custom queries
-opensession log --format json --jq '.[] | select(.has_errors)'
+opensession session log --format json --jq '.[] | select(.has_errors)'
 ```
 
 Auto-detection: when no explicit `--project` is specified, filters by the current git repo or working directory.
 
 ---
 
-### `opensession stats`
+### `opensession session stats`
 
 Show AI usage statistics — sessions, tokens, costs, and breakdowns by tool.
 
@@ -256,20 +256,20 @@ Show AI usage statistics — sessions, tokens, costs, and breakdowns by tool.
 
 ```bash
 # This week's stats
-opensession stats
+opensession session stats
 
 # All-time usage
-opensession stats --period all
+opensession session stats --period all
 
 # Today's stats in JSON
-opensession stats --period day --format json
+opensession session stats --period day --format json
 ```
 
 Shows: total sessions, duration, token counts (input/output), breakdown by tool, top edited files, error rate, and estimated cost.
 
 ---
 
-### `opensession handoff`
+### `opensession session handoff`
 
 Generate a session summary for handing off context to the next AI agent.
 
@@ -291,24 +291,24 @@ Generate a session summary for handing off context to the next AI agent.
 
 ```bash
 # Handoff from the last Claude Code session
-opensession handoff --claude HEAD
+opensession session handoff --claude HEAD
 
 # Handoff with AI-powered summary
-opensession handoff --last --summarize
+opensession session handoff --last --summarize
 
 # Merge multiple sessions into one handoff
-opensession handoff session1.jsonl session2.jsonl
+opensession session handoff session1.jsonl session2.jsonl
 
 # Save handoff to a file
-opensession handoff --claude HEAD -o handoff.md
+opensession session handoff --claude HEAD -o handoff.md
 
 # Cross-tool handoff: Claude to Gemini
-opensession handoff --claude HEAD~3 --summarize --ai gemini
+opensession session handoff --claude HEAD~3 --summarize --ai gemini
 ```
 
 ---
 
-### `opensession diff`
+### `opensession session diff`
 
 Compare two sessions side-by-side.
 
@@ -324,18 +324,18 @@ Compare two sessions side-by-side.
 
 ```bash
 # Compare two sessions by file path
-opensession diff ./before.jsonl ./after.jsonl
+opensession session diff ./before.jsonl ./after.jsonl
 
 # Compare using session references
-opensession diff HEAD^2 HEAD^1
+opensession session diff HEAD^2 HEAD^1
 
 # AI-powered diff analysis
-opensession diff HEAD^2 HEAD^1 --ai
+opensession session diff HEAD^2 HEAD^1 --ai
 ```
 
 ---
 
-### `opensession daemon`
+### `opensession ops daemon`
 
 Manage the background daemon that watches for new sessions and syncs them.
 
@@ -352,16 +352,16 @@ Manage the background daemon that watches for new sessions and syncs them.
 
 ```bash
 # Start the daemon in the background
-opensession daemon start
+opensession ops daemon start
 
 # Check if daemon is running
-opensession daemon status
+opensession ops daemon status
 
 # Verify daemon + server connectivity
-opensession daemon health
+opensession ops daemon health
 
 # Stop the daemon
-opensession daemon stop
+opensession ops daemon stop
 ```
 
 The daemon watches for new sessions from configured tools and syncs them to the server. Configure via `~/.config/opensession/daemon.toml` or the TUI settings:
@@ -384,7 +384,7 @@ strip_env_vars = true
 
 ---
 
-### `opensession server`
+### `opensession account server`
 
 Check server connection and authentication.
 
@@ -395,15 +395,15 @@ Check server connection and authentication.
 
 ```bash
 # Check if server is reachable
-opensession server status
+opensession account server status
 
 # Verify your API key works
-opensession server verify
+opensession account server verify
 ```
 
 ---
 
-### `opensession hooks`
+### `opensession ops hooks`
 
 Manage git hooks that link AI sessions to git commits.
 
@@ -414,43 +414,43 @@ Manage git hooks that link AI sessions to git commits.
 
 ```bash
 # Install in current repo
-opensession hooks install
+opensession ops hooks install
 
 # Remove from current repo
-opensession hooks uninstall
+opensession ops hooks uninstall
 ```
 
 When installed, the hook appends AI session metadata (tool, model, prompt) to your commit messages automatically.
 
 ---
 
-### `opensession stream`
+### `opensession ops stream`
 
 Enable or disable real-time session streaming to the server.
 
 ```bash
 # Enable for auto-detected agent
-opensession stream enable
+opensession ops stream enable
 
 # Enable for a specific agent
-opensession stream enable --agent claude-code
+opensession ops stream enable --agent claude-code
 
 # Disable streaming
-opensession stream disable
+opensession ops stream disable
 ```
 
 ---
 
-### `opensession index` / `completion`
+### `opensession session index` / `docs completion`
 
 ```bash
 # Build/update the local session index
-opensession index
+opensession session index
 
 # Generate shell completions
-opensession completion bash >> ~/.bashrc
-opensession completion zsh >> ~/.zshrc
-opensession completion fish > ~/.config/fish/completions/opensession.fish
+opensession docs completion bash >> ~/.bashrc
+opensession docs completion zsh >> ~/.zshrc
+opensession docs completion fish > ~/.config/fish/completions/opensession.fish
 ```
 
 ---
@@ -469,16 +469,16 @@ The `handoff` and `diff` commands accept flexible session references:
 
 ```bash
 # Last Claude Code session
-opensession handoff --claude HEAD
+opensession session handoff --claude HEAD
 
 # Last 3 Claude Code sessions merged
-opensession handoff --claude HEAD~3
+opensession session handoff --claude HEAD~3
 
 # Compare 2nd-most-recent vs most-recent
-opensession diff HEAD^1 HEAD^0
+opensession session diff HEAD^1 HEAD^0
 
 # Reference by ID prefix
-opensession handoff abc12
+opensession session handoff abc12
 ```
 
 ---
@@ -541,7 +541,7 @@ volumes:
 ### Point the CLI to Your Instance
 
 ```bash
-opensession config --server http://localhost:3000
+opensession account config --server http://localhost:3000
 ```
 
 ## HAIL Format

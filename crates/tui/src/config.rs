@@ -22,14 +22,35 @@ pub fn load_daemon_config() -> DaemonConfig {
     };
 
     let daemon_path = dir.join("daemon.toml");
+    let mut migrated = false;
     if daemon_path.exists() {
-        return std::fs::read_to_string(&daemon_path)
+        let mut config: DaemonConfig = std::fs::read_to_string(&daemon_path)
             .ok()
             .and_then(|s| toml::from_str(&s).ok())
             .unwrap_or_default();
+        if migrate_summary_window_v2(&mut config) {
+            migrated = true;
+        }
+        if migrated {
+            let _ = save_daemon_config(&config);
+        }
+        return config;
     }
 
     DaemonConfig::default()
+}
+
+fn migrate_summary_window_v2(config: &mut DaemonConfig) -> bool {
+    if config.daemon.summary_window_migrated_v2 {
+        return false;
+    }
+    if config.daemon.summary_event_window != 8 {
+        config.daemon.summary_window_migrated_v2 = true;
+        return true;
+    }
+    config.daemon.summary_event_window = 0;
+    config.daemon.summary_window_migrated_v2 = true;
+    true
 }
 
 /// Save daemon config to `~/.config/opensession/daemon.toml`.
@@ -69,6 +90,15 @@ pub enum SettingField {
     SummaryEnabled,
     SummaryProvider,
     SummaryCliAgent,
+    SummaryModel,
+    SummaryContentMode,
+    SummaryDiskCacheEnabled,
+    SummaryOpenAiCompatEndpoint,
+    SummaryOpenAiCompatBase,
+    SummaryOpenAiCompatPath,
+    SummaryOpenAiCompatStyle,
+    SummaryOpenAiCompatApiKey,
+    SummaryOpenAiCompatApiKeyHeader,
     SummaryEventWindow,
     SummaryDebounceMs,
     SummaryMaxInflight,
@@ -175,7 +205,7 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         field: SettingField::DetailRealtimePreviewEnabled,
         label: "Detail Auto-Refresh",
         description: "Auto-reload Session Detail when selected source file mtime changes",
-        dependency_hint: Some("Global toggle; stream-write tools are skipped"),
+        dependency_hint: Some("Global toggle; ignored when Neglect Live Session rule matches"),
     },
     SettingItem::Field {
         field: SettingField::HealthCheckSecs,
@@ -209,9 +239,64 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         dependency_hint: Some("Active only when LLM Summary Enabled=ON and LLM Summary Mode=CLI"),
     },
     SettingItem::Field {
+        field: SettingField::SummaryModel,
+        label: "LLM Summary Model",
+        description: "Optional model override for API calls and CLI --model",
+        dependency_hint: Some("Leave empty to use provider default model"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryContentMode,
+        label: "LLM Summary Detail Mode",
+        description: "normal: richer action detail · minimal: merge low-signal read/open/list actions",
+        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryDiskCacheEnabled,
+        label: "LLM Summary Disk Cache",
+        description: "Persist summary results by context hash and reuse across runs",
+        dependency_hint: Some("Reduces repeated summary calls for unchanged windows"),
+    },
+    SettingItem::Header("LLM Summary API (OpenAI-Compatible)"),
+    SettingItem::Field {
+        field: SettingField::SummaryOpenAiCompatEndpoint,
+        label: "Summary API Endpoint",
+        description: "Full endpoint URL for OpenAI-compatible API",
+        dependency_hint: Some("If set, this is used directly"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryOpenAiCompatBase,
+        label: "Summary API Base URL",
+        description: "Base URL used when endpoint is not set",
+        dependency_hint: Some("Default: https://api.openai.com/v1"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryOpenAiCompatPath,
+        label: "Summary API Path",
+        description: "Path appended to base URL when endpoint is not set",
+        dependency_hint: Some("Default: /chat/completions"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryOpenAiCompatStyle,
+        label: "Summary API Style",
+        description: "Payload style for OpenAI-compatible endpoint: chat/responses",
+        dependency_hint: Some("Auto-inferrs from endpoint when empty"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryOpenAiCompatApiKey,
+        label: "Summary API Key",
+        description: "Optional API key for OpenAI-compatible endpoint",
+        dependency_hint: Some("Fallback: OPS_TL_SUM_KEY or OPENAI_API_KEY"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryOpenAiCompatApiKeyHeader,
+        label: "Summary API Key Header",
+        description: "Header name for Summary API Key",
+        dependency_hint: Some("Default: Authorization: Bearer"),
+    },
+    SettingItem::Field {
         field: SettingField::SummaryEventWindow,
         label: "LLM Summary Window",
-        description: "Checkpoint size in events (set 0 or 'auto' for full-turn auto segmentation)",
+        description: "Checkpoint size in events (set 0 or 'auto' for turn+phase auto segmentation)",
         dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
     },
     SettingItem::Field {
@@ -226,36 +311,38 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Maximum concurrent summary requests (separate from debounce)",
         dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
     },
-    SettingItem::Header("Realtime Session Files"),
+    SettingItem::Header("Neglect Live Session Rules"),
     SettingItem::Field {
         field: SettingField::StreamWriteClaude,
-        label: "Claude Code Stream",
-        description: "Treat as stream-write session file (skip detail realtime+summary)",
-        dependency_hint: Some("Per-agent realtime file mode; usually OFF unless using hook"),
+        label: "Neglect Live: Claude",
+        description: "Ignore Detail Live + LLM Summary for live Claude sessions",
+        dependency_hint: Some(
+            "Rule: session.agent.tool matches 'claude-code' (case-insensitive)",
+        ),
     },
     SettingItem::Field {
         field: SettingField::StreamWriteCodex,
-        label: "Codex Stream",
-        description: "Treat as stream-write session file (skip detail realtime+summary)",
-        dependency_hint: Some("Per-agent realtime file mode"),
+        label: "Neglect Live: Codex",
+        description: "Ignore Detail Live + LLM Summary for live Codex sessions",
+        dependency_hint: Some("Rule: session.agent.tool matches 'codex' (case-insensitive)"),
     },
     SettingItem::Field {
         field: SettingField::StreamWriteCursor,
-        label: "Cursor Stream",
-        description: "Treat as stream-write session file (skip detail realtime+summary)",
-        dependency_hint: Some("Per-agent realtime file mode"),
+        label: "Neglect Live: Cursor",
+        description: "Ignore Detail Live + LLM Summary for live Cursor sessions",
+        dependency_hint: Some("Rule: session.agent.tool matches 'cursor' (case-insensitive)"),
     },
     SettingItem::Field {
         field: SettingField::StreamWriteGemini,
-        label: "Gemini Stream",
-        description: "Treat as stream-write session file (skip detail realtime+summary)",
-        dependency_hint: Some("Per-agent realtime file mode"),
+        label: "Neglect Live: Gemini",
+        description: "Ignore Detail Live + LLM Summary for live Gemini sessions",
+        dependency_hint: Some("Rule: session.agent.tool matches 'gemini' (case-insensitive)"),
     },
     SettingItem::Field {
         field: SettingField::StreamWriteOpenCode,
-        label: "OpenCode Stream",
-        description: "Treat as stream-write session file (skip detail realtime+summary)",
-        dependency_hint: Some("Per-agent realtime file mode"),
+        label: "Neglect Live: OpenCode",
+        description: "Ignore Detail Live + LLM Summary for live OpenCode sessions",
+        dependency_hint: Some("Rule: session.agent.tool matches 'opencode' (case-insensitive)"),
     },
     SettingItem::Header("Watchers"),
     SettingItem::Field {
@@ -312,6 +399,7 @@ impl SettingField {
             Self::AutoPublish
                 | Self::DetailRealtimePreviewEnabled
                 | Self::SummaryEnabled
+                | Self::SummaryDiskCacheEnabled
                 | Self::StreamWriteClaude
                 | Self::StreamWriteCodex
                 | Self::StreamWriteCursor
@@ -333,6 +421,8 @@ impl SettingField {
                 | Self::GitStorageMethod
                 | Self::SummaryProvider
                 | Self::SummaryCliAgent
+                | Self::SummaryContentMode
+                | Self::SummaryOpenAiCompatStyle
         )
     }
 
@@ -371,9 +461,64 @@ impl SettingField {
             Self::SummaryCliAgent => {
                 summary_cli_agent_label(config.daemon.summary_provider.as_deref())
             }
+            Self::SummaryModel => config
+                .daemon
+                .summary_model
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("(default)")
+                .to_string(),
+            Self::SummaryContentMode => {
+                summary_content_mode_label(&config.daemon.summary_content_mode)
+            }
+            Self::SummaryDiskCacheEnabled => on_off(config.daemon.summary_disk_cache_enabled),
+            Self::SummaryOpenAiCompatEndpoint => config
+                .daemon
+                .summary_openai_compat_endpoint
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("(default)")
+                .to_string(),
+            Self::SummaryOpenAiCompatBase => config
+                .daemon
+                .summary_openai_compat_base
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("(default)")
+                .to_string(),
+            Self::SummaryOpenAiCompatPath => config
+                .daemon
+                .summary_openai_compat_path
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("/chat/completions")
+                .to_string(),
+            Self::SummaryOpenAiCompatStyle => summary_openai_compat_style_label(
+                config.daemon.summary_openai_compat_style.as_deref(),
+            ),
+            Self::SummaryOpenAiCompatApiKey => {
+                if let Some(key) = config
+                    .daemon
+                    .summary_openai_compat_key
+                    .as_deref()
+                    .filter(|v| !v.trim().is_empty())
+                {
+                    let visible = key.len().min(6);
+                    format!("{}...", &key[..visible])
+                } else {
+                    "(not set)".to_string()
+                }
+            }
+            Self::SummaryOpenAiCompatApiKeyHeader => config
+                .daemon
+                .summary_openai_compat_key_header
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("Authorization")
+                .to_string(),
             Self::SummaryEventWindow => {
                 if config.daemon.summary_event_window == 0 {
-                    "AUTO(turn)".to_string()
+                    "AUTO(turn+phases)".to_string()
                 } else {
                     config.daemon.summary_event_window.to_string()
                 }
@@ -422,6 +567,38 @@ impl SettingField {
             Self::RealtimeDebounceMs => config.daemon.realtime_debounce_ms.to_string(),
             Self::HealthCheckSecs => config.daemon.health_check_interval_secs.to_string(),
             Self::MaxRetries => config.daemon.max_retries.to_string(),
+            Self::SummaryModel => config.daemon.summary_model.clone().unwrap_or_default(),
+            Self::SummaryContentMode => config.daemon.summary_content_mode.clone(),
+            Self::SummaryOpenAiCompatEndpoint => config
+                .daemon
+                .summary_openai_compat_endpoint
+                .clone()
+                .unwrap_or_default(),
+            Self::SummaryOpenAiCompatBase => config
+                .daemon
+                .summary_openai_compat_base
+                .clone()
+                .unwrap_or_default(),
+            Self::SummaryOpenAiCompatPath => config
+                .daemon
+                .summary_openai_compat_path
+                .clone()
+                .unwrap_or_default(),
+            Self::SummaryOpenAiCompatStyle => config
+                .daemon
+                .summary_openai_compat_style
+                .clone()
+                .unwrap_or_default(),
+            Self::SummaryOpenAiCompatApiKey => config
+                .daemon
+                .summary_openai_compat_key
+                .clone()
+                .unwrap_or_default(),
+            Self::SummaryOpenAiCompatApiKeyHeader => config
+                .daemon
+                .summary_openai_compat_key_header
+                .clone()
+                .unwrap_or_default(),
             Self::SummaryEventWindow => {
                 if config.daemon.summary_event_window == 0 {
                     "auto".to_string()
@@ -463,6 +640,9 @@ impl SettingField {
             Self::WatchOpenCode => config.watchers.opencode = !config.watchers.opencode,
             Self::WatchCursor => config.watchers.cursor = !config.watchers.cursor,
             Self::SummaryEnabled => config.daemon.summary_enabled = !config.daemon.summary_enabled,
+            Self::SummaryDiskCacheEnabled => {
+                config.daemon.summary_disk_cache_enabled = !config.daemon.summary_disk_cache_enabled
+            }
             Self::StripPaths => config.privacy.strip_paths = !config.privacy.strip_paths,
             Self::StripEnvVars => config.privacy.strip_env_vars = !config.privacy.strip_env_vars,
             _ => {}
@@ -513,6 +693,23 @@ impl SettingField {
                 };
                 config.daemon.summary_provider = Some(cli_provider_for_agent(next));
             }
+            Self::SummaryContentMode => {
+                config.daemon.summary_content_mode =
+                    if summary_content_mode_key(&config.daemon.summary_content_mode) == "minimal" {
+                        "normal".to_string()
+                    } else {
+                        "minimal".to_string()
+                    };
+            }
+            Self::SummaryOpenAiCompatStyle => {
+                let next = match summary_openai_compat_style_key(
+                    config.daemon.summary_openai_compat_style.as_deref(),
+                ) {
+                    "chat" => "responses",
+                    _ => "chat",
+                };
+                config.daemon.summary_openai_compat_style = Some(next.to_string());
+            }
             _ => {}
         }
     }
@@ -544,6 +741,41 @@ impl SettingField {
                     config.daemon.max_retries = v;
                 }
             }
+            Self::SummaryModel => {
+                config.daemon.summary_model = normalize_optional_string(value);
+            }
+            Self::SummaryContentMode => {
+                config.daemon.summary_content_mode =
+                    match value.trim().to_ascii_lowercase().as_str() {
+                        "minimal" | "min" => "minimal".to_string(),
+                        _ => "normal".to_string(),
+                    };
+            }
+            Self::SummaryOpenAiCompatEndpoint => {
+                config.daemon.summary_openai_compat_endpoint = normalize_optional_string(value);
+            }
+            Self::SummaryOpenAiCompatBase => {
+                config.daemon.summary_openai_compat_base = normalize_optional_string(value);
+            }
+            Self::SummaryOpenAiCompatPath => {
+                config.daemon.summary_openai_compat_path = normalize_optional_string(value);
+            }
+            Self::SummaryOpenAiCompatStyle => {
+                let normalized = value.trim().to_ascii_lowercase();
+                let mapped = match normalized.as_str() {
+                    "" => None,
+                    "chat" => Some("chat".to_string()),
+                    "responses" => Some("responses".to_string()),
+                    _ => Some("chat".to_string()),
+                };
+                config.daemon.summary_openai_compat_style = mapped;
+            }
+            Self::SummaryOpenAiCompatApiKey => {
+                config.daemon.summary_openai_compat_key = normalize_optional_string(value);
+            }
+            Self::SummaryOpenAiCompatApiKeyHeader => {
+                config.daemon.summary_openai_compat_key_header = normalize_optional_string(value);
+            }
             Self::SummaryEventWindow => {
                 let normalized = value.trim().to_ascii_lowercase();
                 if normalized == "auto" {
@@ -568,6 +800,11 @@ impl SettingField {
             Self::SummaryEnabled => {
                 let lowered = value.to_lowercase();
                 config.daemon.summary_enabled =
+                    matches!(lowered.as_str(), "on" | "1" | "true" | "yes");
+            }
+            Self::SummaryDiskCacheEnabled => {
+                let lowered = value.to_lowercase();
+                config.daemon.summary_disk_cache_enabled =
                     matches!(lowered.as_str(), "on" | "1" | "true" | "yes");
             }
             Self::DetailRealtimePreviewEnabled => {
@@ -685,6 +922,20 @@ fn summary_cli_agent_label(provider: Option<&str>) -> String {
     }
 }
 
+fn summary_content_mode_key(mode: &str) -> &'static str {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "min" => "minimal",
+        _ => "normal",
+    }
+}
+
+fn summary_content_mode_label(mode: &str) -> String {
+    match summary_content_mode_key(mode) {
+        "minimal" => "Minimal".to_string(),
+        _ => "Normal".to_string(),
+    }
+}
+
 fn cli_provider_for_agent(agent: &str) -> String {
     match agent {
         "codex" => "cli:codex".to_string(),
@@ -692,6 +943,29 @@ fn cli_provider_for_agent(agent: &str) -> String {
         "cursor" => "cli:cursor".to_string(),
         "gemini" => "cli:gemini".to_string(),
         _ => "cli:auto".to_string(),
+    }
+}
+
+fn summary_openai_compat_style_key(style: Option<&str>) -> &'static str {
+    match style.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "responses" => "responses",
+        _ => "chat",
+    }
+}
+
+fn summary_openai_compat_style_label(style: Option<&str>) -> String {
+    match summary_openai_compat_style_key(style) {
+        "responses" => "responses".to_string(),
+        _ => "chat".to_string(),
+    }
+}
+
+fn normalize_optional_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -721,6 +995,15 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         | SettingField::SummaryEnabled
         | SettingField::SummaryProvider
         | SettingField::SummaryCliAgent
+        | SettingField::SummaryModel
+        | SettingField::SummaryContentMode
+        | SettingField::SummaryDiskCacheEnabled
+        | SettingField::SummaryOpenAiCompatEndpoint
+        | SettingField::SummaryOpenAiCompatBase
+        | SettingField::SummaryOpenAiCompatPath
+        | SettingField::SummaryOpenAiCompatStyle
+        | SettingField::SummaryOpenAiCompatApiKey
+        | SettingField::SummaryOpenAiCompatApiKeyHeader
         | SettingField::SummaryEventWindow
         | SettingField::SummaryDebounceMs
         | SettingField::SummaryMaxInflight => SettingsGroup::TimelineIntelligence,
@@ -753,4 +1036,35 @@ pub fn field_item(field: SettingField) -> &'static SettingItem {
         .iter()
         .find(|item| item.field() == Some(field))
         .unwrap_or_else(|| panic!("missing setting metadata for {:?}", field))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_summary_window_v2_converts_legacy_default_once() {
+        let mut cfg = DaemonConfig::default();
+        cfg.daemon.summary_event_window = 8;
+        cfg.daemon.summary_window_migrated_v2 = false;
+
+        assert!(migrate_summary_window_v2(&mut cfg));
+        assert_eq!(cfg.daemon.summary_event_window, 0);
+        assert!(cfg.daemon.summary_window_migrated_v2);
+
+        assert!(!migrate_summary_window_v2(&mut cfg));
+        assert_eq!(cfg.daemon.summary_event_window, 0);
+        assert!(cfg.daemon.summary_window_migrated_v2);
+    }
+
+    #[test]
+    fn migrate_summary_window_v2_marks_non_legacy_without_overwrite() {
+        let mut cfg = DaemonConfig::default();
+        cfg.daemon.summary_event_window = 5;
+        cfg.daemon.summary_window_migrated_v2 = false;
+
+        assert!(migrate_summary_window_v2(&mut cfg));
+        assert_eq!(cfg.daemon.summary_event_window, 5);
+        assert!(cfg.daemon.summary_window_migrated_v2);
+    }
 }

@@ -95,6 +95,8 @@ struct PartInfo {
     id: String,
     #[serde(default)]
     message_id: Option<String>,
+    #[serde(default, rename = "callID")]
+    call_id: Option<String>,
     #[serde(rename = "type")]
     part_type: String,
     // text parts
@@ -217,7 +219,7 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
     let mut events: Vec<Event> = Vec::new();
     let mut model_id: Option<String> = None;
     let mut provider_id: Option<String> = None;
-    let mut event_counter = 0u64;
+    let mut open_tasks: HashMap<String, (DateTime<Utc>, String)> = HashMap::new();
 
     for msg in &messages {
         // Extract model from nested model object
@@ -277,7 +279,6 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
                             "assistant" => EventType::AgentMessage,
                             _ => continue,
                         };
-                        event_counter += 1;
                         events.push(Event {
                             event_id: part.id.clone(),
                             timestamp: part_ts,
@@ -292,18 +293,39 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
                         let tool_name = part.tool.as_deref().unwrap_or("unknown").to_string();
                         let state = part.state.as_ref();
                         let status = state.and_then(|s| s.status.as_deref()).unwrap_or("unknown");
+                        let task_id = part
+                            .call_id
+                            .as_deref()
+                            .filter(|id| !id.trim().is_empty())
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| format!("opencode-task-{}", part.id));
+                        let title = state
+                            .and_then(|s| s.title.as_deref())
+                            .filter(|v| !v.trim().is_empty())
+                            .map(str::to_string)
+                            .or_else(|| Some(tool_name.clone()));
+
+                        events.push(Event {
+                            event_id: format!("{}-task-start", part.id),
+                            timestamp: part_ts,
+                            event_type: EventType::TaskStart { title },
+                            task_id: Some(task_id.clone()),
+                            content: Content::empty(),
+                            duration_ms: None,
+                            attributes: HashMap::new(),
+                        });
+                        open_tasks.insert(task_id.clone(), (part_ts, part.id.clone()));
 
                         // Emit ToolCall
                         let input = state.and_then(|s| s.input.clone());
                         let event_type = classify_opencode_tool(&tool_name, &input);
                         let content = opencode_tool_content(&tool_name, &input);
 
-                        event_counter += 1;
                         events.push(Event {
                             event_id: format!("{}-call", part.id),
                             timestamp: part_ts,
                             event_type,
-                            task_id: None,
+                            task_id: Some(task_id.clone()),
                             content,
                             duration_ms,
                             attributes: HashMap::new(),
@@ -318,7 +340,6 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
                                 .unwrap_or("")
                                 .to_string();
 
-                            event_counter += 1;
                             events.push(Event {
                                 event_id: format!("{}-result", part.id),
                                 timestamp: part_ts,
@@ -327,11 +348,35 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
                                     is_error: status == "error",
                                     call_id: Some(call_event_id),
                                 },
-                                task_id: None,
+                                task_id: Some(task_id.clone()),
                                 content: Content::text(&output_text),
                                 duration_ms: None,
                                 attributes: HashMap::new(),
                             });
+                        }
+
+                        if is_terminal_tool_status(status) {
+                            let summary = state
+                                .and_then(|s| s.title.as_deref())
+                                .filter(|v| !v.trim().is_empty())
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    if status == "error" {
+                                        Some(format!("{tool_name} failed"))
+                                    } else {
+                                        Some(format!("{tool_name} {status}"))
+                                    }
+                                });
+                            events.push(Event {
+                                event_id: format!("{}-task-end", part.id),
+                                timestamp: part_ts,
+                                event_type: EventType::TaskEnd { summary },
+                                task_id: Some(task_id.clone()),
+                                content: Content::empty(),
+                                duration_ms: None,
+                                attributes: HashMap::new(),
+                            });
+                            open_tasks.remove(&task_id);
                         }
                     }
                     "snapshot" | "step-start" | "step-finish" => {
@@ -343,7 +388,6 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
         } else {
             // Message without parts — emit as user message if user role
             if msg.role == "user" {
-                event_counter += 1;
                 events.push(Event {
                     event_id: msg.id.clone(),
                     timestamp: msg_ts,
@@ -357,7 +401,19 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
         }
     }
 
-    let _ = event_counter;
+    for (task_id, (ts, origin_part_id)) in open_tasks {
+        events.push(Event {
+            event_id: format!("{origin_part_id}-task-end-eof"),
+            timestamp: ts,
+            event_type: EventType::TaskEnd {
+                summary: Some("closed at EOF".to_string()),
+            },
+            task_id: Some(task_id),
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+    }
 
     let created_at = info
         .time
@@ -417,9 +473,8 @@ fn classify_opencode_tool(name: &str, input: &Option<serde_json::Value>) -> Even
     match name {
         "bash" | "shell" => {
             let cmd = input
-                .and_then(|v| v.get("command").and_then(|c| c.as_str()))
-                .unwrap_or("")
-                .to_string();
+                .and_then(|v| json_find_string(v, &["command", "cmd", "script"]))
+                .unwrap_or_default();
             EventType::ShellCommand {
                 command: cmd,
                 exit_code: None,
@@ -427,71 +482,44 @@ fn classify_opencode_tool(name: &str, input: &Option<serde_json::Value>) -> Even
         }
         "edit" | "str_replace_editor" => {
             let path = input
-                .and_then(|v| {
-                    v.get("path")
-                        .or_else(|| v.get("file_path"))
-                        .and_then(|p| p.as_str())
-                })
-                .unwrap_or("unknown")
-                .to_string();
+                .and_then(json_find_path)
+                .unwrap_or_else(|| "unknown".to_string());
             EventType::FileEdit { path, diff: None }
         }
         "write" | "create" => {
             let path = input
-                .and_then(|v| {
-                    v.get("path")
-                        .or_else(|| v.get("file_path"))
-                        .and_then(|p| p.as_str())
-                })
-                .unwrap_or("unknown")
-                .to_string();
+                .and_then(json_find_path)
+                .unwrap_or_else(|| "unknown".to_string());
             EventType::FileCreate { path }
         }
         "read" | "view" => {
             let path = input
-                .and_then(|v| {
-                    v.get("path")
-                        .or_else(|| v.get("file_path"))
-                        .and_then(|p| p.as_str())
-                })
-                .unwrap_or("unknown")
-                .to_string();
+                .and_then(json_find_path)
+                .unwrap_or_else(|| "unknown".to_string());
             EventType::FileRead { path }
         }
         "grep" | "search" => {
             let query = input
-                .and_then(|v| {
-                    v.get("pattern")
-                        .or_else(|| v.get("query"))
-                        .and_then(|q| q.as_str())
-                })
-                .unwrap_or("")
-                .to_string();
+                .and_then(|v| json_find_string(v, &["pattern", "query", "text", "regex"]))
+                .unwrap_or_default();
             EventType::CodeSearch { query }
         }
         "glob" | "find" => {
             let pattern = input
-                .and_then(|v| {
-                    v.get("pattern")
-                        .or_else(|| v.get("path"))
-                        .and_then(|p| p.as_str())
-                })
-                .unwrap_or("*")
-                .to_string();
+                .and_then(|v| json_find_string(v, &["pattern", "path", "glob"]))
+                .unwrap_or_else(|| "*".to_string());
             EventType::FileSearch { pattern }
         }
         "webfetch" | "web_fetch" => {
             let url = input
-                .and_then(|v| v.get("url").and_then(|u| u.as_str()))
-                .unwrap_or("")
-                .to_string();
+                .and_then(|v| json_find_string(v, &["url", "link"]))
+                .unwrap_or_default();
             EventType::WebFetch { url }
         }
         "websearch" | "web_search" => {
             let query = input
-                .and_then(|v| v.get("query").and_then(|q| q.as_str()))
-                .unwrap_or("")
-                .to_string();
+                .and_then(|v| json_find_string(v, &["query", "q", "text"]))
+                .unwrap_or_default();
             EventType::WebSearch { query }
         }
         "task" => EventType::ToolCall {
@@ -524,6 +552,70 @@ fn opencode_tool_content(name: &str, input: &Option<serde_json::Value>) -> Conte
     }
 }
 
+fn is_terminal_tool_status(status: &str) -> bool {
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "completed" | "complete" | "done" | "error" | "failed" | "cancelled" | "canceled"
+    )
+}
+
+fn json_find_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    if let serde_json::Value::Object(map) = value {
+        for key in keys {
+            if let Some(found) = map.get(*key).and_then(|v| v.as_str()) {
+                if !found.trim().is_empty() {
+                    return Some(found.to_string());
+                }
+            }
+        }
+        for nested in map.values() {
+            if let Some(found) = json_find_string(nested, keys) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn json_find_path(value: &serde_json::Value) -> Option<String> {
+    const PATH_KEYS: &[&str] = &[
+        "path",
+        "file_path",
+        "filePath",
+        "filepath",
+        "target_file",
+        "targetFile",
+        "target_path",
+        "targetPath",
+        "file",
+        "filename",
+    ];
+    if let Some(path) = json_find_string(value, PATH_KEYS) {
+        return Some(path);
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, nested) in map {
+                let key_lower = key.to_ascii_lowercase();
+                if (key_lower.contains("path") || key_lower == "file" || key_lower == "filename")
+                    && nested.as_str().is_some()
+                {
+                    if let Some(raw) = nested.as_str() {
+                        if !raw.trim().is_empty() {
+                            return Some(raw.to_string());
+                        }
+                    }
+                }
+                if let Some(path) = json_find_path(nested) {
+                    return Some(path);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +634,24 @@ mod tests {
             EventType::ShellCommand { command, .. } => assert_eq!(command, "ls -la"),
             _ => panic!("Expected ShellCommand"),
         }
+    }
+
+    #[test]
+    fn test_classify_read_with_camel_case_path() {
+        let input = Some(serde_json::json!({"filePath": "/tmp/demo.rs"}));
+        let et = classify_opencode_tool("read", &input);
+        match et {
+            EventType::FileRead { path } => assert_eq!(path, "/tmp/demo.rs"),
+            _ => panic!("Expected FileRead"),
+        }
+    }
+
+    #[test]
+    fn test_tool_status_terminal_variants() {
+        assert!(is_terminal_tool_status("completed"));
+        assert!(is_terminal_tool_status("FAILED"));
+        assert!(is_terminal_tool_status("canceled"));
+        assert!(!is_terminal_tool_status("running"));
     }
 
     #[test]

@@ -5,7 +5,9 @@ use opensession_api::{
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
 use ratatui::widgets::ListState;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -14,7 +16,11 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::async_ops::{AsyncCommand, CommandResult};
 use crate::config::{self, DaemonConfig, GitStorageMethod, PublishMode, SettingField};
 use crate::session_timeline::{build_lane_events, LaneMarker};
-use crate::timeline_summary::{TimelineSummaryWindowKey, TimelineSummaryWindowRequest};
+use crate::timeline_summary::{
+    describe_summary_engine, parse_timeline_summary_output, SummaryRuntimeConfig,
+    TimelineSummaryCacheEntry, TimelineSummaryPayload, TimelineSummaryWindowKey,
+    TimelineSummaryWindowRequest,
+};
 pub use crate::views::modal::{ConfirmAction, InputAction, Modal};
 
 /// A display-level event for the timeline. Wraps real events with collapse/summary info.
@@ -120,6 +126,15 @@ struct SummaryAnchor<'a> {
 enum SummaryScope {
     Window,
     Turn,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedTimelineSummaryRow {
+    lookup_key: String,
+    compact: String,
+    payload: TimelineSummaryPayload,
+    raw: String,
+    saved_at_unix: u64,
 }
 
 /// Which screen the user is viewing.
@@ -317,6 +332,66 @@ pub struct Turn<'a> {
     pub agent_events: Vec<&'a Event>,
 }
 
+fn is_infra_warning_user_message(event: &Event) -> bool {
+    if !matches!(event.event_type, EventType::UserMessage) {
+        return false;
+    }
+    event_user_text(event)
+        .map(|text| is_control_user_text(&text))
+        .unwrap_or(false)
+}
+
+fn is_control_event(event: &Event) -> bool {
+    if is_infra_warning_user_message(event) {
+        return true;
+    }
+    matches!(
+        &event.event_type,
+        EventType::Custom { kind } if kind.eq_ignore_ascii_case("turn_aborted")
+    )
+}
+
+fn event_user_text(event: &Event) -> Option<String> {
+    if !matches!(event.event_type, EventType::UserMessage) {
+        return None;
+    }
+    let mut text = String::new();
+    for block in &event.content.blocks {
+        if let ContentBlock::Text { text: block_text } = block {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(block_text);
+        }
+    }
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn is_control_user_text(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    if lower.contains("apply_patch was requested via exec_command")
+        && lower.contains("use the apply_patch tool instead")
+    {
+        return true;
+    }
+    lower == "agents.md instructions"
+        || lower.starts_with("# agents.md instructions")
+        || lower.contains("<instructions>")
+        || lower.contains("</instructions>")
+        || lower.contains("<environment_context>")
+        || lower.contains("</environment_context>")
+        || lower.contains("<turn_aborted>")
+        || lower.contains("</turn_aborted>")
+}
+
 /// Extract turns from visible events. Each UserMessage starts a new turn.
 pub fn extract_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
     let mut turns = Vec::new();
@@ -329,6 +404,9 @@ pub fn extract_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
 
     for (display_idx, de) in events.iter().enumerate() {
         let event = de.event();
+        if is_control_event(event) {
+            continue;
+        }
         if !seen_any {
             current_start_display = display_idx;
             current_anchor_source = de.source_index();
@@ -366,6 +444,159 @@ pub fn extract_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
     }
 
     turns
+}
+
+fn turn_has_visible_prompt(turn: &Turn<'_>) -> bool {
+    turn.user_events.iter().any(|event| {
+        event
+            .content
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .flat_map(|text| text.lines())
+            .any(|line| !line.trim().is_empty())
+    })
+}
+
+pub fn extract_visible_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
+    extract_turns(events)
+        .into_iter()
+        .filter(turn_has_visible_prompt)
+        .collect()
+}
+
+#[cfg(test)]
+mod turn_extract_tests {
+    use super::*;
+    use chrono::Utc;
+    use opensession_core::trace::Content;
+
+    fn make_event(event_id: &str, event_type: EventType, text: &str) -> Event {
+        Event {
+            event_id: event_id.to_string(),
+            timestamp: Utc::now(),
+            event_type,
+            task_id: None,
+            content: Content::text(text),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn extract_turns_ignores_control_messages() {
+        let events = vec![
+            make_event(
+                "e1",
+                EventType::UserMessage,
+                "Warning: apply_patch was requested via exec_command. Use the apply_patch tool instead of exec_command.",
+            ),
+            make_event(
+                "e2",
+                EventType::UserMessage,
+                "<turn_aborted>Request interrupted by user for tool use</turn_aborted>",
+            ),
+            make_event(
+                "e3",
+                EventType::Custom {
+                    kind: "turn_aborted".to_string(),
+                },
+                "turn aborted",
+            ),
+            make_event("e4", EventType::UserMessage, "real user prompt"),
+            make_event("e5", EventType::AgentMessage, "assistant response"),
+        ];
+        let display = vec![
+            DisplayEvent::Single {
+                event: &events[0],
+                source_index: 0,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+            DisplayEvent::Single {
+                event: &events[1],
+                source_index: 1,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+            DisplayEvent::Single {
+                event: &events[2],
+                source_index: 2,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+            DisplayEvent::Single {
+                event: &events[3],
+                source_index: 3,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+            DisplayEvent::Single {
+                event: &events[4],
+                source_index: 4,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+        ];
+
+        let turns = extract_turns(&display);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].user_events.len(), 1);
+        let user_text = turns[0].user_events[0]
+            .content
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        assert_eq!(user_text, "real user prompt");
+    }
+
+    #[test]
+    fn extract_visible_turns_hides_no_prompt_turns() {
+        let events = vec![
+            make_event("e1", EventType::AgentMessage, "assistant-only turn"),
+            make_event("e2", EventType::UserMessage, "real prompt"),
+            make_event("e3", EventType::AgentMessage, "assistant response"),
+        ];
+        let display = vec![
+            DisplayEvent::Single {
+                event: &events[0],
+                source_index: 0,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+            DisplayEvent::Single {
+                event: &events[1],
+                source_index: 1,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+            DisplayEvent::Single {
+                event: &events[2],
+                source_index: 2,
+                lane: 0,
+                marker: LaneMarker::None,
+                active_lanes: vec![0],
+            },
+        ];
+
+        let turns = extract_visible_turns(&display);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].user_events.len(), 1);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -443,6 +674,7 @@ pub struct App {
     pub collapse_consecutive: bool,
     pub expanded_events: HashSet<usize>,
     pub detail_view_mode: DetailViewMode,
+    pub focus_detail_view: bool,
     pub detail_h_scroll: u16,
     pub detail_viewport_height: u16,
     pub detail_selected_event_id: Option<String>,
@@ -450,15 +682,22 @@ pub struct App {
     pub detail_source_mtime: Option<SystemTime>,
     pub realtime_preview_enabled: bool,
     pub last_realtime_check: Instant,
-    pub timeline_summary_cache: HashMap<TimelineSummaryWindowKey, String>,
+    pub timeline_summary_cache: HashMap<TimelineSummaryWindowKey, TimelineSummaryCacheEntry>,
     pub timeline_summary_pending: VecDeque<TimelineSummaryWindowRequest>,
     pub timeline_summary_inflight: HashSet<TimelineSummaryWindowKey>,
+    pub timeline_summary_inflight_started: HashMap<TimelineSummaryWindowKey, Instant>,
+    pub timeline_summary_lookup_keys: HashMap<TimelineSummaryWindowKey, String>,
+    pub timeline_summary_disk_cache: HashMap<String, TimelineSummaryCacheEntry>,
+    pub timeline_summary_disk_cache_loaded: bool,
+    pub timeline_summary_epoch: u64,
+    pub session_max_active_agents: HashMap<String, usize>,
     pub last_summary_request_at: Option<Instant>,
     pub summary_cli_prompted: bool,
     pub turn_index: usize,
     pub turn_agent_scroll: u16,
+    pub turn_h_scroll: u16,
     pub turn_line_offsets: Vec<u16>,
-    pub expanded_turns: HashSet<usize>,
+    pub turn_raw_overrides: HashSet<usize>,
 
     // Server connection info
     pub server_info: Option<ServerInfo>,
@@ -604,6 +843,15 @@ impl App {
     }
 
     pub fn new(sessions: Vec<Session>) -> Self {
+        let session_max_active_agents: HashMap<String, usize> = sessions
+            .iter()
+            .map(|session| {
+                (
+                    session.session_id.clone(),
+                    Self::compute_session_max_active_agents(session),
+                )
+            })
+            .collect();
         let filtered: Vec<usize> = sessions
             .iter()
             .enumerate()
@@ -625,9 +873,10 @@ impl App {
             detail_scroll: 0,
             detail_event_index: 0,
             event_filters: HashSet::from([EventFilter::All]),
-            collapse_consecutive: true,
+            collapse_consecutive: false,
             expanded_events: HashSet::new(),
             detail_view_mode: DetailViewMode::Linear,
+            focus_detail_view: false,
             detail_h_scroll: 0,
             detail_viewport_height: 24,
             detail_selected_event_id: None,
@@ -638,12 +887,19 @@ impl App {
             timeline_summary_cache: HashMap::new(),
             timeline_summary_pending: VecDeque::new(),
             timeline_summary_inflight: HashSet::new(),
+            timeline_summary_inflight_started: HashMap::new(),
+            timeline_summary_lookup_keys: HashMap::new(),
+            timeline_summary_disk_cache: HashMap::new(),
+            timeline_summary_disk_cache_loaded: false,
+            timeline_summary_epoch: 0,
+            session_max_active_agents,
             last_summary_request_at: None,
             summary_cli_prompted: false,
             turn_index: 0,
             turn_agent_scroll: 0,
+            turn_h_scroll: 0,
             turn_line_offsets: Vec::new(),
-            expanded_turns: HashSet::new(),
+            turn_raw_overrides: HashSet::new(),
             server_info: None,
             db: None,
             view_mode: ViewMode::Local,
@@ -760,9 +1016,16 @@ impl App {
             && !matches!(self.view, View::Setup)
         {
             if self.view == View::Help {
-                self.view = View::SessionList;
-                self.active_tab = Tab::Sessions;
+                if self.focus_detail_view {
+                    self.view = View::SessionDetail;
+                } else {
+                    self.view = View::SessionList;
+                    self.active_tab = Tab::Sessions;
+                }
             } else {
+                if self.view == View::SessionDetail {
+                    self.cancel_timeline_summary_jobs();
+                }
                 self.view = View::Help;
             }
             return false;
@@ -810,8 +1073,12 @@ impl App {
             View::Invitations => self.handle_invitations_key(key),
             View::Help => {
                 // Any key exits help
-                self.view = View::SessionList;
-                self.active_tab = Tab::Sessions;
+                if self.focus_detail_view {
+                    self.view = View::SessionDetail;
+                } else {
+                    self.view = View::SessionList;
+                    self.active_tab = Tab::Sessions;
+                }
                 false
             }
         }
@@ -820,6 +1087,9 @@ impl App {
     fn switch_tab(&mut self, tab: Tab) {
         if self.active_tab == tab {
             return;
+        }
+        if self.view == View::SessionDetail {
+            self.cancel_timeline_summary_jobs();
         }
         self.active_tab = tab;
         match tab {
@@ -1015,11 +1285,10 @@ impl App {
 
         match key {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
-                self.view = View::SessionList;
-                self.detail_scroll = 0;
-                self.detail_event_index = 0;
-                self.detail_h_scroll = 0;
-                self.detail_view_mode = DetailViewMode::Linear;
+                if self.focus_detail_view {
+                    return true;
+                }
+                self.leave_detail_view();
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.detail_h_scroll = self.detail_h_scroll.saturating_sub(4);
@@ -1043,8 +1312,10 @@ impl App {
             KeyCode::Char('n') => self.jump_to_next_same_type(),
             KeyCode::Char('N') => self.jump_to_prev_same_type(),
             KeyCode::Char('v') => {
-                self.detail_view_mode = DetailViewMode::Turn;
-                self.sync_linear_to_turn();
+                if !self.focus_detail_view {
+                    self.detail_view_mode = DetailViewMode::Turn;
+                    self.sync_linear_to_turn();
+                }
             }
             KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
             KeyCode::Char('2') => self.toggle_event_filter(EventFilter::Messages),
@@ -1631,7 +1902,9 @@ impl App {
             SettingField::SummaryCliAgent if !self.summary_mode_is_cli() => {
                 Some("Set LLM Summary Mode to CLI first")
             }
-            SettingField::SummaryEventWindow | SettingField::SummaryDebounceMs
+            SettingField::SummaryContentMode
+            | SettingField::SummaryEventWindow
+            | SettingField::SummaryDebounceMs
                 if !self.daemon_config.daemon.summary_enabled =>
             {
                 Some("Turn ON LLM Summary Enabled first")
@@ -1995,9 +2268,8 @@ impl App {
                             self.daemon_config.daemon.summary_provider = Some(provider.clone());
                             self.config_dirty = true;
                             self.timeline_summary_cache.clear();
-                            self.timeline_summary_pending.clear();
-                            self.timeline_summary_inflight.clear();
-                            self.last_summary_request_at = None;
+                            self.timeline_summary_lookup_keys.clear();
+                            self.cancel_timeline_summary_jobs();
                             self.save_config();
                             self.flash_success(format!("LLM summary provider set to {provider}"));
                         }
@@ -2247,28 +2519,43 @@ impl App {
                 self.flash_error(format!("Error: {e}"));
             }
 
-            CommandResult::SummaryDone { key, result } => {
+            CommandResult::SummaryDone { key, epoch, result } => {
+                if epoch != self.timeline_summary_epoch {
+                    self.timeline_summary_lookup_keys.remove(&key);
+                    return;
+                }
                 self.timeline_summary_inflight.remove(&key);
+                self.timeline_summary_inflight_started.remove(&key);
                 match result {
                     Ok(summary) => {
-                        if !summary.trim().is_empty() {
-                            self.timeline_summary_cache.insert(key, summary);
-                        } else {
+                        if !summary.compact.trim().is_empty() {
                             self.timeline_summary_cache
-                                .insert(key, "summary unavailable for this window".to_string());
+                                .insert(key.clone(), summary.clone());
+                            if let Some(lookup_key) = self.timeline_summary_lookup_keys.remove(&key)
+                            {
+                                self.persist_summary_disk_cache(lookup_key, &summary);
+                            }
+                        } else {
+                            self.timeline_summary_cache.insert(
+                                key.clone(),
+                                parse_timeline_summary_output(
+                                    "summary unavailable for this window",
+                                ),
+                            );
+                            self.timeline_summary_lookup_keys.remove(&key);
                         }
                     }
                     Err(err) => {
                         let fallback = format!("summary unavailable ({err})");
-                        self.timeline_summary_cache.insert(key.clone(), fallback);
+                        self.timeline_summary_cache
+                            .insert(key.clone(), parse_timeline_summary_output(&fallback));
+                        self.timeline_summary_lookup_keys.remove(&key);
                         if Self::is_summary_setup_missing(&err)
                             || Self::is_summary_cli_runtime_failure(&err)
                         {
                             if self.daemon_config.daemon.summary_enabled {
                                 self.daemon_config.daemon.summary_enabled = false;
-                                self.timeline_summary_pending.clear();
-                                self.timeline_summary_inflight.clear();
-                                self.last_summary_request_at = None;
+                                self.cancel_timeline_summary_jobs();
                                 self.flash_info(
                                     "LLM summary auto-disabled after summary backend failure",
                                 );
@@ -2745,16 +3032,22 @@ impl App {
                 self.detail_h_scroll = 0;
                 self.event_filters = HashSet::from([EventFilter::All]);
                 self.expanded_events.clear();
-                self.expanded_turns.clear();
-                self.detail_view_mode = match crossterm::terminal::size() {
-                    Ok((width, _)) if width >= Self::DETAIL_SPLIT_MIN_WIDTH => DetailViewMode::Turn,
-                    _ => DetailViewMode::Linear,
+                self.turn_raw_overrides.clear();
+                self.detail_view_mode = if self.focus_detail_view {
+                    DetailViewMode::Turn
+                } else {
+                    match crossterm::terminal::size() {
+                        Ok((width, _)) if width >= Self::DETAIL_SPLIT_MIN_WIDTH => {
+                            DetailViewMode::Turn
+                        }
+                        _ => DetailViewMode::Linear,
+                    }
                 };
                 self.detail_selected_event_id = None;
                 self.turn_index = 0;
                 self.turn_agent_scroll = 0;
-                self.timeline_summary_pending.clear();
-                self.timeline_summary_inflight.clear();
+                self.turn_h_scroll = 0;
+                self.cancel_timeline_summary_jobs();
                 self.summary_cli_prompted = false;
                 self.detail_source_path = self.resolve_selected_source_path();
                 self.detail_source_mtime = self
@@ -2774,6 +3067,10 @@ impl App {
                 self.update_detail_selection_anchor();
             }
         }
+    }
+
+    pub(crate) fn enter_detail_for_startup(&mut self) {
+        self.enter_detail();
     }
 
     // ── Detail navigation ───────────────────────────────────────────────
@@ -2830,16 +3127,37 @@ impl App {
     fn handle_turn_key(&mut self, key: KeyCode) -> bool {
         match key {
             KeyCode::Char('q') => {
-                self.view = View::SessionList;
-                self.detail_scroll = 0;
-                self.detail_event_index = 0;
-                self.detail_h_scroll = 0;
-                self.detail_view_mode = DetailViewMode::Linear;
+                if self.focus_detail_view {
+                    return true;
+                }
+                self.leave_detail_view();
             }
-            KeyCode::Esc | KeyCode::Char('v') | KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Esc => {
+                if self.focus_detail_view {
+                    return true;
+                }
                 self.detail_view_mode = DetailViewMode::Linear;
                 self.sync_turn_to_linear();
                 self.update_detail_selection_anchor();
+            }
+            KeyCode::Char('v') => {
+                if !self.focus_detail_view {
+                    self.detail_view_mode = DetailViewMode::Linear;
+                    self.sync_turn_to_linear();
+                    self.update_detail_selection_anchor();
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if self.focus_detail_view {
+                    self.turn_h_scroll = self.turn_h_scroll.saturating_sub(4);
+                } else {
+                    self.detail_view_mode = DetailViewMode::Linear;
+                    self.sync_turn_to_linear();
+                    self.update_detail_selection_anchor();
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.turn_h_scroll = self.turn_h_scroll.saturating_add(4);
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.turn_agent_scroll = self.turn_agent_scroll.saturating_add(1);
@@ -2852,11 +3170,12 @@ impl App {
             KeyCode::Char('g') | KeyCode::Home => {
                 self.turn_index = 0;
                 self.turn_agent_scroll = 0;
+                self.turn_h_scroll = 0;
             }
             KeyCode::Char('G') | KeyCode::End => {
                 if let Some(session) = self.selected_session().cloned() {
                     let visible = self.get_visible_events(&session);
-                    let turns = extract_turns(&visible);
+                    let turns = extract_visible_turns(&visible);
                     self.turn_index = turns.len().saturating_sub(1);
                     if let Some(&offset) = self.turn_line_offsets.get(self.turn_index) {
                         self.turn_agent_scroll = offset;
@@ -2866,11 +3185,26 @@ impl App {
                 }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                let idx = self.turn_index;
-                if self.expanded_turns.contains(&idx) {
-                    self.expanded_turns.remove(&idx);
-                } else {
-                    self.expanded_turns.insert(idx);
+                if let Some(session) = self.selected_session().cloned() {
+                    let visible = self.get_visible_events(&session);
+                    let turns = extract_visible_turns(&visible);
+                    if let Some(turn) = turns.get(self.turn_index) {
+                        let has_summary = self
+                            .turn_summary_payload(
+                                &session.session_id,
+                                turn.turn_index,
+                                turn.anchor_source_index,
+                            )
+                            .is_some();
+                        if has_summary {
+                            let idx = self.turn_index;
+                            if self.turn_raw_overrides.contains(&idx) {
+                                self.turn_raw_overrides.remove(&idx);
+                            } else {
+                                self.turn_raw_overrides.insert(idx);
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -2881,7 +3215,7 @@ impl App {
     fn turn_next(&mut self) {
         if let Some(session) = self.selected_session().cloned() {
             let visible = self.get_visible_events(&session);
-            let turns = extract_turns(&visible);
+            let turns = extract_visible_turns(&visible);
             if self.turn_index + 1 < turns.len() {
                 self.turn_index += 1;
                 if let Some(&offset) = self.turn_line_offsets.get(self.turn_index) {
@@ -2907,26 +3241,28 @@ impl App {
     fn sync_linear_to_turn(&mut self) {
         if let Some(session) = self.selected_session().cloned() {
             let visible = self.get_visible_events(&session);
-            let turns = extract_turns(&visible);
+            let turns = extract_visible_turns(&visible);
             let mut event_count = 0;
             for (ti, turn) in turns.iter().enumerate() {
                 let turn_size = turn.user_events.len() + turn.agent_events.len();
                 if event_count + turn_size > self.detail_event_index {
                     self.turn_index = ti;
                     self.turn_agent_scroll = 0;
+                    self.turn_h_scroll = 0;
                     return;
                 }
                 event_count += turn_size;
             }
             self.turn_index = turns.len().saturating_sub(1);
             self.turn_agent_scroll = 0;
+            self.turn_h_scroll = 0;
         }
     }
 
     fn sync_turn_to_linear(&mut self) {
         if let Some(session) = self.selected_session().cloned() {
             let visible = self.get_visible_events(&session);
-            let turns = extract_turns(&visible);
+            let turns = extract_visible_turns(&visible);
             let mut event_count = 0;
             for (ti, turn) in turns.iter().enumerate() {
                 if ti == self.turn_index {
@@ -3028,6 +3364,19 @@ impl App {
                 .get(abs_idx)
                 .and_then(|&idx| self.sessions.get(idx))
         }
+    }
+
+    pub fn rebuild_session_agent_metrics(&mut self) {
+        self.session_max_active_agents = self
+            .sessions
+            .iter()
+            .map(|session| {
+                (
+                    session.session_id.clone(),
+                    Self::compute_session_max_active_agents(session),
+                )
+            })
+            .collect();
     }
 
     /// Get nickname of the currently selected session (Team/Repo views only).
@@ -3155,7 +3504,7 @@ impl App {
                             event: row.anchor_event,
                             source_index: row.anchor_source_index,
                             window_id: row.key.window_id,
-                            summary: summary.clone(),
+                            summary: summary.compact.clone(),
                             lane: row.lane,
                             active_lanes: row.active_lanes.clone(),
                         });
@@ -3310,11 +3659,16 @@ impl App {
             });
         }
 
-        for turn in extract_turns(events) {
-            if turn.anchor_source_index == 0
-                && turn.user_events.is_empty()
-                && turn.agent_events.is_empty()
-            {
+        for turn in extract_visible_turns(events) {
+            if turn.user_events.is_empty() && turn.agent_events.is_empty() {
+                continue;
+            }
+            let control_only_user = !turn.user_events.is_empty()
+                && turn
+                    .user_events
+                    .iter()
+                    .all(|event| is_infra_warning_user_message(event));
+            if turn.agent_events.is_empty() && control_only_user {
                 continue;
             }
             let Some(anchor_event) = source_to_event.get(&turn.anchor_source_index).copied() else {
@@ -3385,42 +3739,453 @@ impl App {
         let turn_auto_mode = matches!(anchor.scope, SummaryScope::Turn)
             && self.daemon_config.daemon.summary_event_window == 0;
 
-        let mut lines: Vec<String> = Vec::with_capacity(slice.len() + 8);
+        let clip = |value: &str, max_chars: usize| -> String {
+            let compact = value.trim().replace('\n', " ");
+            if compact.chars().count() <= max_chars {
+                compact
+            } else {
+                let mut out = String::new();
+                for ch in compact.chars().take(max_chars.saturating_sub(3)) {
+                    out.push(ch);
+                }
+                out.push_str("...");
+                out
+            }
+        };
+
+        let mut prompt_text_lines: Vec<String> = Vec::new();
+        let mut prompt_constraints: Vec<String> = Vec::new();
+        let mut agent_outcome: Vec<String> = Vec::new();
+        let mut modified_files: HashMap<String, (String, u32)> = HashMap::new();
+        let mut key_implementations: Vec<String> = Vec::new();
+        let mut agent_quotes: Vec<String> = Vec::new();
+        let mut agent_plan: Vec<String> = Vec::new();
+        let mut tool_actions: Vec<String> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        let mut ignored_control_events: Vec<String> = Vec::new();
+        let mut timeline_window: Vec<String> = Vec::new();
+        let mut agent_msg_count = 0usize;
+        let mut saw_task_end = false;
+
+        for (offset, event) in slice.iter().enumerate() {
+            let source_index = start + offset;
+            let e = event.event();
+            if is_control_event(e) {
+                ignored_control_events
+                    .push(format!("[{source_index}] {}", Self::compact_event_line(e)));
+                continue;
+            }
+
+            let kind = Self::event_kind_label(&e.event_type);
+            timeline_window.push(format!(
+                "- [{source_index}] {kind} {}",
+                Self::compact_event_line(e)
+            ));
+
+            match &e.event_type {
+                EventType::UserMessage => {
+                    for block in &e.content.blocks {
+                        if let ContentBlock::Text { text } = block {
+                            for line in text.lines().map(str::trim).filter(|line| !line.is_empty())
+                            {
+                                if prompt_text_lines.len() < 16 {
+                                    prompt_text_lines.push(line.to_string());
+                                }
+                                let lower = line.to_ascii_lowercase();
+                                if prompt_constraints.len() < 8
+                                    && (lower.starts_with("must ")
+                                        || lower.starts_with("should ")
+                                        || lower.starts_with("please ")
+                                        || lower.contains("do not ")
+                                        || lower.contains("don't ")
+                                        || lower.starts_with('-')
+                                        || lower.starts_with('*'))
+                                {
+                                    prompt_constraints.push(clip(line, 180));
+                                }
+                            }
+                        }
+                    }
+                }
+                EventType::AgentMessage | EventType::SystemMessage | EventType::Thinking => {
+                    if matches!(e.event_type, EventType::AgentMessage) {
+                        agent_msg_count += 1;
+                        for block in &e.content.blocks {
+                            if let ContentBlock::Text { text } = block {
+                                for line in
+                                    text.lines().map(str::trim).filter(|line| !line.is_empty())
+                                {
+                                    if agent_quotes.len() < 3 {
+                                        agent_quotes.push(clip(line, 220));
+                                    }
+                                    let lower = line.to_ascii_lowercase();
+                                    if key_implementations.len() < 24
+                                        && (lower.contains("implement")
+                                            || lower.contains("updated")
+                                            || lower.contains("fixed")
+                                            || lower.contains("added")
+                                            || lower.contains("refactor")
+                                            || lower.contains("migrate"))
+                                    {
+                                        key_implementations.push(clip(line, 220));
+                                    }
+                                    if agent_plan.len() < 24
+                                        && (lower.starts_with("plan")
+                                            || lower.starts_with("next")
+                                            || lower.starts_with("phase")
+                                            || lower.starts_with("1.")
+                                            || lower.starts_with("2.")
+                                            || lower.starts_with("3.")
+                                            || lower.starts_with("- "))
+                                    {
+                                        agent_plan.push(clip(line, 220));
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    let line = Self::compact_event_line(e);
+                    if !line.is_empty() && agent_outcome.len() < 20 {
+                        agent_outcome.push(line);
+                    }
+                }
+                EventType::TaskStart { title } => {
+                    if let Some(title) = title.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                        if agent_plan.len() < 24 {
+                            agent_plan.push(format!("task started: {}", clip(title, 180)));
+                        }
+                    }
+                }
+                EventType::TaskEnd { summary } => {
+                    saw_task_end = true;
+                    if let Some(text) = summary.as_deref().map(str::trim).filter(|v| !v.is_empty())
+                    {
+                        if agent_outcome.len() < 20 {
+                            agent_outcome.push(text.to_string());
+                        }
+                    }
+                }
+                EventType::ToolCall { name } => {
+                    if tool_actions.len() < 32 {
+                        tool_actions.push(format!("tool_call:{name}"));
+                    }
+                    if name.eq_ignore_ascii_case("update_plan") {
+                        for block in &e.content.blocks {
+                            if let ContentBlock::Json { data } = block {
+                                if let Some(items) = data.get("plan").and_then(|v| v.as_array()) {
+                                    for item in items {
+                                        let step = item
+                                            .get("step")
+                                            .and_then(|v| v.as_str())
+                                            .map(str::trim)
+                                            .filter(|v| !v.is_empty());
+                                        if let Some(step) = step {
+                                            let status = item
+                                                .get("status")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("unknown");
+                                            if agent_plan.len() < 24 {
+                                                agent_plan.push(format!(
+                                                    "[{}] {}",
+                                                    clip(status, 32),
+                                                    clip(step, 180)
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                EventType::ToolResult { name, is_error, .. } => {
+                    let status = if *is_error { "error" } else { "ok" };
+                    if tool_actions.len() < 32 {
+                        tool_actions.push(format!("tool_result:{name}:{status}"));
+                    }
+                    if *is_error {
+                        let detail = Self::first_text_block_line(&e.content.blocks, 180);
+                        if errors.len() < 16 {
+                            if detail.is_empty() {
+                                errors.push(format!("tool {name} failed"));
+                            } else {
+                                errors.push(format!("tool {name} failed: {}", clip(&detail, 180)));
+                            }
+                        }
+                    }
+                }
+                EventType::ShellCommand { command, exit_code } => {
+                    let action = match exit_code {
+                        Some(code) => format!("shell:{command} => {code}"),
+                        None => format!("shell:{command}"),
+                    };
+                    if tool_actions.len() < 32 {
+                        tool_actions.push(clip(&action, 200));
+                    }
+                    if let Some(code) = exit_code {
+                        if *code != 0 && errors.len() < 16 {
+                            errors.push(format!("shell exit {code}: {}", clip(command, 180)));
+                        }
+                    }
+                }
+                EventType::FileRead { path } => {
+                    let entry = modified_files
+                        .entry(path.clone())
+                        .or_insert_with(|| ("read".to_string(), 0));
+                    entry.0 = "read".to_string();
+                    entry.1 += 1;
+                }
+                EventType::FileEdit { path, .. } => {
+                    let entry = modified_files
+                        .entry(path.clone())
+                        .or_insert_with(|| ("edit".to_string(), 0));
+                    entry.0 = "edit".to_string();
+                    entry.1 += 1;
+                    if key_implementations.len() < 24 {
+                        key_implementations.push(format!("edited {path}"));
+                    }
+                }
+                EventType::FileCreate { path } => {
+                    let entry = modified_files
+                        .entry(path.clone())
+                        .or_insert_with(|| ("create".to_string(), 0));
+                    entry.0 = "create".to_string();
+                    entry.1 += 1;
+                    if key_implementations.len() < 24 {
+                        key_implementations.push(format!("created {path}"));
+                    }
+                }
+                EventType::FileDelete { path } => {
+                    let entry = modified_files
+                        .entry(path.clone())
+                        .or_insert_with(|| ("delete".to_string(), 0));
+                    entry.0 = "delete".to_string();
+                    entry.1 += 1;
+                    if key_implementations.len() < 24 {
+                        key_implementations.push(format!("deleted {path}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let collapse_low_signal_actions = |actions: Vec<String>| -> Vec<String> {
+            let mut merged = Vec::new();
+            let mut grouped_read_open = 0usize;
+            for action in actions {
+                let lower = action.to_ascii_lowercase();
+                let low_signal = lower.contains("tool_call:read")
+                    || lower.contains("tool_result:read")
+                    || lower.contains("tool_call:view")
+                    || lower.contains("tool_result:view")
+                    || lower.contains("tool_call:list_dir")
+                    || lower.contains("tool_result:list_dir")
+                    || lower.contains("tool_call:glob")
+                    || lower.contains("tool_result:glob")
+                    || lower.contains("tool_call:file_search")
+                    || lower.contains("tool_result:file_search")
+                    || lower.starts_with("read ")
+                    || lower.starts_with("open ");
+                if low_signal {
+                    grouped_read_open += 1;
+                } else {
+                    merged.push(action);
+                }
+            }
+            if grouped_read_open > 0 {
+                merged.insert(
+                    0,
+                    format!("semantic-group: read/open/list actions x{grouped_read_open}"),
+                );
+            }
+            merged
+        };
+
+        let dedupe_keep_order = |items: Vec<String>| -> Vec<String> {
+            let mut out = Vec::new();
+            for item in items {
+                if !out.iter().any(|existing| existing == &item) {
+                    out.push(item);
+                }
+            }
+            out
+        };
+
+        prompt_constraints = dedupe_keep_order(prompt_constraints);
+        key_implementations = dedupe_keep_order(key_implementations);
+        agent_quotes = dedupe_keep_order(agent_quotes);
+        agent_plan = dedupe_keep_order(agent_plan);
+        tool_actions = dedupe_keep_order(tool_actions);
+        errors = dedupe_keep_order(errors);
+        if self.summary_content_mode_is_minimal() {
+            tool_actions = collapse_low_signal_actions(tool_actions);
+        }
+
+        let mut modified_file_lines: Vec<String> = modified_files
+            .into_iter()
+            .map(|(path, (op, count))| format!("- path:{path} op:{op} count:{count}"))
+            .collect();
+        modified_file_lines.sort();
+        modified_file_lines.truncate(24);
+
+        let card_cap = (4usize + (agent_msg_count / 10)).clamp(6, 24);
+        let turn_index_hint = if matches!(anchor.scope, SummaryScope::Turn) {
+            (anchor.key.window_id & ((1u64 << 56) - 1)) as usize
+        } else {
+            anchor.display_index
+        };
+        let outcome_status = if !errors.is_empty() {
+            "error"
+        } else if saw_task_end {
+            "completed"
+        } else {
+            "in_progress"
+        };
+
+        let prompt_text = if prompt_text_lines.is_empty() {
+            "(none)".to_string()
+        } else {
+            prompt_text_lines.join(" | ")
+        };
+        let prompt_intent = prompt_text_lines
+            .first()
+            .map(|line| clip(line, 180))
+            .unwrap_or_else(|| "No explicit user prompt".to_string());
+        let outcome_summary = agent_outcome
+            .last()
+            .map(|line| clip(line, 220))
+            .unwrap_or_else(|| "No agent outcome recorded".to_string());
+        let next_steps: Vec<String> = agent_plan
+            .iter()
+            .filter(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("next")
+                    || lower.contains("todo")
+                    || lower.contains("pending")
+                    || lower.contains("in_progress")
+            })
+            .take(5)
+            .cloned()
+            .collect();
+
+        let mut lines: Vec<String> = Vec::with_capacity(slice.len() + 64);
         lines.push(format!("session_id: {}", session.session_id));
         lines.push(format!("tool: {}", session.agent.tool));
         lines.push(format!("model: {}", session.agent.model));
-        lines.push(format!(
-            "anchor_event: {} ({})",
-            anchor.anchor_source_index,
-            Self::event_kind_label(&slice[slice.len() - 1].event().event_type)
-        ));
         lines.push(format!("scope: {scope}"));
-        if turn_auto_mode {
-            lines.push("window_mode: auto-turn".to_string());
+        lines.push(format!("summary_mode: {}", self.summary_content_mode_key()));
+        lines.push(format!("card_cap: {card_cap}"));
+        lines.push(format!(
+            "turn_meta: turn_index={} anchor_event_index={} event_span={}..{}",
+            turn_index_hint, anchor.anchor_source_index, start, end
+        ));
+        lines.push("prompt:".to_string());
+        lines.push(format!("- text: {}", clip(&prompt_text, 600)));
+        lines.push(format!("- intent: {}", clip(&prompt_intent, 220)));
+        if prompt_constraints.is_empty() {
+            lines.push("- constraints: (none)".to_string());
+        } else {
+            lines.push("- constraints:".to_string());
+            for c in prompt_constraints.iter().take(8) {
+                lines.push(format!("  - {}", clip(c, 220)));
+            }
+        }
+        lines.push("outcome:".to_string());
+        lines.push(format!("- status: {outcome_status}"));
+        lines.push(format!("- summary: {}", clip(&outcome_summary, 220)));
+        lines.push("evidence.modified_files:".to_string());
+        if modified_file_lines.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            lines.extend(modified_file_lines);
+        }
+        lines.push("evidence.key_implementations:".to_string());
+        if key_implementations.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            for line in key_implementations.iter().take(24) {
+                lines.push(format!("- {}", clip(line, 220)));
+            }
+        }
+        lines.push("evidence.agent_quotes_candidates:".to_string());
+        if agent_quotes.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            for quote in agent_quotes.iter().take(3) {
+                lines.push(format!("- {}", clip(quote, 220)));
+            }
+        }
+        lines.push("evidence.agent_plan_candidates:".to_string());
+        if agent_plan.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            for plan in agent_plan.iter().take(24) {
+                lines.push(format!("- {}", clip(plan, 220)));
+            }
+        }
+        lines.push("evidence.tool_actions:".to_string());
+        if tool_actions.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            for action in tool_actions.iter().take(24) {
+                lines.push(format!("- {}", clip(action, 220)));
+            }
+        }
+        lines.push("evidence.errors:".to_string());
+        if errors.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            for error in errors.iter().take(16) {
+                lines.push(format!("- {}", clip(error, 220)));
+            }
+        }
+        lines.push("next_steps_hint:".to_string());
+        if next_steps.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            for step in next_steps {
+                lines.push(format!("- {}", clip(&step, 220)));
+            }
+        }
+        lines.push(format!(
+            "ignored_control_events: {}",
+            ignored_control_events.len()
+        ));
+        for entry in ignored_control_events.iter().take(6) {
+            lines.push(format!("- {}", clip(entry, 220)));
         }
         lines.push("timeline_window:".to_string());
-        for (offset, event) in slice.iter().enumerate() {
-            let e = event.event();
-            lines.push(format!(
-                "- [{}] {} {}",
-                start + offset,
-                Self::event_kind_label(&e.event_type),
-                Self::compact_event_line(e)
-            ));
+        if timeline_window.is_empty() {
+            lines.push("- (none)".to_string());
+        } else {
+            lines.extend(timeline_window);
         }
 
-        let extra = if turn_auto_mode {
-            "Auto-turn mode rule:\n\
-             - Treat the whole turn as one unit and infer 2-4 semantic phases internally.\n\
-             - Reflect phase boundaries in `progress` and `changes` concisely.\n\n"
+        let auto_mode_hint = if turn_auto_mode {
+            "auto_turn_mode: on (infer phase boundaries inside cards, keep scope as one turn)"
         } else {
-            ""
+            "auto_turn_mode: off"
+        };
+        let summary_mode_hint = if self.summary_content_mode_is_minimal() {
+            "summary_mode_hint: minimal (merge semantically equivalent low-signal read/open/list actions; preserve key outcomes, files, plans, and errors)"
+        } else {
+            "summary_mode_hint: normal (keep action-level detail)"
         };
 
         format!(
-            "Generate HAIL-summary JSON for this {scope}.\n\
+            "Generate turn-summary JSON (v2) for this {scope}.\n\
              Return strict JSON only with keys:\n\
-             kind, version, scope, intent, progress, changes, next.\n\n{extra}{}",
+             kind, version, scope, turn_meta, prompt, outcome, evidence, cards, next_steps.\n\
+             Required guarantees:\n\
+             - evidence.modified_files, evidence.key_implementations, evidence.agent_quotes, evidence.agent_plan must not be dropped.\n\
+             - cards must preserve evidence and use types: overview/files/implementation/plan/errors/more.\n\
+             - Respect card_cap; if too many cards, emit a final `more` card.\n\
+             - Do not copy instruction/control text into prompt.intent.\n\
+             - Keep agent_quotes verbatim (1~3 lines max).\n\
+             - Prefer factual execution outcomes over meta-instructions.\n\
+             {auto_mode_hint}\n\
+             {summary_mode_hint}\n\n{}",
             lines.join("\n")
         )
     }
@@ -3543,8 +4308,7 @@ impl App {
 
         match provider.as_str() {
             "" | "auto" => {
-                if Self::has_any_summary_api_key() || Self::has_openai_compatible_endpoint_config()
-                {
+                if self.has_any_summary_api_key() || self.has_openai_compatible_endpoint_config() {
                     None
                 } else if std::env::var("OPS_TL_SUM_CLI_BIN")
                     .ok()
@@ -3553,7 +4317,7 @@ impl App {
                     None
                 } else {
                     Some(
-                        "no summary backend configured for auto mode; add API key, set OPS_TL_SUM_ENDPOINT/OPS_TL_SUM_BASE, set OPS_TL_SUM_CLI_BIN, or switch LLM Summary Mode".to_string(),
+                        "no summary backend configured for auto mode; set API key/endpoint in Settings > Timeline Intelligence, set OPS_TL_SUM_CLI_BIN, or switch LLM Summary Mode".to_string(),
                     )
                 }
             }
@@ -3572,13 +4336,13 @@ impl App {
                 }
             }
             "openai-compatible" => {
-                if Self::has_openai_compatible_endpoint_config()
-                    || Self::has_openai_compatible_api_key()
+                if self.has_openai_compatible_endpoint_config()
+                    || self.has_openai_compatible_api_key()
                 {
                     None
                 } else {
                     Some(
-                        "OpenAI-compatible mode needs key or endpoint/base config (OPS_TL_SUM_KEY, OPS_TL_SUM_ENDPOINT, OPS_TL_SUM_BASE)"
+                        "OpenAI-compatible mode needs key or endpoint/base config (Settings > Timeline Intelligence or OPS_TL_SUM_*)"
                             .to_string(),
                     )
                 }
@@ -3631,15 +4395,190 @@ impl App {
         }
     }
 
-    fn has_any_summary_api_key() -> bool {
+    fn cfg_non_empty(value: Option<&str>) -> bool {
+        value.is_some_and(|v| !v.trim().is_empty())
+    }
+
+    fn summary_content_mode_key(&self) -> &'static str {
+        match self
+            .daemon_config
+            .daemon
+            .summary_content_mode
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "minimal" | "min" => "minimal",
+            _ => "normal",
+        }
+    }
+
+    fn summary_content_mode_is_minimal(&self) -> bool {
+        self.summary_content_mode_key() == "minimal"
+    }
+
+    fn summary_disk_cache_enabled(&self) -> bool {
+        self.daemon_config.daemon.summary_disk_cache_enabled
+    }
+
+    fn summary_cache_path() -> Option<PathBuf> {
+        config::config_dir()
+            .ok()
+            .map(|dir| dir.join("timeline_summary_cache.jsonl"))
+    }
+
+    fn stable_context_hash(input: &str) -> u64 {
+        // FNV-1a 64-bit for stable cache key hashing across runs.
+        const OFFSET: u64 = 0xcbf29ce484222325;
+        const PRIME: u64 = 0x100000001b3;
+        let mut hash = OFFSET;
+        for byte in input.as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash
+    }
+
+    fn summary_cache_lookup_key(
+        &self,
+        key: &TimelineSummaryWindowKey,
+        context: &str,
+    ) -> Option<String> {
+        if !self.summary_disk_cache_enabled() {
+            return None;
+        }
+        let engine = describe_summary_engine(
+            self.daemon_config.daemon.summary_provider.as_deref(),
+            Some(&self.summary_runtime_config()),
+        )
+        .ok()?;
+        let context_hash = Self::stable_context_hash(context);
+        Some(format!(
+            "v2|{}|{}|{}|{}|{}|{:016x}",
+            key.session_id,
+            key.event_index,
+            key.window_id,
+            engine,
+            self.summary_content_mode_key(),
+            context_hash
+        ))
+    }
+
+    fn ensure_summary_disk_cache_loaded(&mut self) {
+        if self.timeline_summary_disk_cache_loaded {
+            return;
+        }
+        self.timeline_summary_disk_cache_loaded = true;
+        if !self.summary_disk_cache_enabled() {
+            return;
+        }
+
+        let Some(path) = Self::summary_cache_path() else {
+            return;
+        };
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+        let reader = BufReader::new(file);
+        for line in reader.lines().map_while(Result::ok) {
+            let Ok(row) = serde_json::from_str::<PersistedTimelineSummaryRow>(&line) else {
+                continue;
+            };
+            self.timeline_summary_disk_cache.insert(
+                row.lookup_key,
+                TimelineSummaryCacheEntry {
+                    compact: row.compact,
+                    payload: row.payload,
+                    raw: row.raw,
+                },
+            );
+        }
+    }
+
+    fn maybe_use_summary_disk_cache(
+        &mut self,
+        key: &TimelineSummaryWindowKey,
+        lookup_key: &str,
+    ) -> bool {
+        self.ensure_summary_disk_cache_loaded();
+        let Some(entry) = self.timeline_summary_disk_cache.get(lookup_key).cloned() else {
+            return false;
+        };
+        self.timeline_summary_lookup_keys
+            .insert(key.clone(), lookup_key.to_string());
+        self.timeline_summary_cache.insert(key.clone(), entry);
+        true
+    }
+
+    fn persist_summary_disk_cache(
+        &mut self,
+        lookup_key: String,
+        entry: &TimelineSummaryCacheEntry,
+    ) {
+        if !self.summary_disk_cache_enabled() {
+            return;
+        }
+        self.ensure_summary_disk_cache_loaded();
+        self.timeline_summary_disk_cache
+            .insert(lookup_key.clone(), entry.clone());
+
+        let Some(path) = Self::summary_cache_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        else {
+            return;
+        };
+
+        let saved_at_unix = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let row = PersistedTimelineSummaryRow {
+            lookup_key,
+            compact: entry.compact.clone(),
+            payload: entry.payload.clone(),
+            raw: entry.raw.clone(),
+            saved_at_unix,
+        };
+        if let Ok(json) = serde_json::to_string(&row) {
+            let _ = file.write_all(json.as_bytes());
+            let _ = file.write_all(b"\n");
+        }
+    }
+
+    fn has_any_summary_api_key(&self) -> bool {
         std::env::var("ANTHROPIC_API_KEY").is_ok()
             || std::env::var("OPENAI_API_KEY").is_ok()
             || std::env::var("GEMINI_API_KEY").is_ok()
             || std::env::var("GOOGLE_API_KEY").is_ok()
+            || Self::cfg_non_empty(
+                self.daemon_config
+                    .daemon
+                    .summary_openai_compat_key
+                    .as_deref(),
+            )
     }
 
-    fn has_openai_compatible_endpoint_config() -> bool {
-        std::env::var("OPS_TL_SUM_ENDPOINT")
+    fn has_openai_compatible_endpoint_config(&self) -> bool {
+        Self::cfg_non_empty(
+            self.daemon_config
+                .daemon
+                .summary_openai_compat_endpoint
+                .as_deref(),
+        ) || Self::cfg_non_empty(
+            self.daemon_config
+                .daemon
+                .summary_openai_compat_base
+                .as_deref(),
+        ) || std::env::var("OPS_TL_SUM_ENDPOINT")
             .ok()
             .is_some_and(|v| !v.trim().is_empty())
             || std::env::var("OPS_TL_SUM_BASE")
@@ -3650,8 +4589,13 @@ impl App {
                 .is_some_and(|v| !v.trim().is_empty())
     }
 
-    fn has_openai_compatible_api_key() -> bool {
-        std::env::var("OPS_TL_SUM_KEY")
+    fn has_openai_compatible_api_key(&self) -> bool {
+        Self::cfg_non_empty(
+            self.daemon_config
+                .daemon
+                .summary_openai_compat_key
+                .as_deref(),
+        ) || std::env::var("OPS_TL_SUM_KEY")
             .ok()
             .is_some_and(|v| !v.trim().is_empty())
             || std::env::var("OPENAI_API_KEY")
@@ -3677,13 +4621,84 @@ impl App {
         if let Some(reason) = self.summary_backend_unavailable_reason(session) {
             self.daemon_config.daemon.summary_enabled = false;
             self.timeline_summary_cache.clear();
-            self.timeline_summary_pending.clear();
-            self.timeline_summary_inflight.clear();
-            self.last_summary_request_at = None;
+            self.timeline_summary_lookup_keys.clear();
+            self.cancel_timeline_summary_jobs();
             self.flash_info(format!(
                 "LLM summary auto-disabled: {} (Settings > Timeline Intelligence)",
                 reason
             ));
+        }
+    }
+
+    fn clear_timeline_summary_queue_state(&mut self) {
+        for pending in &self.timeline_summary_pending {
+            self.timeline_summary_lookup_keys.remove(&pending.key);
+        }
+        for key in &self.timeline_summary_inflight {
+            self.timeline_summary_lookup_keys.remove(key);
+        }
+        self.timeline_summary_pending.clear();
+        self.timeline_summary_inflight.clear();
+        self.timeline_summary_inflight_started.clear();
+        self.last_summary_request_at = None;
+    }
+
+    fn cancel_timeline_summary_jobs(&mut self) {
+        self.clear_timeline_summary_queue_state();
+        self.timeline_summary_epoch = self.timeline_summary_epoch.wrapping_add(1);
+    }
+
+    fn leave_detail_view(&mut self) {
+        self.cancel_timeline_summary_jobs();
+        self.view = View::SessionList;
+        self.detail_scroll = 0;
+        self.detail_event_index = 0;
+        self.detail_h_scroll = 0;
+        self.detail_view_mode = DetailViewMode::Linear;
+    }
+
+    fn summary_inflight_timeout() -> Duration {
+        let timeout_ms = std::env::var("OPS_TL_SUM_INFLIGHT_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(90_000)
+            .max(5_000);
+        Duration::from_millis(timeout_ms)
+    }
+
+    fn prune_stale_summary_inflight(&mut self) {
+        if self.timeline_summary_inflight.is_empty() {
+            return;
+        }
+
+        let timeout = Self::summary_inflight_timeout();
+        let stale: Vec<TimelineSummaryWindowKey> = self
+            .timeline_summary_inflight
+            .iter()
+            .filter_map(
+                |key| match self.timeline_summary_inflight_started.get(key) {
+                    Some(started) if started.elapsed() >= timeout => Some(key.clone()),
+                    Some(_) => None,
+                    None => Some(key.clone()),
+                },
+            )
+            .collect();
+
+        if stale.is_empty() {
+            return;
+        }
+
+        let fallback = format!(
+            "summary unavailable (summary job timed out after {}s)",
+            timeout.as_secs()
+        );
+        for key in stale {
+            self.timeline_summary_inflight.remove(&key);
+            self.timeline_summary_inflight_started.remove(&key);
+            self.timeline_summary_lookup_keys.remove(&key);
+            self.timeline_summary_cache
+                .entry(key)
+                .or_insert_with(|| parse_timeline_summary_output(&fallback));
         }
     }
 
@@ -3834,6 +4849,7 @@ impl App {
         if self.view != View::SessionDetail {
             return None;
         }
+        self.prune_stale_summary_inflight();
         let max_inflight = self.daemon_config.daemon.summary_max_inflight.max(1) as usize;
         if self.timeline_summary_inflight.len() >= max_inflight {
             return None;
@@ -3859,7 +4875,8 @@ impl App {
             .saturating_add(viewport.saturating_mul(2));
 
         let mut visible_new: Vec<(usize, TimelineSummaryWindowRequest)> = Vec::new();
-        let mut background_new: Vec<TimelineSummaryWindowRequest> = Vec::new();
+        let mut background_new: Vec<(usize, TimelineSummaryWindowRequest)> = Vec::new();
+        self.ensure_summary_disk_cache_loaded();
 
         for anchor in self.build_summary_anchors(&session, &base) {
             if self.timeline_summary_cache.contains_key(&anchor.key)
@@ -3869,18 +4886,31 @@ impl App {
                 continue;
             }
 
+            let context = self.build_summary_context(&session, &base, &anchor);
+            let cache_lookup_key = self.summary_cache_lookup_key(&anchor.key, &context);
+            if let Some(lookup_key) = cache_lookup_key.as_deref() {
+                if self.maybe_use_summary_disk_cache(&anchor.key, lookup_key) {
+                    continue;
+                }
+            }
+
+            let distance = anchor.display_index.abs_diff(self.detail_event_index);
+            let turn_focus_priority = self.detail_view_mode == DetailViewMode::Turn
+                && matches!(anchor.scope, SummaryScope::Turn)
+                && distance <= viewport;
+            let in_visible_range =
+                anchor.display_index >= visible_start && anchor.display_index <= visible_end;
             let req = TimelineSummaryWindowRequest {
-                context: self.build_summary_context(&session, &base, &anchor),
+                context,
                 key: anchor.key,
-                visible_priority: anchor.display_index >= visible_start
-                    && anchor.display_index <= visible_end,
+                visible_priority: turn_focus_priority || in_visible_range,
+                cache_lookup_key,
             };
 
             if req.visible_priority {
-                let distance = anchor.display_index.abs_diff(self.detail_event_index);
                 visible_new.push((distance, req));
             } else {
-                background_new.push(req);
+                background_new.push((distance, req));
             }
         }
 
@@ -3890,7 +4920,10 @@ impl App {
                 self.timeline_summary_pending.push_front(req);
             }
         }
-        for req in background_new {
+        // Keep background fill lazy: only enqueue a small near-range batch per tick.
+        background_new.sort_by_key(|(distance, _)| *distance);
+        const BACKGROUND_ENQUEUE_BATCH: usize = 24;
+        for (_, req) in background_new.into_iter().take(BACKGROUND_ENQUEUE_BATCH) {
             self.timeline_summary_pending.push_back(req);
         }
 
@@ -3906,9 +4939,17 @@ impl App {
         }
 
         self.timeline_summary_inflight.insert(req.key.clone());
-        self.last_summary_request_at = Some(Instant::now());
+        if let Some(lookup_key) = req.cache_lookup_key.clone() {
+            self.timeline_summary_lookup_keys
+                .insert(req.key.clone(), lookup_key);
+        }
+        let now = Instant::now();
+        self.timeline_summary_inflight_started
+            .insert(req.key.clone(), now);
+        self.last_summary_request_at = Some(now);
         Some(AsyncCommand::GenerateTimelineSummary {
             key: req.key,
+            epoch: self.timeline_summary_epoch,
             provider: self.daemon_config.daemon.summary_provider.clone(),
             context: req.context,
             agent_tool: session.agent.tool.clone(),
@@ -3925,6 +4966,26 @@ impl App {
             event_index: anchor_source_index,
             window_id: (3u64 << 56) | (turn_index as u64),
         }
+    }
+
+    pub fn turn_summary_entry(
+        &self,
+        session_id: &str,
+        turn_index: usize,
+        anchor_source_index: usize,
+    ) -> Option<&TimelineSummaryCacheEntry> {
+        let key = Self::turn_summary_key(session_id, turn_index, anchor_source_index);
+        self.timeline_summary_cache.get(&key)
+    }
+
+    pub fn turn_summary_payload(
+        &self,
+        session_id: &str,
+        turn_index: usize,
+        anchor_source_index: usize,
+    ) -> Option<&TimelineSummaryPayload> {
+        self.turn_summary_entry(session_id, turn_index, anchor_source_index)
+            .map(|entry| &entry.payload)
     }
 
     fn resolve_selected_source_path(&self) -> Option<PathBuf> {
@@ -4014,6 +5075,31 @@ impl App {
         self.is_stream_write_tool(&session.agent.tool)
     }
 
+    fn summary_runtime_config(&self) -> SummaryRuntimeConfig {
+        SummaryRuntimeConfig {
+            model: self.daemon_config.daemon.summary_model.clone(),
+            content_mode: Some(self.daemon_config.daemon.summary_content_mode.clone()),
+            openai_compat_endpoint: self
+                .daemon_config
+                .daemon
+                .summary_openai_compat_endpoint
+                .clone(),
+            openai_compat_base: self.daemon_config.daemon.summary_openai_compat_base.clone(),
+            openai_compat_path: self.daemon_config.daemon.summary_openai_compat_path.clone(),
+            openai_compat_style: self
+                .daemon_config
+                .daemon
+                .summary_openai_compat_style
+                .clone(),
+            openai_compat_api_key: self.daemon_config.daemon.summary_openai_compat_key.clone(),
+            openai_compat_api_key_header: self
+                .daemon_config
+                .daemon
+                .summary_openai_compat_key_header
+                .clone(),
+        }
+    }
+
     pub fn llm_summary_status_label(&self) -> String {
         let Some(session) = self.selected_session() else {
             return "off".to_string();
@@ -4022,12 +5108,93 @@ impl App {
             return "off".to_string();
         }
         if self.is_stream_write_tool(&session.agent.tool) {
-            return "skip(stream)".to_string();
+            return "ignored(live-rule)".to_string();
         }
-        if self.summary_backend_unavailable_reason(session).is_some() {
+        if describe_summary_engine(
+            self.daemon_config.daemon.summary_provider.as_deref(),
+            Some(&self.summary_runtime_config()),
+        )
+        .is_err()
+        {
             return "off(no-backend)".to_string();
         }
         "on".to_string()
+    }
+
+    pub fn llm_summary_engine_label(&self) -> String {
+        describe_summary_engine(
+            self.daemon_config.daemon.summary_provider.as_deref(),
+            Some(&self.summary_runtime_config()),
+        )
+        .unwrap_or_else(|_| "backend:none".to_string())
+    }
+
+    pub fn detail_summary_counters(&self) -> (usize, usize, usize, usize) {
+        let Some(session) = self.selected_session() else {
+            return (0, 0, 0, 0);
+        };
+        let sid = &session.session_id;
+        let queued = self
+            .timeline_summary_pending
+            .iter()
+            .filter(|req| &req.key.session_id == sid)
+            .count()
+            + self
+                .timeline_summary_inflight
+                .iter()
+                .filter(|key| &key.session_id == sid)
+                .count();
+        let done = self
+            .timeline_summary_cache
+            .keys()
+            .filter(|key| &key.session_id == sid)
+            .count();
+        let skipped = self
+            .timeline_summary_cache
+            .iter()
+            .filter(|(key, entry)| {
+                &key.session_id == sid
+                    && entry
+                        .compact
+                        .to_ascii_lowercase()
+                        .contains("summary unavailable")
+            })
+            .count();
+        let filtered_control = session
+            .events
+            .iter()
+            .filter(|event| is_control_event(event))
+            .count();
+        (queued, done, skipped, filtered_control)
+    }
+
+    pub fn llm_summary_runtime_badge(&self) -> String {
+        let status = self.llm_summary_status_label();
+        let (queued, done, skipped, filtered_control) = self.detail_summary_counters();
+        let mode = self.summary_content_mode_key();
+        let cache = if self.daemon_config.daemon.summary_disk_cache_enabled {
+            "disk-cache:on"
+        } else {
+            "disk-cache:off"
+        };
+        match status.as_str() {
+            "on" => format!(
+                "summary:on {} mode:{} {} queued:{} done:{} skipped:{} filtered-control:{}",
+                self.llm_summary_engine_label(),
+                mode,
+                cache,
+                queued,
+                done,
+                skipped,
+                filtered_control
+            ),
+            "ignored(live-rule)" => "summary:ignored(live-rule)".to_string(),
+            "off(no-backend)" => format!(
+                "summary:off(no-backend) {}",
+                self.llm_summary_engine_label()
+            ),
+            _ => "summary:off".to_string(),
+        }
     }
 
     pub fn take_realtime_reload_path(&mut self) -> Option<PathBuf> {
@@ -4060,18 +5227,37 @@ impl App {
 
     pub fn apply_reloaded_session(&mut self, reloaded: Session) {
         let sid = reloaded.session_id.clone();
+        let max_agents = Self::compute_session_max_active_agents(&reloaded);
         if let Some(existing) = self.sessions.iter_mut().find(|s| s.session_id == sid) {
             *existing = reloaded;
         } else {
             self.sessions.push(reloaded);
         }
+        self.session_max_active_agents
+            .insert(sid.clone(), max_agents);
         self.timeline_summary_cache
             .retain(|key, _| key.session_id != sid);
         self.timeline_summary_pending
             .retain(|request| request.key.session_id != sid);
         self.timeline_summary_inflight
             .retain(|key| key.session_id != sid);
+        self.timeline_summary_inflight_started
+            .retain(|key, _| key.session_id != sid);
+        self.timeline_summary_lookup_keys
+            .retain(|key, _| key.session_id != sid);
         self.remap_detail_selection_by_event_id();
+    }
+
+    fn compute_session_max_active_agents(session: &Session) -> usize {
+        if session.events.is_empty() {
+            return 0;
+        }
+        let max_subagents = build_lane_events(session, |_| true)
+            .iter()
+            .map(|row| row.active_lanes.iter().filter(|lane| **lane > 0).count())
+            .max()
+            .unwrap_or(0);
+        max_subagents + 1
     }
 
     fn visible_event_count(&self, session: &Session) -> usize {

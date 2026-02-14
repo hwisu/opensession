@@ -1,7 +1,7 @@
 use anyhow::Result;
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
 use tokio::task::block_in_place;
 
@@ -22,18 +22,26 @@ pub struct CliTimelineExportOptions {
     pub include_summaries: bool,
     pub generate_summaries: bool,
     pub summary_provider_override: Option<String>,
+    pub summary_content_mode_override: Option<String>,
+    pub summary_disk_cache_override: Option<bool>,
     pub max_rows: Option<usize>,
+    pub summary_budget: Option<usize>,
+    pub summary_timeout_ms: Option<u64>,
 }
 
 impl Default for CliTimelineExportOptions {
     fn default() -> Self {
         Self {
             view: CliTimelineView::Linear,
-            collapse_consecutive: true,
+            collapse_consecutive: false,
             include_summaries: true,
             generate_summaries: false,
             summary_provider_override: None,
+            summary_content_mode_override: None,
+            summary_disk_cache_override: None,
             max_rows: None,
+            summary_budget: None,
+            summary_timeout_ms: None,
         }
     }
 }
@@ -77,12 +85,26 @@ pub fn export_session_timeline(
     if let Some(provider) = options.summary_provider_override {
         app.daemon_config.daemon.summary_provider = Some(provider);
     }
+    if let Some(mode) = options.summary_content_mode_override {
+        app.daemon_config.daemon.summary_content_mode = mode;
+    }
+    if let Some(enabled) = options.summary_disk_cache_override {
+        app.daemon_config.daemon.summary_disk_cache_enabled = enabled;
+    }
 
     let mut generated_summaries = 0usize;
     if options.include_summaries
         && options.generate_summaries
         && app.daemon_config.daemon.summary_enabled
     {
+        // Keep CLI export responsive on large sessions by default.
+        let summary_budget = options.summary_budget.unwrap_or(96).max(1);
+        let summary_timeout = match options.summary_timeout_ms {
+            Some(0) => None,
+            Some(ms) => Some(Duration::from_millis(ms.max(200))),
+            None => Some(Duration::from_millis(12_000)),
+        };
+        let loop_started = Instant::now();
         let mut owned_runtime = if Handle::try_current().is_err() {
             Some(Runtime::new()?)
         } else {
@@ -91,6 +113,14 @@ pub fn export_session_timeline(
         // Drive the same scheduler used by TUI until queue drains (or guard trips).
         let mut idle_ticks = 0u32;
         for _ in 0..4096 {
+            if generated_summaries >= summary_budget {
+                break;
+            }
+            if let Some(timeout) = summary_timeout {
+                if loop_started.elapsed() >= timeout {
+                    break;
+                }
+            }
             if let Some(cmd) = app.schedule_detail_summary_jobs() {
                 let result = if let Some(rt) = owned_runtime.as_mut() {
                     rt.block_on(async_ops::execute(cmd, &app.daemon_config))
@@ -222,12 +252,12 @@ fn render_turn_lines(app: &App, session_id: &str, events: &[DisplayEvent<'_>]) -
         let llm_summary = app
             .timeline_summary_cache
             .get(&turn_key)
-            .cloned()
+            .map(|entry| entry.compact.clone())
             .unwrap_or_else(|| {
                 if !app.daemon_config.daemon.summary_enabled {
                     "(LLM summary off)".to_string()
                 } else if app.should_skip_realtime_for_selected() {
-                    "(LLM summary skipped: stream-write tool)".to_string()
+                    "(LLM summary ignored by Neglect Live Session rule)".to_string()
                 } else {
                     "(LLM summary pending)".to_string()
                 }

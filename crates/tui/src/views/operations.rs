@@ -18,7 +18,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("  Daemon:                ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                "  Daemon:                ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(
                 if daemon_on {
                     format!(
@@ -36,7 +39,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Realtime Publish:      ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                "  Realtime Publish:      ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(
                 format!(
                     "{} / {}",
@@ -47,14 +53,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Publish Debounce:      ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                "  Publish Debounce:      ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(
                 format!("{}s", app.daemon_config.daemon.debounce_secs),
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Realtime Poll:         ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                "  Realtime Poll:         ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(
                 format!("{}ms", app.daemon_config.daemon.realtime_debounce_ms),
                 Style::new().fg(Theme::TEXT_PRIMARY),
@@ -67,21 +79,30 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("  Claude Code:           ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                "  Claude Code:           ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(
                 on_off(app.daemon_config.watchers.claude_code),
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  OpenCode:              ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                "  OpenCode:              ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(
                 on_off(app.daemon_config.watchers.opencode),
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Cursor:                ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                "  Cursor:                ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(
                 on_off(app.daemon_config.watchers.cursor),
                 Style::new().fg(Theme::TEXT_PRIMARY),
@@ -89,8 +110,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "── Stream-write Tool (Detail Live/Summary Skip) ──",
+            "── Neglect Live Session Rules ──",
             Style::new().fg(Theme::ACCENT_BLUE).bold(),
+        )),
+        Line::from(Span::styled(
+            "  Rule: if session.agent.tool matches (case-insensitive), Detail Live + LLM Summary are ignored",
+            Style::new().fg(Theme::TEXT_MUTED),
         )),
         Line::raw(""),
     ];
@@ -104,7 +129,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ] {
         let enabled = stream_write.iter().any(|v| v.eq_ignore_ascii_case(key));
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<21}", label), Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                format!("  {:<21}", label),
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
             Span::styled(on_off(enabled), Style::new().fg(Theme::TEXT_PRIMARY)),
         ]));
     }

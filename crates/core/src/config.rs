@@ -41,7 +41,7 @@ pub struct DaemonSettings {
     /// Enable realtime file preview refresh in TUI session detail.
     #[serde(default = "default_detail_realtime_preview_enabled")]
     pub detail_realtime_preview_enabled: bool,
-    /// Agents using stream-write (PostToolUse hook): daemon skips upload for these.
+    /// Neglect-live tool rules (stream-write/PostToolUse): matching sessions skip detail live and summary.
     #[serde(default)]
     pub stream_write: Vec<String>,
     /// Enable timeline summaries in TUI detail view.
@@ -51,9 +51,39 @@ pub struct DaemonSettings {
     /// auto | anthropic | openai | openai-compatible | gemini | cli:auto | cli:codex | cli:claude | cli:cursor | cli:gemini
     #[serde(default)]
     pub summary_provider: Option<String>,
+    /// Optional model override for summary calls (API and CLI `--model`).
+    #[serde(default)]
+    pub summary_model: Option<String>,
+    /// Summary detail mode: normal | minimal.
+    #[serde(default = "default_summary_content_mode")]
+    pub summary_content_mode: String,
+    /// Persist timeline summaries to disk and reuse by context hash.
+    #[serde(default = "default_summary_disk_cache_enabled")]
+    pub summary_disk_cache_enabled: bool,
+    /// Full OpenAI-compatible endpoint URL override.
+    #[serde(default)]
+    pub summary_openai_compat_endpoint: Option<String>,
+    /// OpenAI-compatible base URL (used when endpoint is not set).
+    #[serde(default)]
+    pub summary_openai_compat_base: Option<String>,
+    /// OpenAI-compatible path (default: /chat/completions).
+    #[serde(default)]
+    pub summary_openai_compat_path: Option<String>,
+    /// OpenAI-compatible payload style: chat | responses.
+    #[serde(default)]
+    pub summary_openai_compat_style: Option<String>,
+    /// Optional OpenAI-compatible API key.
+    #[serde(default)]
+    pub summary_openai_compat_key: Option<String>,
+    /// Optional API key header name (default: Authorization: Bearer).
+    #[serde(default)]
+    pub summary_openai_compat_key_header: Option<String>,
     /// Number of events per summary window. `0` means auto(turn-aware).
     #[serde(default = "default_summary_event_window")]
     pub summary_event_window: u32,
+    /// One-shot migration guard for legacy summary window defaults.
+    #[serde(default = "default_false")]
+    pub summary_window_migrated_v2: bool,
     /// Debounce for summary requests / realtime checks, in milliseconds.
     #[serde(default = "default_summary_debounce_ms")]
     pub summary_debounce_ms: u64,
@@ -75,7 +105,17 @@ impl Default for DaemonSettings {
             stream_write: Vec::new(),
             summary_enabled: true,
             summary_provider: None,
-            summary_event_window: 8,
+            summary_model: None,
+            summary_content_mode: "normal".to_string(),
+            summary_disk_cache_enabled: true,
+            summary_openai_compat_endpoint: None,
+            summary_openai_compat_base: None,
+            summary_openai_compat_path: None,
+            summary_openai_compat_style: None,
+            summary_openai_compat_key: None,
+            summary_openai_compat_key_header: None,
+            summary_event_window: 0,
+            summary_window_migrated_v2: false,
             summary_debounce_ms: 1200,
             summary_max_inflight: 1,
         }
@@ -243,8 +283,14 @@ fn default_detail_realtime_preview_enabled() -> bool {
 fn default_summary_enabled() -> bool {
     true
 }
+fn default_summary_content_mode() -> String {
+    "normal".to_string()
+}
+fn default_summary_disk_cache_enabled() -> bool {
+    true
+}
 fn default_summary_event_window() -> u32 {
-    8
+    0
 }
 fn default_summary_debounce_ms() -> u64 {
     1200

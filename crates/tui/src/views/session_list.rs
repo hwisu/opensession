@@ -29,6 +29,7 @@ fn render_local(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let page_range = app.page_range();
+    let agent_counts = &app.session_max_active_agents;
     let items: Vec<ListItem> = app.filtered_sessions[page_range]
         .iter()
         .map(|&idx| {
@@ -44,6 +45,10 @@ fn render_local(frame: &mut Frame, app: &mut App, area: Rect) {
             let events = session.stats.event_count;
             let msgs = session.stats.user_message_count;
             let duration = format_duration(session.stats.duration_seconds);
+            let max_agents = agent_counts
+                .get(&session.session_id)
+                .copied()
+                .unwrap_or_else(|| if session.events.is_empty() { 0 } else { 1 });
             let date = format_relative_datetime(session.context.created_at);
 
             // Line 1: icon + title
@@ -69,6 +74,11 @@ fn render_local(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(format!("{} msgs", msgs), Style::new().fg(Color::Green)),
                 Span::styled("  ", Style::new().fg(Color::DarkGray)),
                 Span::styled(format!("{} events", events), Style::new().fg(Color::Yellow)),
+                Span::styled("  ", Style::new().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{max_agents} agents"),
+                    Style::new().fg(Theme::ACCENT_PURPLE),
+                ),
                 Span::styled("  ", Style::new().fg(Color::DarkGray)),
                 Span::styled(duration, Style::new().fg(Color::Cyan)),
             ]);
@@ -109,9 +119,13 @@ fn render_db(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_db_single(frame: &mut Frame, app: &mut App, area: Rect) {
     let page_range = app.page_range();
+    let agent_counts = &app.session_max_active_agents;
     let items: Vec<ListItem> = app.db_sessions[page_range]
         .iter()
-        .map(|row| db_row_to_list_item(row))
+        .map(|row| {
+            let max_agents = agent_counts.get(&row.id).copied();
+            db_row_to_list_item(row, max_agents)
+        })
         .collect();
 
     let title = list_title(&app.view_mode);
@@ -145,9 +159,14 @@ fn render_db_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
         let color = theme::user_color(user);
 
         let indices = app.column_session_indices(user);
+        let agent_counts = &app.session_max_active_agents;
         let items: Vec<ListItem> = indices
             .iter()
-            .map(|&idx| db_row_to_compact_item(&app.db_sessions[idx]))
+            .map(|&idx| {
+                let row = &app.db_sessions[idx];
+                let max_agents = agent_counts.get(&row.id).copied();
+                db_row_to_compact_item(row, max_agents)
+            })
             .collect();
 
         let block = if is_focused {
@@ -177,10 +196,13 @@ fn render_db_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Compact list item for multi-column view (no nickname, shorter).
-fn db_row_to_compact_item(row: &LocalSessionRow) -> ListItem<'static> {
+fn db_row_to_compact_item(row: &LocalSessionRow, max_agents: Option<usize>) -> ListItem<'static> {
     let title = row.title.as_deref().unwrap_or(&row.id);
     let tool = &row.tool;
     let date = format_relative_date_str(&row.created_at);
+    let agents = max_agents
+        .map(|count| format!("{count} agents"))
+        .unwrap_or_else(|| "? agents".to_string());
 
     let line1 = Line::from(vec![
         Span::styled(
@@ -198,6 +220,8 @@ fn db_row_to_compact_item(row: &LocalSessionRow) -> ListItem<'static> {
             format!("{} msgs", row.user_message_count),
             Style::new().fg(Color::Green),
         ),
+        Span::styled("  ", Style::new()),
+        Span::styled(agents, Style::new().fg(Theme::ACCENT_PURPLE)),
     ]);
 
     let line3 = Line::raw("");
@@ -205,7 +229,7 @@ fn db_row_to_compact_item(row: &LocalSessionRow) -> ListItem<'static> {
     ListItem::new(vec![line1, line2, line3])
 }
 
-fn db_row_to_list_item(row: &LocalSessionRow) -> ListItem<'static> {
+fn db_row_to_list_item(row: &LocalSessionRow, max_agents: Option<usize>) -> ListItem<'static> {
     let title = row.title.as_deref().unwrap_or(&row.id);
     let tool = &row.tool;
     let model = row.agent_model.as_deref().unwrap_or("-");
@@ -213,6 +237,9 @@ fn db_row_to_list_item(row: &LocalSessionRow) -> ListItem<'static> {
     let events = row.event_count;
     let duration = format_duration(row.duration_seconds as u64);
     let date = format_relative_date_str(&row.created_at);
+    let agents = max_agents
+        .map(|count| format!("{count} agents"))
+        .unwrap_or_else(|| "? agents".to_string());
 
     // Sync status icon
     let sync_icon = match row.sync_status.as_str() {
@@ -258,6 +285,8 @@ fn db_row_to_list_item(row: &LocalSessionRow) -> ListItem<'static> {
         Span::styled(format!("{msgs} msgs"), Style::new().fg(Color::Green)),
         Span::styled("  ", Style::new().fg(Color::DarkGray)),
         Span::styled(format!("{events} events"), Style::new().fg(Color::Yellow)),
+        Span::styled("  ", Style::new().fg(Color::DarkGray)),
+        Span::styled(agents, Style::new().fg(Theme::ACCENT_PURPLE)),
         Span::styled("  ", Style::new().fg(Color::DarkGray)),
         Span::styled(duration, Style::new().fg(Color::Cyan)),
     ];

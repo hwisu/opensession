@@ -1,10 +1,13 @@
 <script lang="ts">
 import { listSessions } from '../api';
+import { groupSessionsByAgentCount } from '../session-presentation';
 import type { SessionListItem, SortOrder, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import SessionCard from './SessionCard.svelte';
 
 const { onNavigate }: { onNavigate: (path: string) => void } = $props();
+
+type ListLayout = 'single' | 'agent-columns';
 
 let sessions = $state<SessionListItem[]>([]);
 let total = $state(0);
@@ -15,11 +18,27 @@ let toolFilter = $state('');
 let sortBy = $state<SortOrder>('recent');
 let timeRange = $state<TimeRange>('all');
 let currentPage = $state(1);
+let selectedIndex = $state(0);
+let listLayout = $state<ListLayout>('single');
+let renderLimit = $state(20);
+let searchInput: HTMLInputElement | undefined = $state();
+
 const perPage = 20;
+const layoutPreferenceKey = 'opensession_session_list_layout';
 
 const hasMore = $derived(currentPage * perPage < total);
-let selectedIndex = $state(0);
-let searchInput: HTMLInputElement | undefined = $state();
+const visibleSessions = $derived(sessions.slice(0, renderLimit));
+const hasHiddenRendered = $derived(renderLimit < sessions.length);
+const groupedByAgents = $derived(groupSessionsByAgentCount(visibleSessions));
+const visibleColumnCount = $derived(groupedByAgents.length);
+const navigableSessions = $derived(visibleSessions);
+const selectedSessionId = $derived(navigableSessions[selectedIndex]?.id ?? null);
+const sessionOrder = $derived.by(() => {
+	const order = new Map<string, number>();
+	navigableSessions.forEach((session, idx) => order.set(session.id, idx));
+	return order;
+});
+
 const sortCycle: readonly SortOrder[] = ['recent', 'popular', 'longest'];
 const rangeCycle: readonly TimeRange[] = ['all', '24h', '7d', '30d'];
 const timeRangeTabs: ReadonlyArray<{ value: TimeRange; label: string }> = [
@@ -29,10 +48,33 @@ const timeRangeTabs: ReadonlyArray<{ value: TimeRange; label: string }> = [
 	{ value: '30d', label: '30d' },
 ];
 
+function sessionIndex(sessionId: string): number {
+	return sessionOrder.get(sessionId) ?? -1;
+}
+
+function syncLayoutPreference() {
+	if (typeof window === 'undefined') return;
+	const stored = localStorage.getItem(layoutPreferenceKey);
+	if (stored === 'agent-columns' || stored === 'single') {
+		listLayout = stored;
+	}
+}
+
+function persistLayoutPreference() {
+	if (typeof window === 'undefined') return;
+	localStorage.setItem(layoutPreferenceKey, listLayout);
+}
+
+function toggleLayout() {
+	listLayout = listLayout === 'single' ? 'agent-columns' : 'single';
+}
+
 async function fetchSessions(reset = false) {
 	if (reset) {
 		currentPage = 1;
 		sessions = [];
+		selectedIndex = 0;
+		renderLimit = perPage;
 	}
 	loading = true;
 	error = null;
@@ -47,11 +89,11 @@ async function fetchSessions(reset = false) {
 		});
 		if (reset) {
 			sessions = res.sessions;
+			renderLimit = Math.max(perPage, Math.min(res.sessions.length, perPage));
 		} else {
 			sessions = [...sessions, ...res.sessions];
 		}
 		total = res.total;
-		if (reset) selectedIndex = 0;
 	} catch (e) {
 		error = e instanceof Error ? e.message : 'Failed to load sessions';
 	} finally {
@@ -68,6 +110,10 @@ function loadMore() {
 	fetchSessions(false);
 }
 
+function renderMore() {
+	renderLimit = Math.min(renderLimit + perPage, sessions.length);
+}
+
 const tools = [
 	{ value: '', label: 'All Tools' },
 	...Object.values(TOOL_CONFIGS).map((t) => ({ value: t.name, label: t.label })),
@@ -79,14 +125,30 @@ function cycleFilterValue<T extends string>(current: T, options: readonly T[]): 
 }
 
 $effect(() => {
+	syncLayoutPreference();
 	fetchSessions(true);
+});
+
+$effect(() => {
+	persistLayoutPreference();
+});
+
+$effect(() => {
+	const len = navigableSessions.length;
+	if (len === 0) {
+		selectedIndex = 0;
+		return;
+	}
+	if (selectedIndex >= len) {
+		selectedIndex = len - 1;
+	}
 });
 
 function handleKeydown(e: KeyboardEvent) {
 	if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 	if (e.key === 'j') {
 		e.preventDefault();
-		if (selectedIndex < sessions.length - 1) selectedIndex++;
+		if (selectedIndex < navigableSessions.length - 1) selectedIndex++;
 		scrollSelectedIntoView();
 	} else if (e.key === 'k') {
 		e.preventDefault();
@@ -94,8 +156,9 @@ function handleKeydown(e: KeyboardEvent) {
 		scrollSelectedIntoView();
 	} else if (e.key === 'Enter') {
 		e.preventDefault();
-		if (sessions[selectedIndex]) {
-			onNavigate(`/session/${sessions[selectedIndex].id}`);
+		const selected = navigableSessions[selectedIndex];
+		if (selected) {
+			onNavigate(`/session/${selected.id}`);
 		}
 	} else if (e.key === '/') {
 		e.preventDefault();
@@ -113,6 +176,9 @@ function handleKeydown(e: KeyboardEvent) {
 		e.preventDefault();
 		timeRange = cycleFilterValue(timeRange, rangeCycle);
 		fetchSessions(true);
+	} else if (e.key === 'l') {
+		e.preventDefault();
+		toggleLayout();
 	}
 }
 
@@ -129,7 +195,6 @@ function scrollSelectedIntoView() {
 </svelte:head>
 
 <div class="flex h-full flex-col">
-	<!-- Filter bar -->
 	<div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-2 py-1.5">
 		<div class="flex items-center gap-1" role="tablist" aria-label="Time range">
 			{#each timeRangeTabs as tab}
@@ -178,6 +243,22 @@ function scrollSelectedIntoView() {
 			<option value="popular">Most Messages</option>
 			<option value="longest">Longest</option>
 		</select>
+		<div class="flex items-center border border-border bg-bg-secondary p-0.5">
+			<button
+				onclick={() => { listLayout = 'single'; }}
+				class="px-2 py-0.5 text-xs"
+				class:bg-bg-hover={listLayout === 'single'}
+			>
+				List
+			</button>
+			<button
+				onclick={() => { listLayout = 'agent-columns'; }}
+				class="px-2 py-0.5 text-xs"
+				class:bg-bg-hover={listLayout === 'agent-columns'}
+			>
+				Agents
+			</button>
+		</div>
 	</div>
 
 	{#if error}
@@ -189,6 +270,9 @@ function scrollSelectedIntoView() {
 	<div class="flex-1 overflow-y-auto">
 		<div class="border-b border-border px-3 py-1 text-xs text-text-muted">
 			Sessions ({total})
+			{#if listLayout === 'agent-columns'}
+				<span class="ml-2 text-text-secondary">[cols:{visibleColumnCount}]</span>
+			{/if}
 		</div>
 
 		{#if sessions.length === 0 && !loading}
@@ -200,16 +284,47 @@ function scrollSelectedIntoView() {
 			</div>
 		{/if}
 
-		<div>
-			{#each sessions as session, idx (session.id)}
-				<div data-session-idx={idx}>
-					<SessionCard {session} selected={selectedIndex === idx} />
-				</div>
-			{/each}
-		</div>
+		{#if listLayout === 'single'}
+			<div>
+				{#each visibleSessions as session (session.id)}
+					<div data-session-idx={sessionIndex(session.id)} data-session-id={session.id}>
+						<SessionCard session={session} selected={selectedSessionId === session.id} />
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<div class="flex gap-3 overflow-x-auto px-2 py-2">
+				{#each groupedByAgents as group}
+					<section class="min-w-[280px] max-w-[360px] flex-1 border border-border bg-bg-secondary/30">
+						<header class="flex items-center justify-between border-b border-border px-2 py-1 text-xs">
+							<span class="font-semibold" style="color: {group.color};">{group.label}</span>
+							<span class="text-text-muted">{group.sessions.length}</span>
+						</header>
+						<div>
+							{#each group.sessions as session (session.id)}
+								<div data-session-idx={sessionIndex(session.id)} data-session-id={session.id}>
+									<SessionCard session={session} selected={selectedSessionId === session.id} />
+								</div>
+							{/each}
+						</div>
+					</section>
+				{/each}
+			</div>
+		{/if}
 
 		{#if loading}
 			<div class="py-4 text-center text-xs text-text-muted">Loading...</div>
+		{/if}
+
+		{#if hasHiddenRendered && !loading}
+			<div class="border-t border-border py-2 text-center">
+				<button
+					onclick={renderMore}
+					class="px-4 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
+				>
+					Render More
+				</button>
+			</div>
 		{/if}
 
 		{#if hasMore && !loading}

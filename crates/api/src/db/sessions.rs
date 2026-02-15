@@ -48,6 +48,7 @@ fn session_columns(q: &mut sea_query::SelectStatement) -> &mut sea_query::Select
         .column((Sessions::Table, Sessions::FilesModified))
         .column((Sessions::Table, Sessions::FilesRead))
         .column((Sessions::Table, Sessions::HasErrors))
+        .column((Sessions::Table, Sessions::MaxActiveAgents))
 }
 
 /// Base SELECT for session listings (with users JOIN).
@@ -94,6 +95,7 @@ pub struct InsertParams<'a> {
     pub files_modified: Option<&'a str>,
     pub files_read: Option<&'a str>,
     pub has_errors: bool,
+    pub max_active_agents: i64,
 }
 
 /// INSERT a new session.
@@ -129,6 +131,7 @@ pub fn insert(p: &InsertParams<'_>) -> Built {
             Sessions::FilesModified,
             Sessions::FilesRead,
             Sessions::HasErrors,
+            Sessions::MaxActiveAgents,
         ])
         .values_panic([
             p.id.into(),
@@ -159,6 +162,7 @@ pub fn insert(p: &InsertParams<'_>) -> Built {
             p.files_modified.map(|s| s.to_string()).into(),
             p.files_read.map(|s| s.to_string()).into(),
             p.has_errors.into(),
+            p.max_active_agents.into(),
         ])
         .build(SqliteQueryBuilder)
 }
@@ -222,6 +226,7 @@ pub fn list(q: &SessionListQuery) -> BuiltSessionListQuery {
         .column((Alias::new("s"), Sessions::FilesModified))
         .column((Alias::new("s"), Sessions::FilesRead))
         .column((Alias::new("s"), Sessions::HasErrors))
+        .column((Alias::new("s"), Sessions::MaxActiveAgents))
         .from_as(Sessions::Table, Alias::new("s"))
         .join_as(
             JoinType::LeftJoin,

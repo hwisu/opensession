@@ -714,6 +714,7 @@ mod turn_extract_tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
 
         assert!(App::is_internal_summary_row(&row));
@@ -754,6 +755,7 @@ mod turn_extract_tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
 
         assert!(App::is_internal_summary_row(&row));
@@ -962,6 +964,7 @@ mod turn_extract_tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         }];
         app.list_state.select(Some(0));
 
@@ -3460,7 +3463,7 @@ impl App {
                         .session_max_active_agents
                         .get(&row.id)
                         .copied()
-                        .unwrap_or(1)
+                        .unwrap_or_else(|| row.max_active_agents.max(1) as usize)
                         .max(1);
                     by_agents.entry(agent_count).or_default().push(abs_idx);
                 }
@@ -6225,20 +6228,7 @@ impl App {
     }
 
     fn compute_session_max_active_agents(session: &Session) -> usize {
-        if session.events.is_empty() {
-            return 0;
-        }
-        let hidden_task_ids = Self::hidden_claude_subagent_task_ids(session);
-        let max_subagents = build_lane_events_with_filter(
-            session,
-            |event| !Self::hide_claude_subagent_event(event, &hidden_task_ids),
-            |_| true,
-        )
-        .iter()
-        .map(|row| row.active_lanes.iter().filter(|lane| **lane > 0).count())
-        .max()
-        .unwrap_or(0);
-        max_subagents + 1
+        opensession_core::agent_metrics::max_active_agents(session)
     }
 
     fn visible_event_count(&self, session: &Session) -> usize {

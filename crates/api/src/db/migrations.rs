@@ -16,6 +16,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0002_team_invite_keys",
         include_str!("../../migrations/0002_team_invite_keys.sql"),
     ),
+    (
+        "0003_max_active_agents",
+        include_str!("../../migrations/0003_max_active_agents.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).

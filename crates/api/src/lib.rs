@@ -379,6 +379,8 @@ pub struct SessionSummary {
     pub files_read: Option<String>,
     #[serde(default)]
     pub has_errors: bool,
+    #[serde(default = "default_max_active_agents")]
+    pub max_active_agents: i64,
 }
 
 /// Paginated session listing returned by `GET /api/sessions`.
@@ -415,6 +417,9 @@ fn default_page() -> u32 {
 }
 fn default_per_page() -> u32 {
     20
+}
+fn default_max_active_agents() -> i64 {
+    1
 }
 
 /// Single session detail returned by `GET /api/sessions/:id`.

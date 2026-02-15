@@ -41,6 +41,7 @@ impl From<storage::SessionRow> for SessionSummary {
             files_modified: s.files_modified,
             files_read: s.files_read,
             has_errors: s.has_errors,
+            max_active_agents: s.max_active_agents,
         }
     }
 }
@@ -166,6 +167,9 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
         files_modified: meta.files_modified.as_deref(),
         files_read: meta.files_read.as_deref(),
         has_errors: meta.has_errors,
+        max_active_agents: saturating_i64(
+            opensession_core::agent_metrics::max_active_agents(&session) as u64,
+        ),
     });
     d1.prepare(&sql).bind(&values_to_js(&values))?.run().await?;
 

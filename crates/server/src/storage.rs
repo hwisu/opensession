@@ -144,6 +144,7 @@ pub fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSumm
         files_modified: row.get(25)?,
         files_read: row.get(26)?,
         has_errors: row.get::<_, i64>(27).unwrap_or(0) != 0,
+        max_active_agents: row.get(28).unwrap_or(1),
     })
 }
 

@@ -48,6 +48,7 @@ pub struct LocalSessionRow {
     pub files_modified: Option<String>,
     pub files_read: Option<String>,
     pub has_errors: bool,
+    pub max_active_agents: i64,
 }
 
 /// A link between a git commit and an AI session.
@@ -325,6 +326,7 @@ impl LocalDb {
         // Extract files_modified, files_read, and has_errors from events
         let (files_modified, files_read, has_errors) =
             opensession_core::extract::extract_file_metadata(session);
+        let max_active_agents = opensession_core::agent_metrics::max_active_agents(session) as i64;
 
         let conn = self.conn();
         conn.execute(
@@ -334,8 +336,8 @@ impl LocalDb {
               message_count, user_message_count, task_count, event_count, duration_seconds, \
               total_input_tokens, total_output_tokens, body_storage_key, \
               git_remote, git_branch, git_commit, git_repo_name, working_directory, \
-              files_modified, files_read, has_errors) \
-             VALUES (?1,'personal',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'',?16,?17,?18,?19,?20,?21,?22,?23) \
+              files_modified, files_read, has_errors, max_active_agents) \
+             VALUES (?1,'personal',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'',?16,?17,?18,?19,?20,?21,?22,?23,?24) \
              ON CONFLICT(id) DO UPDATE SET \
               tool=excluded.tool, agent_provider=excluded.agent_provider, \
               agent_model=excluded.agent_model, \
@@ -350,7 +352,8 @@ impl LocalDb {
               git_commit=excluded.git_commit, git_repo_name=excluded.git_repo_name, \
               working_directory=excluded.working_directory, \
               files_modified=excluded.files_modified, files_read=excluded.files_read, \
-              has_errors=excluded.has_errors",
+              has_errors=excluded.has_errors, \
+              max_active_agents=excluded.max_active_agents",
             params![
                 &session.session_id,
                 &session.agent.tool,
@@ -375,6 +378,7 @@ impl LocalDb {
                 &files_modified,
                 &files_read,
                 has_errors,
+                max_active_agents,
             ],
         )?;
 
@@ -399,8 +403,8 @@ impl LocalDb {
               total_input_tokens, total_output_tokens, body_storage_key, \
               git_remote, git_branch, git_commit, git_repo_name, \
               pr_number, pr_url, working_directory, \
-              files_modified, files_read, has_errors) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'',?18,?19,?20,?21,?22,?23,?24,?25,?26,?27) \
+              files_modified, files_read, has_errors, max_active_agents) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'',?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28) \
              ON CONFLICT(id) DO UPDATE SET \
               title=excluded.title, description=excluded.description, \
               tags=excluded.tags, uploaded_at=excluded.uploaded_at, \
@@ -413,7 +417,8 @@ impl LocalDb {
               pr_number=excluded.pr_number, pr_url=excluded.pr_url, \
               working_directory=excluded.working_directory, \
               files_modified=excluded.files_modified, files_read=excluded.files_read, \
-              has_errors=excluded.has_errors",
+              has_errors=excluded.has_errors, \
+              max_active_agents=excluded.max_active_agents",
             params![
                 &summary.id,
                 &summary.user_id,
@@ -442,6 +447,7 @@ impl LocalDb {
                 &summary.files_modified,
                 &summary.files_read,
                 summary.has_errors,
+                summary.max_active_agents,
             ],
         )?;
 
@@ -1070,6 +1076,7 @@ impl LocalDb {
         let description = session.context.description.as_deref();
         let (files_modified, files_read, has_errors) =
             opensession_core::extract::extract_file_metadata(session);
+        let max_active_agents = opensession_core::agent_metrics::max_active_agents(session) as i64;
 
         self.conn().execute(
             "UPDATE sessions SET \
@@ -1077,7 +1084,8 @@ impl LocalDb {
              message_count=?4, user_message_count=?5, task_count=?6, \
              event_count=?7, duration_seconds=?8, \
              total_input_tokens=?9, total_output_tokens=?10, \
-             files_modified=?11, files_read=?12, has_errors=?13 \
+             files_modified=?11, files_read=?12, has_errors=?13, \
+             max_active_agents=?14 \
              WHERE id=?1",
             params![
                 &session.session_id,
@@ -1093,6 +1101,7 @@ impl LocalDb {
                 &files_modified,
                 &files_read,
                 has_errors,
+                max_active_agents,
             ],
         )?;
         Ok(())
@@ -1233,6 +1242,7 @@ const REQUIRED_SESSION_COLUMNS: &[(&str, &str)] = &[
     ("files_modified", "TEXT"),
     ("files_read", "TEXT"),
     ("has_errors", "BOOLEAN DEFAULT 0"),
+    ("max_active_agents", "INTEGER DEFAULT 1"),
 ];
 
 fn ensure_sessions_columns(conn: &Connection) -> Result<()> {
@@ -1264,7 +1274,7 @@ s.message_count, COALESCE(s.user_message_count, 0), s.task_count, s.event_count,
 s.total_input_tokens, s.total_output_tokens, \
 s.git_remote, s.git_branch, s.git_commit, s.git_repo_name, \
 s.pr_number, s.pr_url, s.working_directory, \
-s.files_modified, s.files_read, s.has_errors";
+s.files_modified, s.files_read, s.has_errors, COALESCE(s.max_active_agents, 1)";
 
 fn row_to_local_session(row: &rusqlite::Row) -> rusqlite::Result<LocalSessionRow> {
     Ok(LocalSessionRow {
@@ -1300,6 +1310,7 @@ fn row_to_local_session(row: &rusqlite::Row) -> rusqlite::Result<LocalSessionRow
         files_modified: row.get(29)?,
         files_read: row.get(30)?,
         has_errors: row.get::<_, i64>(31).unwrap_or(0) != 0,
+        max_active_agents: row.get(32).unwrap_or(1),
     })
 }
 
@@ -1365,6 +1376,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         }
     }
 
@@ -1488,6 +1500,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
 
         let parent = LocalSessionRow {
@@ -1523,6 +1536,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
 
         assert!(is_opencode_child_session(&child));
@@ -1564,6 +1578,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
 
         let parent = LocalSessionRow {
@@ -1599,6 +1614,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
 
         assert!(is_opencode_child_session(&child));
@@ -1640,6 +1656,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
 
         assert!(is_opencode_child_session(&child));
@@ -1814,6 +1831,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
         db.upsert_remote_session(&summary).unwrap();
 
@@ -1857,6 +1875,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         };
         db.upsert_remote_session(&summary1).unwrap();
 
@@ -1906,6 +1925,7 @@ mod tests {
             files_modified: None,
             files_read: None,
             has_errors: false,
+            max_active_agents: 1,
         }
     }
 

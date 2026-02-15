@@ -1,10 +1,17 @@
 <script lang="ts">
 import { truncate } from '../event-helpers';
+import { getSessionActorLabel, getSessionModelLabel } from '../session-presentation';
 import type { SessionListItem } from '../types';
 import { formatDuration, formatTimestamp, getToolConfig } from '../types';
 import { stripTags } from '../utils';
 
-const { session, selected = false }: { session: SessionListItem; selected?: boolean } = $props();
+const {
+	session,
+	selected = false,
+}: {
+	session: SessionListItem;
+	selected?: boolean;
+} = $props();
 
 const tool = $derived(getToolConfig(session.tool));
 
@@ -14,6 +21,8 @@ const cleanDesc = $derived(session.description ? stripTags(session.description) 
 const displayTitle = $derived(
 	cleanTitle ? cleanTitle : cleanDesc ? truncate(cleanDesc) : 'Untitled Session',
 );
+const actorLabel = $derived(getSessionActorLabel(session));
+const modelLabel = $derived(getSessionModelLabel(session));
 </script>
 
 <a
@@ -38,6 +47,12 @@ const displayTitle = $derived(
 		{displayTitle}
 	</span>
 
+	{#if actorLabel}
+		<span class="hidden shrink-0 text-[11px] text-accent lg:inline">
+			{actorLabel}
+		</span>
+	{/if}
+
 	<!-- Date -->
 	<span class="hidden shrink-0 text-text-muted sm:inline">
 		{formatTimestamp(session.created_at)}
@@ -45,7 +60,7 @@ const displayTitle = $derived(
 
 	<!-- Model (colored) -->
 	<span class="hidden shrink-0 text-text-secondary md:inline">
-		{session.agent_model ?? 'unknown'}
+		{modelLabel}
 	</span>
 
 	<!-- Stats -->

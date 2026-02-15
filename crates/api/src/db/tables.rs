@@ -46,6 +46,7 @@ pub enum Sessions {
     FilesModified,
     FilesRead,
     HasErrors,
+    MaxActiveAgents,
 }
 
 #[derive(Iden)]

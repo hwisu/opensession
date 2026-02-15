@@ -88,6 +88,12 @@ pub struct SessionRow {
     pub files_read: Option<String>,
     #[serde(default, deserialize_with = "bool_from_d1")]
     pub has_errors: bool,
+    #[serde(default = "default_max_active_agents")]
+    pub max_active_agents: i64,
+}
+
+fn default_max_active_agents() -> i64 {
+    1
 }
 
 #[derive(Debug, Serialize, Deserialize)]

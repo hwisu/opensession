@@ -121,6 +121,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 			<span>j/k navigate</span>
 			<span>Enter open</span>
 			<span>/ search</span>
+			<span>l layout</span>
 		{:else}
 			<span>Esc back</span>
 		{/if}

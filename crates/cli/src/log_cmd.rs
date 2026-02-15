@@ -688,6 +688,7 @@ mod tests {
             files_modified: Some(r#"["src/main.rs","src/lib.rs"]"#.to_string()),
             files_read: Some("README.md".to_string()),
             has_errors: false,
+            max_active_agents: 1,
         }
     }
 

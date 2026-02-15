@@ -88,6 +88,9 @@ pub async fn upload_session(
             files_modified: meta.files_modified.as_deref(),
             files_read: meta.files_read.as_deref(),
             has_errors: meta.has_errors,
+            max_active_agents: saturating_i64(opensession_core::agent_metrics::max_active_agents(
+                session,
+            ) as u64),
         }),
     )
     .map_err(|e| {

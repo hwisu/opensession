@@ -215,7 +215,10 @@ fn render_db_single(frame: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app.db_sessions[page_range]
         .iter()
         .map(|row| {
-            let max_agents = agent_counts.get(&row.id).copied();
+            let max_agents = agent_counts
+                .get(&row.id)
+                .copied()
+                .or_else(|| Some(row.max_active_agents.max(1) as usize));
             db_row_to_list_item(row, max_agents)
         })
         .collect();
@@ -269,7 +272,10 @@ fn render_db_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .map(|&idx| {
                 let row = &app.db_sessions[idx];
-                let max_agents = agent_counts.get(&row.id).copied();
+                let max_agents = agent_counts
+                    .get(&row.id)
+                    .copied()
+                    .or_else(|| Some(row.max_active_agents.max(1) as usize));
                 db_row_to_compact_item(row, max_agents)
             })
             .collect();

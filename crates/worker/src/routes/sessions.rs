@@ -2,8 +2,8 @@ use worker::*;
 
 use opensession_api::db;
 use opensession_api::{
-    saturating_i64, LinkType, ServiceError, SessionDetail, SessionLink, SessionListQuery,
-    SessionListResponse, SessionSummary, UploadResponse,
+    saturating_i64, LinkType, OkResponse, ServiceError, SessionDetail, SessionLink,
+    SessionListQuery, SessionListResponse, SessionSummary, UploadResponse,
 };
 
 use crate::db_helpers::values_to_js;
@@ -370,4 +370,51 @@ pub async fn get_raw(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
         }
         None => ServiceError::NotFound("session body not found".into()).into_err_response(),
     }
+}
+
+/// DELETE /api/sessions/:id — delete a session (owner only)
+pub async fn delete(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let user = match storage::require_auth(&req, &ctx.env).await {
+        Ok(u) => u,
+        Err(resp) => return Ok(resp),
+    };
+
+    let id = ctx.param("id").ok_or_else(|| Error::from("Missing id"))?;
+    let d1 = storage::get_d1(&ctx.env)?;
+
+    let (sql, values) = db::sessions::get_by_id(id);
+    let session = d1
+        .prepare(&sql)
+        .bind(&values_to_js(&values))?
+        .first::<storage::SessionRow>(None)
+        .await?;
+
+    let session = match session {
+        Some(s) => s,
+        None => return ServiceError::NotFound("session not found".into()).into_err_response(),
+    };
+
+    if session.user_id.as_deref() != Some(user.id.as_str()) {
+        return ServiceError::Forbidden("not your session".into()).into_err_response();
+    }
+
+    let (sql, values) = db::sessions::get_storage_info(id);
+    if let Some(info) = d1
+        .prepare(&sql)
+        .bind(&values_to_js(&values))?
+        .first::<storage::StorageInfoRow>(None)
+        .await?
+    {
+        if !info.body_storage_key.is_empty() {
+            let _ = storage::delete_session_body(&ctx.env, &info.body_storage_key).await;
+        }
+    }
+
+    let (sql, values) = db::sessions::delete_links(id);
+    d1.prepare(&sql).bind(&values_to_js(&values))?.run().await?;
+
+    let (sql, values) = db::sessions::delete(id);
+    d1.prepare(&sql).bind(&values_to_js(&values))?.run().await?;
+
+    Response::from_json(&OkResponse { ok: true })
 }

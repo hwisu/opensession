@@ -71,6 +71,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .post_async("/api/sessions", routes::sessions::create)
         .get_async("/api/sessions", routes::sessions::list)
         .get_async("/api/sessions/:id", routes::sessions::get)
+        .delete_async("/api/sessions/:id", routes::sessions::delete)
         .get_async("/api/sessions/:id/raw", routes::sessions::get_raw)
         // Teams
         .post_async("/api/teams", routes::teams::create)

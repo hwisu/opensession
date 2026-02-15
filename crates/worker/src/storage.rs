@@ -281,6 +281,13 @@ pub async fn get_session_body(env: &Env, key: &str) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// Delete a raw session body from R2.
+pub async fn delete_session_body(env: &Env, key: &str) -> Result<()> {
+    let bucket = get_r2(env)?;
+    bucket.delete(key).await?;
+    Ok(())
+}
+
 // ── Auth helpers ────────────────────────────────────────────────────────────
 //
 // Worker-specific exception: these use inline `SELECT * FROM users` queries

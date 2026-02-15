@@ -9,8 +9,16 @@ pub fn values_to_js(values: &sea_query::Values) -> Vec<JsValue> {
         .iter()
         .map(|v| match v {
             sea_query::Value::String(Some(s)) => s.as_str().into(),
+            sea_query::Value::TinyInt(Some(i)) => (*i as f64).into(),
+            sea_query::Value::SmallInt(Some(i)) => (*i as f64).into(),
             sea_query::Value::Int(Some(i)) => (*i as f64).into(),
             sea_query::Value::BigInt(Some(i)) => (*i as f64).into(),
+            sea_query::Value::TinyUnsigned(Some(i)) => (*i as f64).into(),
+            sea_query::Value::SmallUnsigned(Some(i)) => (*i as f64).into(),
+            sea_query::Value::Unsigned(Some(i)) => (*i as f64).into(),
+            sea_query::Value::BigUnsigned(Some(i)) => (*i as f64).into(),
+            sea_query::Value::Float(Some(i)) => (*i as f64).into(),
+            sea_query::Value::Double(Some(i)) => (*i).into(),
             sea_query::Value::Bool(Some(b)) => (*b).into(),
             _ => JsValue::NULL,
         })

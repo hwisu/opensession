@@ -463,10 +463,29 @@ fn event_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
         EventType::UserMessage | EventType::AgentMessage => first_text_line(blocks, 80),
         EventType::SystemMessage => String::new(),
         EventType::Thinking => "thinking".to_string(),
-        EventType::ToolCall { name } => format!("{name}()"),
+        EventType::ToolCall { name } => {
+            let hint = first_json_block_hint(blocks, 72)
+                .or_else(|| first_code_line(blocks, 72))
+                .or_else(|| first_meaningful_text_line_opt(blocks, 72))
+                .or_else(|| first_text_line_opt(blocks, 72));
+            if let Some(hint) = hint {
+                format!("{name} {hint}")
+            } else {
+                format!("{name}()")
+            }
+        }
         EventType::ToolResult { name, is_error, .. } => {
+            let hint = first_meaningful_text_line_opt(blocks, 72)
+                .or_else(|| first_code_line(blocks, 72))
+                .or_else(|| first_json_block_hint(blocks, 72));
             if *is_error {
-                format!("{name} failed")
+                if let Some(hint) = hint {
+                    format!("{name} error: {hint}")
+                } else {
+                    format!("{name} failed")
+                }
+            } else if let Some(hint) = hint {
+                format!("{name}: {hint}")
             } else {
                 format!("{name} ok")
             }
@@ -517,7 +536,20 @@ fn event_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
                 "end".to_string()
             }
         }
-        EventType::Custom { kind } => compact_text_snippet(kind, 70),
+        EventType::Custom { kind } => {
+            let hint = first_meaningful_text_line_opt(blocks, 70)
+                .or_else(|| first_json_block_hint(blocks, 70))
+                .or_else(|| first_code_line(blocks, 70));
+            if let Some(hint) = hint {
+                if hint.eq_ignore_ascii_case(kind) {
+                    compact_text_snippet(kind, 70)
+                } else {
+                    format!("{kind}: {hint}")
+                }
+            } else {
+                compact_text_snippet(kind, 70)
+            }
+        }
         _ => String::new(),
     }
 }
@@ -1124,6 +1156,38 @@ mod tests {
     }
 
     #[test]
+    fn event_summary_tool_call_uses_json_hint() {
+        let rendered = event_summary(
+            &EventType::ToolCall {
+                name: "exec_command".to_string(),
+            },
+            &[ContentBlock::Json {
+                data: serde_json::json!({
+                    "cmd": "cargo test -p opensession-tui"
+                }),
+            }],
+        );
+        assert!(rendered.contains("exec_command"));
+        assert!(rendered.contains("cmd=cargo test -p opensession-tui"));
+    }
+
+    #[test]
+    fn event_summary_tool_result_skips_chunk_id_noise() {
+        let rendered = event_summary(
+            &EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            &[ContentBlock::Text {
+                text: "Chunk ID: 0827f7\nupdated 2 files".to_string(),
+            }],
+        );
+        assert!(rendered.contains("updated 2 files"));
+        assert!(!rendered.to_ascii_lowercase().contains("chunk id"));
+    }
+
+    #[test]
     fn task_board_action_hints_prioritize_meaningful_actions() {
         let mut file_edit = make_event(
             EventType::FileEdit {
@@ -1213,6 +1277,63 @@ mod tests {
         let rendered = lines.join(" | ").to_ascii_lowercase();
         assert!(rendered.contains("shell"));
         assert!(!rendered.contains("chunk id"));
+    }
+
+    #[test]
+    fn live_fallback_panel_includes_recent_activity_stream() {
+        let session = Session::new(
+            "test-session-live-feed".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let mut app = App::new(vec![session]);
+        app.live_mode = true;
+
+        let shell = make_event(
+            EventType::ShellCommand {
+                command: "cargo test -p opensession-tui".to_string(),
+                exit_code: Some(0),
+            },
+            "",
+        );
+        let edit = make_event(
+            EventType::FileEdit {
+                path: "/tmp/project/crates/tui/src/views/session_detail.rs".to_string(),
+                diff: None,
+            },
+            "",
+        );
+        let noisy = make_event(
+            EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            "Chunk ID: 0827f7",
+        );
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 2,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&shell, &edit, &noisy],
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, None, false, true, 110, "off");
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Live activity"));
+        assert!(rendered.contains("shell"));
+        assert!(rendered.contains("edit"));
+        assert!(!rendered.to_ascii_lowercase().contains("chunk id"));
     }
 
     #[test]
@@ -1814,6 +1935,25 @@ fn render_turn_fallback_panel(
         format!(" {status_text}"),
         Style::new().fg(status_color),
     )]));
+    if live_mode {
+        let live_rows = turn_live_activity_rows(turn, if focused { 6 } else { 3 });
+        if !live_rows.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![Span::styled(
+                " Live activity",
+                Style::new().fg(Theme::ACCENT_TEAL).bold(),
+            )]));
+            for row in live_rows {
+                lines.extend(wrap_text_lines(
+                    "  - ",
+                    &row,
+                    Style::new().fg(Theme::TEXT_MUTED),
+                    Style::new().fg(Theme::TEXT_PRIMARY),
+                    content_width,
+                ));
+            }
+        }
+    }
 
     let buckets = build_task_chronicle_buckets(turn);
     if buckets.is_empty() {
@@ -2381,9 +2521,6 @@ fn task_board_event_summary(event: &Event, max_len: usize) -> String {
         EventType::ToolResult { name, is_error, .. } => {
             let hint =
                 first_meaningful_text_line_opt(&event.content.blocks, max_len.saturating_sub(16))
-                    .or_else(|| {
-                        first_text_line_opt(&event.content.blocks, max_len.saturating_sub(16))
-                    })
                     .or_else(|| first_code_line(&event.content.blocks, max_len.saturating_sub(16)))
                     .or_else(|| {
                         first_json_block_hint(&event.content.blocks, max_len.saturating_sub(16))
@@ -2404,7 +2541,6 @@ fn task_board_event_summary(event: &Event, max_len: usize) -> String {
                         max_len.saturating_sub(10),
                     )
                 })
-                .or_else(|| first_text_line_opt(&event.content.blocks, max_len.saturating_sub(10)))
                 .or_else(|| {
                     first_json_block_hint(&event.content.blocks, max_len.saturating_sub(10))
                 })
@@ -2531,6 +2667,68 @@ fn task_bucket_action_hints(bucket: &TaskChronicleBucket<'_>, limit: usize) -> V
 
     hints.reverse();
     hints
+}
+
+fn turn_live_activity_rows(turn: &crate::app::Turn<'_>, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut rows = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for event in turn.agent_events.iter().rev() {
+        let (kind, _) = event_type_display(&event.event_type, true);
+        let mut summary = task_board_event_summary(event, 120);
+        summary = strip_kind_prefix(&summary, kind);
+        if summary.is_empty()
+            && !matches!(
+                event.event_type,
+                EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+            )
+        {
+            continue;
+        }
+        let priority = task_event_activity_priority(event, &summary);
+        if priority < 2 {
+            continue;
+        }
+
+        let task_prefix = event
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|task_id| !task_id.is_empty())
+            .map(|task_id| format!("[task {}] ", compact_task_id(task_id)))
+            .unwrap_or_default();
+        let body = if summary.is_empty() {
+            kind.to_string()
+        } else {
+            format!("{kind} {summary}")
+        };
+        let row = compact_text_snippet(
+            &format!(
+                "{} {}{}",
+                event.timestamp.format("%H:%M:%S"),
+                task_prefix,
+                body
+            ),
+            180,
+        );
+        if row.is_empty() {
+            continue;
+        }
+        let row_key = normalize_activity_key(&row);
+        if !seen.insert(row_key) {
+            continue;
+        }
+        rows.push(row);
+        if rows.len() >= limit {
+            break;
+        }
+    }
+
+    rows.reverse();
+    rows
 }
 
 fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) -> Vec<String> {

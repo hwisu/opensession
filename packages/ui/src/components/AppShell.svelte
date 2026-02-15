@@ -8,19 +8,44 @@ const { currentPath, children }: { currentPath: string; children: Snippet } = $p
 
 let user = $state<UserSettings | null>(null);
 let inboxCount = $state(0);
+let lastSettingsFetchAt = $state(0);
+let lastInboxFetchAt = $state(0);
+
+const SETTINGS_REFRESH_INTERVAL_MS = 30_000;
+const INBOX_REFRESH_INTERVAL_MS = 30_000;
 
 $effect(() => {
-	// Re-fetch user on every navigation (currentPath change triggers re-run)
+	// Re-check auth/inbox on navigation with a short throttle window.
 	void currentPath;
-	getSettings()
-		.then((u) => {
-			user = u;
-		})
-		.catch(() => {
-			user = null;
-		});
+	const now = Date.now();
+	const hasStoredAuth = isAuthenticated();
+	const shouldCheckSettings = hasStoredAuth || user !== null;
 
-	if (isAuthenticated()) {
+	if (!shouldCheckSettings) {
+		user = null;
+		inboxCount = 0;
+		return;
+	}
+
+	if (now - lastSettingsFetchAt >= SETTINGS_REFRESH_INTERVAL_MS) {
+		lastSettingsFetchAt = now;
+		getSettings()
+			.then((u) => {
+				user = u;
+			})
+			.catch(() => {
+				user = null;
+			});
+	}
+
+	const hasAuthContext = !!user || hasStoredAuth;
+	if (!hasAuthContext) {
+		inboxCount = 0;
+		return;
+	}
+
+	if (now - lastInboxFetchAt >= INBOX_REFRESH_INTERVAL_MS) {
+		lastInboxFetchAt = now;
 		listInvitations()
 			.then((resp) => {
 				inboxCount = resp.invitations.length;
@@ -28,8 +53,6 @@ $effect(() => {
 			.catch(() => {
 				inboxCount = 0;
 			});
-	} else {
-		inboxCount = 0;
 	}
 });
 

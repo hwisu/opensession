@@ -23,9 +23,19 @@ let listLayout = $state<ListLayout>('single');
 let renderLimit = $state(20);
 let searchInput: HTMLInputElement | undefined = $state();
 let authed = $state(false);
+let fetchRequestId = 0;
 
 const perPage = 20;
 const layoutPreferenceKey = 'opensession_session_list_layout';
+const listCacheKey = 'opensession_public_list_cache_v1';
+const listCacheTtlMs = 30_000;
+
+type SessionListCacheEntry = {
+	query: string;
+	created_at: number;
+	total: number;
+	sessions: SessionListItem[];
+};
 
 const hasMore = $derived(currentPage * perPage < total);
 const visibleSessions = $derived(sessions.slice(0, renderLimit));
@@ -72,14 +82,75 @@ function toggleLayout() {
 	listLayout = listLayout === 'single' ? 'agent-columns' : 'single';
 }
 
+function currentListQueryFingerprint(page: number): string {
+	return JSON.stringify({
+		search: searchQuery || '',
+		tool: toolFilter || '',
+		sort: sortBy,
+		time_range: timeRange,
+		page,
+		per_page: perPage,
+	});
+}
+
+function isDefaultPublicFeedQuery(page: number): boolean {
+	return (
+		page === 1 &&
+		searchQuery.trim().length === 0 &&
+		toolFilter.length === 0 &&
+		sortBy === 'recent' &&
+		timeRange === 'all'
+	);
+}
+
+function readListCache(fingerprint: string): SessionListCacheEntry | null {
+	if (typeof window === 'undefined') return null;
+	try {
+		const raw = localStorage.getItem(listCacheKey);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as SessionListCacheEntry;
+		if (!parsed || parsed.query !== fingerprint) return null;
+		if (Date.now() - parsed.created_at > listCacheTtlMs) return null;
+		if (!Array.isArray(parsed.sessions)) return null;
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+function writeListCache(entry: SessionListCacheEntry) {
+	if (typeof window === 'undefined') return;
+	try {
+		localStorage.setItem(listCacheKey, JSON.stringify(entry));
+	} catch {
+		// Ignore storage quota/private mode errors.
+	}
+}
+
 async function fetchSessions(reset = false) {
+	const requestId = ++fetchRequestId;
+	const targetPage = reset ? 1 : currentPage;
+
 	if (reset) {
-		currentPage = 1;
+		currentPage = targetPage;
 		sessions = [];
 		selectedIndex = 0;
 		renderLimit = perPage;
 	}
-	loading = true;
+
+	let usedWarmCache = false;
+	const fingerprint = currentListQueryFingerprint(targetPage);
+	if (reset && isDefaultPublicFeedQuery(targetPage)) {
+		const cached = readListCache(fingerprint);
+		if (cached) {
+			sessions = cached.sessions;
+			total = cached.total;
+			renderLimit = Math.max(perPage, Math.min(cached.sessions.length, perPage));
+			usedWarmCache = true;
+		}
+	}
+
+	loading = !usedWarmCache;
 	error = null;
 	try {
 		const res = await listSessions({
@@ -87,9 +158,10 @@ async function fetchSessions(reset = false) {
 			tool: toolFilter || undefined,
 			sort: sortBy !== 'recent' ? sortBy : undefined,
 			time_range: timeRange !== 'all' ? timeRange : undefined,
-			page: currentPage,
+			page: targetPage,
 			per_page: perPage,
 		});
+		if (requestId !== fetchRequestId) return;
 		if (reset) {
 			sessions = res.sessions;
 			renderLimit = Math.max(perPage, Math.min(res.sessions.length, perPage));
@@ -97,10 +169,21 @@ async function fetchSessions(reset = false) {
 			sessions = [...sessions, ...res.sessions];
 		}
 		total = res.total;
+		if (reset && isDefaultPublicFeedQuery(targetPage)) {
+			writeListCache({
+				query: fingerprint,
+				created_at: Date.now(),
+				total: res.total,
+				sessions: res.sessions,
+			});
+		}
 	} catch (e) {
+		if (requestId !== fetchRequestId) return;
 		error = e instanceof Error ? e.message : 'Failed to load sessions';
 	} finally {
-		loading = false;
+		if (requestId === fetchRequestId) {
+			loading = false;
+		}
 	}
 }
 

@@ -32,6 +32,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0006_sessions_remove_fk_constraints",
         include_str!("../../migrations/0006_sessions_remove_fk_constraints.sql"),
     ),
+    (
+        "0007_sessions_list_perf_indexes",
+        include_str!("../../migrations/0007_sessions_list_perf_indexes.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).

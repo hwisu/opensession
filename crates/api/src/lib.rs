@@ -412,6 +412,71 @@ pub struct SessionListQuery {
     pub time_range: Option<TimeRange>,
 }
 
+impl SessionListQuery {
+    /// Returns true when this query targets the anonymous public feed and is safe to edge-cache.
+    pub fn is_public_feed_cacheable(
+        &self,
+        has_auth_header: bool,
+        has_session_cookie: bool,
+    ) -> bool {
+        !has_auth_header
+            && !has_session_cookie
+            && self.team_id.is_none()
+            && self.search.as_deref().is_none_or(|s| s.trim().is_empty())
+            && self.page <= 10
+            && self.per_page <= 50
+    }
+}
+
+#[cfg(test)]
+mod session_list_query_tests {
+    use super::*;
+
+    fn base_query() -> SessionListQuery {
+        SessionListQuery {
+            page: 1,
+            per_page: 20,
+            search: None,
+            tool: None,
+            team_id: None,
+            sort: None,
+            time_range: None,
+        }
+    }
+
+    #[test]
+    fn public_feed_cacheable_when_anonymous_default_feed() {
+        let q = base_query();
+        assert!(q.is_public_feed_cacheable(false, false));
+    }
+
+    #[test]
+    fn public_feed_not_cacheable_with_auth_or_cookie() {
+        let q = base_query();
+        assert!(!q.is_public_feed_cacheable(true, false));
+        assert!(!q.is_public_feed_cacheable(false, true));
+    }
+
+    #[test]
+    fn public_feed_not_cacheable_for_team_or_search_or_large_page() {
+        let mut q = base_query();
+        q.team_id = Some("team-1".into());
+        assert!(!q.is_public_feed_cacheable(false, false));
+
+        let mut q = base_query();
+        q.search = Some("hello".into());
+        assert!(!q.is_public_feed_cacheable(false, false));
+
+        let mut q = base_query();
+        q.page = 11;
+        assert!(!q.is_public_feed_cacheable(false, false));
+
+        let mut q = base_query();
+        q.per_page = 100;
+        assert!(!q.is_public_feed_cacheable(false, false));
+    }
+}
+
 fn default_page() -> u32 {
     1
 }

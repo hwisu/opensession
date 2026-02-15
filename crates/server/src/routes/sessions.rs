@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -16,6 +16,8 @@ use opensession_core::extract;
 use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
 use crate::storage::{session_from_row, sq_execute, sq_query_map, sq_query_row, Db};
+
+const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalidate=60";
 
 // ---------------------------------------------------------------------------
 // Upload session
@@ -139,7 +141,8 @@ pub async fn upload_session(
 pub async fn list_sessions(
     State(db): State<Db>,
     Query(q): Query<SessionListQuery>,
-) -> Result<Json<SessionListResponse>, ApiErr> {
+    headers: HeaderMap,
+) -> Result<axum::response::Response, ApiErr> {
     let built = db::sessions::list(&q);
     let conn = db.conn();
 
@@ -151,12 +154,27 @@ pub async fn list_sessions(
     let sessions: Vec<SessionSummary> = sq_query_map(&conn, built.select_query, session_from_row)
         .map_err(ApiErr::from_db("list sessions"))?;
 
-    Ok(Json(SessionListResponse {
+    let mut resp = Json(SessionListResponse {
         sessions,
         total,
         page: built.page,
         per_page: built.per_page,
-    }))
+    })
+    .into_response();
+
+    let has_auth_header = headers.get(header::AUTHORIZATION).is_some();
+    let has_session_cookie = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|cookie| cookie.contains("session="));
+    if q.is_public_feed_cacheable(has_auth_header, has_session_cookie) {
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(PUBLIC_LIST_CACHE_CONTROL),
+        );
+    }
+
+    Ok(resp)
 }
 
 // ---------------------------------------------------------------------------

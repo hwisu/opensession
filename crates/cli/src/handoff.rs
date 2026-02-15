@@ -5,6 +5,7 @@ use dialoguer::Select;
 use opensession_core::Session;
 use opensession_parsers::discover::discover_sessions;
 use opensession_parsers::{all_parsers, SessionParser};
+use std::io::IsTerminal;
 
 /// Run the handoff command: parse session file(s) and output a structured summary.
 #[allow(clippy::too_many_arguments)]
@@ -147,7 +148,9 @@ fn resolve_session_file(last: bool) -> Result<PathBuf> {
 
     if last {
         let (path, tool) = &all[0];
-        eprintln!("Using most recent session [{}]", tool);
+        if std::io::stdout().is_terminal() {
+            eprintln!("Using most recent session [{}]", tool);
+        }
         return Ok(path.clone());
     }
 

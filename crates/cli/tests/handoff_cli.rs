@@ -96,3 +96,25 @@ fn handoff_last_supports_all_output_formats() {
         }
     }
 }
+
+#[test]
+fn handoff_defaults_to_json_and_last_when_piped() {
+    let tmp = make_home();
+    let home = tmp.path();
+    create_codex_session(home, "2026/02/14/handoff-default-pipe.jsonl");
+
+    // Command output is captured in tests (non-tty), so default should be JSON,
+    // and missing explicit session ref should auto-fallback to latest.
+    let output = run(home, &["session", "handoff"]);
+    assert!(
+        output.status.success(),
+        "handoff default failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(&stdout).expect("default piped output is json");
+    let arr = parsed.as_array().expect("json array");
+    assert_eq!(arr.len(), 1);
+    assert!(arr[0].get("session_id").is_some());
+}

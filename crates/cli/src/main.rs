@@ -13,6 +13,7 @@ mod upload_all;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -139,8 +140,9 @@ enum SessionAction {
         output: Option<PathBuf>,
 
         /// Output format
-        #[arg(long, value_enum, default_value = "markdown")]
-        format: OutputFormat,
+        /// Defaults to markdown in terminal, json when piped.
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
 
         /// Claude Code session reference (e.g. HEAD, HEAD~2)
         #[arg(long)]
@@ -235,7 +237,9 @@ impl Commands {
             Commands::Session { action } => match action {
                 SessionAction::Handoff { format, .. } => {
                     matches!(
-                        format,
+                        format
+                            .as_ref()
+                            .unwrap_or(&default_handoff_format_for_output()),
                         OutputFormat::Json | OutputFormat::Stream | OutputFormat::Jsonl
                     )
                 }
@@ -399,9 +403,12 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
             gemini,
             tool,
         } => {
+            let format = format.unwrap_or_else(default_handoff_format_for_output);
+            let force_last =
+                should_default_to_last(&files, last, claude.as_deref(), gemini.as_deref(), &tool);
             handoff::run_handoff(
                 &files,
-                last,
+                last || force_last,
                 output.as_deref(),
                 format,
                 claude.as_deref(),
@@ -411,6 +418,28 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
             .await
         }
     }
+}
+
+fn default_handoff_format_for_output() -> OutputFormat {
+    if std::io::stdout().is_terminal() {
+        OutputFormat::Markdown
+    } else {
+        OutputFormat::Json
+    }
+}
+
+fn should_default_to_last(
+    files: &[PathBuf],
+    last: bool,
+    claude: Option<&str>,
+    gemini: Option<&str>,
+    tools: &[String],
+) -> bool {
+    if last || !files.is_empty() || claude.is_some() || gemini.is_some() || !tools.is_empty() {
+        return false;
+    }
+
+    !std::io::stdout().is_terminal()
 }
 
 fn resolve_interactive_scope(scope: Option<&Path>) -> Result<InteractiveScope> {

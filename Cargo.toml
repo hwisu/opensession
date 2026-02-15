@@ -44,13 +44,13 @@ homepage = "https://opensession.io"
 authors = ["opensession.io contributors"]
 
 [workspace.dependencies]
-opensession-core = { path = "crates/core" }
-opensession-parsers = { path = "crates/parsers" }
-opensession-api = { path = "crates/api", default-features = false }
-opensession-api-client = { path = "crates/api-client" }
-opensession-local-db = { path = "crates/local-db" }
-opensession-git-native = { path = "crates/git-native" }
-opensession-e2e = { path = "crates/e2e" }
+opensession-core = { version = "0.1.4", path = "crates/core" }
+opensession-parsers = { version = "0.1.4", path = "crates/parsers" }
+opensession-api = { version = "0.1.4", path = "crates/api", default-features = false }
+opensession-api-client = { version = "0.1.4", path = "crates/api-client" }
+opensession-local-db = { version = "0.1.4", path = "crates/local-db" }
+opensession-git-native = { version = "0.1.4", path = "crates/git-native" }
+opensession-e2e = { version = "0.1.4", path = "crates/e2e" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

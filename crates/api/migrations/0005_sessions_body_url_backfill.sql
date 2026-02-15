@@ -2,8 +2,6 @@
 -- Some deployed databases were created before `body_url` existed.
 -- Rebuild into the canonical shape expected by the API.
 
-PRAGMA foreign_keys = OFF;
-
 CREATE TABLE IF NOT EXISTS sessions__backfill (
     id                  TEXT PRIMARY KEY,
     user_id             TEXT REFERENCES users(id),
@@ -111,5 +109,3 @@ ALTER TABLE sessions__backfill RENAME TO sessions;
 CREATE INDEX IF NOT EXISTS idx_sessions_team_id ON sessions(team_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_uploaded_at ON sessions(uploaded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_tool ON sessions(tool);
-
-PRAGMA foreign_keys = ON;

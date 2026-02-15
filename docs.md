@@ -522,7 +522,7 @@ services:
       - opensession-data:/data
     environment:
       - JWT_SECRET=your-secret-here
-      - OPENSESSION_BASE_URL=https://your-domain.com
+      - BASE_URL=https://your-domain.com
     restart: unless-stopped
 
 volumes:
@@ -535,7 +535,7 @@ volumes:
 |----------|---------|-------------|
 | `JWT_SECRET` | *(required)* | Secret for JWT token signing |
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite DB and session body storage |
-| `OPENSESSION_BASE_URL` | `http://localhost:3000` | Public-facing URL (used as OAuth callback base when set) |
+| `BASE_URL` | `http://localhost:3000` | Public-facing URL (used as OAuth callback base when set) |
 | `PORT` | `3000` | HTTP listen port |
 
 ### Point the CLI to Your Instance

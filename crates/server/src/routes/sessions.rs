@@ -120,8 +120,15 @@ pub async fn upload_session(
     // Update FTS (server-specific; D1 does not support FTS)
     let _ = sq_execute(&conn, db::sessions::insert_fts(&session_id));
 
-    let base_url =
-        std::env::var("OPENSESSION_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+    let base_url = std::env::var("BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("OPENSESSION_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "http://localhost:3000".into());
     let url = format!("{base_url}/session/{session_id}");
 
     Ok((

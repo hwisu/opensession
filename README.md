@@ -142,7 +142,7 @@ method = "none"              # platform_api | native | none
 |----------|---------|-------------|
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite DB and session body storage |
 | `OPENSESSION_WEB_DIR` | `web/build` | Static frontend files |
-| `OPENSESSION_BASE_URL` | `http://localhost:3000` | Public-facing URL (used as OAuth callback base when set) |
+| `BASE_URL` | `http://localhost:3000` | Public-facing URL (used as OAuth callback base when set) |
 | `JWT_SECRET` | *(required)* | Secret for JWT token signing |
 | `PORT` | `3000` | HTTP listen port |
 | `RUST_LOG` | `opensession_server=info,tower_http=info` | Log level |

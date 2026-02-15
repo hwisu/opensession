@@ -98,9 +98,14 @@ async fn main() -> anyhow::Result<()> {
     let db = storage::init_db(&data_dir)?;
     tracing::info!("database initialized");
 
-    let base_url_env = std::env::var("OPENSESSION_BASE_URL")
+    let base_url_env = std::env::var("BASE_URL")
         .ok()
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("OPENSESSION_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
     let base_url = base_url_env
         .clone()
         .unwrap_or_else(|| "http://localhost:3000".into());

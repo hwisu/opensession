@@ -10,7 +10,7 @@ services:
     environment:
       - OPENSESSION_DATA_DIR=/data
       - OPENSESSION_WEB_DIR=/var/www/opensession
-      - OPENSESSION_BASE_URL=http://localhost:3000
+      - BASE_URL=http://localhost:3000
       - RUST_LOG=opensession_server=info,tower_http=info
       - JWT_SECRET=${JWT_SECRET:-e2e-test-secret-key-do-not-use-in-production}
     read_only: true

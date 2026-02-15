@@ -5,7 +5,8 @@ static CTX: OnceCell<TestContext> = OnceCell::const_new();
 
 async fn get_ctx() -> &'static TestContext {
     CTX.get_or_init(|| async {
-        let base_url = std::env::var("OPENSESSION_BASE_URL")
+        let base_url = std::env::var("BASE_URL")
+            .or_else(|_| std::env::var("OPENSESSION_BASE_URL"))
             .unwrap_or_else(|_| "https://opensession.io".into());
         let ctx = TestContext::new(base_url);
 

@@ -7,8 +7,7 @@ pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mo
     let tabs = [
         (Tab::Sessions, "1:Sessions", "Sessions"),
         (Tab::Collaboration, "2:Collaboration", "Collaboration"),
-        (Tab::Operations, "3:Operations", "Operations"),
-        (Tab::Settings, "4:Settings", "Settings"),
+        (Tab::Settings, "3:Settings", "Settings"),
     ];
 
     // In detail views, hide number prefixes since 1-6 keys are used for event filters
@@ -86,8 +85,7 @@ mod tests {
         let text = render_tab_text(Tab::Sessions, View::SessionList, false);
         assert!(text.contains("1:Sessions"));
         assert!(text.contains("2:Collaboration"));
-        assert!(text.contains("3:Operations"));
-        assert!(text.contains("4:Settings"));
+        assert!(text.contains("3:Settings"));
     }
 
     #[test]
@@ -103,7 +101,7 @@ mod tests {
     fn team_detail_view_hides_number_prefixes() {
         let text = render_tab_text(Tab::Collaboration, View::TeamDetail, false);
         assert!(text.contains("Sessions"));
-        assert!(text.contains("Operations"));
-        assert!(!text.contains("3:Operations"));
+        assert!(text.contains("Settings"));
+        assert!(!text.contains("3:Settings"));
     }
 }

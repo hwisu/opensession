@@ -5,8 +5,7 @@ use std::sync::{Mutex, OnceLock};
 
 // Re-export shared runtime config types
 pub use opensession_runtime_config::{
-    apply_compat_fallbacks, CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
-    CONFIG_FILE_NAME,
+    apply_compat_fallbacks, CalendarDisplayMode, DaemonConfig, GitStorageMethod, CONFIG_FILE_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,7 +456,6 @@ pub enum SettingField {
     TeamId,
     Nickname,
     AutoPublish,
-    PublishMode,
     DebounceSecs,
     RealtimeDebounceMs,
     DetailRealtimePreviewEnabled,
@@ -769,7 +767,6 @@ impl SettingField {
             }
             Self::Nickname => config.identity.nickname.clone(),
             Self::AutoPublish => on_off(config.daemon.auto_publish),
-            Self::PublishMode => config.daemon.publish_on.display().to_string(),
             Self::DebounceSecs => config.daemon.debounce_secs.to_string(),
             Self::RealtimeDebounceMs => config.daemon.realtime_debounce_ms.to_string(),
             Self::DetailRealtimePreviewEnabled => {
@@ -956,9 +953,6 @@ impl SettingField {
     /// Cycle an enum field.
     pub fn cycle_enum(self, config: &mut DaemonConfig) {
         match self {
-            Self::PublishMode => {
-                config.daemon.publish_on = config.daemon.publish_on.cycle();
-            }
             Self::CalendarDisplayMode => {
                 let next = match calendar_display_mode() {
                     CalendarDisplayMode::Smart => CalendarDisplayMode::Relative,

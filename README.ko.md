@@ -116,8 +116,8 @@ TUI 설정 화면이나 파일 직접 편집으로 설정:
 
 ```toml
 [daemon]
-auto_publish = false
-publish_on = "manual"        # session_end | realtime | manual
+auto_publish = false         # TUI "Daemon Capture" 토글이 관리
+publish_on = "manual"        # ON => session_end, OFF => manual
 debounce_secs = 5
 
 [server]
@@ -129,9 +129,16 @@ nickname = "user"
 team_id = ""
 
 [watchers]
-claude_code = true
-opencode = true
-cursor = false
+custom_paths = [
+  "~/.claude/projects",
+  "~/.codex/sessions",
+  "~/.local/share/opencode/storage/session",
+  "~/.cline/data/tasks",
+  "~/.local/share/amp/threads",
+  "~/.gemini/tmp",
+  "~/Library/Application Support/Cursor/User",
+  "~/.config/Cursor/User",
+]
 
 [privacy]
 strip_paths = true
@@ -140,6 +147,9 @@ strip_env_vars = true
 [git_storage]
 method = "native"            # platform_api | native | none
 ```
+
+에이전트별 watcher 토글은 하위 호환을 위해 읽기만 지원하며,
+새 설정 저장 시에는 `watchers.custom_paths`만 기록됩니다.
 
 ### 환경 변수 (서버)
 

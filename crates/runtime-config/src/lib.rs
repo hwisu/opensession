@@ -155,13 +155,13 @@ impl Default for PrivacySettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatcherSettings {
     /// Deprecated agent toggles kept for backward-compatible config parsing.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing)]
     pub claude_code: bool,
     /// Deprecated agent toggles kept for backward-compatible config parsing.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing)]
     pub opencode: bool,
     /// Deprecated agent toggles kept for backward-compatible config parsing.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing)]
     pub cursor: bool,
     #[serde(default = "default_watch_paths")]
     pub custom_paths: Vec<String>,
@@ -246,17 +246,22 @@ fn default_exclude_patterns() -> Vec<String> {
     ]
 }
 
+pub const DEFAULT_WATCH_PATHS: &[&str] = &[
+    "~/.claude/projects",
+    "~/.codex/sessions",
+    "~/.local/share/opencode/storage/session",
+    "~/.cline/data/tasks",
+    "~/.local/share/amp/threads",
+    "~/.gemini/tmp",
+    "~/Library/Application Support/Cursor/User",
+    "~/.config/Cursor/User",
+];
+
 pub fn default_watch_paths() -> Vec<String> {
-    vec![
-        "~/.claude/projects".to_string(),
-        "~/.codex/sessions".to_string(),
-        "~/.local/share/opencode/storage/session".to_string(),
-        "~/.cline/data/tasks".to_string(),
-        "~/.local/share/amp/threads".to_string(),
-        "~/.gemini/tmp".to_string(),
-        "~/Library/Application Support/Cursor/User".to_string(),
-        "~/.config/Cursor/User".to_string(),
-    ]
+    DEFAULT_WATCH_PATHS
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect()
 }
 
 /// Apply compatibility fallbacks after loading raw TOML.
@@ -362,5 +367,16 @@ method = "native"
         assert_eq!(cfg.identity.team_id, before.identity.team_id);
         assert_eq!(cfg.watchers.custom_paths, before.watchers.custom_paths);
         assert_eq!(cfg.git_storage.method, before.git_storage.method);
+    }
+
+    #[test]
+    fn legacy_watcher_flags_are_not_serialized() {
+        let cfg = DaemonConfig::default();
+        let encoded = toml::to_string(&cfg).expect("serialize config");
+
+        assert!(encoded.contains("custom_paths"));
+        assert!(!encoded.contains("\nclaude_code ="));
+        assert!(!encoded.contains("\nopencode ="));
+        assert!(!encoded.contains("\ncursor ="));
     }
 }

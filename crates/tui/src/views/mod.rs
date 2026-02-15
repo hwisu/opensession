@@ -1,7 +1,6 @@
 pub mod help;
 pub mod invitations;
 pub mod modal;
-pub mod operations;
 pub mod session_detail;
 pub mod session_list;
 pub mod settings;

@@ -4,8 +4,8 @@ use crate::app::{
 };
 use crate::theme::Theme;
 use crate::views::{
-    help, invitations, modal, operations, session_detail, session_list, settings, setup, tab_bar,
-    team_detail, teams,
+    help, invitations, modal, session_detail, session_list, settings, setup, tab_bar, team_detail,
+    teams,
 };
 use opensession_core::trace::{ContentBlock, EventType, Session};
 use ratatui::prelude::*;
@@ -97,7 +97,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SessionList => session_list::render(frame, app, body_area),
         View::SessionDetail => session_detail::render(frame, app, body_area),
         View::Settings => settings::render(frame, app, body_area),
-        View::Operations => operations::render(frame, app, body_area),
         View::Teams => teams::render(frame, app, body_area),
         View::TeamDetail => team_detail::render(frame, app, body_area),
         View::Invitations => invitations::render(frame, app, body_area),
@@ -281,29 +280,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());
             frame.render_widget(p, area);
-        }
-        View::Operations => {
-            let block = Theme::block();
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            let daemon_label = if app.startup_status.daemon_pid.is_some() {
-                " daemon:on "
-            } else {
-                " daemon:off "
-            };
-            let line = Line::from(vec![
-                Span::styled(" Operations ", Style::new().fg(Theme::ACCENT_ORANGE).bold()),
-                Span::styled(" ", Style::new()),
-                Span::styled(
-                    daemon_label,
-                    if app.startup_status.daemon_pid.is_some() {
-                        Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
-                    } else {
-                        Style::new().fg(Theme::TEXT_MUTED)
-                    },
-                ),
-            ]);
-            frame.render_widget(Paragraph::new(line), inner);
         }
         View::Teams | View::TeamDetail => {
             let block = Theme::block();

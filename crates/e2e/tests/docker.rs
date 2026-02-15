@@ -20,3 +20,19 @@ macro_rules! e2e_test {
 
 opensession_e2e::for_each_spec!(e2e_test);
 opensession_e2e::for_each_docker_only_spec!(e2e_test);
+
+#[tokio::test]
+async fn team_api_enabled_on_docker_profile() {
+    let ctx = get_ctx().await;
+    let admin = ctx.admin().expect("admin not initialized");
+    let resp = ctx
+        .get_authed("/teams", &admin.access_token)
+        .await
+        .expect("request failed");
+
+    assert_ne!(
+        resp.status().as_u16(),
+        404,
+        "docker profile must expose /api/teams"
+    );
+}

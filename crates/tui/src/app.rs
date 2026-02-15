@@ -167,10 +167,8 @@ pub enum View {
     SessionDetail,
     Setup,
     Settings,
-    Operations,
     Teams,
     TeamDetail,
-    #[allow(dead_code)]
     Invitations,
     Help,
 }
@@ -180,7 +178,6 @@ pub enum View {
 pub enum Tab {
     Sessions,
     Collaboration,
-    Operations,
     Settings,
 }
 
@@ -2024,7 +2021,7 @@ impl App {
                     return false;
                 }
                 KeyCode::Char('3') => {
-                    self.switch_tab(Tab::Operations);
+                    self.switch_tab(Tab::Settings);
                     return false;
                 }
                 KeyCode::Char('4') => {
@@ -2040,7 +2037,6 @@ impl App {
             View::SessionDetail => self.handle_detail_key(key),
             View::Setup => self.handle_setup_key(key),
             View::Settings => self.handle_settings_key(key),
-            View::Operations => self.handle_operations_key(key),
             View::Teams => self.handle_teams_key(key),
             View::TeamDetail => self.handle_team_detail_key(key),
             View::Invitations => self.handle_invitations_key(key),
@@ -2111,9 +2107,6 @@ impl App {
                     self.teams_loading = true;
                     self.pending_command = Some(AsyncCommand::FetchTeams);
                 }
-            }
-            Tab::Operations => {
-                self.view = View::Operations;
             }
             Tab::Settings => {
                 self.view = View::Settings;
@@ -3056,23 +3049,6 @@ impl App {
             }
             _ => {}
         }
-    }
-
-    fn handle_operations_key(&mut self, key: KeyCode) -> bool {
-        match key {
-            KeyCode::Char('q') => return true,
-            KeyCode::Esc => {
-                self.switch_tab(Tab::Sessions);
-            }
-            KeyCode::Char('d') => self.toggle_daemon(),
-            KeyCode::Char('r') => {
-                self.startup_status.daemon_pid = config::daemon_pid();
-                self.sync_daemon_publish_policy_from_runtime();
-                self.flash_info("Operations status refreshed");
-            }
-            _ => {}
-        }
-        false
     }
 
     fn summary_mode_is_cli(&self) -> bool {

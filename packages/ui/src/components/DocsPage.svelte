@@ -577,18 +577,25 @@ $ opensession daemon select --agent claude-code --repo .</pre>
 				<div class="mt-3 border border-border bg-bg-secondary p-4">
 					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">opensession.toml</div>
 					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted">[daemon]</span>
-publish_on = "manual"        <span class="text-text-muted"># session_end | realtime | manual</span>
+auto_publish = false         <span class="text-text-muted"># managed by TUI "Daemon Capture" toggle</span>
+publish_on = "manual"        <span class="text-text-muted"># ON =&gt; session_end, OFF =&gt; manual</span>
 debounce_secs = 5
 
 <span class="text-text-muted">[watchers]</span>
-claude_code = true
-opencode = true
-cursor = false
+custom_paths = [
+  "~/.claude/projects",
+  "~/.codex/sessions",
+  "~/.local/share/opencode/storage/session",
+]
 
 <span class="text-text-muted">[privacy]</span>
 strip_paths = true
 strip_env_vars = true</pre>
 				</div>
+				<p class="mt-2 text-xs text-text-muted">
+					Legacy per-agent watcher toggles are parsed for backward compatibility, but new saves write
+					<code class="text-accent">watchers.custom_paths</code> only.
+				</p>
 			</div>
 
 			<!-- stream -->

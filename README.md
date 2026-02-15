@@ -131,8 +131,8 @@ Configurable via TUI settings or direct file editing:
 
 ```toml
 [daemon]
-auto_publish = false
-publish_on = "manual"        # session_end | realtime | manual
+auto_publish = false         # managed by TUI "Daemon Capture" toggle
+publish_on = "manual"        # ON => session_end, OFF => manual
 debounce_secs = 5
 
 [server]
@@ -144,9 +144,16 @@ nickname = "user"
 team_id = ""
 
 [watchers]
-claude_code = true
-opencode = true
-cursor = false
+custom_paths = [
+  "~/.claude/projects",
+  "~/.codex/sessions",
+  "~/.local/share/opencode/storage/session",
+  "~/.cline/data/tasks",
+  "~/.local/share/amp/threads",
+  "~/.gemini/tmp",
+  "~/Library/Application Support/Cursor/User",
+  "~/.config/Cursor/User",
+]
 
 [privacy]
 strip_paths = true
@@ -155,6 +162,9 @@ strip_env_vars = true
 [git_storage]
 method = "native"            # platform_api | native | none
 ```
+
+Legacy per-agent watcher toggles are still parsed for backward compatibility,
+but new config writes use `watchers.custom_paths` only.
 
 ### Environment Variables (Server)
 

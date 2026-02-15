@@ -151,8 +151,8 @@ Example:
 
 ```toml
 [daemon]
-auto_publish = false
-publish_on = "manual"        # session_end | realtime | manual
+auto_publish = false         # managed by TUI "Daemon Capture" toggle
+publish_on = "manual"        # ON => session_end, OFF => manual
 debounce_secs = 5
 
 [server]
@@ -164,10 +164,20 @@ nickname = "user"
 team_id = ""
 
 [watchers]
-claude_code = true
-opencode = true
-cursor = false
+custom_paths = [
+  "~/.claude/projects",
+  "~/.codex/sessions",
+  "~/.local/share/opencode/storage/session",
+  "~/.cline/data/tasks",
+  "~/.local/share/amp/threads",
+  "~/.gemini/tmp",
+  "~/Library/Application Support/Cursor/User",
+  "~/.config/Cursor/User",
+]
 ```
+
+Legacy per-agent watcher toggles are still accepted when reading old files,
+but new writes only persist `watchers.custom_paths`.
 
 ## Self-Hosting (Docker)
 

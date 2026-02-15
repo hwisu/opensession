@@ -25,9 +25,9 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled("── Global ──", header_style)),
         Line::from(vec![
-            Span::styled("  1/2/3/4   ", key_style),
+            Span::styled("  1/2/3     ", key_style),
             Span::styled(
-                "Switch tabs (Sessions/Collaboration/Operations/Settings)",
+                "Switch tabs (Sessions/Collaboration/Settings)",
                 desc_style,
             ),
         ]),
@@ -132,17 +132,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Back to session list", desc_style),
         ]),
         Line::raw(""),
-        Line::from(Span::styled(
-            "── Collaboration / Operations ──",
-            header_style,
-        )),
+        Line::from(Span::styled("── Collaboration ──", header_style)),
         Line::from(vec![
             Span::styled("  i         ", key_style),
             Span::styled("Open inbox from collaboration view", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  d/r       ", key_style),
-            Span::styled("Operations actions: daemon/refresh", desc_style),
         ]),
         Line::raw(""),
         Line::from(Span::styled("── Settings ──", header_style)),

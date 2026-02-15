@@ -24,3 +24,19 @@ macro_rules! e2e_test {
 }
 
 opensession_e2e::for_each_spec!(e2e_test);
+
+#[tokio::test]
+async fn team_api_disabled_on_worker_profile() {
+    let ctx = get_ctx().await;
+    let admin = ctx.admin().expect("admin not initialized");
+    let resp = ctx
+        .get_authed("/teams", &admin.access_token)
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "worker profile must not expose /api/teams when ENABLE_TEAM_API=false"
+    );
+}

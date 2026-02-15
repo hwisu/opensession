@@ -1022,6 +1022,83 @@ mod tests {
     }
 
     #[test]
+    fn task_activity_rows_do_not_duplicate_start_prefix() {
+        let session = Session::new(
+            "test-session-start-prefix".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let app = App::new(vec![session]);
+        let start = make_event_with_task(EventType::TaskStart { title: None }, "", "task-start");
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 0,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&start],
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, None, false, true, 100, "off");
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("start start"));
+    }
+
+    #[test]
+    fn task_board_summary_uses_json_hint_for_tool_call() {
+        let event = Event {
+            event_id: "tool-call".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolCall {
+                name: "request_user_input".to_string(),
+            },
+            task_id: Some("task-a".to_string()),
+            content: Content {
+                blocks: vec![ContentBlock::Json {
+                    data: serde_json::json!({
+                        "questions": [{"id": "plan"}]
+                    }),
+                }],
+            },
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        };
+
+        let summary = task_board_event_summary(&event, 120);
+        assert!(summary.contains("request_user_input"));
+        assert!(summary.contains("questions=1"));
+    }
+
+    #[test]
+    fn task_board_summary_uses_tool_result_text() {
+        let event = Event {
+            event_id: "tool-result".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            task_id: Some("task-a".to_string()),
+            content: Content::text("updated 4 files\nnext line"),
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        };
+
+        let summary = task_board_event_summary(&event, 120);
+        assert!(summary.contains("exec_command"));
+        assert!(summary.contains("updated 4 files"));
+    }
+
+    #[test]
     fn task_board_prioritizes_running_buckets_over_main_done() {
         let mut main = make_event(EventType::AgentMessage, "main output");
         main.timestamp = Utc::now() - Duration::minutes(3);
@@ -1874,41 +1951,23 @@ fn build_task_chronicle_buckets_unsorted<'a>(
                 TaskBucketStatus::Running
             };
 
-            let last_output = events
-                .iter()
-                .rev()
-                .find_map(|event| match &event.event_type {
-                    EventType::AgentMessage => {
-                        let text = first_text_line(&event.content.blocks, 220);
-                        if text.trim().is_empty() {
-                            None
-                        } else {
-                            Some(text)
-                        }
-                    }
-                    EventType::TaskEnd {
-                        summary: Some(summary),
-                    } => {
-                        let summary = compact_text_snippet(summary, 220);
-                        if summary.is_empty() {
-                            None
-                        } else {
-                            Some(summary)
-                        }
-                    }
-                    EventType::ToolResult { .. } | EventType::Custom { .. } => {
-                        let text = compact_text_snippet(
-                            &event_summary(&event.event_type, &event.content.blocks),
-                            220,
-                        );
-                        if text.trim().is_empty() {
-                            None
-                        } else {
-                            Some(text)
-                        }
-                    }
-                    _ => None,
-                });
+            let last_output = events.iter().rev().find_map(|event| {
+                if !matches!(
+                    event.event_type,
+                    EventType::AgentMessage
+                        | EventType::TaskEnd { .. }
+                        | EventType::ToolResult { .. }
+                        | EventType::Custom { .. }
+                ) {
+                    return None;
+                }
+                let text = task_board_event_summary(event, 220);
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            });
 
             TaskChronicleBucket {
                 task_key,
@@ -1933,6 +1992,237 @@ fn normalize_activity_key(text: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn json_value_hint(value: &serde_json::Value, max_len: usize) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => {
+            let text = compact_text_snippet(text, max_len);
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::Bool(flag) => Some(flag.to_string()),
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                None
+            } else {
+                Some(format!("items={}", items.len()))
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let preferred_keys = [
+                "path",
+                "file_path",
+                "file",
+                "query",
+                "pattern",
+                "url",
+                "command",
+                "cmd",
+                "subject",
+                "recipient",
+                "title",
+                "task_id",
+                "turn_id",
+                "status",
+                "reason",
+            ];
+
+            for key in preferred_keys {
+                if let Some(value) = map.get(key) {
+                    if key == "command" {
+                        if let Some(arr) = value.as_array() {
+                            let parts = arr
+                                .iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let parts = compact_text_snippet(&parts, max_len.saturating_sub(9));
+                            if !parts.is_empty() {
+                                return Some(format!("command={parts}"));
+                            }
+                        }
+                    }
+                    if let Some(hint) =
+                        json_value_hint(value, max_len.saturating_sub(key.len() + 1))
+                    {
+                        return Some(format!("{key}={hint}"));
+                    }
+                }
+            }
+
+            if let Some(questions) = map.get("questions").and_then(|value| value.as_array()) {
+                return Some(format!("questions={}", questions.len()));
+            }
+            if let Some(tool_uses) = map.get("tool_uses").and_then(|value| value.as_array()) {
+                return Some(format!("tool_uses={}", tool_uses.len()));
+            }
+
+            let keys = map
+                .keys()
+                .take(3)
+                .map(|key| key.to_string())
+                .collect::<Vec<_>>();
+            if keys.is_empty() {
+                None
+            } else {
+                Some(format!("keys={}", keys.join(",")))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn first_json_block_hint(blocks: &[ContentBlock], max_len: usize) -> Option<String> {
+    for block in blocks {
+        if let ContentBlock::Json { data } = block {
+            if let Some(hint) = json_value_hint(data, max_len) {
+                if !hint.trim().is_empty() {
+                    return Some(hint);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn first_code_line(blocks: &[ContentBlock], max_len: usize) -> Option<String> {
+    for block in blocks {
+        if let ContentBlock::Code { code, .. } = block {
+            let first_line = code.lines().next().unwrap_or("").trim();
+            if !first_line.is_empty() {
+                return Some(compact_text_snippet(first_line, max_len));
+            }
+        }
+    }
+    None
+}
+
+fn first_text_line_opt(blocks: &[ContentBlock], max_len: usize) -> Option<String> {
+    let line = first_text_line(blocks, max_len);
+    if line.trim().is_empty() {
+        None
+    } else {
+        Some(line)
+    }
+}
+
+fn attributes_hint(
+    attributes: &std::collections::HashMap<String, serde_json::Value>,
+    max_len: usize,
+) -> Option<String> {
+    let preferred_keys = [
+        "reason", "message", "error", "status", "path", "query", "pattern", "url", "command", "cmd",
+    ];
+    for key in preferred_keys {
+        if let Some(value) = attributes.get(key) {
+            if let Some(rendered) = json_value_hint(value, max_len.saturating_sub(key.len() + 1)) {
+                return Some(format!("{key}={rendered}"));
+            }
+        }
+    }
+    None
+}
+
+fn strip_kind_prefix(summary: &str, kind: &str) -> String {
+    let trimmed = summary.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lower_kind = kind.to_ascii_lowercase();
+    let lower_summary = trimmed.to_ascii_lowercase();
+    if lower_summary == lower_kind {
+        return String::new();
+    }
+    let prefix = format!("{lower_kind} ");
+    if lower_summary.starts_with(&prefix) {
+        let stripped = trimmed
+            .chars()
+            .skip(kind.chars().count())
+            .collect::<String>();
+        return stripped.trim_start().to_string();
+    }
+    trimmed.to_string()
+}
+
+fn task_board_event_summary(event: &Event, max_len: usize) -> String {
+    let summary = match &event.event_type {
+        EventType::TaskStart { title } => {
+            if let Some(title) = title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                title.to_string()
+            } else if let Some(hint) = first_text_line_opt(&event.content.blocks, max_len) {
+                if hint.eq_ignore_ascii_case("task started") {
+                    String::new()
+                } else {
+                    hint
+                }
+            } else {
+                String::new()
+            }
+        }
+        EventType::TaskEnd { summary } => {
+            if let Some(summary) = summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                summary.to_string()
+            } else if let Some(hint) = first_text_line_opt(&event.content.blocks, max_len) {
+                hint
+            } else {
+                "completed".to_string()
+            }
+        }
+        EventType::ToolCall { name } => {
+            let hint = first_json_block_hint(&event.content.blocks, max_len.saturating_sub(8))
+                .or_else(|| first_code_line(&event.content.blocks, max_len.saturating_sub(8)))
+                .or_else(|| first_text_line_opt(&event.content.blocks, max_len.saturating_sub(8)))
+                .or_else(|| attributes_hint(&event.attributes, max_len.saturating_sub(8)));
+            if let Some(hint) = hint {
+                format!("{name} {hint}")
+            } else {
+                format!("{name}()")
+            }
+        }
+        EventType::ToolResult { name, is_error, .. } => {
+            let hint = first_text_line_opt(&event.content.blocks, max_len.saturating_sub(16))
+                .or_else(|| first_code_line(&event.content.blocks, max_len.saturating_sub(16)))
+                .or_else(|| {
+                    first_json_block_hint(&event.content.blocks, max_len.saturating_sub(16))
+                })
+                .or_else(|| attributes_hint(&event.attributes, max_len.saturating_sub(16)));
+            match (is_error, hint) {
+                (true, Some(hint)) => format!("{name} error: {hint}"),
+                (false, Some(hint)) => format!("{name}: {hint}"),
+                (true, None) => format!("{name} failed"),
+                (false, None) => format!("{name} ok"),
+            }
+        }
+        EventType::Custom { kind } => {
+            let hint = attributes_hint(&event.attributes, max_len.saturating_sub(10))
+                .or_else(|| first_text_line_opt(&event.content.blocks, max_len.saturating_sub(10)))
+                .or_else(|| {
+                    first_json_block_hint(&event.content.blocks, max_len.saturating_sub(10))
+                })
+                .or_else(|| first_code_line(&event.content.blocks, max_len.saturating_sub(10)));
+            if let Some(hint) = hint {
+                format!("{kind} {hint}")
+            } else {
+                kind.to_string()
+            }
+        }
+        _ => event_summary(&event.event_type, &event.content.blocks),
+    };
+
+    compact_text_snippet(&summary, max_len)
+}
+
 fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -1944,38 +2234,39 @@ fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) ->
 
     for event in bucket.events.iter().rev() {
         let (kind, _) = event_type_display(&event.event_type, true);
-        let mut summary = compact_text_snippet(
-            &event_summary(&event.event_type, &event.content.blocks),
-            120,
-        );
-        if kind == "end" {
-            if let Some(stripped) = summary.strip_prefix("end ") {
-                summary = stripped.to_string();
-            }
-        } else if kind == "start" {
-            if let Some(stripped) = summary.strip_prefix("start ") {
-                summary = stripped.to_string();
-            }
-        }
+        let mut summary = task_board_event_summary(event, 120);
+        summary = strip_kind_prefix(&summary, kind);
         if summary.is_empty() {
-            continue;
+            if !matches!(
+                event.event_type,
+                EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+            ) {
+                continue;
+            }
         }
         let summary_key = normalize_activity_key(&summary);
         if !output_key.is_empty()
             && summary_key == output_key
             && matches!(
                 event.event_type,
-                EventType::AgentMessage | EventType::TaskEnd { .. }
+                EventType::AgentMessage
+                    | EventType::TaskEnd { .. }
+                    | EventType::ToolResult { .. }
+                    | EventType::Custom { .. }
             )
         {
             continue;
         }
-        let row = format!(
-            "{} {:>8} {}",
-            event.timestamp.format("%H:%M:%S"),
-            kind,
-            summary
-        );
+        let row = if summary.is_empty() {
+            format!("{} {:>8}", event.timestamp.format("%H:%M:%S"), kind)
+        } else {
+            format!(
+                "{} {:>8} {}",
+                event.timestamp.format("%H:%M:%S"),
+                kind,
+                summary
+            )
+        };
         let row_key = normalize_activity_key(&row);
         if !seen.insert(row_key) {
             continue;

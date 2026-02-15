@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/hwisu/opensession/compare/opensession-core-v0.2.0...opensession-core-v0.2.1) - 2026-02-15
+
+### Added
+
+- improve live/session UX, parity updates, and infra fixes
+
+### Fixed
+
+- *(core)* keep semver-stable config API
+
 ## [0.2.0](https://github.com/hwisu/opensession/compare/opensession-core-v0.1.4...opensession-core-v0.2.0) - 2026-02-15
 
 ### Added

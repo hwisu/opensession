@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.0...opensession-api-v0.2.1) - 2026-02-15
+
+### Added
+
+- *(storage)* use sqlite summary cache and default local git-native
+- improve live/session UX, parity updates, and infra fixes
+
 ## [0.1.3](https://github.com/hwisu/opensession/compare/opensession-api-v0.1.2...opensession-api-v0.1.3) - 2026-02-13
 
 ### Other

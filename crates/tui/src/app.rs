@@ -1173,6 +1173,22 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn summary_cache_lookup_key_uses_cache_namespace_prefix() {
+        let mut app = App::new(vec![]);
+        app.daemon_config.daemon.summary_disk_cache_enabled = true;
+        app.daemon_config.daemon.summary_provider = Some("openai".to_string());
+        let key = TimelineSummaryWindowKey {
+            session_id: "s-cache".to_string(),
+            event_index: 7,
+            window_id: 42,
+        };
+        let lookup_key = app
+            .summary_cache_lookup_key(&key, "summary-context")
+            .expect("disk cache should be enabled by default");
+        assert!(lookup_key.starts_with(App::summary_cache_namespace()));
+    }
+
+    #[test]
     fn jump_to_latest_turn_uses_tail_scroll_anchor() {
         let session = make_live_session("turn-tail-anchor", 6);
         let mut app = App::new(vec![session]);
@@ -1534,6 +1550,10 @@ pub struct TeamInfo {
 
 impl App {
     const DETAIL_SPLIT_MIN_WIDTH: u16 = 160;
+    // Bump this when turn-summary prompt or parsing compatibility changes.
+    // Changing this invalidates on-disk summary cache and forces regeneration.
+    const SUMMARY_DISK_CACHE_NAMESPACE: &str = "turn-summary-cache-v3";
+    const SUMMARY_DISK_CACHE_FORCE_RESET_ENV: &str = "OPS_TL_SUM_CACHE_RESET";
     const INTERNAL_SUMMARY_TITLE_PREFIX: &str = "summarize this coding timeline window";
     const INTERNAL_SUMMARY_HARD_MARKERS: &[&str] = &[
         App::INTERNAL_SUMMARY_TITLE_PREFIX,
@@ -5927,6 +5947,48 @@ impl App {
             .map(|dir| dir.join("timeline_summary_cache.jsonl"))
     }
 
+    fn summary_cache_meta_path() -> Option<PathBuf> {
+        config::config_dir()
+            .ok()
+            .map(|dir| dir.join("timeline_summary_cache.meta"))
+    }
+
+    fn summary_cache_namespace() -> &'static str {
+        Self::SUMMARY_DISK_CACHE_NAMESPACE
+    }
+
+    fn summary_cache_force_reset_requested() -> bool {
+        std::env::var(Self::SUMMARY_DISK_CACHE_FORCE_RESET_ENV)
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+    }
+
+    fn ensure_summary_disk_cache_namespace(&mut self) {
+        let namespace = Self::summary_cache_namespace();
+        let force_reset = Self::summary_cache_force_reset_requested();
+        let previous_namespace = Self::summary_cache_meta_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        let namespace_changed = previous_namespace != namespace;
+        if !force_reset && !namespace_changed {
+            return;
+        }
+
+        self.timeline_summary_disk_cache.clear();
+        if let Some(path) = Self::summary_cache_path() {
+            let _ = std::fs::remove_file(path);
+        }
+
+        if let Some(meta_path) = Self::summary_cache_meta_path() {
+            if let Some(parent) = meta_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(meta_path, format!("{namespace}\n"));
+        }
+    }
+
     fn stable_context_hash(input: &str) -> u64 {
         // FNV-1a 64-bit for stable cache key hashing across runs.
         const OFFSET: u64 = 0xcbf29ce484222325;
@@ -5954,7 +6016,8 @@ impl App {
         .ok()?;
         let context_hash = Self::stable_context_hash(context);
         Some(format!(
-            "v2|{}|{}|{}|{}|{}|{:016x}",
+            "{}|{}|{}|{}|{}|{}|{:016x}",
+            Self::summary_cache_namespace(),
             key.session_id,
             key.event_index,
             key.window_id,
@@ -5972,6 +6035,7 @@ impl App {
         if !self.summary_disk_cache_enabled() {
             return;
         }
+        self.ensure_summary_disk_cache_namespace();
 
         let Some(path) = Self::summary_cache_path() else {
             return;
@@ -5981,10 +6045,14 @@ impl App {
             Err(_) => return,
         };
         let reader = BufReader::new(file);
+        let key_prefix = format!("{}|", Self::summary_cache_namespace());
         for line in reader.lines().map_while(Result::ok) {
             let Ok(row) = serde_json::from_str::<PersistedTimelineSummaryRow>(&line) else {
                 continue;
             };
+            if !row.lookup_key.starts_with(&key_prefix) {
+                continue;
+            }
             self.timeline_summary_disk_cache.insert(
                 row.lookup_key,
                 TimelineSummaryCacheEntry {

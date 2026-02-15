@@ -124,7 +124,7 @@ method = "none"              # platform_api | native | none
 |------|--------|------|
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite DB 및 세션 본문 저장 경로 |
 | `OPENSESSION_WEB_DIR` | `web/build` | 정적 프론트엔드 파일 경로 |
-| `OPENSESSION_BASE_URL` | `http://localhost:3000` | 외부 공개 URL |
+| `OPENSESSION_BASE_URL` | `http://localhost:3000` | 외부 공개 URL (설정 시 OAuth 콜백 기준 URL로 사용) |
 | `JWT_SECRET` | *(필수)* | JWT 토큰 서명 비밀키 |
 | `PORT` | `3000` | HTTP 리슨 포트 |
 | `RUST_LOG` | `opensession_server=info,tower_http=info` | 로그 레벨 |

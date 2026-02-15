@@ -26,6 +26,7 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct AppConfig {
     pub base_url: String,
+    pub oauth_use_request_host: bool,
     pub jwt_secret: String,
     pub oauth_providers: Vec<OAuthProviderConfig>,
 }
@@ -97,8 +98,12 @@ async fn main() -> anyhow::Result<()> {
     let db = storage::init_db(&data_dir)?;
     tracing::info!("database initialized");
 
-    let base_url =
-        std::env::var("OPENSESSION_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+    let base_url_env = std::env::var("OPENSESSION_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let base_url = base_url_env
+        .clone()
+        .unwrap_or_else(|| "http://localhost:3000".into());
 
     let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
     if jwt_secret.is_empty() {
@@ -109,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig {
         base_url: base_url.clone(),
+        oauth_use_request_host: base_url_env.is_none(),
         jwt_secret,
         oauth_providers,
     };

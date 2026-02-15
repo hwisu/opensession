@@ -535,7 +535,7 @@ volumes:
 |----------|---------|-------------|
 | `JWT_SECRET` | *(required)* | Secret for JWT token signing |
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite DB and session body storage |
-| `OPENSESSION_BASE_URL` | `http://localhost:3000` | Public-facing URL |
+| `OPENSESSION_BASE_URL` | `http://localhost:3000` | Public-facing URL (used as OAuth callback base when set) |
 | `PORT` | `3000` | HTTP listen port |
 
 ### Point the CLI to Your Instance

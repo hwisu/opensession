@@ -39,8 +39,12 @@ fn first_header_value(headers: &HeaderMap, key: header::HeaderName) -> Option<St
         .map(ToOwned::to_owned)
 }
 
-fn resolve_base_url(headers: &HeaderMap, fallback: &str) -> String {
+fn resolve_base_url(headers: &HeaderMap, fallback: &str, prefer_request_host: bool) -> String {
     let fallback = fallback.trim_end_matches('/').to_string();
+    if !prefer_request_host {
+        return fallback;
+    }
+
     let host = first_header_value(headers, header::HeaderName::from_static("x-forwarded-host"))
         .or_else(|| first_header_value(headers, header::HOST));
     let proto = first_header_value(
@@ -111,7 +115,7 @@ pub async fn redirect(
     )
     .map_err(ApiErr::from_db("oauth state insert"))?;
 
-    let base_url = resolve_base_url(&headers, &config.base_url);
+    let base_url = resolve_base_url(&headers, &config.base_url, config.oauth_use_request_host);
     let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
     let url = oauth::build_authorize_url(provider, &redirect_uri, &state);
 
@@ -132,7 +136,7 @@ pub async fn callback(
     let db = state.db.clone();
     let config = state.config.clone();
     let provider = find_provider(&config, &provider_id)?;
-    let base_url = resolve_base_url(&headers, &config.base_url);
+    let base_url = resolve_base_url(&headers, &config.base_url, config.oauth_use_request_host);
 
     let code = params
         .get("code")
@@ -405,9 +409,52 @@ pub async fn link(
     )
     .map_err(ApiErr::from_db("oauth state insert for link"))?;
 
-    let base_url = resolve_base_url(&headers, &config.base_url);
+    let base_url = resolve_base_url(&headers, &config.base_url, config.oauth_use_request_host);
     let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
     let url = oauth::build_authorize_url(provider, &redirect_uri, &state);
 
     Ok(Json(OAuthLinkResponse { url }))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    use super::resolve_base_url;
+
+    #[test]
+    fn resolve_base_url_prefers_config_when_request_host_disabled() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:5173"));
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+
+        let resolved = resolve_base_url(&headers, "https://app.example.com/", false);
+        assert_eq!(resolved, "https://app.example.com");
+    }
+
+    #[test]
+    fn resolve_base_url_uses_forwarded_host_when_enabled() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("edge.example.com"),
+        );
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+
+        let resolved = resolve_base_url(&headers, "http://localhost:3000", true);
+        assert_eq!(resolved, "https://edge.example.com");
+    }
+
+    #[test]
+    fn resolve_base_url_falls_back_without_host_header() {
+        let headers = HeaderMap::new();
+        let resolved = resolve_base_url(&headers, "http://localhost:3000/", true);
+        assert_eq!(resolved, "http://localhost:3000");
+    }
 }

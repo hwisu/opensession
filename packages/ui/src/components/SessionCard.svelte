@@ -8,9 +8,11 @@ import { stripTags } from '../utils';
 const {
 	session,
 	selected = false,
+	compact = false,
 }: {
 	session: SessionListItem;
 	selected?: boolean;
+	compact?: boolean;
 } = $props();
 
 const tool = $derived(getToolConfig(session.tool));
@@ -27,7 +29,7 @@ const modelLabel = $derived(getSessionModelLabel(session));
 
 <a
 	href="/session/{session.id}"
-	class="group flex items-center gap-3 px-3 py-1.5 text-xs transition-colors hover:bg-bg-hover"
+	class={`group flex w-full min-w-0 items-center overflow-hidden px-3 py-1.5 text-xs transition-colors hover:bg-bg-hover ${compact ? 'gap-2' : 'gap-3'}`}
 	class:bg-bg-hover={selected}
 >
 	<!-- Cursor -->
@@ -47,29 +49,40 @@ const modelLabel = $derived(getSessionModelLabel(session));
 		{displayTitle}
 	</span>
 
-	{#if actorLabel}
+	{#if actorLabel && !compact}
 		<span class="hidden shrink-0 text-[11px] text-accent lg:inline">
 			{actorLabel}
 		</span>
 	{/if}
 
-	<!-- Date -->
-	<span class="hidden shrink-0 text-text-muted sm:inline">
-		{formatTimestamp(session.created_at)}
-	</span>
+	{#if !compact}
+		<!-- Date -->
+		<span class="hidden shrink-0 text-text-muted sm:inline">
+			{formatTimestamp(session.created_at)}
+		</span>
 
-	<!-- Model (colored) -->
-	<span class="hidden shrink-0 text-text-secondary md:inline">
-		{modelLabel}
-	</span>
+		<!-- Model (colored) -->
+		<span class="hidden shrink-0 text-text-secondary md:inline">
+			{modelLabel}
+		</span>
+	{/if}
 
-	<!-- Stats -->
-	<span class="hidden shrink-0 text-text-muted lg:inline">
-		{session.message_count} msgs
-	</span>
-	<span class="hidden shrink-0 text-text-muted lg:inline">
-		{session.event_count} ev
-	</span>
+	{#if compact}
+		<span class="hidden shrink-0 text-text-muted lg:inline">
+			{session.message_count} msgs
+		</span>
+		<span class="hidden shrink-0 text-text-muted xl:inline">
+			{session.event_count} events
+		</span>
+	{:else}
+		<!-- Stats -->
+		<span class="hidden shrink-0 text-text-muted lg:inline">
+			{session.message_count} messages
+		</span>
+		<span class="hidden shrink-0 text-text-muted lg:inline">
+			{session.event_count} events
+		</span>
+	{/if}
 	<span class="shrink-0 text-text-muted">
 		{formatDuration(session.duration_seconds)}
 	</span>

@@ -208,7 +208,7 @@ $effect(() => {
 	<div class="mx-auto max-w-2xl py-6">
 		<AuthGuideCard
 			title="Team pages require sign in"
-			description="Sign in with your account to view team members, invites, and private team sessions."
+			description="Sign in with your account to view team members, invites, and team sessions."
 		/>
 	</div>
 {:else if error}

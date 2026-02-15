@@ -32,7 +32,7 @@ Base URL: `/api`
 
 ## Open Source
 
-- [GitHub](https://github.com/hwisu/opensession-core)
+- [GitHub](https://github.com/hwisu/opensession)
 - Self-host: `docker run -p 3000:3000 ghcr.io/hwisu/opensession`
 - CLI: `cargo install opensession`
 ";

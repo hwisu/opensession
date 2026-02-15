@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - consolidate three repos into monorepo
 
-## [0.1.3](https://github.com/hwisu/opensession-core/compare/opensession-api-client-v0.1.1...opensession-api-client-v0.1.3) - 2026-02-12
+## [0.1.3](https://github.com/hwisu/opensession/compare/opensession-api-client-v0.1.1...opensession-api-client-v0.1.3) - 2026-02-12
 
 ### Added
 
@@ -21,9 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- release v0.1.2 ([#1](https://github.com/hwisu/opensession-core/pull/1))
+- release v0.1.2 ([#1](https://github.com/hwisu/opensession/pull/1))
 
-## [0.1.2](https://github.com/hwisu/opensession-core/compare/opensession-api-client-v0.1.1...opensession-api-client-v0.1.2) - 2026-02-12
+## [0.1.2](https://github.com/hwisu/opensession/compare/opensession-api-client-v0.1.1...opensession-api-client-v0.1.2) - 2026-02-12
 
 ### Added
 

@@ -259,7 +259,7 @@ fn render_turn_lines(app: &App, session_id: &str, events: &[DisplayEvent<'_>]) -
                 if !app.daemon_config.daemon.summary_enabled {
                     "(LLM summary off)".to_string()
                 } else if app.should_skip_realtime_for_selected() {
-                    "(LLM summary ignored by Neglect Live Session rule)".to_string()
+                    "(LLM summary waiting for live refresh)".to_string()
                 } else {
                     "(LLM summary pending)".to_string()
                 }

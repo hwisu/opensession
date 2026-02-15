@@ -90,6 +90,9 @@ pub struct DaemonSettings {
     /// Max concurrent in-flight timeline summary jobs.
     #[serde(default = "default_summary_max_inflight")]
     pub summary_max_inflight: u32,
+    /// Date/time display mode for session lists.
+    #[serde(default = "default_calendar_display_mode")]
+    pub calendar_display_mode: CalendarDisplayMode,
 }
 
 impl Default for DaemonSettings {
@@ -118,6 +121,7 @@ impl Default for DaemonSettings {
             summary_window_migrated_v2: false,
             summary_debounce_ms: 1200,
             summary_max_inflight: 1,
+            calendar_display_mode: CalendarDisplayMode::Smart,
         }
     }
 }
@@ -146,6 +150,14 @@ impl PublishMode {
             Self::Manual => "Manual",
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CalendarDisplayMode {
+    Smart,
+    Relative,
+    Absolute,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,7 +252,7 @@ pub struct GitStorageSettings {
 impl Default for GitStorageSettings {
     fn default() -> Self {
         Self {
-            method: GitStorageMethod::None,
+            method: GitStorageMethod::Native,
             token: String::new(),
         }
     }
@@ -252,6 +264,8 @@ pub enum GitStorageMethod {
     PlatformApi,
     /// Store sessions as git objects on an orphan branch (no external API needed).
     Native,
+    /// Store HAIL session metadata/body in local SQLite only.
+    SqliteLocal,
     #[default]
     #[serde(other)]
     None,
@@ -297,6 +311,9 @@ fn default_summary_debounce_ms() -> u64 {
 }
 fn default_summary_max_inflight() -> u32 {
     1
+}
+fn default_calendar_display_mode() -> CalendarDisplayMode {
+    CalendarDisplayMode::Smart
 }
 fn default_publish_on() -> PublishMode {
     PublishMode::Manual

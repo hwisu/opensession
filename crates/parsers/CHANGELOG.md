@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - upgrade view timeline summary pipeline and parser lane signals
 - unify IA and timeline summary across CLI TUI Web
 
-## [0.1.3](https://github.com/hwisu/opensession-core/compare/opensession-parsers-v0.1.2...opensession-parsers-v0.1.3) - 2026-02-13
+## [0.1.3](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.1.2...opensession-parsers-v0.1.3) - 2026-02-13
 
 ### Other
 

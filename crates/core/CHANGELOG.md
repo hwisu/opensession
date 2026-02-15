@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improve web/docker/tui parity and unify session presentation
 - extract shared config to core, fix inline SQL, overhaul docs
 
-## [0.1.3](https://github.com/hwisu/opensession-core/compare/opensession-core-v0.1.2...opensession-core-v0.1.3) - 2026-02-13
+## [0.1.3](https://github.com/hwisu/opensession/compare/opensession-core-v0.1.2...opensession-core-v0.1.3) - 2026-02-13
 
 ### Fixed
 

@@ -9,7 +9,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let daemon_on = app.startup_status.daemon_pid.is_some();
-    let stream_write = &app.daemon_config.daemon.stream_write;
 
     let mut lines = vec![
         Line::from(Span::styled(
@@ -72,6 +71,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  Calendar Mode:         ",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
+            Span::styled(
+                format!("{:?}", app.daemon_config.daemon.calendar_display_mode)
+                    .to_ascii_lowercase(),
+                Style::new().fg(Theme::TEXT_PRIMARY),
+            ),
+        ]),
         Line::raw(""),
         Line::from(Span::styled(
             "── Capture Watchers ──",
@@ -108,34 +118,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "── Neglect Live Session Rules ──",
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )),
-        Line::from(Span::styled(
-            "  Rule: if session.agent.tool matches (case-insensitive), Detail Live + LLM Summary are ignored",
-            Style::new().fg(Theme::TEXT_MUTED),
-        )),
-        Line::raw(""),
     ];
-
-    for (label, key) in [
-        ("claude-code", "claude-code"),
-        ("codex", "codex"),
-        ("cursor", "cursor"),
-        ("gemini", "gemini"),
-        ("opencode", "opencode"),
-    ] {
-        let enabled = stream_write.iter().any(|v| v.eq_ignore_ascii_case(key));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {:<21}", label),
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            ),
-            Span::styled(on_off(enabled), Style::new().fg(Theme::TEXT_PRIMARY)),
-        ]));
-    }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(

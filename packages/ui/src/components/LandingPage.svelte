@@ -142,7 +142,7 @@ function getLineClass(type: string): string {
 							<span class="relative z-10">Get Started</span>
 						</button>
 						<a
-							href="https://github.com/hwisu/opensession-core"
+							href="https://github.com/hwisu/opensession"
 							target="_blank"
 							rel="noopener"
 							class="px-4 py-2.5 text-sm text-text-muted transition-colors hover:text-text-primary"

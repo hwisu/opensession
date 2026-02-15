@@ -7,6 +7,7 @@ use crate::views::{
     help, invitations, modal, operations, session_detail, session_list, settings, setup, tab_bar,
     team_detail, teams,
 };
+use opensession_core::trace::{ContentBlock, EventType, Session};
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph};
 
@@ -21,19 +22,28 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    // `opensession view` focus mode: hide global tab/header/footer chrome.
+    // `opensession view` focus mode: hide global tab chrome,
+    // but keep compact session summary + footer shortcuts.
     if app.focus_detail_view {
+        let [summary_area, body_area, footer_area] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
+        render_focus_session_summary(frame, app, summary_area);
         if matches!(app.view, View::Help) {
-            help::render(frame, frame.area());
+            help::render(frame, body_area);
         } else if app.selected_session().is_some() {
             app.view = View::SessionDetail;
-            session_detail::render(frame, app, frame.area());
+            session_detail::render(frame, app, body_area);
         } else {
             let waiting = Paragraph::new("Waiting for session data...")
                 .block(Theme::block_dim().title(" View "))
                 .style(Style::new().fg(Theme::TEXT_MUTED));
-            frame.render_widget(waiting, frame.area());
+            frame.render_widget(waiting, body_area);
         }
+        render_footer(frame, app, footer_area);
         if let Some(ref m) = app.modal {
             modal::render(frame, m, &app.edit_buffer);
         }
@@ -79,6 +89,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Upload popup overlay
     if app.upload_popup.is_some() {
         render_upload_popup(frame, app);
+    }
+
+    if app.repo_picker_open {
+        render_repo_picker(frame, app);
     }
 
     // Help overlay
@@ -170,17 +184,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                     Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
                 ));
             }
-            if !app.is_default_sort() {
-                left_spans.push(Span::styled("  ", Style::new()));
-                left_spans.push(Span::styled(
-                    format!(" sort:{} ", app.session_sort_label()),
-                    Style::new()
-                        .fg(Color::Black)
-                        .bg(Theme::ACCENT_YELLOW)
-                        .bold(),
-                ));
-            }
-
             // Page indicator
             if app.total_pages() > 1 {
                 left_spans.push(Span::styled(
@@ -294,13 +297,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                     summary_badge.as_str(),
                     Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold(),
                 ),
-                "ignored(live-rule)" => (
-                    summary_badge.as_str(),
-                    Style::new()
-                        .fg(Color::Black)
-                        .bg(Theme::ACCENT_YELLOW)
-                        .bold(),
-                ),
                 "off(no-backend)" => (summary_badge.as_str(), Style::new().fg(Theme::TEXT_MUTED)),
                 _ => (summary_badge.as_str(), Style::new().fg(Theme::TEXT_MUTED)),
             };
@@ -308,21 +304,31 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(" ", Style::new()));
             let (rt_label, rt_style) = if !app.daemon_config.daemon.detail_realtime_preview_enabled
             {
-                ("detail-live:off", Style::new().fg(Theme::TEXT_MUTED))
-            } else if app.should_skip_realtime_for_selected() {
-                (
-                    "detail-live:ignored(live-rule)",
-                    Style::new().fg(Theme::TEXT_MUTED),
-                )
+                ("auto-refresh:off", Style::new().fg(Theme::TEXT_MUTED))
             } else if app.realtime_preview_enabled {
                 (
-                    "detail-live:on",
+                    "auto-refresh:on",
                     Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold(),
                 )
             } else {
-                ("detail-live:off", Style::new().fg(Theme::TEXT_MUTED))
+                ("auto-refresh:off", Style::new().fg(Theme::TEXT_MUTED))
             };
             spans.push(Span::styled(format!(" {} ", rt_label), rt_style));
+            if app.live_mode {
+                spans.push(Span::styled(" ", Style::new()));
+                spans.push(Span::styled(
+                    " LIVE ",
+                    Style::new().fg(Color::Black).bg(Theme::ACCENT_RED).bold(),
+                ));
+                spans.push(Span::styled(" ", Style::new()));
+                let follow_label = format!(" follow:{} ", app.detail_follow_status_label());
+                let follow_style = if app.detail_follow_state().is_following {
+                    Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
+                } else {
+                    Style::new().fg(Theme::TEXT_MUTED)
+                };
+                spans.push(Span::styled(follow_label, follow_style));
+            }
             if app.detail_view_mode != DetailViewMode::Turn {
                 spans.push(Span::styled(
                     format!(" h-scroll:{} ", app.detail_h_scroll),
@@ -450,41 +456,25 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("  ESC cancel  Enter confirm", desc_style),
                 ])
             } else if app.list_layout == ListLayout::ByUser {
-                let mut spans = vec![
-                    Span::styled(" h/l ", key_style),
-                    Span::styled("columns  ", desc_style),
-                    Span::styled("j/k ", key_style),
-                    Span::styled("navigate  ", desc_style),
-                ];
-                if app.is_db_view() && app.total_pages() > 1 {
-                    spans.push(Span::styled("PgUp/PgDn ", key_style));
-                    spans.push(Span::styled("page  ", desc_style));
-                }
-                spans.extend([
-                    Span::styled("Enter ", key_style),
-                    Span::styled("open  ", desc_style),
+                let spans = vec![
                     Span::styled("m ", key_style),
                     Span::styled("single  ", desc_style),
                     Span::styled("t ", key_style),
                     Span::styled("tool  ", desc_style),
-                    Span::styled("o ", key_style),
-                    Span::styled("sort  ", desc_style),
                     Span::styled("r ", key_style),
                     Span::styled("range  ", desc_style),
+                    Span::styled("R ", key_style),
+                    Span::styled("repos  ", desc_style),
                     Span::styled("Tab ", key_style),
                     Span::styled("view  ", desc_style),
                     Span::styled("q ", key_style),
                     Span::styled("quit", desc_style),
-                ]);
+                ];
                 Line::from(spans)
             } else {
                 let mut spans = vec![
-                    Span::styled(" j/k ", key_style),
-                    Span::styled("navigate  ", desc_style),
                     Span::styled("PgUp/PgDn ", key_style),
                     Span::styled("page  ", desc_style),
-                    Span::styled("Enter ", key_style),
-                    Span::styled("open  ", desc_style),
                     Span::styled("/ ", key_style),
                     Span::styled("search  ", desc_style),
                     Span::styled("Tab ", key_style),
@@ -494,10 +484,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled("t ", key_style));
                     spans.push(Span::styled("tool  ", desc_style));
                 }
-                spans.push(Span::styled("o ", key_style));
-                spans.push(Span::styled("sort  ", desc_style));
                 spans.push(Span::styled("r ", key_style));
                 spans.push(Span::styled("range  ", desc_style));
+                spans.push(Span::styled("R ", key_style));
+                spans.push(Span::styled("repos  ", desc_style));
                 spans.push(Span::styled("m ", key_style));
                 spans.push(Span::styled("by-agent-count  ", desc_style));
                 if app.is_db_view() {
@@ -505,10 +495,6 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled("tool(next)  ", desc_style));
                     spans.push(Span::styled("d ", key_style));
                     spans.push(Span::styled("delete  ", desc_style));
-                }
-                if app.total_pages() > 1 {
-                    spans.push(Span::styled("[/] ", key_style));
-                    spans.push(Span::styled("page  ", desc_style));
                 }
                 if !matches!(app.connection_ctx, ConnectionContext::Local) {
                     spans.push(Span::styled("p ", key_style));
@@ -522,8 +508,6 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         View::SessionDetail => {
             let realtime_state = if !app.daemon_config.daemon.detail_realtime_preview_enabled {
                 "off"
-            } else if app.should_skip_realtime_for_selected() {
-                "ignored(live-rule)"
             } else if app.realtime_preview_enabled {
                 "on"
             } else {
@@ -536,24 +520,41 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             if app.detail_view_mode == DetailViewMode::Turn {
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled(" j/k ", key_style),
                     Span::styled("scroll  ", desc_style),
                     Span::styled("n/N ", key_style),
-                    Span::styled("turn  ", desc_style),
+                    Span::styled("prompt jump  ", desc_style),
                     Span::styled("Enter ", key_style),
-                    Span::styled("raw toggle  ", desc_style),
+                    Span::styled("summary/raw  ", desc_style),
                     Span::styled("g/G ", key_style),
                     Span::styled("first/last  ", desc_style),
-                    Span::styled("detail-live ", key_style),
+                    Span::styled("auto-refresh ", key_style),
                     Span::styled(format!("{realtime_state}  "), desc_style),
                     Span::styled("v ", key_style),
                     Span::styled("linear  ", desc_style),
                     Span::styled("Esc ", key_style),
-                    Span::styled("back", desc_style),
-                ])
+                    Span::styled(
+                        if app.focus_detail_view {
+                            "exit"
+                        } else {
+                            "back"
+                        },
+                        desc_style,
+                    ),
+                ];
+                if app.live_mode {
+                    spans.push(Span::styled("  LIVE ", key_style));
+                    spans.push(Span::styled(
+                        format!("follow:{}  ", app.detail_follow_status_label()),
+                        desc_style,
+                    ));
+                    spans.push(Span::styled("End ", key_style));
+                    spans.push(Span::styled("jump latest", desc_style));
+                }
+                Line::from(spans)
             } else {
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled(" j/k ", key_style),
                     Span::styled("scroll  ", desc_style),
                     Span::styled("h/l ", key_style),
@@ -564,7 +565,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("type  ", desc_style),
                     Span::styled("c ", key_style),
                     Span::styled(format!("collapse:{collapse_state}  "), desc_style),
-                    Span::styled("detail-live ", key_style),
+                    Span::styled("auto-refresh ", key_style),
                     Span::styled(format!("{realtime_state}  "), desc_style),
                     Span::styled("Enter ", key_style),
                     Span::styled("expand  ", desc_style),
@@ -573,8 +574,25 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("1-6 ", key_style),
                     Span::styled("filter  ", desc_style),
                     Span::styled("Esc/q ", key_style),
-                    Span::styled("back", desc_style),
-                ])
+                    Span::styled(
+                        if app.focus_detail_view {
+                            "exit"
+                        } else {
+                            "back"
+                        },
+                        desc_style,
+                    ),
+                ];
+                if app.live_mode {
+                    spans.push(Span::styled("  LIVE ", key_style));
+                    spans.push(Span::styled(
+                        format!("follow:{}  ", app.detail_follow_status_label()),
+                        desc_style,
+                    ));
+                    spans.push(Span::styled("End ", key_style));
+                    spans.push(Span::styled("jump latest", desc_style));
+                }
+                Line::from(spans)
             }
         }
         View::Operations => Line::from(vec![
@@ -686,6 +704,159 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(help);
     frame.render_widget(paragraph, area);
+}
+
+fn render_focus_session_summary(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Theme::block();
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(session) = app.selected_session() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                " View mode: waiting for selected session",
+                Style::new().fg(Theme::TEXT_MUTED),
+            )])),
+            inner,
+        );
+        return;
+    };
+
+    let title = session
+        .context
+        .title
+        .as_deref()
+        .unwrap_or(session.session_id.as_str());
+    let agent_count = app
+        .session_max_active_agents
+        .get(&session.session_id)
+        .copied()
+        .unwrap_or(1)
+        .max(1);
+    let event_count = if session.events.is_empty() {
+        session.stats.event_count
+    } else {
+        session.events.len() as u64
+    };
+    let message_count = session.stats.message_count;
+    let actor = app
+        .selected_session_actor_label()
+        .unwrap_or_else(|| "anonymous".to_string());
+    let live_style = if app.live_mode {
+        Style::new().fg(Color::Black).bg(Theme::ACCENT_RED).bold()
+    } else {
+        Style::new().fg(Theme::TEXT_MUTED)
+    };
+
+    let line1 = Line::from(vec![
+        Span::styled(
+            format!(" {} ", if app.live_mode { "LIVE" } else { "VIEW" }),
+            live_style,
+        ),
+        Span::styled(" ", Style::new()),
+        Span::styled(
+            compact_line(title, 44),
+            Style::new().fg(Theme::TEXT_PRIMARY).bold(),
+        ),
+        Span::styled("  ", Style::new()),
+        Span::styled(actor, Style::new().fg(Theme::ACCENT_CYAN)),
+        Span::styled("  ", Style::new()),
+        Span::styled(
+            format!(
+                "{} · {} · ev:{} msgs:{} agents:{}",
+                session.agent.tool, session.agent.model, event_count, message_count, agent_count
+            ),
+            Style::new().fg(Theme::TEXT_SECONDARY),
+        ),
+    ]);
+
+    let prompt = latest_prompt_preview(session).unwrap_or_else(|| "(no prompt)".to_string());
+    let output = latest_output_preview(session).unwrap_or_else(|| "(no output)".to_string());
+    let line2 = Line::from(vec![
+        Span::styled(" prompt ", Style::new().fg(Theme::TEXT_KEY).bold()),
+        Span::styled(
+            compact_line(&prompt, 68),
+            Style::new().fg(Theme::TEXT_PRIMARY),
+        ),
+        Span::styled("  |  ", Style::new().fg(Theme::GUTTER)),
+        Span::styled(" output ", Style::new().fg(Theme::TEXT_KEY).bold()),
+        Span::styled(
+            compact_line(&output, 68),
+            Style::new().fg(Theme::TEXT_PRIMARY),
+        ),
+    ]);
+
+    frame.render_widget(Paragraph::new(vec![line1, line2]), inner);
+}
+
+fn latest_prompt_preview(session: &Session) -> Option<String> {
+    session
+        .events
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(event.event_type, EventType::UserMessage)
+                && !App::is_internal_summary_user_event(event)
+        })
+        .and_then(|event| event_first_text(event.content.blocks.as_slice()))
+}
+
+fn latest_output_preview(session: &Session) -> Option<String> {
+    for event in session.events.iter().rev() {
+        if matches!(event.event_type, EventType::AgentMessage) {
+            if let Some(text) = event_first_text(event.content.blocks.as_slice()) {
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    for event in session.events.iter().rev() {
+        if let EventType::TaskEnd {
+            summary: Some(summary),
+        } = &event.event_type
+        {
+            let compact = compact_line(summary, 180);
+            if !compact.is_empty() {
+                return Some(compact);
+            }
+        }
+    }
+    None
+}
+
+fn event_first_text(blocks: &[ContentBlock]) -> Option<String> {
+    for block in blocks {
+        for fragment in App::block_text_fragments(block) {
+            for line in fragment.lines() {
+                let compact = compact_line(line, 220);
+                if !compact.is_empty() {
+                    return Some(compact);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn compact_line(text: &str, max_chars: usize) -> String {
+    let one_line = text
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if one_line.is_empty() {
+        return String::new();
+    }
+    if one_line.chars().count() <= max_chars {
+        return one_line;
+    }
+    let mut out = String::new();
+    for ch in one_line.chars().take(max_chars.saturating_sub(1)) {
+        out.push(ch);
+    }
+    out.push('…');
+    out
 }
 
 use crate::app::ServerInfo;
@@ -856,6 +1027,83 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+}
+
+fn render_repo_picker(frame: &mut Frame, app: &App) {
+    let entries = app.repo_picker_entries();
+    let selected = app.repo_picker_selected_index();
+
+    let area = frame.area();
+    let popup_width = 76u16.min(area.width.saturating_sub(4));
+    let popup_height = 16u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Theme::block_accent().title(" Repo Picker ");
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let key_style = Style::new().fg(Theme::TEXT_KEY);
+    let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" Search: ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(
+                format!("{}|", app.repo_picker_query),
+                Style::new().fg(Theme::ACCENT_YELLOW),
+            ),
+        ]),
+        Line::raw(""),
+    ];
+
+    if entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No repository matches search.",
+            Style::new().fg(Theme::TEXT_MUTED),
+        )));
+    } else {
+        let visible_rows = inner.height.saturating_sub(5) as usize;
+        let visible_rows = visible_rows.max(1);
+        let start = selected.saturating_sub(visible_rows / 2);
+        let end = (start + visible_rows).min(entries.len());
+        for (idx, repo) in entries.iter().enumerate().skip(start).take(end - start) {
+            let is_selected = idx == selected;
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if is_selected { " > " } else { "   " },
+                    if is_selected {
+                        Style::new().fg(Theme::ACCENT_BLUE).bold()
+                    } else {
+                        Style::new().fg(Theme::TEXT_MUTED)
+                    },
+                ),
+                Span::styled(
+                    repo.as_str(),
+                    if is_selected {
+                        Style::new().fg(Theme::TEXT_PRIMARY).bold()
+                    } else {
+                        Style::new().fg(Theme::TEXT_SECONDARY)
+                    },
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(" j/k ", key_style),
+        Span::styled("move  ", desc_style),
+        Span::styled("Enter ", key_style),
+        Span::styled("open repo  ", desc_style),
+        Span::styled("Esc ", key_style),
+        Span::styled("close", desc_style),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn build_server_status_spans(info: &ServerInfo) -> Vec<Span<'_>> {

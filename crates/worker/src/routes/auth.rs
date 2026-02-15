@@ -71,6 +71,20 @@ fn load_all_providers(env: &Env) -> Vec<oauth::OAuthProviderConfig> {
         .collect()
 }
 
+fn resolve_base_url(req: Option<&Request>, env: &Env) -> String {
+    if let Some(request) = req {
+        if let Ok(url) = request.url() {
+            let origin = url.origin().ascii_serialization();
+            if !origin.is_empty() && origin != "null" {
+                return origin;
+            }
+        }
+    }
+    env.var("BASE_URL")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| "https://opensession.io".to_string())
+}
+
 // ── Legacy register (nickname only, for CLI) ────────────────────────────────
 
 /// POST /api/register
@@ -299,12 +313,12 @@ pub async fn auth_providers(_req: Request, ctx: RouteContext<()>) -> Result<Resp
 }
 
 /// GET /api/auth/oauth/:provider — redirect to provider's authorize page
-pub async fn oauth_redirect(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn oauth_redirect(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let provider_id = ctx
         .param("provider")
         .ok_or_else(|| Error::from("missing provider param"))?
         .to_string();
-    oauth_redirect_inner(&ctx.env, &provider_id).await
+    oauth_redirect_inner(&req, &ctx.env, &provider_id).await
 }
 
 /// GET /api/auth/oauth/:provider/callback
@@ -327,9 +341,9 @@ pub async fn oauth_link(req: Request, ctx: RouteContext<()>) -> Result<Response>
 
 // ── OAuth inner implementations ─────────────────────────────────────────────
 
-async fn oauth_redirect_inner(env: &Env, provider_id: &str) -> Result<Response> {
+async fn oauth_redirect_inner(req: &Request, env: &Env, provider_id: &str) -> Result<Response> {
     let provider = load_provider_config(env, provider_id)?;
-    let base_url = env.var("BASE_URL")?.to_string();
+    let base_url = resolve_base_url(Some(req), env);
 
     let state = crypto::generate_token()?;
     let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(10))
@@ -347,6 +361,7 @@ async fn oauth_redirect_inner(env: &Env, provider_id: &str) -> Result<Response> 
 
 async fn oauth_callback_inner(req: Request, env: &Env, provider_id: &str) -> Result<Response> {
     let provider = load_provider_config(env, provider_id)?;
+    let base_url = resolve_base_url(Some(&req), env);
 
     let url = req.url()?;
     let params: std::collections::HashMap<String, String> = url
@@ -388,7 +403,6 @@ async fn oauth_callback_inner(req: Request, env: &Env, provider_id: &str) -> Res
     };
 
     // Exchange code for access token
-    let base_url = env.var("BASE_URL")?.to_string();
     let redirect_uri = format!("{base_url}/api/auth/oauth/{provider_id}/callback");
     let token_body = oauth::build_token_request_body(&provider, code, &redirect_uri);
 
@@ -570,6 +584,7 @@ async fn oauth_callback_inner(req: Request, env: &Env, provider_id: &str) -> Res
 
 async fn oauth_link_inner(req: Request, env: &Env, provider_id: &str) -> Result<Response> {
     let provider = load_provider_config(env, provider_id)?;
+    let base_url = resolve_base_url(Some(&req), env);
 
     let user = match storage::require_auth(&req, env).await {
         Ok(u) => u,
@@ -591,7 +606,6 @@ async fn oauth_link_inner(req: Request, env: &Env, provider_id: &str) -> Result<
             .into_err_response();
     }
 
-    let base_url = env.var("BASE_URL")?.to_string();
     let state = crypto::generate_token()?;
     let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(10))
         .format("%Y-%m-%d %H:%M:%S")

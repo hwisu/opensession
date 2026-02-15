@@ -45,10 +45,10 @@ pub fn hidden_claude_subagent_task_ids(session: &Session) -> HashSet<String> {
 
 /// Max number of concurrently active agents (main lane included).
 ///
-/// Returns `0` for empty sessions, otherwise `>= 1`.
+/// Always returns `>= 1` (main lane baseline).
 pub fn max_active_agents(session: &Session) -> usize {
     if session.events.is_empty() {
-        return 0;
+        return 1;
     }
 
     let hidden_task_ids = hidden_claude_subagent_task_ids(session);
@@ -124,9 +124,9 @@ mod tests {
     }
 
     #[test]
-    fn returns_zero_for_empty_sessions() {
+    fn returns_one_for_empty_sessions() {
         let s = session("codex", vec![]);
-        assert_eq!(max_active_agents(&s), 0);
+        assert_eq!(max_active_agents(&s), 1);
     }
 
     #[test]

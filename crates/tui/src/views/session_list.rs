@@ -1,6 +1,7 @@
 use crate::app::{App, ListLayout, ViewMode};
+use crate::config::CalendarDisplayMode;
 use crate::theme::{self, Theme};
-use chrono::{DateTime, Datelike, Local, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, Utc};
 use opensession_local_db::LocalSessionRow;
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, Paragraph};
@@ -37,6 +38,7 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let page_range = app.page_range();
     let agent_counts = &app.session_max_active_agents;
+    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
     let items: Vec<ListItem> = app.filtered_sessions[page_range]
         .iter()
         .map(|&idx| {
@@ -50,13 +52,15 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
             let tool = &session.agent.tool;
             let model = &session.agent.model;
             let events = session.stats.event_count;
-            let msgs = session.stats.user_message_count;
+            let msgs = session.stats.message_count;
             let duration = format_duration(session.stats.duration_seconds);
             let max_agents = agent_counts
                 .get(&session.session_id)
                 .copied()
-                .unwrap_or(if session.events.is_empty() { 0 } else { 1 });
-            let date = format_relative_datetime(session.context.created_at);
+                .unwrap_or(1)
+                .max(1);
+            let date = format_relative_datetime(session.context.created_at, calendar_mode);
+            let live = is_live_local_session(session);
 
             // Line 1: icon + title + actor
             let mut line1_spans = vec![
@@ -65,11 +69,18 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
                     Style::new().fg(theme::tool_color(tool)).bold(),
                 ),
                 Span::raw(" "),
-                Span::styled(
-                    truncate(title, 70),
-                    Style::new().fg(Theme::TEXT_PRIMARY).bold(),
-                ),
             ];
+            if live {
+                line1_spans.push(Span::styled(
+                    " LIVE ",
+                    Style::new().fg(Color::Black).bg(Theme::ACCENT_RED).bold(),
+                ));
+                line1_spans.push(Span::raw(" "));
+            }
+            line1_spans.extend([Span::styled(
+                truncate(title, 70),
+                Style::new().fg(Theme::TEXT_PRIMARY).bold(),
+            )]);
             if let Some(actor) = local_actor_label(session) {
                 line1_spans.push(Span::styled(
                     format!("  {actor}"),
@@ -81,19 +92,19 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
             // Line 2: metadata with subtle separators
             let line2 = Line::from(vec![
                 Span::raw("   "),
-                Span::styled(date, Style::new().fg(Color::DarkGray)),
-                Span::styled("  ", Style::new().fg(Color::DarkGray)),
+                Span::styled(date, Style::new().fg(Theme::TEXT_PRIMARY)),
+                Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
                 Span::styled(model, Style::new().fg(Color::Blue)),
-                Span::styled("  ", Style::new().fg(Color::DarkGray)),
+                Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
                 Span::styled(format!("{} msgs", msgs), Style::new().fg(Color::Green)),
-                Span::styled("  ", Style::new().fg(Color::DarkGray)),
+                Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
                 Span::styled(format!("{} events", events), Style::new().fg(Color::Yellow)),
-                Span::styled("  ", Style::new().fg(Color::DarkGray)),
+                Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
                 Span::styled(
-                    format!("{max_agents} agents"),
+                    format_agents_label(max_agents),
                     Style::new().fg(Theme::ACCENT_PURPLE),
                 ),
-                Span::styled("  ", Style::new().fg(Color::DarkGray)),
+                Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
                 Span::styled(duration, Style::new().fg(Color::Cyan)),
             ]);
 
@@ -139,6 +150,7 @@ fn render_local_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|_| Constraint::Ratio(1, col_count as u32))
         .collect();
     let columns = Layout::horizontal(constraints).split(columns_area);
+    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
 
     for (visible_idx, col_idx) in (start_col..start_col + col_count).enumerate() {
         let Some(label) = app.column_users.get(col_idx).cloned() else {
@@ -155,7 +167,11 @@ fn render_local_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
                 let &session_idx = app.filtered_sessions.get(abs_idx)?;
                 let session = app.sessions.get(session_idx)?;
                 let max_agents = agent_counts.get(&session.session_id).copied();
-                Some(local_session_to_compact_item(session, max_agents))
+                Some(local_session_to_compact_item(
+                    session,
+                    max_agents,
+                    calendar_mode,
+                ))
             })
             .collect();
 
@@ -212,6 +228,7 @@ fn render_db(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_db_single(frame: &mut Frame, app: &mut App, area: Rect) {
     let page_range = app.page_range();
     let agent_counts = &app.session_max_active_agents;
+    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
     let items: Vec<ListItem> = app.db_sessions[page_range]
         .iter()
         .map(|row| {
@@ -219,7 +236,7 @@ fn render_db_single(frame: &mut Frame, app: &mut App, area: Rect) {
                 .get(&row.id)
                 .copied()
                 .or_else(|| Some(row.max_active_agents.max(1) as usize));
-            db_row_to_list_item(row, max_agents)
+            db_row_to_list_item(row, max_agents, calendar_mode)
         })
         .collect();
 
@@ -258,6 +275,7 @@ fn render_db_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|_| Constraint::Ratio(1, col_count as u32))
         .collect();
     let columns = Layout::horizontal(constraints).split(columns_area);
+    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
 
     for (visible_idx, col_idx) in (start_col..start_col + col_count).enumerate() {
         let Some(user) = app.column_users.get(col_idx).cloned() else {
@@ -276,7 +294,7 @@ fn render_db_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
                     .get(&row.id)
                     .copied()
                     .or_else(|| Some(row.max_active_agents.max(1) as usize));
-                db_row_to_compact_item(row, max_agents)
+                db_row_to_compact_item(row, max_agents, calendar_mode)
             })
             .collect();
 
@@ -330,6 +348,7 @@ fn column_group_color(label: &str) -> Color {
 fn local_session_to_compact_item(
     session: &opensession_core::trace::Session,
     max_agents: Option<usize>,
+    calendar_mode: &CalendarDisplayMode,
 ) -> ListItem<'static> {
     let title = session
         .context
@@ -337,18 +356,24 @@ fn local_session_to_compact_item(
         .as_deref()
         .unwrap_or(&session.session_id);
     let tool = &session.agent.tool;
-    let date = format_relative_datetime(session.context.created_at);
-    let agents = max_agents
-        .map(|count| format!("{count} agents"))
-        .unwrap_or_else(|| "? agents".to_string());
+    let date = format_relative_datetime(session.context.created_at, calendar_mode);
+    let live = is_live_local_session(session);
+    let agents = resolved_agents_label(max_agents);
 
-    let mut line1_spans = vec![
-        Span::styled(
-            theme::tool_icon(tool),
-            Style::new().fg(theme::tool_color(tool)).bold(),
-        ),
-        Span::styled(truncate(title, 40), Style::new().fg(Theme::TEXT_PRIMARY)),
-    ];
+    let mut line1_spans = vec![Span::styled(
+        theme::tool_icon(tool),
+        Style::new().fg(theme::tool_color(tool)).bold(),
+    )];
+    if live {
+        line1_spans.push(Span::styled(
+            "LIVE ",
+            Style::new().fg(Color::Black).bg(Theme::ACCENT_RED).bold(),
+        ));
+    }
+    line1_spans.push(Span::styled(
+        truncate(title, 40),
+        Style::new().fg(Theme::TEXT_PRIMARY),
+    ));
     if let Some(actor) = local_actor_label(session) {
         line1_spans.push(Span::styled(
             format!("  {actor}"),
@@ -359,10 +384,10 @@ fn local_session_to_compact_item(
 
     let line2 = Line::from(vec![
         Span::raw("   "),
-        Span::styled(date, Style::new().fg(Color::DarkGray)),
+        Span::styled(date, Style::new().fg(Theme::TEXT_PRIMARY)),
         Span::styled("  ", Style::new()),
         Span::styled(
-            format!("{} msgs", session.stats.user_message_count),
+            format!("{} msgs", session.stats.message_count),
             Style::new().fg(Color::Green),
         ),
         Span::styled("  ", Style::new()),
@@ -374,21 +399,31 @@ fn local_session_to_compact_item(
 }
 
 /// Compact list item for multi-column view (no nickname, shorter).
-fn db_row_to_compact_item(row: &LocalSessionRow, max_agents: Option<usize>) -> ListItem<'static> {
+fn db_row_to_compact_item(
+    row: &LocalSessionRow,
+    max_agents: Option<usize>,
+    calendar_mode: &CalendarDisplayMode,
+) -> ListItem<'static> {
     let title = row.title.as_deref().unwrap_or(&row.id);
     let tool = &row.tool;
-    let date = format_relative_date_str(&row.created_at);
-    let agents = max_agents
-        .map(|count| format!("{count} agents"))
-        .unwrap_or_else(|| "? agents".to_string());
+    let date = format_relative_date_str(&row.created_at, calendar_mode);
+    let live = is_live_row(row);
+    let agents = resolved_agents_label(max_agents);
 
-    let mut line1_spans = vec![
-        Span::styled(
-            theme::tool_icon(tool),
-            Style::new().fg(theme::tool_color(tool)).bold(),
-        ),
-        Span::styled(truncate(title, 40), Style::new().fg(Theme::TEXT_PRIMARY)),
-    ];
+    let mut line1_spans = vec![Span::styled(
+        theme::tool_icon(tool),
+        Style::new().fg(theme::tool_color(tool)).bold(),
+    )];
+    if live {
+        line1_spans.push(Span::styled(
+            "LIVE ",
+            Style::new().fg(Color::Black).bg(Theme::ACCENT_RED).bold(),
+        ));
+    }
+    line1_spans.push(Span::styled(
+        truncate(title, 40),
+        Style::new().fg(Theme::TEXT_PRIMARY),
+    ));
     if let Some(actor) = actor_label(row) {
         line1_spans.push(Span::styled(
             format!("  {actor}"),
@@ -399,10 +434,10 @@ fn db_row_to_compact_item(row: &LocalSessionRow, max_agents: Option<usize>) -> L
 
     let line2 = Line::from(vec![
         Span::raw("   "),
-        Span::styled(date, Style::new().fg(Color::DarkGray)),
+        Span::styled(date, Style::new().fg(Theme::TEXT_PRIMARY)),
         Span::styled("  ", Style::new()),
         Span::styled(
-            format!("{} msgs", row.user_message_count),
+            format!("{} msgs", row.message_count.max(0)),
             Style::new().fg(Color::Green),
         ),
         Span::styled("  ", Style::new()),
@@ -414,17 +449,20 @@ fn db_row_to_compact_item(row: &LocalSessionRow, max_agents: Option<usize>) -> L
     ListItem::new(vec![line1, line2, line3])
 }
 
-fn db_row_to_list_item(row: &LocalSessionRow, max_agents: Option<usize>) -> ListItem<'static> {
+fn db_row_to_list_item(
+    row: &LocalSessionRow,
+    max_agents: Option<usize>,
+    calendar_mode: &CalendarDisplayMode,
+) -> ListItem<'static> {
     let title = row.title.as_deref().unwrap_or(&row.id);
     let tool = &row.tool;
     let model = display_model(row);
-    let msgs = row.user_message_count;
+    let msgs = normalized_db_message_count(row);
     let events = row.event_count;
     let duration = format_duration(row.duration_seconds as u64);
-    let date = format_relative_date_str(&row.created_at);
-    let agents = max_agents
-        .map(|count| format!("{count} agents"))
-        .unwrap_or_else(|| "? agents".to_string());
+    let date = format_relative_date_str(&row.created_at, calendar_mode);
+    let live = is_live_row(row);
+    let agents = resolved_agents_label(max_agents);
 
     // Sync status icon
     let sync_icon = match row.sync_status.as_str() {
@@ -447,6 +485,14 @@ fn db_row_to_list_item(row: &LocalSessionRow, max_agents: Option<usize>) -> List
         ),
         sync_icon,
         Span::styled(
+            if live { " LIVE " } else { "" },
+            if live {
+                Style::new().fg(Color::Black).bg(Theme::ACCENT_RED).bold()
+            } else {
+                Style::new()
+            },
+        ),
+        Span::styled(
             truncate(title, 60),
             Style::new().fg(Theme::TEXT_PRIMARY).bold(),
         ),
@@ -463,21 +509,21 @@ fn db_row_to_list_item(row: &LocalSessionRow, max_agents: Option<usize>) -> List
     // Line 2: date, model, stats, git info
     let mut line2_spans = vec![
         Span::raw("   "),
-        Span::styled(date, Style::new().fg(Color::DarkGray)),
-        Span::styled("  ", Style::new().fg(Color::DarkGray)),
+        Span::styled(date, Style::new().fg(Theme::TEXT_PRIMARY)),
+        Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
         Span::styled(model, Style::new().fg(Color::Blue)),
-        Span::styled("  ", Style::new().fg(Color::DarkGray)),
+        Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
         Span::styled(format!("{msgs} msgs"), Style::new().fg(Color::Green)),
-        Span::styled("  ", Style::new().fg(Color::DarkGray)),
+        Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
         Span::styled(format!("{events} events"), Style::new().fg(Color::Yellow)),
-        Span::styled("  ", Style::new().fg(Color::DarkGray)),
+        Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
         Span::styled(agents, Style::new().fg(Theme::ACCENT_PURPLE)),
-        Span::styled("  ", Style::new().fg(Color::DarkGray)),
+        Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)),
         Span::styled(duration, Style::new().fg(Color::Cyan)),
     ];
     // Git branch info
     if let Some(ref branch) = row.git_branch {
-        line2_spans.push(Span::styled("  ", Style::new().fg(Color::DarkGray)));
+        line2_spans.push(Span::styled("  ", Style::new().fg(Theme::TEXT_MUTED)));
         line2_spans.push(Span::styled(
             truncate(branch, 20),
             Style::new().fg(Color::Magenta),
@@ -625,9 +671,6 @@ fn list_title(app: &App) -> String {
     if !app.is_default_time_range() {
         base.push_str(&format!("[range:{}] ", app.session_time_range_label()));
     }
-    if !app.is_default_sort() {
-        base.push_str(&format!("[sort:{}] ", app.session_sort_label()));
-    }
     if app.list_layout == ListLayout::ByUser {
         let total_cols = app.column_users.len();
         if total_cols == 0 {
@@ -700,22 +743,38 @@ fn format_duration(seconds: u64) -> String {
 }
 
 /// Format a UTC DateTime as a relative date string.
-fn format_relative_datetime(dt: DateTime<Utc>) -> String {
+fn format_relative_datetime(dt: DateTime<Utc>, mode: &CalendarDisplayMode) -> String {
     let local = dt.with_timezone(&Local);
-    format_relative_local(local)
+    format_local_datetime(local, mode)
 }
 
 /// Format an ISO8601 date string as a relative date string.
-fn format_relative_date_str(date_str: &str) -> String {
+fn format_relative_date_str(date_str: &str, mode: &CalendarDisplayMode) -> String {
     if let Ok(dt) = DateTime::parse_from_rfc3339(date_str) {
-        format_relative_local(dt.with_timezone(&Local))
+        format_local_datetime(dt.with_timezone(&Local), mode)
     } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%dT%H:%M:%S%.f") {
-        format_relative_local(dt.and_utc().with_timezone(&Local))
+        format_local_datetime(dt.and_utc().with_timezone(&Local), mode)
     } else if date_str.len() > 10 {
         // Fallback: show truncated date
         date_str[5..date_str.len().min(16)].to_string()
     } else {
         date_str.to_string()
+    }
+}
+
+fn format_local_datetime(local: DateTime<Local>, mode: &CalendarDisplayMode) -> String {
+    match mode {
+        CalendarDisplayMode::Relative => format_relative_local(local),
+        CalendarDisplayMode::Absolute => format_absolute_local(local),
+        CalendarDisplayMode::Smart => {
+            let now = Local::now();
+            let delta = now.signed_duration_since(local);
+            if delta >= ChronoDuration::zero() && delta <= ChronoDuration::hours(24) {
+                format_relative_local(local)
+            } else {
+                format_absolute_local(local)
+            }
+        }
     }
 }
 
@@ -741,10 +800,78 @@ fn format_relative_local(local: DateTime<Local>) -> String {
     }
 }
 
+fn format_absolute_local(local: DateTime<Local>) -> String {
+    let today = Local::now().date_naive();
+    if local.date_naive().year() == today.year() {
+        local.format("%m/%d %H:%M").to_string()
+    } else {
+        local.format("%Y/%m/%d %H:%M").to_string()
+    }
+}
+
+fn parse_datetime_utc(value: &str) -> Option<DateTime<Utc>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(dt.and_utc());
+    }
+    None
+}
+
+fn is_live_row(row: &LocalSessionRow) -> bool {
+    let mut latest = parse_datetime_utc(&row.created_at);
+    if let Some(uploaded_at) = row.uploaded_at.as_deref().and_then(parse_datetime_utc) {
+        latest = Some(latest.map_or(uploaded_at, |current| current.max(uploaded_at)));
+    }
+    if let Some(last_synced_at) = row.last_synced_at.as_deref().and_then(parse_datetime_utc) {
+        latest = Some(latest.map_or(last_synced_at, |current| current.max(last_synced_at)));
+    }
+    latest.is_some_and(is_live_timestamp)
+}
+
+fn is_live_local_session(session: &opensession_core::trace::Session) -> bool {
+    let ts = session
+        .events
+        .last()
+        .map(|event| event.timestamp)
+        .unwrap_or(session.context.updated_at);
+    is_live_timestamp(ts)
+}
+
+fn is_live_timestamp(ts: DateTime<Utc>) -> bool {
+    let now = Utc::now();
+    now >= ts && now.signed_duration_since(ts) <= ChronoDuration::minutes(5)
+}
+
+fn format_agents_label(count: usize) -> String {
+    if count == 1 {
+        "1 agent".to_string()
+    } else {
+        format!("{count} agents")
+    }
+}
+
+fn resolved_agents_label(max_agents: Option<usize>) -> String {
+    max_agents
+        .map(|count| format_agents_label(count.max(1)))
+        .unwrap_or_else(|| "1 agent".to_string())
+}
+
+fn normalized_db_message_count(row: &LocalSessionRow) -> i64 {
+    row.message_count.max(0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{column_viewport, list_title, MIN_MULTI_COLUMN_WIDTH};
+    use super::{
+        column_viewport, format_relative_datetime, list_title, normalized_db_message_count,
+        resolved_agents_label, MIN_MULTI_COLUMN_WIDTH,
+    };
     use crate::app::{App, ListLayout, ViewMode};
+    use crate::config::CalendarDisplayMode;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use opensession_local_db::LocalSessionRow;
 
     #[test]
     fn list_title_includes_column_count_for_multi_column_layout() {
@@ -762,6 +889,7 @@ mod tests {
         let title = list_title(&app);
         assert!(title.contains("[group:agent-count(desc)]"));
         assert!(title.contains("[cols:5]"));
+        assert!(!title.contains("[sort:"));
     }
 
     #[test]
@@ -772,5 +900,57 @@ mod tests {
 
         let (start, visible) = column_viewport(width, 7, 5);
         assert_eq!((start, visible), (3, 3));
+    }
+
+    #[test]
+    fn relative_and_absolute_calendar_modes_render_different_formats() {
+        let dt = Utc::now() - ChronoDuration::days(2);
+        let relative = format_relative_datetime(dt, &CalendarDisplayMode::Relative);
+        let absolute = format_relative_datetime(dt, &CalendarDisplayMode::Absolute);
+        assert_ne!(relative, absolute);
+        assert!(relative.contains("ago") || relative.contains('/'));
+        assert!(absolute.contains('/'));
+    }
+
+    #[test]
+    fn db_list_item_uses_message_count_and_minimum_agent_label() {
+        let row = LocalSessionRow {
+            id: "ses-1".to_string(),
+            source_path: None,
+            sync_status: "local_only".to_string(),
+            last_synced_at: None,
+            user_id: None,
+            nickname: None,
+            team_id: None,
+            tool: "codex".to_string(),
+            agent_provider: Some("openai".to_string()),
+            agent_model: Some("gpt-5-codex".to_string()),
+            title: Some("Session".to_string()),
+            description: None,
+            tags: None,
+            created_at: Utc::now().to_rfc3339(),
+            uploaded_at: None,
+            message_count: 10,
+            user_message_count: 0,
+            task_count: 0,
+            event_count: 12,
+            duration_seconds: 5,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            git_remote: None,
+            git_branch: None,
+            git_commit: None,
+            git_repo_name: None,
+            pr_number: None,
+            pr_url: None,
+            working_directory: None,
+            files_modified: None,
+            files_read: None,
+            has_errors: false,
+            max_active_agents: 0,
+        };
+
+        assert_eq!(normalized_db_message_count(&row), 10);
+        assert_eq!(resolved_agents_label(Some(0)), "1 agent".to_string());
     }
 }

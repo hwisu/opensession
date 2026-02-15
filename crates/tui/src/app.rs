@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use opensession_api::{
     InvitationResponse, MemberResponse, SortOrder, TeamDetailResponse, TeamResponse, TimeRange,
     UserSettingsResponse,
@@ -18,6 +18,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::async_ops::{AsyncCommand, CommandResult};
 use crate::config::{self, DaemonConfig, GitStorageMethod, PublishMode, SettingField};
+use crate::live::{
+    DefaultLiveFeedProvider, FollowTailState, LiveFeedProvider, LiveSubscription, LiveUpdate,
+    LiveUpdateBatch,
+};
 use crate::session_timeline::{build_lane_events_with_filter, LaneMarker};
 use crate::timeline_summary::{
     describe_summary_engine, parse_timeline_summary_output, SummaryRuntimeConfig,
@@ -495,9 +499,11 @@ pub fn extract_visible_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
 #[cfg(test)]
 mod turn_extract_tests {
     use super::*;
+    use crate::live::{LiveUpdate, LiveUpdateBatch};
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, Session};
     use serde_json::Value;
+    use std::time::{Duration, Instant};
 
     fn make_event(event_id: &str, event_type: EventType, text: &str) -> Event {
         Event {
@@ -530,6 +536,33 @@ mod turn_extract_tests {
             );
         }
         event
+    }
+
+    fn make_live_session(session_id: &str, event_count: usize) -> Session {
+        let mut session = Session::new(
+            session_id.to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+
+        for idx in 0..event_count {
+            let event_type = if idx % 2 == 0 {
+                EventType::UserMessage
+            } else {
+                EventType::AgentMessage
+            };
+            session.events.push(make_event(
+                &format!("e-{idx}"),
+                event_type,
+                &format!("line-{idx}"),
+            ));
+        }
+        session.recompute_stats();
+        session
     }
 
     #[test]
@@ -721,7 +754,7 @@ mod turn_extract_tests {
     }
 
     #[test]
-    fn internal_summary_row_filters_codex_no_user_messages() {
+    fn internal_summary_row_keeps_codex_without_user_messages() {
         let row = LocalSessionRow {
             id: "row-2".to_string(),
             source_path: None,
@@ -758,7 +791,7 @@ mod turn_extract_tests {
             max_active_agents: 1,
         };
 
-        assert!(App::is_internal_summary_row(&row));
+        assert!(!App::is_internal_summary_row(&row));
     }
 
     #[test]
@@ -973,6 +1006,263 @@ mod turn_extract_tests {
             Some("id:0123456789")
         );
     }
+
+    #[test]
+    fn list_repo_picker_opens_and_selects_repo() {
+        let mut app = App::new(vec![]);
+        app.repos = vec!["alpha/repo".to_string(), "beta/repo".to_string()];
+
+        app.handle_list_key(KeyCode::Char('R'));
+        assert!(app.repo_picker_open);
+
+        app.handle_repo_picker_key(KeyCode::Char('b'));
+        app.handle_repo_picker_key(KeyCode::Enter);
+
+        assert!(!app.repo_picker_open);
+        assert_eq!(app.view_mode, ViewMode::Repo("beta/repo".to_string()));
+    }
+
+    #[test]
+    fn list_bracket_keys_do_not_change_page_anymore() {
+        let mut app = App::new(vec![
+            Session::new(
+                "s1".to_string(),
+                Agent {
+                    provider: "openai".to_string(),
+                    model: "gpt-5".to_string(),
+                    tool: "codex".to_string(),
+                    tool_version: None,
+                },
+            ),
+            Session::new(
+                "s2".to_string(),
+                Agent {
+                    provider: "openai".to_string(),
+                    model: "gpt-5".to_string(),
+                    tool: "codex".to_string(),
+                    tool_version: None,
+                },
+            ),
+        ]);
+        app.per_page = 1;
+        app.page = 0;
+        app.apply_filter();
+
+        app.handle_list_key(KeyCode::Char(']'));
+        assert_eq!(app.page, 0);
+
+        app.handle_list_key(KeyCode::Char('['));
+        assert_eq!(app.page, 0);
+    }
+
+    #[test]
+    fn live_detail_enters_at_tail_in_linear_and_turn_modes() {
+        let session = make_live_session("live-tail", 4);
+
+        let mut linear_app = App::new(vec![session.clone()]);
+        linear_app.enter_detail();
+        linear_app.detail_view_mode = DetailViewMode::Linear;
+        linear_app.jump_to_latest_linear();
+        assert!(linear_app.live_mode);
+        assert_eq!(linear_app.detail_event_index, 3);
+
+        let mut turn_app = App::new(vec![session]);
+        turn_app.focus_detail_view = true;
+        turn_app.enter_detail();
+        turn_app.detail_view_mode = DetailViewMode::Turn;
+        turn_app.jump_to_latest_turn();
+        assert!(turn_app.live_mode);
+        assert_eq!(turn_app.turn_index, 1);
+    }
+
+    #[test]
+    fn live_summary_jobs_are_blocked() {
+        let session = make_live_session("live-summary-off", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.live_mode = true;
+        app.detail_entered_at = Instant::now() - Duration::from_secs(2);
+
+        assert!(app.schedule_detail_summary_jobs().is_none());
+    }
+
+    #[test]
+    fn refresh_live_mode_turns_on_when_source_was_modified_recently() {
+        let unique = format!(
+            "ops-live-source-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("session.jsonl");
+        std::fs::write(&path, "{}\n").expect("write file");
+
+        let session = make_live_session("live-source-recent", 2);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_source_path = Some(path.clone());
+        app.live_subscription = None;
+        app.live_mode = false;
+        app.refresh_live_mode();
+
+        assert!(app.live_mode);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn focus_detail_view_disables_summary_status_and_queue() {
+        let session = make_live_session("focus-no-summary", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.daemon_config.daemon.summary_enabled = true;
+        app.detail_entered_at = Instant::now() - Duration::from_secs(2);
+
+        app.focus_detail_view = true;
+        assert_eq!(app.llm_summary_status_label(), "off");
+        assert!(app.schedule_detail_summary_jobs().is_none());
+    }
+
+    #[test]
+    fn focus_detail_view_v_toggles_turn_and_linear() {
+        let session = make_live_session("focus-v-toggle", 4);
+        let mut app = App::new(vec![session]);
+        app.focus_detail_view = true;
+        app.enter_detail();
+        assert_eq!(app.detail_view_mode, DetailViewMode::Turn);
+
+        app.handle_detail_key(KeyCode::Char('v'));
+        assert_eq!(app.detail_view_mode, DetailViewMode::Linear);
+
+        app.handle_detail_key(KeyCode::Char('v'));
+        assert_eq!(app.detail_view_mode, DetailViewMode::Turn);
+    }
+
+    #[test]
+    fn jump_to_latest_turn_uses_tail_scroll_anchor() {
+        let session = make_live_session("turn-tail-anchor", 6);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_view_mode = DetailViewMode::Turn;
+        app.jump_to_latest_turn();
+
+        assert_eq!(app.turn_agent_scroll, u16::MAX);
+    }
+
+    #[test]
+    fn live_reload_assigns_lane_for_spawn_task_without_explicit_task_start() {
+        let mut session = Session::new(
+            "live-spawn-lane".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session
+            .events
+            .push(make_event("seed", EventType::UserMessage, "seed"));
+        session.recompute_stats();
+
+        let mut app = App::new(vec![session.clone()]);
+        app.enter_detail();
+
+        let mut reloaded = session.clone();
+        let mut spawned = make_event(
+            "spawn-msg",
+            EventType::AgentMessage,
+            "spawned worker output",
+        );
+        spawned.task_id = Some("spawn-task-1".to_string());
+        reloaded.events.push(spawned.clone());
+        reloaded.recompute_stats();
+
+        let batch = LiveUpdateBatch {
+            updates: vec![
+                LiveUpdate::SessionReloaded(reloaded.clone()),
+                LiveUpdate::EventsAppended(vec![spawned]),
+            ],
+            cursor: Some(reloaded.events.len() as u64),
+            source_offset: Some(10),
+            last_event_at: reloaded.events.last().map(|event| event.timestamp),
+            active: true,
+        };
+        app.apply_live_update_batch(batch);
+
+        let visible = app.get_base_visible_events(&app.sessions[0]);
+        let lane = visible
+            .iter()
+            .find_map(|row| match row {
+                DisplayEvent::Single { event, lane, .. } if event.event_id == "spawn-msg" => {
+                    Some(*lane)
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        assert!(lane > 0);
+    }
+
+    #[test]
+    fn live_follow_detach_then_reattach_controls_auto_jump() {
+        let session = make_live_session("live-follow", 4);
+        let mut app = App::new(vec![session.clone()]);
+        app.enter_detail();
+        app.detail_view_mode = DetailViewMode::Linear;
+        app.jump_to_latest_linear();
+        assert_eq!(app.detail_event_index, 3);
+        assert_eq!(app.detail_follow_status_label(), "ON");
+
+        app.handle_detail_key(KeyCode::Up);
+        assert_eq!(app.detail_event_index, 2);
+        assert_eq!(app.detail_follow_status_label(), "OFF");
+
+        let mut reloaded = session.clone();
+        reloaded.events.push(make_event(
+            "e-4",
+            EventType::AgentMessage,
+            "appended-after-detach",
+        ));
+        reloaded.recompute_stats();
+
+        let detached_batch = LiveUpdateBatch {
+            updates: vec![
+                LiveUpdate::SessionReloaded(reloaded.clone()),
+                LiveUpdate::EventsAppended(vec![reloaded.events.last().cloned().expect("event")]),
+            ],
+            cursor: Some(reloaded.events.len() as u64),
+            source_offset: Some(1),
+            last_event_at: reloaded.events.last().map(|event| event.timestamp),
+            active: true,
+        };
+        app.apply_live_update_batch(detached_batch);
+        assert_eq!(app.detail_event_index, 2);
+
+        app.handle_detail_key(KeyCode::End);
+        assert_eq!(app.detail_follow_status_label(), "ON");
+
+        let mut reloaded2 = reloaded.clone();
+        reloaded2.events.push(make_event(
+            "e-5",
+            EventType::AgentMessage,
+            "appended-after-reattach",
+        ));
+        reloaded2.recompute_stats();
+
+        let attached_batch = LiveUpdateBatch {
+            updates: vec![
+                LiveUpdate::SessionReloaded(reloaded2.clone()),
+                LiveUpdate::EventsAppended(vec![reloaded2.events.last().cloned().expect("event")]),
+            ],
+            cursor: Some(reloaded2.events.len() as u64),
+            source_offset: Some(2),
+            last_event_at: reloaded2.events.last().map(|event| event.timestamp),
+            active: true,
+        };
+        app.apply_live_update_batch(attached_batch);
+        assert_eq!(app.detail_event_index, reloaded2.events.len() - 1);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1058,7 +1348,11 @@ pub struct App {
     pub detail_source_mtime: Option<SystemTime>,
     pub detail_hydrate_pending: bool,
     pub realtime_preview_enabled: bool,
-    pub last_realtime_check: Instant,
+    pub live_mode: bool,
+    pub follow_tail_linear: FollowTailState,
+    pub follow_tail_turn: FollowTailState,
+    pub live_last_event_at: Option<DateTime<Utc>>,
+    pub live_subscription: Option<LiveSubscription>,
     pub detail_entered_at: Instant,
     pub timeline_summary_cache: HashMap<TimelineSummaryWindowKey, TimelineSummaryCacheEntry>,
     pub timeline_summary_pending: VecDeque<TimelineSummaryWindowRequest>,
@@ -1091,13 +1385,16 @@ pub struct App {
     pub repos: Vec<String>,
     /// Current repo index when cycling.
     pub repo_index: usize,
+    /// Repo picker popup state (`R` in session list).
+    pub repo_picker_open: bool,
+    pub repo_picker_query: String,
+    pub repo_picker_index: usize,
     /// Team ID from config (if any).
     pub team_id: Option<String>,
 
     // ── Tool filter ──────────────────────────────────────────────
     pub tool_filter: Option<String>,
     pub available_tools: Vec<String>,
-    pub session_sort: SortOrder,
     pub session_time_range: TimeRange,
 
     // ── Pagination ───────────────────────────────────────────────
@@ -1408,7 +1705,11 @@ impl App {
             detail_source_mtime: None,
             detail_hydrate_pending: false,
             realtime_preview_enabled: false,
-            last_realtime_check: Instant::now(),
+            live_mode: false,
+            follow_tail_linear: FollowTailState::default(),
+            follow_tail_turn: FollowTailState::default(),
+            live_last_event_at: None,
+            live_subscription: None,
             detail_entered_at: Instant::now(),
             timeline_summary_cache: HashMap::new(),
             timeline_summary_pending: VecDeque::new(),
@@ -1433,10 +1734,12 @@ impl App {
             db_total_sessions: 0,
             repos: Vec::new(),
             repo_index: 0,
+            repo_picker_open: false,
+            repo_picker_query: String::new(),
+            repo_picker_index: 0,
             team_id: None,
             tool_filter: None,
             available_tools: local_tools,
-            session_sort: SortOrder::Recent,
             session_time_range: TimeRange::All,
             page: 0,
             per_page: 50,
@@ -1511,7 +1814,6 @@ impl App {
                 .description
                 .as_deref()
                 .is_some_and(Self::is_internal_summary_title)
-            || (row.tool == "codex" && row.user_message_count == 0)
     }
 
     fn hidden_claude_subagent_task_ids(session: &Session) -> HashSet<String> {
@@ -1573,6 +1875,10 @@ impl App {
         // Upload popup intercepts keys when active
         if self.upload_popup.is_some() {
             return self.handle_upload_popup_key(key);
+        }
+
+        if self.repo_picker_open {
+            return self.handle_repo_picker_key(key);
         }
 
         if self.searching {
@@ -1656,6 +1962,46 @@ impl App {
         }
     }
 
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if self.modal.is_some() || self.upload_popup.is_some() || self.repo_picker_open {
+            return false;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => match self.view {
+                View::SessionList => self.list_prev(),
+                View::SessionDetail => {
+                    if self.detail_view_mode == DetailViewMode::Turn {
+                        self.turn_agent_scroll = self.turn_agent_scroll.saturating_sub(2);
+                        self.detach_live_follow_turn();
+                    } else {
+                        self.detail_event_index = self.detail_event_index.saturating_sub(2);
+                        self.detach_live_follow_linear();
+                        self.update_detail_selection_anchor();
+                    }
+                }
+                _ => {}
+            },
+            MouseEventKind::ScrollDown => match self.view {
+                View::SessionList => self.list_next(),
+                View::SessionDetail => {
+                    if self.detail_view_mode == DetailViewMode::Turn {
+                        self.turn_agent_scroll = self.turn_agent_scroll.saturating_add(2);
+                    } else if let Some(session) = self.selected_session() {
+                        let visible = self.visible_event_count(session);
+                        if visible > 0 {
+                            self.detail_event_index =
+                                (self.detail_event_index + 2).min(visible - 1);
+                            self.update_detail_selection_anchor();
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        false
+    }
+
     fn switch_tab(&mut self, tab: Tab) {
         if self.active_tab == tab {
             return;
@@ -1721,6 +2067,90 @@ impl App {
         false
     }
 
+    fn open_repo_picker(&mut self) {
+        if self.repos.is_empty() {
+            self.flash_info("No repositories available");
+            return;
+        }
+        self.repo_picker_open = true;
+        self.repo_picker_query.clear();
+        self.repo_picker_index = self.repo_index.min(self.repos.len().saturating_sub(1));
+    }
+
+    fn repo_picker_filtered_indices(&self) -> Vec<usize> {
+        let query = self.repo_picker_query.trim().to_ascii_lowercase();
+        self.repos
+            .iter()
+            .enumerate()
+            .filter(|(_, repo)| {
+                query.is_empty() || repo.to_ascii_lowercase().contains(query.as_str())
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    pub fn repo_picker_entries(&self) -> Vec<String> {
+        self.repo_picker_filtered_indices()
+            .into_iter()
+            .filter_map(|idx| self.repos.get(idx).cloned())
+            .collect()
+    }
+
+    pub fn repo_picker_selected_index(&self) -> usize {
+        let len = self.repo_picker_filtered_indices().len();
+        if len == 0 {
+            0
+        } else {
+            self.repo_picker_index.min(len - 1)
+        }
+    }
+
+    fn handle_repo_picker_key(&mut self, key: KeyCode) -> bool {
+        let filtered = self.repo_picker_filtered_indices();
+        match key {
+            KeyCode::Esc => {
+                self.repo_picker_open = false;
+                self.repo_picker_query.clear();
+                self.repo_picker_index = 0;
+            }
+            KeyCode::Enter => {
+                if filtered.is_empty() {
+                    self.flash_info("No repository matches search");
+                    return false;
+                }
+                let selected = self.repo_picker_index.min(filtered.len() - 1);
+                let repo_idx = filtered[selected];
+                if let Some(repo) = self.repos.get(repo_idx).cloned() {
+                    self.repo_index = repo_idx;
+                    self.apply_session_view_mode(ViewMode::Repo(repo));
+                }
+                self.repo_picker_open = false;
+                self.repo_picker_query.clear();
+                self.repo_picker_index = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !filtered.is_empty() {
+                    self.repo_picker_index = (self.repo_picker_index + 1).min(filtered.len() - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.repo_picker_index = self.repo_picker_index.saturating_sub(1);
+            }
+            KeyCode::Backspace => {
+                self.repo_picker_query.pop();
+                self.repo_picker_index = 0;
+            }
+            KeyCode::Char(c) => {
+                if !c.is_control() {
+                    self.repo_picker_query.push(c);
+                    self.repo_picker_index = 0;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
     fn handle_list_key(&mut self, key: KeyCode) -> bool {
         // Agent-count multi-column mode
         if self.list_layout == ListLayout::ByUser {
@@ -1748,12 +2178,10 @@ impl App {
             KeyCode::Char('t') => {
                 self.cycle_tool_filter();
             }
-            KeyCode::Char('o') => {
-                self.cycle_session_sort();
-            }
             KeyCode::Char('r') => {
                 self.cycle_session_time_range();
             }
+            KeyCode::Char('R') => self.open_repo_picker(),
             KeyCode::Char('p') => {
                 // Open upload popup — only when connected to a server
                 if matches!(self.connection_ctx, ConnectionContext::Local) {
@@ -1778,8 +2206,6 @@ impl App {
                     self.cycle_tool_filter();
                 }
             }
-            KeyCode::Char(']') => self.next_page(),
-            KeyCode::Char('[') => self.prev_page(),
             KeyCode::Char('d') => {
                 if self.is_db_view() {
                     if let Some(row) = self.selected_db_session().cloned() {
@@ -1835,12 +2261,12 @@ impl App {
                     state.select(Some(current.saturating_sub(1)));
                 }
             }
-            KeyCode::PageDown | KeyCode::Char(']') => {
+            KeyCode::PageDown => {
                 if self.is_db_view() {
                     self.list_page_down();
                 }
             }
-            KeyCode::PageUp | KeyCode::Char('[') => {
+            KeyCode::PageUp => {
                 if self.is_db_view() {
                     self.list_page_up();
                 }
@@ -1870,12 +2296,10 @@ impl App {
             KeyCode::Char('t') => {
                 self.cycle_tool_filter();
             }
-            KeyCode::Char('o') => {
-                self.cycle_session_sort();
-            }
             KeyCode::Char('r') => {
                 self.cycle_session_time_range();
             }
+            KeyCode::Char('R') => self.open_repo_picker(),
             KeyCode::Char('f') => {
                 // Legacy alias in DB multi-column view.
                 self.cycle_tool_filter();
@@ -1916,6 +2340,7 @@ impl App {
                 self.detail_event_index = 0;
                 self.detail_scroll = 0;
                 self.detail_h_scroll = 0;
+                self.detach_live_follow_linear();
             }
             KeyCode::PageDown => self.detail_page_down(),
             KeyCode::PageUp => self.detail_page_up(),
@@ -1925,10 +2350,8 @@ impl App {
             KeyCode::Char('n') => self.jump_to_next_same_type(),
             KeyCode::Char('N') => self.jump_to_prev_same_type(),
             KeyCode::Char('v') => {
-                if !self.focus_detail_view {
-                    self.detail_view_mode = DetailViewMode::Turn;
-                    self.sync_linear_to_turn();
-                }
+                self.detail_view_mode = DetailViewMode::Turn;
+                self.sync_linear_to_turn();
             }
             KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
             KeyCode::Char('2') => self.toggle_event_filter(EventFilter::Messages),
@@ -2507,7 +2930,7 @@ impl App {
             SettingField::GitStorageToken
                 if self.daemon_config.git_storage.method == GitStorageMethod::None =>
             {
-                Some("Set Git Storage Method to Platform API or Native first")
+                Some("Set Git Storage Method to Platform API, Native, or SQLite Local first")
             }
             SettingField::SummaryCliAgent if !self.daemon_config.daemon.summary_enabled => {
                 Some("Turn ON LLM Summary Enabled first")
@@ -2598,17 +3021,31 @@ impl App {
 
     fn stop_daemon(&mut self) {
         if let Some(pid) = self.startup_status.daemon_pid {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .status();
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            self.startup_status.daemon_pid = config::daemon_pid();
+            let _ = Self::send_signal(pid, "TERM");
+            for _ in 0..6 {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                self.startup_status.daemon_pid = config::daemon_pid();
+                if self.startup_status.daemon_pid.is_none() {
+                    break;
+                }
+            }
             if self.startup_status.daemon_pid.is_none() {
                 self.flash_success("Daemon stopped");
             } else {
                 self.flash_error("Daemon may still be running");
             }
         }
+    }
+
+    fn send_signal(pid: u32, signal: &str) -> bool {
+        std::process::Command::new("kill")
+            .arg(format!("-{signal}"))
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
     }
 
     // ── Teams key handler ─────────────────────────────────────────────
@@ -3513,7 +3950,7 @@ impl App {
                 team_id: Some(tid.clone()),
                 tool: self.tool_filter.clone(),
                 search: search.clone(),
-                sort: self.session_sort.clone(),
+                sort: SortOrder::Recent,
                 time_range: self.session_time_range.clone(),
                 ..Default::default()
             },
@@ -3521,7 +3958,7 @@ impl App {
                 git_repo_name: Some(repo.clone()),
                 tool: self.tool_filter.clone(),
                 search,
-                sort: self.session_sort.clone(),
+                sort: SortOrder::Recent,
                 time_range: self.session_time_range.clone(),
                 ..Default::default()
             },
@@ -3660,7 +4097,7 @@ impl App {
                     team_id: Some(tid),
                     tool: None,
                     search,
-                    sort: self.session_sort.clone(),
+                    sort: SortOrder::Recent,
                     time_range: self.session_time_range.clone(),
                     ..Default::default()
                 };
@@ -3676,7 +4113,7 @@ impl App {
                     git_repo_name: Some(repo),
                     tool: None,
                     search,
-                    sort: self.session_sort.clone(),
+                    sort: SortOrder::Recent,
                     time_range: self.session_time_range.clone(),
                     ..Default::default()
                 };
@@ -3715,14 +4152,6 @@ impl App {
         self.apply_filter();
     }
 
-    pub fn session_sort_label(&self) -> &'static str {
-        match self.session_sort {
-            SortOrder::Recent => "recent",
-            SortOrder::Popular => "popular",
-            SortOrder::Longest => "longest",
-        }
-    }
-
     pub fn session_time_range_label(&self) -> &'static str {
         match self.session_time_range {
             TimeRange::All => "all",
@@ -3730,10 +4159,6 @@ impl App {
             TimeRange::Days7 => "7d",
             TimeRange::Days30 => "30d",
         }
-    }
-
-    pub fn is_default_sort(&self) -> bool {
-        matches!(self.session_sort, SortOrder::Recent)
     }
 
     pub fn is_default_time_range(&self) -> bool {
@@ -3749,7 +4174,6 @@ impl App {
     pub fn has_active_session_filters(&self) -> bool {
         self.active_tool_filter().is_some()
             || !self.search_query.trim().is_empty()
-            || !self.is_default_sort()
             || !self.is_default_time_range()
     }
 
@@ -3844,16 +4268,6 @@ impl App {
                 .then_with(|| rhs.context.created_at.cmp(&lhs.context.created_at))
                 .then_with(|| rhs.session_id.cmp(&lhs.session_id)),
         }
-    }
-
-    fn cycle_session_sort(&mut self) {
-        self.session_sort = match self.session_sort {
-            SortOrder::Recent => SortOrder::Popular,
-            SortOrder::Popular => SortOrder::Longest,
-            SortOrder::Longest => SortOrder::Recent,
-        };
-        self.page = 0;
-        self.apply_filter();
     }
 
     fn cycle_session_time_range(&mut self) {
@@ -3966,6 +4380,11 @@ impl App {
                 self.turn_index = 0;
                 self.turn_agent_scroll = 0;
                 self.turn_h_scroll = 0;
+                self.live_mode = false;
+                self.live_last_event_at = None;
+                self.live_subscription = None;
+                self.follow_tail_linear.reset();
+                self.follow_tail_turn.reset();
                 self.cancel_timeline_summary_jobs();
                 self.summary_cli_prompted = false;
                 self.detail_source_path = self.resolve_selected_source_path();
@@ -3978,14 +4397,19 @@ impl App {
                     .selected_session()
                     .map(|session| session.events.is_empty() && session.stats.event_count > 0)
                     .unwrap_or(false);
-                self.last_realtime_check = Instant::now();
                 self.detail_entered_at = Instant::now();
                 self.realtime_preview_enabled =
                     self.daemon_config.daemon.detail_realtime_preview_enabled;
                 if let Some(session) = self.selected_session().cloned() {
                     self.ensure_summary_ready_for_session(&session);
+                    self.live_last_event_at = session.events.last().map(|event| event.timestamp);
                 }
-                if self.detail_view_mode == DetailViewMode::Turn {
+                self.refresh_live_subscription();
+                self.refresh_live_mode();
+                if self.live_mode {
+                    self.jump_to_latest_linear();
+                    self.jump_to_latest_turn();
+                } else if self.detail_view_mode == DetailViewMode::Turn {
                     self.sync_linear_to_turn();
                 }
                 self.update_detail_selection_anchor();
@@ -4011,6 +4435,7 @@ impl App {
 
     fn detail_prev_event(&mut self) {
         self.detail_event_index = self.detail_event_index.saturating_sub(1);
+        self.detach_live_follow_linear();
         self.update_detail_selection_anchor();
     }
 
@@ -4021,6 +4446,7 @@ impl App {
                 self.detail_event_index = visible - 1;
             }
         }
+        self.reattach_live_follow_linear();
         self.update_detail_selection_anchor();
     }
 
@@ -4036,6 +4462,7 @@ impl App {
 
     fn detail_page_up(&mut self) {
         self.detail_event_index = self.detail_event_index.saturating_sub(10);
+        self.detach_live_follow_linear();
         self.update_detail_selection_anchor();
     }
 
@@ -4065,11 +4492,9 @@ impl App {
                 self.update_detail_selection_anchor();
             }
             KeyCode::Char('v') => {
-                if !self.focus_detail_view {
-                    self.detail_view_mode = DetailViewMode::Linear;
-                    self.sync_turn_to_linear();
-                    self.update_detail_selection_anchor();
-                }
+                self.detail_view_mode = DetailViewMode::Linear;
+                self.sync_turn_to_linear();
+                self.update_detail_selection_anchor();
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 if self.focus_detail_view {
@@ -4088,25 +4513,25 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.turn_agent_scroll = self.turn_agent_scroll.saturating_sub(1);
+                self.detach_live_follow_turn();
             }
             KeyCode::Char('J') | KeyCode::Char('n') => self.turn_next(),
             KeyCode::Char('K') | KeyCode::Char('N') => self.turn_prev(),
+            KeyCode::PageUp => {
+                self.turn_agent_scroll = self.turn_agent_scroll.saturating_sub(10);
+                self.detach_live_follow_turn();
+            }
+            KeyCode::PageDown => {
+                self.turn_agent_scroll = self.turn_agent_scroll.saturating_add(10);
+            }
             KeyCode::Char('g') | KeyCode::Home => {
                 self.turn_index = 0;
                 self.turn_agent_scroll = 0;
                 self.turn_h_scroll = 0;
+                self.detach_live_follow_turn();
             }
             KeyCode::Char('G') | KeyCode::End => {
-                if let Some(session) = self.selected_session().cloned() {
-                    let visible = self.get_visible_events(&session);
-                    let turns = extract_visible_turns(&visible);
-                    self.turn_index = turns.len().saturating_sub(1);
-                    if let Some(&offset) = self.turn_line_offsets.get(self.turn_index) {
-                        self.turn_agent_scroll = offset;
-                    } else {
-                        self.turn_agent_scroll = 0;
-                    }
-                }
+                self.jump_to_latest_turn();
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(session) = self.selected_session().cloned() {
@@ -4159,6 +4584,7 @@ impl App {
             } else {
                 self.turn_agent_scroll = 0;
             }
+            self.detach_live_follow_turn();
         }
     }
 
@@ -5305,9 +5731,10 @@ impl App {
     }
 
     fn summary_allowed_for_session(&self, session: &Session) -> bool {
-        if !self.daemon_config.daemon.summary_enabled
-            || self.is_stream_write_tool(&session.agent.tool)
-        {
+        if self.focus_detail_view || self.live_mode {
+            return false;
+        }
+        if !self.daemon_config.daemon.summary_enabled {
             return false;
         }
         self.summary_backend_unavailable_reason(session).is_none()
@@ -5629,9 +6056,7 @@ impl App {
     }
 
     fn ensure_summary_ready_for_session(&mut self, session: &Session) {
-        if !self.daemon_config.daemon.summary_enabled
-            || self.is_stream_write_tool(&session.agent.tool)
-        {
+        if !self.daemon_config.daemon.summary_enabled {
             return;
         }
 
@@ -5673,6 +6098,11 @@ impl App {
         self.detail_h_scroll = 0;
         self.detail_view_mode = DetailViewMode::Linear;
         self.detail_hydrate_pending = false;
+        self.live_mode = false;
+        self.live_last_event_at = None;
+        self.live_subscription = None;
+        self.follow_tail_linear.reset();
+        self.follow_tail_turn.reset();
     }
 
     fn summary_inflight_timeout() -> Duration {
@@ -5722,14 +6152,6 @@ impl App {
 
     fn pending_summary_contains(&self, key: &TimelineSummaryWindowKey) -> bool {
         self.timeline_summary_pending.iter().any(|r| &r.key == key)
-    }
-
-    pub fn is_stream_write_tool(&self, tool: &str) -> bool {
-        self.daemon_config
-            .daemon
-            .stream_write
-            .iter()
-            .any(|item| item.eq_ignore_ascii_case(tool))
     }
 
     fn maybe_prompt_summary_cli_setup(&mut self, key: &TimelineSummaryWindowKey, err: &str) {
@@ -5872,6 +6294,13 @@ impl App {
 
     pub fn schedule_detail_summary_jobs(&mut self) -> Option<AsyncCommand> {
         if self.view != View::SessionDetail {
+            return None;
+        }
+        if self.focus_detail_view {
+            return None;
+        }
+        self.refresh_live_mode();
+        if self.live_mode {
             return None;
         }
         if self.detail_entered_at.elapsed() < Self::detail_summary_warmup_duration() {
@@ -6031,6 +6460,220 @@ impl App {
             .map(|entry| &entry.payload)
     }
 
+    fn live_recent_cutoff() -> ChronoDuration {
+        ChronoDuration::minutes(5)
+    }
+
+    fn selected_session_last_event_at(&self) -> Option<DateTime<Utc>> {
+        self.selected_session()
+            .and_then(|session| session.events.last().map(|event| event.timestamp))
+    }
+
+    fn is_source_path_recently_modified(&self) -> bool {
+        let Some(path) = self.detail_source_path.as_ref() else {
+            return false;
+        };
+        let Ok(meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        let Ok(modified) = meta.modified() else {
+            return false;
+        };
+        let modified_at: DateTime<Utc> = modified.into();
+        Utc::now().signed_duration_since(modified_at) <= Self::live_recent_cutoff()
+    }
+
+    fn is_selected_session_recently_live(&self) -> bool {
+        self.selected_session_last_event_at()
+            .map(|ts| Utc::now().signed_duration_since(ts) <= Self::live_recent_cutoff())
+            .unwrap_or(false)
+    }
+
+    fn refresh_live_subscription(&mut self) {
+        self.live_subscription = None;
+        if self.view != View::SessionDetail {
+            return;
+        }
+        if !self.daemon_config.daemon.detail_realtime_preview_enabled
+            || !self.realtime_preview_enabled
+        {
+            return;
+        }
+
+        let Some(path) = self.detail_source_path.clone() else {
+            return;
+        };
+        let Some(session) = self.selected_session().cloned() else {
+            return;
+        };
+        let debounce_ms = self.daemon_config.daemon.realtime_debounce_ms.max(300);
+        let provider = DefaultLiveFeedProvider;
+        self.live_subscription =
+            provider.subscribe(&path, &session, Duration::from_millis(debounce_ms));
+    }
+
+    fn refresh_live_mode(&mut self) {
+        let previous = self.live_mode;
+        let has_subscription = self.live_subscription.is_some();
+        let provider_active = self
+            .live_subscription
+            .as_ref()
+            .is_some_and(LiveSubscription::is_active);
+        let source_recent = self.is_source_path_recently_modified();
+        let event_recent = self.is_selected_session_recently_live();
+        self.live_mode = if has_subscription {
+            provider_active || source_recent || event_recent
+        } else {
+            source_recent || event_recent
+        };
+        if self.live_mode && !previous {
+            self.cancel_timeline_summary_jobs();
+        }
+    }
+
+    fn observe_live_tail_proximity(&mut self) {
+        let Some(session) = self.selected_session().cloned() else {
+            self.follow_tail_linear.mark_before_update(true);
+            self.follow_tail_turn.mark_before_update(true);
+            return;
+        };
+        let visible = self.get_visible_events(&session);
+        self.observe_linear_tail_proximity(visible.len());
+        let turns = extract_visible_turns(&visible);
+        self.observe_turn_tail_proximity(turns.len());
+    }
+
+    pub fn observe_linear_tail_proximity(&mut self, visible_event_count: usize) {
+        let threshold = self.follow_tail_linear.auto_follow_threshold_rows;
+        let remaining_rows = visible_event_count.saturating_sub(self.detail_event_index + 1);
+        self.follow_tail_linear
+            .mark_before_update(remaining_rows <= threshold);
+    }
+
+    pub fn observe_turn_tail_proximity(&mut self, turn_count: usize) {
+        let threshold = self.follow_tail_turn.auto_follow_threshold_rows;
+        let remaining_rows = turn_count.saturating_sub(self.turn_index + 1);
+        self.follow_tail_turn
+            .mark_before_update(remaining_rows <= threshold);
+    }
+
+    fn detach_live_follow_linear(&mut self) {
+        self.follow_tail_linear.detach();
+    }
+
+    fn reattach_live_follow_linear(&mut self) {
+        self.follow_tail_linear.reattach();
+    }
+
+    fn detach_live_follow_turn(&mut self) {
+        self.follow_tail_turn.detach();
+    }
+
+    fn reattach_live_follow_turn(&mut self) {
+        self.follow_tail_turn.reattach();
+    }
+
+    pub fn detail_follow_state(&self) -> &FollowTailState {
+        if self.detail_view_mode == DetailViewMode::Turn {
+            &self.follow_tail_turn
+        } else {
+            &self.follow_tail_linear
+        }
+    }
+
+    pub fn detail_follow_status_label(&self) -> &'static str {
+        if self.detail_follow_state().is_following {
+            "ON"
+        } else {
+            "OFF"
+        }
+    }
+
+    pub fn jump_to_latest_linear(&mut self) {
+        if let Some(session) = self.selected_session() {
+            let visible = self.visible_event_count(session);
+            if visible > 0 {
+                self.detail_event_index = visible - 1;
+            } else {
+                self.detail_event_index = 0;
+            }
+        }
+        self.reattach_live_follow_linear();
+        self.update_detail_selection_anchor();
+    }
+
+    pub fn jump_to_latest_turn(&mut self) {
+        if let Some(session) = self.selected_session().cloned() {
+            let visible = self.get_visible_events(&session);
+            let turns = extract_visible_turns(&visible);
+            self.turn_index = turns.len().saturating_sub(1);
+            self.turn_agent_scroll = u16::MAX;
+        }
+        self.reattach_live_follow_turn();
+    }
+
+    pub fn poll_live_update_batch(&mut self) -> Option<LiveUpdateBatch> {
+        if self.view != View::SessionDetail {
+            return None;
+        }
+        let batch = self
+            .live_subscription
+            .as_mut()
+            .and_then(LiveSubscription::poll_update);
+        if let Some(ref batch) = batch {
+            if !batch.has_updates() && !batch.active {
+                self.refresh_live_mode();
+                return None;
+            }
+            if let Some(last_event_at) = batch.last_event_at {
+                self.live_last_event_at = Some(last_event_at);
+            }
+            if batch.active || batch.cursor.is_some() || batch.source_offset.is_some() {
+                self.live_mode = true;
+            }
+        }
+        self.refresh_live_mode();
+        batch
+    }
+
+    pub fn apply_live_update_batch(&mut self, batch: LiveUpdateBatch) {
+        self.observe_live_tail_proximity();
+        let should_follow_linear = self.follow_tail_linear.should_follow_after_update();
+        let should_follow_turn = self.follow_tail_turn.should_follow_after_update();
+        let mut applied_reload = false;
+
+        for update in batch.updates {
+            match update {
+                LiveUpdate::SessionReloaded(session) => {
+                    self.apply_reloaded_session(session);
+                    applied_reload = true;
+                }
+                LiveUpdate::EventsAppended(events) => {
+                    if let Some(last_event) = events.last() {
+                        self.live_last_event_at = Some(last_event.timestamp);
+                    }
+                }
+            }
+        }
+
+        if let Some(last_event_at) = batch.last_event_at {
+            self.live_last_event_at = Some(last_event_at);
+        }
+        if !applied_reload {
+            self.refresh_live_mode();
+            return;
+        }
+
+        if should_follow_linear {
+            self.jump_to_latest_linear();
+        }
+        if should_follow_turn {
+            self.jump_to_latest_turn();
+        }
+        self.refresh_live_mode();
+        self.update_detail_selection_anchor();
+    }
+
     fn resolve_selected_source_path(&self) -> Option<PathBuf> {
         if let Some(row) = self.selected_db_session() {
             if let Some(path) = row.source_path.as_ref().map(PathBuf::from) {
@@ -6112,10 +6755,7 @@ impl App {
     }
 
     pub fn should_skip_realtime_for_selected(&self) -> bool {
-        let Some(session) = self.selected_session() else {
-            return true;
-        };
-        self.is_stream_write_tool(&session.agent.tool)
+        self.selected_session().is_none()
     }
 
     fn summary_runtime_config(&self) -> SummaryRuntimeConfig {
@@ -6144,14 +6784,14 @@ impl App {
     }
 
     pub fn llm_summary_status_label(&self) -> String {
-        let Some(session) = self.selected_session() else {
-            return "off".to_string();
-        };
-        if !self.daemon_config.daemon.summary_enabled {
+        if self.selected_session().is_none() {
             return "off".to_string();
         }
-        if self.is_stream_write_tool(&session.agent.tool) {
-            return "ignored(live-rule)".to_string();
+        if self.focus_detail_view || self.live_mode {
+            return "off".to_string();
+        }
+        if !self.daemon_config.daemon.summary_enabled {
+            return "off".to_string();
         }
         if describe_summary_engine(
             self.daemon_config.daemon.summary_provider.as_deref(),
@@ -6175,41 +6815,12 @@ impl App {
     pub fn llm_summary_runtime_badge(&self) -> String {
         let status = self.llm_summary_status_label();
         match status.as_str() {
-            "on" => format!("summary:on {}", self.llm_summary_engine_label()),
-            "ignored(live-rule)" => "summary:ignored(live-rule)".to_string(),
+            "on" => format!("llm-summary:on {}", self.llm_summary_engine_label()),
             "off(no-backend)" => format!(
-                "summary:off(no-backend) {}",
+                "llm-summary:off(no-backend) {}",
                 self.llm_summary_engine_label()
             ),
-            _ => "summary:off".to_string(),
-        }
-    }
-
-    pub fn take_realtime_reload_path(&mut self) -> Option<PathBuf> {
-        if self.view != View::SessionDetail
-            || !self.daemon_config.daemon.detail_realtime_preview_enabled
-            || !self.realtime_preview_enabled
-        {
-            return None;
-        }
-        if self.should_skip_realtime_for_selected() {
-            return None;
-        }
-        let debounce_ms = self.daemon_config.daemon.realtime_debounce_ms.max(300);
-        if self.last_realtime_check.elapsed() < Duration::from_millis(debounce_ms) {
-            return None;
-        }
-        self.last_realtime_check = Instant::now();
-
-        let path = self.detail_source_path.clone()?;
-        let metadata = std::fs::metadata(&path).ok()?;
-        let modified = metadata.modified().ok()?;
-        match self.detail_source_mtime {
-            Some(prev) if modified <= prev => None,
-            _ => {
-                self.detail_source_mtime = Some(modified);
-                Some(path)
-            }
+            _ => "llm-summary:off".to_string(),
         }
     }
 
@@ -6248,7 +6859,11 @@ impl App {
         self.timeline_summary_lookup_keys
             .retain(|key, _| key.session_id != sid);
         self.detail_hydrate_pending = false;
+        if let Some(session) = self.selected_session() {
+            self.live_last_event_at = session.events.last().map(|event| event.timestamp);
+        }
         self.remap_detail_selection_by_event_id();
+        self.refresh_live_mode();
     }
 
     fn compute_session_max_active_agents(session: &Session) -> usize {
@@ -6286,7 +6901,7 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
 
-                let sort_order = self.session_sort.clone();
+                let sort_order = SortOrder::Recent;
                 self.filtered_sessions.sort_by(|a, b| {
                     let lhs = &self.sessions[*a];
                     let rhs = &self.sessions[*b];

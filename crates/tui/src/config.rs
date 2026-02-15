@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 // Re-export shared config types from core
-pub use opensession_core::config::{DaemonConfig, GitStorageMethod, PublishMode};
+pub use opensession_core::config::{
+    CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
+};
 
 // ── File I/O ────────────────────────────────────────────────────────────
 
@@ -24,10 +26,12 @@ pub fn load_daemon_config() -> DaemonConfig {
     let daemon_path = dir.join("daemon.toml");
     let mut migrated = false;
     if daemon_path.exists() {
-        let mut config: DaemonConfig = std::fs::read_to_string(&daemon_path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default();
+        let content = std::fs::read_to_string(&daemon_path).unwrap_or_default();
+        let parsed: Option<toml::Value> = toml::from_str(&content).ok();
+        let mut config: DaemonConfig = toml::from_str(&content).unwrap_or_default();
+        if config_file_missing_git_storage_method(parsed.as_ref()) {
+            config.git_storage.method = GitStorageMethod::None;
+        }
         if migrate_summary_window_v2(&mut config) {
             migrated = true;
         }
@@ -38,6 +42,22 @@ pub fn load_daemon_config() -> DaemonConfig {
     }
 
     DaemonConfig::default()
+}
+
+fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
+    let Some(root) = root else {
+        return false;
+    };
+    let Some(table) = root.as_table() else {
+        return false;
+    };
+    let Some(git_storage) = table.get("git_storage") else {
+        return true;
+    };
+    match git_storage.as_table() {
+        Some(section) => !section.contains_key("method"),
+        None => true,
+    }
 }
 
 fn migrate_summary_window_v2(config: &mut DaemonConfig) -> bool {
@@ -68,7 +88,25 @@ pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
 pub fn daemon_pid() -> Option<u32> {
     let pid_path = config_dir().ok()?.join("daemon.pid");
     let content = std::fs::read_to_string(pid_path).ok()?;
-    content.trim().parse().ok()
+    let pid: u32 = content.trim().parse().ok()?;
+    if process_alive(pid) {
+        Some(pid)
+    } else {
+        let stale_path = config_dir().ok()?.join("daemon.pid");
+        let _ = std::fs::remove_file(stale_path);
+        None
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 // ── Setting fields enum ─────────────────────────────────────────────────
@@ -85,6 +123,7 @@ pub enum SettingField {
     DebounceSecs,
     RealtimeDebounceMs,
     DetailRealtimePreviewEnabled,
+    CalendarDisplayMode,
     HealthCheckSecs,
     MaxRetries,
     SummaryEnabled,
@@ -102,11 +141,6 @@ pub enum SettingField {
     SummaryEventWindow,
     SummaryDebounceMs,
     SummaryMaxInflight,
-    StreamWriteClaude,
-    StreamWriteCodex,
-    StreamWriteCursor,
-    StreamWriteGemini,
-    StreamWriteOpenCode,
     WatchClaudeCode,
     WatchOpenCode,
     WatchCursor,
@@ -176,6 +210,12 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Display handle shown on your sessions",
         dependency_hint: None,
     },
+    SettingItem::Field {
+        field: SettingField::CalendarDisplayMode,
+        label: "Calendar Mode",
+        description: "Date format in list: smart / relative / absolute",
+        dependency_hint: None,
+    },
     SettingItem::Header("Daemon Publish"),
     SettingItem::Field {
         field: SettingField::AutoPublish,
@@ -205,7 +245,7 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         field: SettingField::DetailRealtimePreviewEnabled,
         label: "Detail Auto-Refresh",
         description: "Auto-reload Session Detail when selected source file mtime changes",
-        dependency_hint: Some("Global toggle; ignored when Neglect Live Session rule matches"),
+        dependency_hint: Some("Global toggle for Session Detail live refresh"),
     },
     SettingItem::Field {
         field: SettingField::HealthCheckSecs,
@@ -219,7 +259,7 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Maximum retry attempts for failed uploads",
         dependency_hint: Some("Applies when daemon is running"),
     },
-    SettingItem::Header("LLM Summary"),
+    SettingItem::Header("LLM Summary (Simple)"),
     SettingItem::Field {
         field: SettingField::SummaryEnabled,
         label: "LLM Summary Enabled",
@@ -245,18 +285,18 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         dependency_hint: Some("Leave empty to use provider default model"),
     },
     SettingItem::Field {
-        field: SettingField::SummaryContentMode,
-        label: "LLM Summary Detail Mode",
-        description: "normal: richer action detail · minimal: merge low-signal read/open/list actions",
-        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
-    },
-    SettingItem::Field {
         field: SettingField::SummaryDiskCacheEnabled,
         label: "LLM Summary Disk Cache",
         description: "Persist summary results by context hash and reuse across runs",
         dependency_hint: Some("Reduces repeated summary calls for unchanged windows"),
     },
-    SettingItem::Header("LLM Summary API (OpenAI-Compatible)"),
+    SettingItem::Header("LLM Summary (Advanced)"),
+    SettingItem::Field {
+        field: SettingField::SummaryContentMode,
+        label: "LLM Summary Detail Mode",
+        description: "normal: richer action detail · minimal: merge low-signal read/open/list actions",
+        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
+    },
     SettingItem::Field {
         field: SettingField::SummaryOpenAiCompatEndpoint,
         label: "Summary API Endpoint",
@@ -311,39 +351,6 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Maximum concurrent summary requests (separate from debounce)",
         dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
     },
-    SettingItem::Header("Neglect Live Session Rules"),
-    SettingItem::Field {
-        field: SettingField::StreamWriteClaude,
-        label: "Neglect Live: Claude",
-        description: "Ignore Detail Live + LLM Summary for live Claude sessions",
-        dependency_hint: Some(
-            "Rule: session.agent.tool matches 'claude-code' (case-insensitive)",
-        ),
-    },
-    SettingItem::Field {
-        field: SettingField::StreamWriteCodex,
-        label: "Neglect Live: Codex",
-        description: "Ignore Detail Live + LLM Summary for live Codex sessions",
-        dependency_hint: Some("Rule: session.agent.tool matches 'codex' (case-insensitive)"),
-    },
-    SettingItem::Field {
-        field: SettingField::StreamWriteCursor,
-        label: "Neglect Live: Cursor",
-        description: "Ignore Detail Live + LLM Summary for live Cursor sessions",
-        dependency_hint: Some("Rule: session.agent.tool matches 'cursor' (case-insensitive)"),
-    },
-    SettingItem::Field {
-        field: SettingField::StreamWriteGemini,
-        label: "Neglect Live: Gemini",
-        description: "Ignore Detail Live + LLM Summary for live Gemini sessions",
-        dependency_hint: Some("Rule: session.agent.tool matches 'gemini' (case-insensitive)"),
-    },
-    SettingItem::Field {
-        field: SettingField::StreamWriteOpenCode,
-        label: "Neglect Live: OpenCode",
-        description: "Ignore Detail Live + LLM Summary for live OpenCode sessions",
-        dependency_hint: Some("Rule: session.agent.tool matches 'opencode' (case-insensitive)"),
-    },
     SettingItem::Header("Watchers"),
     SettingItem::Field {
         field: SettingField::WatchClaudeCode,
@@ -367,14 +374,14 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     SettingItem::Field {
         field: SettingField::GitStorageMethod,
         label: "Method",
-        description: "platform_api: GitHub/GitLab API (token required) · native: git objects · none: disabled",
+        description: "native: git objects (default) · sqlite_local: local SQLite cache · platform_api: provider API · none: disabled",
         dependency_hint: None,
     },
     SettingItem::Field {
         field: SettingField::GitStorageToken,
         label: "Token",
         description: "GitHub PAT with 'repo' scope — github.com/settings/tokens",
-        dependency_hint: Some("Set method to Platform API or Native first"),
+        dependency_hint: Some("Set method to Platform API, Native, or SQLite Local first"),
     },
     SettingItem::Header("Privacy"),
     SettingItem::Field {
@@ -400,11 +407,6 @@ impl SettingField {
                 | Self::DetailRealtimePreviewEnabled
                 | Self::SummaryEnabled
                 | Self::SummaryDiskCacheEnabled
-                | Self::StreamWriteClaude
-                | Self::StreamWriteCodex
-                | Self::StreamWriteCursor
-                | Self::StreamWriteGemini
-                | Self::StreamWriteOpenCode
                 | Self::WatchClaudeCode
                 | Self::WatchOpenCode
                 | Self::WatchCursor
@@ -418,6 +420,7 @@ impl SettingField {
         matches!(
             self,
             Self::PublishMode
+                | Self::CalendarDisplayMode
                 | Self::GitStorageMethod
                 | Self::SummaryProvider
                 | Self::SummaryCliAgent
@@ -454,6 +457,11 @@ impl SettingField {
             Self::DetailRealtimePreviewEnabled => {
                 on_off(config.daemon.detail_realtime_preview_enabled)
             }
+            Self::CalendarDisplayMode => match config.daemon.calendar_display_mode {
+                CalendarDisplayMode::Smart => "smart".to_string(),
+                CalendarDisplayMode::Relative => "relative".to_string(),
+                CalendarDisplayMode::Absolute => "absolute".to_string(),
+            },
             Self::HealthCheckSecs => config.daemon.health_check_interval_secs.to_string(),
             Self::MaxRetries => config.daemon.max_retries.to_string(),
             Self::SummaryEnabled => on_off(config.daemon.summary_enabled),
@@ -525,11 +533,6 @@ impl SettingField {
             }
             Self::SummaryDebounceMs => config.daemon.summary_debounce_ms.to_string(),
             Self::SummaryMaxInflight => config.daemon.summary_max_inflight.to_string(),
-            Self::StreamWriteClaude => on_off(stream_write_enabled(config, "claude-code")),
-            Self::StreamWriteCodex => on_off(stream_write_enabled(config, "codex")),
-            Self::StreamWriteCursor => on_off(stream_write_enabled(config, "cursor")),
-            Self::StreamWriteGemini => on_off(stream_write_enabled(config, "gemini")),
-            Self::StreamWriteOpenCode => on_off(stream_write_enabled(config, "opencode")),
             Self::WatchClaudeCode => on_off(config.watchers.claude_code),
             Self::WatchOpenCode => on_off(config.watchers.opencode),
             Self::WatchCursor => on_off(config.watchers.cursor),
@@ -537,6 +540,7 @@ impl SettingField {
                 GitStorageMethod::None => "None".to_string(),
                 GitStorageMethod::PlatformApi => "Platform API".to_string(),
                 GitStorageMethod::Native => "Native".to_string(),
+                GitStorageMethod::SqliteLocal => "SQLite (Local)".to_string(),
             },
             Self::GitStorageToken => {
                 if config.git_storage.token.is_empty() {
@@ -621,21 +625,6 @@ impl SettingField {
                 config.daemon.detail_realtime_preview_enabled =
                     !config.daemon.detail_realtime_preview_enabled;
             }
-            Self::StreamWriteClaude => {
-                toggle_stream_write(config, "claude-code");
-            }
-            Self::StreamWriteCodex => {
-                toggle_stream_write(config, "codex");
-            }
-            Self::StreamWriteCursor => {
-                toggle_stream_write(config, "cursor");
-            }
-            Self::StreamWriteGemini => {
-                toggle_stream_write(config, "gemini");
-            }
-            Self::StreamWriteOpenCode => {
-                toggle_stream_write(config, "opencode");
-            }
             Self::WatchClaudeCode => config.watchers.claude_code = !config.watchers.claude_code,
             Self::WatchOpenCode => config.watchers.opencode = !config.watchers.opencode,
             Self::WatchCursor => config.watchers.cursor = !config.watchers.cursor,
@@ -655,11 +644,19 @@ impl SettingField {
             Self::PublishMode => {
                 config.daemon.publish_on = config.daemon.publish_on.cycle();
             }
+            Self::CalendarDisplayMode => {
+                config.daemon.calendar_display_mode = match config.daemon.calendar_display_mode {
+                    CalendarDisplayMode::Smart => CalendarDisplayMode::Relative,
+                    CalendarDisplayMode::Relative => CalendarDisplayMode::Absolute,
+                    CalendarDisplayMode::Absolute => CalendarDisplayMode::Smart,
+                };
+            }
             Self::GitStorageMethod => {
                 config.git_storage.method = match config.git_storage.method {
                     GitStorageMethod::None => GitStorageMethod::PlatformApi,
                     GitStorageMethod::PlatformApi => GitStorageMethod::Native,
-                    GitStorageMethod::Native => GitStorageMethod::None,
+                    GitStorageMethod::Native => GitStorageMethod::SqliteLocal,
+                    GitStorageMethod::SqliteLocal => GitStorageMethod::None,
                 };
             }
             Self::SummaryProvider => {
@@ -812,6 +809,14 @@ impl SettingField {
                 config.daemon.detail_realtime_preview_enabled =
                     matches!(lowered.as_str(), "on" | "1" | "true" | "yes");
             }
+            Self::CalendarDisplayMode => {
+                config.daemon.calendar_display_mode =
+                    match value.trim().to_ascii_lowercase().as_str() {
+                        "relative" | "rel" => CalendarDisplayMode::Relative,
+                        "absolute" | "abs" => CalendarDisplayMode::Absolute,
+                        _ => CalendarDisplayMode::Smart,
+                    };
+            }
             Self::SummaryProvider => {
                 let normalized = value.to_lowercase();
                 let cleaned = normalized.trim();
@@ -843,6 +848,14 @@ impl SettingField {
                 };
                 config.daemon.summary_provider = Some(cli_provider_for_agent(agent));
             }
+            Self::GitStorageMethod => {
+                config.git_storage.method = match value.trim().to_ascii_lowercase().as_str() {
+                    "none" => GitStorageMethod::None,
+                    "platform_api" | "platform-api" | "api" => GitStorageMethod::PlatformApi,
+                    "sqlite_local" | "sqlite-local" | "sqlite" => GitStorageMethod::SqliteLocal,
+                    _ => GitStorageMethod::Native,
+                };
+            }
             _ => {}
         }
     }
@@ -853,27 +866,6 @@ fn on_off(v: bool) -> String {
         "ON".to_string()
     } else {
         "OFF".to_string()
-    }
-}
-
-fn stream_write_enabled(config: &DaemonConfig, tool: &str) -> bool {
-    config
-        .daemon
-        .stream_write
-        .iter()
-        .any(|item| item.eq_ignore_ascii_case(tool))
-}
-
-fn toggle_stream_write(config: &mut DaemonConfig, tool: &str) {
-    if let Some(idx) = config
-        .daemon
-        .stream_write
-        .iter()
-        .position(|item| item.eq_ignore_ascii_case(tool))
-    {
-        config.daemon.stream_write.remove(idx);
-    } else {
-        config.daemon.stream_write.push(tool.to_string());
     }
 }
 
@@ -974,7 +966,8 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         SettingField::ServerUrl
         | SettingField::ApiKey
         | SettingField::TeamId
-        | SettingField::Nickname => SettingsGroup::Workspace,
+        | SettingField::Nickname
+        | SettingField::CalendarDisplayMode => SettingsGroup::Workspace,
 
         SettingField::AutoPublish
         | SettingField::PublishMode
@@ -982,11 +975,6 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         | SettingField::RealtimeDebounceMs
         | SettingField::HealthCheckSecs
         | SettingField::MaxRetries
-        | SettingField::StreamWriteClaude
-        | SettingField::StreamWriteCodex
-        | SettingField::StreamWriteCursor
-        | SettingField::StreamWriteGemini
-        | SettingField::StreamWriteOpenCode
         | SettingField::WatchClaudeCode
         | SettingField::WatchOpenCode
         | SettingField::WatchCursor => SettingsGroup::CaptureSync,

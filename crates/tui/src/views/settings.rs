@@ -432,6 +432,7 @@ fn render_daemon_config(
                 for detail in [
                     "\u{00b7} Platform API \u{2014} Push via GitHub/GitLab REST API (needs token)",
                     "\u{00b7} Native       \u{2014} Write git objects directly (local git required)",
+                    "\u{00b7} SQLite Local \u{2014} Persist git snapshot metadata in local SQLite",
                     "\u{00b7} None         \u{2014} Server-only, no git backup",
                 ] {
                     lines.push(Line::from(vec![
@@ -529,7 +530,7 @@ fn render_daemon_config(
                 lines.push(Line::from(vec![
                     Span::raw("     "),
                     Span::styled(
-                        "Scope: daemon realtime publish cadence + detail live polling",
+                        "Scope: daemon realtime publish cadence + auto-refresh polling",
                         Style::new().fg(Theme::TEXT_MUTED),
                     ),
                 ]));
@@ -539,7 +540,17 @@ fn render_daemon_config(
                 lines.push(Line::from(vec![
                     Span::raw("     "),
                     Span::styled(
-                        "Scope: Session Detail Live only (separate from Realtime Publish)",
+                        "Scope: Session auto-refresh only (separate from Realtime Publish)",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::CalendarDisplayMode {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "smart: recent=relative, older=absolute",
                         Style::new().fg(Theme::TEXT_MUTED),
                     ),
                 ]));

@@ -2,9 +2,11 @@ use crate::app::{extract_visible_turns, App, DetailViewMode, DisplayEvent};
 use crate::session_timeline::LaneMarker;
 use crate::theme::{self, Theme};
 use crate::timeline_summary::TimelineSummaryPayload;
+use chrono::{DateTime, Utc};
 use opensession_core::trace::{ContentBlock, Event, EventType};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
+use std::collections::HashSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -24,6 +26,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         if base_events.is_empty() {
             base_events = app.get_visible_events(&session);
         }
+        let turns = extract_visible_turns(&base_events);
+        app.observe_turn_tail_proximity(turns.len());
         render_turn_view(frame, app, &session.session_id, &base_events, area);
         return;
     }
@@ -51,6 +55,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.detail_event_index >= visible_events.len() {
         app.detail_event_index = visible_events.len() - 1;
     }
+    app.observe_linear_tail_proximity(visible_events.len());
 
     render_timeline_bar(frame, bar_area, &visible_events, app.detail_event_index);
 
@@ -182,6 +187,7 @@ fn render_lane_timeline(
     events: &mut [DisplayEvent<'_>],
     area: Rect,
 ) {
+    let summary_off = app.live_mode || app.llm_summary_status_label() != "on";
     let total_visible = events.len();
     let current_idx = app.detail_event_index.min(total_visible.saturating_sub(1));
     let max_lane = events
@@ -248,11 +254,21 @@ fn render_lane_timeline(
                 marker,
                 ..
             } => {
-                let (kind, kind_color) = event_type_display(&event.event_type);
-                spans.push(Span::styled(
-                    format!("{kind:>10} "),
-                    Style::new().fg(kind_color).bold(),
-                ));
+                let (kind, kind_color) = event_type_display(&event.event_type, summary_off);
+                if matches!(
+                    event.event_type,
+                    EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+                ) {
+                    spans.push(Span::styled(
+                        format!(" {kind:^8} "),
+                        Style::new().fg(Color::Black).bg(kind_color).bold(),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        format!("{kind:>10} "),
+                        Style::new().fg(kind_color).bold(),
+                    ));
+                }
                 spans.push(Span::styled(
                     event_summary(&event.event_type, &event.content.blocks),
                     Style::new().fg(Theme::TEXT_PRIMARY),
@@ -261,6 +277,12 @@ fn render_lane_timeline(
                     spans.push(Span::styled(
                         format!(" {badge}"),
                         Style::new().fg(Theme::ACCENT_CYAN),
+                    ));
+                }
+                if let Some(task_badge) = event_task_badge(event) {
+                    spans.push(Span::styled(
+                        format!(" {task_badge}"),
+                        Style::new().fg(Theme::ACCENT_TEAL).bold(),
                     ));
                 }
             }
@@ -283,18 +305,23 @@ fn render_lane_timeline(
 
     let visible_height = area.height.saturating_sub(2) as usize;
     let target_line = event_line_positions.get(current_idx).copied().unwrap_or(0);
-    let scroll = if target_line >= visible_height {
+    let max_scroll = lines.len().saturating_sub(visible_height);
+    let mut scroll = if target_line >= visible_height {
         target_line.saturating_sub(visible_height / 3)
     } else {
         0
     };
+    if app.live_mode && app.detail_follow_state().is_following {
+        scroll = max_scroll;
+    }
     app.detail_scroll = scroll as u16;
 
     let timeline = Paragraph::new(lines.clone())
         .block(Theme::block().title(format!(
-            " Timeline ({}/{}) ",
+            " Timeline ({}/{}) lanes:{} ",
             current_idx + 1,
-            total_visible
+            total_visible,
+            lane_count
         )))
         .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, app.detail_h_scroll));
@@ -389,7 +416,7 @@ fn append_content_preview<'a>(lines: &mut Vec<Line<'a>>, event: &Event, max_line
     }
 }
 
-fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
+fn event_type_display(event_type: &EventType, summary_off: bool) -> (&'static str, Color) {
     match event_type {
         EventType::UserMessage => ("user", Theme::ROLE_USER),
         EventType::AgentMessage => ("agent", Theme::ROLE_AGENT_BRIGHT),
@@ -397,7 +424,14 @@ fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
         EventType::Thinking => ("think", Theme::ACCENT_PURPLE),
         EventType::ToolCall { .. } => ("tool", Theme::ACCENT_YELLOW),
         EventType::ToolResult { is_error: true, .. } => ("error", Theme::ACCENT_RED),
-        EventType::ToolResult { .. } => ("result", Theme::TEXT_MUTED),
+        EventType::ToolResult { .. } => (
+            "result",
+            if summary_off {
+                Theme::ACCENT_GREEN
+            } else {
+                Theme::TEXT_MUTED
+            },
+        ),
         EventType::FileRead { .. } => ("read", Theme::ROLE_AGENT_BRIGHT),
         EventType::CodeSearch { .. } => ("search", Theme::ACCENT_CYAN),
         EventType::FileSearch { .. } => ("find", Theme::ACCENT_TEAL),
@@ -412,7 +446,14 @@ fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
         EventType::AudioGenerate { .. } => ("audio", Theme::ACCENT_BLUE),
         EventType::TaskStart { .. } => ("start", Theme::ROLE_TASK),
         EventType::TaskEnd { .. } => ("end", Theme::ROLE_TASK),
-        EventType::Custom { .. } => ("custom", Theme::TEXT_MUTED),
+        EventType::Custom { .. } => (
+            "custom",
+            if summary_off {
+                Theme::ACCENT_CYAN
+            } else {
+                Theme::TEXT_MUTED
+            },
+        ),
         _ => ("other", Theme::TEXT_MUTED),
     }
 }
@@ -452,9 +493,31 @@ fn event_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
         EventType::ImageGenerate { prompt }
         | EventType::VideoGenerate { prompt }
         | EventType::AudioGenerate { prompt } => truncate(prompt, 70),
-        EventType::TaskStart { title } => format!("start {}", title.clone().unwrap_or_default()),
-        EventType::TaskEnd { summary } => format!("end {}", summary.clone().unwrap_or_default()),
-        EventType::Custom { kind } => kind.clone(),
+        EventType::TaskStart { title } => {
+            if let Some(title) = title.as_deref() {
+                let snippet = compact_text_snippet(title, 60);
+                if snippet.is_empty() {
+                    "start".to_string()
+                } else {
+                    format!("start {snippet}")
+                }
+            } else {
+                "start".to_string()
+            }
+        }
+        EventType::TaskEnd { summary } => {
+            if let Some(summary) = summary.as_deref() {
+                let snippet = compact_text_snippet(summary, 72);
+                if snippet.is_empty() {
+                    "end".to_string()
+                } else {
+                    format!("end {snippet}")
+                }
+            } else {
+                "end".to_string()
+            }
+        }
+        EventType::Custom { kind } => compact_text_snippet(kind, 70),
         _ => String::new(),
     }
 }
@@ -477,6 +540,15 @@ fn lane_assignment_badge(event: &Event, lane: usize, marker: LaneMarker) -> Opti
     } else {
         Some(format!("[L{lane} {task}]"))
     }
+}
+
+fn event_task_badge(event: &Event) -> Option<String> {
+    let task_id = event
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())?;
+    Some(format!("[task:{}]", compact_task_id(task_id)))
 }
 
 fn compact_task_id(task_id: &str) -> String {
@@ -505,7 +577,7 @@ fn first_text_line(blocks: &[ContentBlock], max_chars: usize) -> String {
             if let Some(line) = text.lines().next() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
-                    return truncate(trimmed, max_chars);
+                    return compact_text_snippet(trimmed, max_chars);
                 }
             }
         }
@@ -536,6 +608,46 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+fn looks_like_terminal_mouse_dump(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 40 {
+        return false;
+    }
+    let semicolons = trimmed.matches(';').count();
+    let mouse_marks = trimmed.matches('M').count() + trimmed.matches('m').count();
+    let digits = trimmed.chars().filter(|ch| ch.is_ascii_digit()).count();
+    let letters = trimmed
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
+    (trimmed.starts_with("[<") || trimmed.contains("[<"))
+        && semicolons >= 6
+        && mouse_marks >= 4
+        && digits > letters.saturating_mul(3)
+}
+
+fn compact_text_snippet(text: &str, max_len: usize) -> String {
+    let mut cleaned = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+        cleaned.push(ch);
+    }
+    let collapsed = cleaned
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.is_empty() {
+        return String::new();
+    }
+    if looks_like_terminal_mouse_dump(&collapsed) {
+        return "(terminal mouse input omitted)".to_string();
+    }
+    truncate(&collapsed, max_len)
+}
+
 fn count_diff_lines(diff: &str) -> (usize, usize) {
     let mut added = 0;
     let mut removed = 0;
@@ -562,7 +674,7 @@ fn format_duration(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use opensession_core::trace::{Agent, Content, Event, EventType, Session};
 
     fn make_event(event_type: EventType, text: &str) -> Event {
@@ -676,12 +788,14 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(rendered.contains("Agent Output"));
+        assert!(rendered.contains("response"));
         assert!(rendered.contains("Turn Summary"));
         assert!(!rendered.contains("Agent Thread"));
     }
 
     #[test]
-    fn summary_off_uses_agent_chronicle_fallback() {
+    fn summary_off_uses_task_board_fallback() {
         let session = Session::new(
             "test-session-off".to_string(),
             Agent {
@@ -709,9 +823,10 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("Agent Chronicle"));
+        assert!(rendered.contains("Task Board"));
         assert!(rendered.contains("Summary is off"));
         assert!(rendered.contains("[main]"));
+        assert!(rendered.contains("output: implemented fallback"));
     }
 
     #[test]
@@ -750,7 +865,249 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("[main]"));
         assert!(rendered.contains("task task-"));
-        assert!(rendered.contains("subagent response"));
+        assert!(rendered.contains("output: subagent response"));
+    }
+
+    #[test]
+    fn summary_off_collapses_single_synthetic_end_stub_tasks() {
+        let session = Session::new(
+            "test-session-synthetic".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let app = App::new(vec![session]);
+        let main = make_event(EventType::AgentMessage, "main response");
+        let stub_a = make_event_with_task(
+            EventType::TaskEnd {
+                summary: Some("synthetic end (missing task_complete)".to_string()),
+            },
+            "",
+            "task-aaaaaaaaaaaaaaaa",
+        );
+        let stub_b = make_event_with_task(
+            EventType::TaskEnd {
+                summary: Some("synthetic end (missing task_complete)".to_string()),
+            },
+            "",
+            "task-bbbbbbbbbbbbbbbb",
+        );
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 2,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&main, &stub_a, &stub_b],
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, None, false, true, 100, "off");
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("synthetic-end stubs: 2 collapsed"));
+        assert!(!rendered.contains("task task-aaaa"));
+        assert!(!rendered.contains("task task-bbbb"));
+    }
+
+    #[test]
+    fn agent_output_preview_prefers_agent_message_over_task_end_summary() {
+        let task_end = make_event_with_task(
+            EventType::TaskEnd {
+                summary: Some("task summary".to_string()),
+            },
+            "",
+            "task-1",
+        );
+        let agent = make_event(EventType::AgentMessage, "final assistant output");
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 1,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&task_end, &agent],
+        };
+
+        let preview = turn_agent_output_preview(&turn);
+        assert_eq!(preview.as_deref(), Some("final assistant output"));
+    }
+
+    #[test]
+    fn task_chronicle_bucket_marks_running_and_counts_ops() {
+        let start = make_event_with_task(EventType::TaskStart { title: None }, "", "task-1");
+        let tool = make_event_with_task(
+            EventType::ToolCall {
+                name: "search".to_string(),
+            },
+            "",
+            "task-1",
+        );
+        let shell = make_event_with_task(
+            EventType::ShellCommand {
+                command: "ls".to_string(),
+                exit_code: Some(0),
+            },
+            "",
+            "task-1",
+        );
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 2,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&start, &tool, &shell],
+        };
+        let buckets = build_task_chronicle_buckets(&turn);
+        let task = buckets
+            .iter()
+            .find(|bucket| bucket.task_key == "task-1")
+            .expect("task bucket should exist");
+
+        assert_eq!(task.status, TaskBucketStatus::Running);
+        assert_eq!(task.tool_ops, 1);
+        assert_eq!(task.shell_ops, 1);
+    }
+
+    #[test]
+    fn task_activity_rows_do_not_duplicate_end_prefix() {
+        let session = Session::new(
+            "test-session-end-prefix".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let app = App::new(vec![session]);
+        let start = make_event_with_task(
+            EventType::TaskStart {
+                title: Some("validate".to_string()),
+            },
+            "",
+            "task-end-prefix",
+        );
+        let end = make_event_with_task(
+            EventType::TaskEnd {
+                summary: Some("completed check".to_string()),
+            },
+            "",
+            "task-end-prefix",
+        );
+        let agent = make_event_with_task(EventType::AgentMessage, "done output", "task-end-prefix");
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 2,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&start, &end, &agent],
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, None, false, true, 100, "off");
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("end completed check"));
+        assert!(!rendered.contains("end end completed check"));
+    }
+
+    #[test]
+    fn task_board_prioritizes_running_buckets_over_main_done() {
+        let mut main = make_event(EventType::AgentMessage, "main output");
+        main.timestamp = Utc::now() - Duration::minutes(3);
+        let mut start = make_event_with_task(
+            EventType::TaskStart {
+                title: Some("spawn".to_string()),
+            },
+            "",
+            "task-latest",
+        );
+        start.timestamp = Utc::now();
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 1,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&main, &start],
+        };
+
+        let buckets = build_task_chronicle_buckets(&turn);
+        assert!(!buckets.is_empty());
+        assert_eq!(buckets[0].task_key, "task-latest");
+        assert_eq!(buckets[0].status, TaskBucketStatus::Running);
+    }
+
+    #[test]
+    fn event_task_badge_includes_compact_task_id() {
+        let event = make_event_with_task(EventType::AgentMessage, "done", "task-1234567890abcdef");
+        let badge = event_task_badge(&event).expect("badge should exist");
+        assert!(badge.starts_with("[task:"));
+    }
+
+    #[test]
+    fn summary_off_promotes_result_and_custom_colors() {
+        let (_, on_result) = event_type_display(
+            &EventType::ToolResult {
+                name: "tool".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            false,
+        );
+        let (_, off_result) = event_type_display(
+            &EventType::ToolResult {
+                name: "tool".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            true,
+        );
+        assert_ne!(on_result, off_result);
+
+        let (_, on_custom) = event_type_display(
+            &EventType::Custom {
+                kind: "note".to_string(),
+            },
+            false,
+        );
+        let (_, off_custom) = event_type_display(
+            &EventType::Custom {
+                kind: "note".to_string(),
+            },
+            true,
+        );
+        assert_ne!(on_custom, off_custom);
+    }
+
+    #[test]
+    fn task_end_summary_is_compacted_to_single_line() {
+        let summary = "line1\n\nline2 with extra details that should be compacted";
+        let rendered = event_summary(
+            &EventType::TaskEnd {
+                summary: Some(summary.to_string()),
+            },
+            &[],
+        );
+        assert!(!rendered.contains('\n'));
+        assert!(rendered.starts_with("end "));
+    }
+
+    #[test]
+    fn terminal_mouse_dump_is_replaced_with_safe_label() {
+        let dump = "[<35;152;36M35;152;37M35;151;37M35;150;37M35;149;38M35;148;38M";
+        let compact = compact_text_snippet(dump, 120);
+        assert_eq!(compact, "(terminal mouse input omitted)");
     }
 
     #[test]
@@ -872,6 +1229,7 @@ fn render_turn_view(
     area: Rect,
 ) {
     let turns = extract_visible_turns(events);
+    app.observe_turn_tail_proximity(turns.len());
     if turns.is_empty() {
         let p = Paragraph::new("No turns found.")
             .block(Theme::block_dim().title(" Split View "))
@@ -959,6 +1317,9 @@ fn render_turn_view(
     let visible_h = left_area.height.saturating_sub(2);
     let total = left_lines.len() as u16;
     let max_scroll = total.saturating_sub(visible_h);
+    if app.live_mode && app.detail_follow_state().is_following {
+        app.turn_agent_scroll = max_scroll;
+    }
     app.turn_agent_scroll = app.turn_agent_scroll.min(max_scroll);
     let scroll = (app.turn_agent_scroll, app.turn_h_scroll);
 
@@ -1102,7 +1463,12 @@ fn render_turn_response_panel(
 ) -> Vec<Line<'static>> {
     if let Some(payload) = summary_payload {
         if !raw_override {
-            return render_turn_summary_cards(payload, focused, content_width);
+            let mut lines = render_agent_output_preview(turn, focused, content_width);
+            if !lines.is_empty() {
+                lines.push(Line::raw(""));
+            }
+            lines.extend(render_turn_summary_cards(payload, focused, content_width));
+            return lines;
         }
     }
 
@@ -1118,7 +1484,13 @@ fn render_turn_response_panel(
     }
 
     if summary_status != "on" {
-        return render_turn_fallback_panel(turn, summary_status, focused, content_width);
+        return render_turn_fallback_panel(
+            turn,
+            summary_status,
+            focused,
+            content_width,
+            app.live_mode,
+        );
     }
 
     render_turn_pending_row(app, turn, focused, content_width)
@@ -1127,10 +1499,63 @@ fn render_turn_response_panel(
 fn turn_right_panel_title(summary_status: &str) -> &'static str {
     match summary_status {
         "on" => " Turn Summaries ",
-        "ignored(live-rule)" => " Agent Chronicle (live-rule) ",
         "off(no-backend)" => " Agent Chronicle (no backend) ",
         _ => " Agent Chronicle ",
     }
+}
+
+fn render_agent_output_preview(
+    turn: &crate::app::Turn<'_>,
+    focused: bool,
+    content_width: u16,
+) -> Vec<Line<'static>> {
+    let Some(preview) = turn_agent_output_preview(turn) else {
+        return Vec::new();
+    };
+    let border_style = if focused {
+        Style::new().fg(Theme::ACCENT_CYAN)
+    } else {
+        Style::new().fg(Theme::GUTTER)
+    };
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![Span::styled(
+        " Agent Output",
+        Style::new().fg(Theme::ACCENT_CYAN).bold(),
+    )]));
+    lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));
+    lines.extend(wrap_text_lines(
+        "  │ ",
+        &preview,
+        border_style,
+        Style::new().fg(Theme::TEXT_PRIMARY),
+        content_width,
+    ));
+    lines.push(Line::from(vec![Span::styled("  └", border_style)]));
+    lines
+}
+
+fn turn_agent_output_preview(turn: &crate::app::Turn<'_>) -> Option<String> {
+    for event in turn.agent_events.iter().rev() {
+        if matches!(event.event_type, EventType::AgentMessage) {
+            let text = first_text_line(&event.content.blocks, 220);
+            if !text.trim().is_empty() {
+                return Some(text);
+            }
+        }
+    }
+
+    for event in turn.agent_events.iter().rev() {
+        if let EventType::TaskEnd {
+            summary: Some(summary),
+        } = &event.event_type
+        {
+            let summary = summary.trim();
+            if !summary.is_empty() {
+                return Some(truncate(summary, 220));
+            }
+        }
+    }
+    None
 }
 
 fn render_turn_fallback_panel(
@@ -1138,22 +1563,23 @@ fn render_turn_fallback_panel(
     summary_status: &str,
     focused: bool,
     content_width: u16,
+    live_mode: bool,
 ) -> Vec<Line<'static>> {
-    let (status_text, status_color) = match summary_status {
-        "off" => (
-            "Summary is off. Showing agent execution chronicle.",
-            Theme::ACCENT_ORANGE,
-        ),
-        "off(no-backend)" => (
-            "No summary backend configured. Showing agent execution chronicle.",
+    let (status_text, status_color) = match (summary_status, live_mode) {
+        ("off", true) => (
+            "Live mode: summaries disabled. Rendering task activity board.",
             Theme::ACCENT_YELLOW,
         ),
-        "ignored(live-rule)" => (
-            "Summary ignored by Neglect Live Session rule. Showing agent execution chronicle.",
-            Theme::ACCENT_TEAL,
+        ("off", false) => (
+            "Summary is off. Rendering task-level execution board.",
+            Theme::ACCENT_ORANGE,
+        ),
+        ("off(no-backend)", _) => (
+            "No summary backend configured. Rendering task-level execution board.",
+            Theme::ACCENT_YELLOW,
         ),
         _ => (
-            "Summary unavailable. Showing agent execution chronicle.",
+            "Summary unavailable. Rendering task-level execution board.",
             Theme::TEXT_SECONDARY,
         ),
     };
@@ -1164,17 +1590,14 @@ fn render_turn_fallback_panel(
     };
 
     let mut lines = Vec::new();
-    lines.push(Line::from(vec![Span::styled(
-        " Agent Chronicle",
-        title_style,
-    )]));
+    lines.push(Line::from(vec![Span::styled(" Task Board", title_style)]));
     lines.push(Line::from(vec![Span::styled(
         format!(" {status_text}"),
         Style::new().fg(status_color),
     )]));
 
-    let groups = group_turn_agent_events(turn);
-    if groups.is_empty() {
+    let buckets = build_task_chronicle_buckets(turn);
+    if buckets.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             "  (no agent events captured)",
             Style::new().fg(Theme::TEXT_MUTED),
@@ -1182,50 +1605,130 @@ fn render_turn_fallback_panel(
         return lines;
     }
 
-    for (idx, (group_key, events)) in groups.iter().enumerate() {
-        let group_color = agent_group_color(idx);
-        let border_style = Style::new().fg(group_color);
-        let header_style = Style::new().fg(group_color).bold();
+    let mut visible_buckets: Vec<&TaskChronicleBucket<'_>> = Vec::new();
+    let mut synthetic_stub_count = 0usize;
+    let mut synthetic_latest: Option<DateTime<Utc>> = None;
+    for bucket in &buckets {
+        if task_bucket_is_synthetic_end_stub(bucket) {
+            synthetic_stub_count += 1;
+            if let Some(ts) = bucket.last_timestamp {
+                if synthetic_latest.map(|current| ts > current).unwrap_or(true) {
+                    synthetic_latest = Some(ts);
+                }
+            }
+        } else {
+            visible_buckets.push(bucket);
+        }
+    }
+
+    let running = visible_buckets
+        .iter()
+        .filter(|bucket| bucket.status == TaskBucketStatus::Running)
+        .count();
+    let errors = visible_buckets
+        .iter()
+        .filter(|bucket| bucket.status == TaskBucketStatus::Error)
+        .count();
+    let done = visible_buckets
+        .iter()
+        .filter(|bucket| bucket.status == TaskBucketStatus::Done)
+        .count();
+    lines.push(Line::from(vec![Span::styled(
+        format!(
+            " running:{running}  error:{errors}  done:{done}  buckets:{}",
+            visible_buckets.len()
+        ),
+        Style::new().fg(Theme::TEXT_SECONDARY),
+    )]));
+    if synthetic_stub_count > 0 {
+        let suffix = synthetic_latest
+            .map(format_time_ago)
+            .map(|age| format!(" · last {age}"))
+            .unwrap_or_default();
+        lines.push(Line::from(vec![Span::styled(
+            format!(" synthetic-end stubs: {synthetic_stub_count} collapsed{suffix}"),
+            Style::new().fg(Theme::TEXT_MUTED),
+        )]));
+    }
+    lines.push(Line::raw(""));
+
+    for (idx, bucket) in visible_buckets.iter().enumerate() {
+        let (status_label, status_badge_color) = task_bucket_status_badge(&bucket.status);
+        let border_style = Style::new().fg(status_badge_color);
+        let header_style = Style::new().fg(status_badge_color).bold();
         let body_style = Style::new().fg(Theme::TEXT_PRIMARY);
-        let label = if group_key == "main" {
+        let label = if bucket.task_key == "main" {
             "main".to_string()
         } else {
-            format!("task {}", compact_task_id(group_key))
+            format!("task {}", compact_task_id(&bucket.task_key))
         };
-        let (tool_calls, file_ops, shell_ops, errors) = agent_group_stats(events);
+        let age_label = bucket
+            .last_timestamp
+            .map(format_time_ago)
+            .unwrap_or_else(|| "-".to_string());
 
         lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));
         lines.extend(wrap_text_lines(
             "  │ ",
             &format!(
-                "[{label}] {} events · tool:{tool_calls} file:{file_ops} shell:{shell_ops} err:{errors}",
-                events.len()
+                "[{label}] {status_label} · {} events · last {age_label}",
+                bucket.events.len()
             ),
             border_style,
             header_style,
             content_width,
         ));
-
-        for event in events.iter().take(6) {
-            let (kind, kind_color) = event_type_display(&event.event_type);
-            let summary = event_summary(&event.event_type, &event.content.blocks);
-            let rendered = if summary.trim().is_empty() {
-                format!("{kind:>8}")
-            } else {
-                format!("{kind:>8} {summary}")
-            };
+        lines.extend(wrap_text_lines(
+            "  │ ",
+            &format!(
+                "ops  tool:{}  file:{}  shell:{}  err:{}",
+                bucket.tool_ops, bucket.file_ops, bucket.shell_ops, bucket.error_count
+            ),
+            border_style,
+            body_style,
+            content_width,
+        ));
+        if let Some(last_output) = bucket.last_output.as_deref() {
             lines.extend(wrap_text_lines(
                 "  │ ",
-                &rendered,
+                &format!("output: {}", truncate(last_output, 180)),
                 border_style,
-                body_style.fg(kind_color),
+                Style::new().fg(Theme::ACCENT_CYAN),
+                content_width,
+            ));
+        } else {
+            lines.extend(wrap_text_lines(
+                "  │ ",
+                "output: (none)",
+                border_style,
+                Style::new().fg(Theme::TEXT_SECONDARY),
                 content_width,
             ));
         }
-        if events.len() > 6 {
+
+        let activity_limit = if focused { 4 } else { 2 };
+        let activity_lines = task_bucket_activity_lines(bucket, activity_limit);
+        if !activity_lines.is_empty() {
             lines.extend(wrap_text_lines(
                 "  │ ",
-                &format!("… {} more events", events.len() - 6),
+                "recent activity:",
+                border_style,
+                Style::new().fg(Theme::TEXT_SECONDARY),
+                content_width,
+            ));
+            for line in activity_lines {
+                lines.extend(wrap_text_lines(
+                    "  │   - ",
+                    &line,
+                    border_style,
+                    Style::new().fg(Theme::TEXT_PRIMARY),
+                    content_width,
+                ));
+            }
+        } else {
+            lines.extend(wrap_text_lines(
+                "  │ ",
+                "(no recent activity details)",
                 border_style,
                 Style::new().fg(Theme::TEXT_MUTED),
                 content_width,
@@ -1233,15 +1736,78 @@ fn render_turn_fallback_panel(
         }
 
         lines.push(Line::from(vec![Span::styled("  └", border_style)]));
-        if idx + 1 < groups.len() {
+        if idx + 1 < visible_buckets.len() {
             lines.push(Line::raw(""));
         }
+    }
+
+    if visible_buckets.is_empty() && synthetic_stub_count > 0 {
+        lines.push(Line::from(vec![Span::styled(
+            "  (only synthetic-end stub tasks in this turn)",
+            Style::new().fg(Theme::TEXT_MUTED),
+        )]));
     }
 
     lines
 }
 
-fn group_turn_agent_events<'a>(turn: &crate::app::Turn<'a>) -> Vec<(String, Vec<&'a Event>)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskBucketStatus {
+    Running,
+    Done,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+struct TaskChronicleBucket<'a> {
+    task_key: String,
+    events: Vec<&'a Event>,
+    last_timestamp: Option<DateTime<Utc>>,
+    status: TaskBucketStatus,
+    tool_ops: usize,
+    file_ops: usize,
+    shell_ops: usize,
+    error_count: usize,
+    last_output: Option<String>,
+}
+
+fn task_bucket_status_badge(status: &TaskBucketStatus) -> (&'static str, Color) {
+    match status {
+        TaskBucketStatus::Running => ("running", Theme::ACCENT_YELLOW),
+        TaskBucketStatus::Done => ("done", Theme::ACCENT_GREEN),
+        TaskBucketStatus::Error => ("error", Theme::ACCENT_RED),
+    }
+}
+
+fn task_bucket_status_sort_value(status: &TaskBucketStatus) -> usize {
+    match status {
+        TaskBucketStatus::Running => 0,
+        TaskBucketStatus::Error => 1,
+        TaskBucketStatus::Done => 2,
+    }
+}
+
+fn sort_task_buckets<'a>(
+    mut buckets: Vec<TaskChronicleBucket<'a>>,
+) -> Vec<TaskChronicleBucket<'a>> {
+    buckets.sort_by(|lhs, rhs| {
+        task_bucket_status_sort_value(&lhs.status)
+            .cmp(&task_bucket_status_sort_value(&rhs.status))
+            .then_with(|| rhs.last_timestamp.cmp(&lhs.last_timestamp))
+            .then_with(|| rhs.events.len().cmp(&lhs.events.len()))
+            .then_with(|| lhs.task_key.cmp(&rhs.task_key))
+    });
+    buckets
+}
+
+fn build_task_chronicle_buckets<'a>(turn: &crate::app::Turn<'a>) -> Vec<TaskChronicleBucket<'a>> {
+    let buckets = build_task_chronicle_buckets_unsorted(turn);
+    sort_task_buckets(buckets)
+}
+
+fn build_task_chronicle_buckets_unsorted<'a>(
+    turn: &crate::app::Turn<'a>,
+) -> Vec<TaskChronicleBucket<'a>> {
     let mut groups: Vec<(String, Vec<&'a Event>)> = Vec::new();
     for &event in &turn.agent_events {
         let key = event
@@ -1257,43 +1823,204 @@ fn group_turn_agent_events<'a>(turn: &crate::app::Turn<'a>) -> Vec<(String, Vec<
             groups.push((key, vec![event]));
         }
     }
-    groups
-}
 
-fn agent_group_stats(events: &[&Event]) -> (usize, usize, usize, usize) {
-    let mut tool_calls = 0usize;
-    let mut file_ops = 0usize;
-    let mut shell_ops = 0usize;
-    let mut errors = 0usize;
-    for event in events {
-        match event.event_type {
-            EventType::ToolCall { .. } => tool_calls += 1,
-            EventType::ToolResult { is_error, .. } => {
-                if is_error {
-                    errors += 1;
+    groups
+        .into_iter()
+        .map(|(task_key, events)| {
+            let mut open_tasks = 0usize;
+            let mut saw_end = false;
+            let mut tool_ops = 0usize;
+            let mut file_ops = 0usize;
+            let mut shell_ops = 0usize;
+            let mut error_count = 0usize;
+
+            for event in &events {
+                match &event.event_type {
+                    EventType::TaskStart { .. } => {
+                        open_tasks = open_tasks.saturating_add(1);
+                    }
+                    EventType::TaskEnd { .. } => {
+                        open_tasks = open_tasks.saturating_sub(1);
+                        saw_end = true;
+                    }
+                    EventType::ToolCall { .. } => tool_ops += 1,
+                    EventType::ToolResult { is_error, .. } => {
+                        if *is_error {
+                            error_count += 1;
+                        }
+                    }
+                    EventType::FileRead { .. }
+                    | EventType::FileEdit { .. }
+                    | EventType::FileCreate { .. }
+                    | EventType::FileDelete { .. } => file_ops += 1,
+                    EventType::ShellCommand { .. } => shell_ops += 1,
+                    EventType::Custom { kind } => {
+                        let lower = kind.to_ascii_lowercase();
+                        if lower.contains("error") || lower.contains("fail") {
+                            error_count += 1;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            EventType::FileRead { .. }
-            | EventType::FileEdit { .. }
-            | EventType::FileCreate { .. }
-            | EventType::FileDelete { .. } => file_ops += 1,
-            EventType::ShellCommand { .. } => shell_ops += 1,
-            _ => {}
-        }
-    }
-    (tool_calls, file_ops, shell_ops, errors)
+
+            let status = if error_count > 0 {
+                TaskBucketStatus::Error
+            } else if open_tasks > 0 {
+                TaskBucketStatus::Running
+            } else if saw_end || !events.is_empty() {
+                TaskBucketStatus::Done
+            } else {
+                TaskBucketStatus::Running
+            };
+
+            let last_output = events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.event_type {
+                    EventType::AgentMessage => {
+                        let text = first_text_line(&event.content.blocks, 220);
+                        if text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(text)
+                        }
+                    }
+                    EventType::TaskEnd {
+                        summary: Some(summary),
+                    } => {
+                        let summary = compact_text_snippet(summary, 220);
+                        if summary.is_empty() {
+                            None
+                        } else {
+                            Some(summary)
+                        }
+                    }
+                    EventType::ToolResult { .. } | EventType::Custom { .. } => {
+                        let text = compact_text_snippet(
+                            &event_summary(&event.event_type, &event.content.blocks),
+                            220,
+                        );
+                        if text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(text)
+                        }
+                    }
+                    _ => None,
+                });
+
+            TaskChronicleBucket {
+                task_key,
+                last_timestamp: events.last().map(|event| event.timestamp),
+                events,
+                status,
+                tool_ops,
+                file_ops,
+                shell_ops,
+                error_count,
+                last_output,
+            }
+        })
+        .collect()
 }
 
-fn agent_group_color(index: usize) -> Color {
-    const COLORS: [Color; 6] = [
-        Theme::ACCENT_CYAN,
-        Theme::ACCENT_BLUE,
-        Theme::ACCENT_GREEN,
-        Theme::ACCENT_PURPLE,
-        Theme::ACCENT_YELLOW,
-        Theme::ACCENT_ORANGE,
-    ];
-    COLORS[index % COLORS.len()]
+fn normalize_activity_key(text: &str) -> String {
+    text.split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let output_key = bucket
+        .last_output
+        .as_deref()
+        .map(normalize_activity_key)
+        .unwrap_or_default();
+
+    for event in bucket.events.iter().rev() {
+        let (kind, _) = event_type_display(&event.event_type, true);
+        let mut summary = compact_text_snippet(
+            &event_summary(&event.event_type, &event.content.blocks),
+            120,
+        );
+        if kind == "end" {
+            if let Some(stripped) = summary.strip_prefix("end ") {
+                summary = stripped.to_string();
+            }
+        } else if kind == "start" {
+            if let Some(stripped) = summary.strip_prefix("start ") {
+                summary = stripped.to_string();
+            }
+        }
+        if summary.is_empty() {
+            continue;
+        }
+        let summary_key = normalize_activity_key(&summary);
+        if !output_key.is_empty()
+            && summary_key == output_key
+            && matches!(
+                event.event_type,
+                EventType::AgentMessage | EventType::TaskEnd { .. }
+            )
+        {
+            continue;
+        }
+        let row = format!(
+            "{} {:>8} {}",
+            event.timestamp.format("%H:%M:%S"),
+            kind,
+            summary
+        );
+        let row_key = normalize_activity_key(&row);
+        if !seen.insert(row_key) {
+            continue;
+        }
+        lines.push(row);
+        if lines.len() >= limit {
+            break;
+        }
+    }
+    lines.reverse();
+    lines
+}
+
+fn is_synthetic_task_end_event(event: &Event) -> bool {
+    let EventType::TaskEnd {
+        summary: Some(summary),
+    } = &event.event_type
+    else {
+        return false;
+    };
+    let lower = summary.to_ascii_lowercase();
+    lower.contains("synthetic end") || lower.contains("missing task_complete")
+}
+
+fn task_bucket_is_synthetic_end_stub(bucket: &TaskChronicleBucket<'_>) -> bool {
+    if bucket.task_key == "main" || bucket.events.len() != 1 {
+        return false;
+    }
+    bucket
+        .events
+        .first()
+        .is_some_and(|event| is_synthetic_task_end_event(event))
+}
+
+fn format_time_ago(ts: DateTime<Utc>) -> String {
+    let delta = (Utc::now() - ts).num_seconds().max(0);
+    if delta < 60 {
+        format!("{delta}s ago")
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3600)
+    } else {
+        format!("{}d ago", delta / 86_400)
+    }
 }
 
 fn render_turn_pending_row(
@@ -1310,7 +2037,7 @@ fn render_turn_pending_row(
     let pending = if !app.daemon_config.daemon.summary_enabled {
         "LLM summary is off"
     } else if app.should_skip_realtime_for_selected() {
-        "LLM summary skipped by Neglect Live Session rule"
+        "LLM summary waiting while live updates are active"
     } else {
         "LLM summary pending"
     };
@@ -1380,7 +2107,7 @@ fn render_turn_raw_thread(
     } else {
         let event_limit = if focused { 14 } else { 6 };
         for event in turn.agent_events.iter().take(event_limit) {
-            let (kind, kind_color) = event_type_display(&event.event_type);
+            let (kind, kind_color) = event_type_display(&event.event_type, true);
             lines.extend(wrap_text_lines(
                 "  │ ",
                 &format!("{kind:>8}"),

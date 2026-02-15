@@ -20,7 +20,7 @@ impl From<storage::TeamRow> for TeamResponse {
             id: t.id,
             name: t.name,
             description: t.description,
-            is_public: t.is_public,
+            is_public: true,
             created_by: t.created_by,
             created_at: t.created_at,
         }
@@ -69,7 +69,7 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
     };
 
     let team_id = uuid::Uuid::new_v4().to_string();
-    let is_public = body.is_public.unwrap_or(false);
+    let is_public = true;
     let d1 = storage::get_d1(&ctx.env)?;
 
     // Create the team using sea-query INSERT
@@ -217,10 +217,10 @@ pub async fn update(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
         d1.prepare(&sql).bind(&values_to_js(&values))?.run().await?;
     }
 
-    if let Some(is_public) = body.is_public {
-        let (sql, values) = db::teams::update_visibility(id, is_public);
-        d1.prepare(&sql).bind(&values_to_js(&values))?.run().await?;
-    }
+    // Team visibility is currently fixed to public.
+    let _ = &body.is_public;
+    let (sql, values) = db::teams::update_visibility(id, true);
+    d1.prepare(&sql).bind(&values_to_js(&values))?.run().await?;
 
     let (sql, values) = db::teams::get_by_id(id);
     let team = d1

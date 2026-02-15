@@ -1,5 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
+    http::{header, HeaderMap},
     response::Redirect,
     Json,
 };
@@ -26,6 +27,40 @@ fn find_provider<'a>(config: &'a AppConfig, id: &str) -> Result<&'a OAuthProvide
         .iter()
         .find(|p| p.id == id)
         .ok_or_else(|| ApiErr::not_found(format!("OAuth provider '{}' not found", id)))
+}
+
+fn first_header_value(headers: &HeaderMap, key: header::HeaderName) -> Option<String> {
+    headers
+        .get(key)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.split(',').next())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn resolve_base_url(headers: &HeaderMap, fallback: &str) -> String {
+    let fallback = fallback.trim_end_matches('/').to_string();
+    let host = first_header_value(headers, header::HeaderName::from_static("x-forwarded-host"))
+        .or_else(|| first_header_value(headers, header::HOST));
+    let proto = first_header_value(
+        headers,
+        header::HeaderName::from_static("x-forwarded-proto"),
+    );
+
+    match host {
+        Some(host) => {
+            let scheme = proto.unwrap_or_else(|| {
+                if fallback.starts_with("http://") {
+                    "http".to_string()
+                } else {
+                    "https".to_string()
+                }
+            });
+            format!("{scheme}://{host}")
+        }
+        None => fallback,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +91,7 @@ pub async fn redirect(
     Path(provider_id): Path<String>,
     State(db): State<Db>,
     State(config): State<AppConfig>,
+    headers: HeaderMap,
 ) -> Result<Redirect, ApiErr> {
     let provider = find_provider(&config, &provider_id)?;
 
@@ -75,10 +111,8 @@ pub async fn redirect(
     )
     .map_err(ApiErr::from_db("oauth state insert"))?;
 
-    let redirect_uri = format!(
-        "{}/api/auth/oauth/{}/callback",
-        config.base_url, provider_id
-    );
+    let base_url = resolve_base_url(&headers, &config.base_url);
+    let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
     let url = oauth::build_authorize_url(provider, &redirect_uri, &state);
 
     Ok(Redirect::temporary(&url))
@@ -93,10 +127,12 @@ pub async fn callback(
     Path(provider_id): Path<String>,
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Result<Redirect, ApiErr> {
     let db = state.db.clone();
     let config = state.config.clone();
     let provider = find_provider(&config, &provider_id)?;
+    let base_url = resolve_base_url(&headers, &config.base_url);
 
     let code = params
         .get("code")
@@ -134,10 +170,7 @@ pub async fn callback(
     }; // conn dropped here, before any .await
 
     // Exchange code for access token
-    let redirect_uri = format!(
-        "{}/api/auth/oauth/{}/callback",
-        config.base_url, provider_id
-    );
+    let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
     let token_body = oauth::build_token_request_body(provider, code, &redirect_uri);
 
     let client = reqwest::Client::new();
@@ -204,7 +237,7 @@ pub async fn callback(
             if existing != link_uid {
                 return Ok(Redirect::temporary(&format!(
                     "{}/settings?error=oauth_already_linked",
-                    config.base_url
+                    base_url
                 )));
             }
         }
@@ -224,7 +257,7 @@ pub async fn callback(
 
         return Ok(Redirect::temporary(&format!(
             "{}/settings?oauth_linked=true",
-            config.base_url
+            base_url
         )));
     }
 
@@ -321,7 +354,7 @@ pub async fn callback(
     // Redirect to frontend with tokens in URL fragment
     let redirect_url = format!(
         "{}/auth/callback#access_token={}&refresh_token={}&expires_in={}",
-        config.base_url, tokens.access_token, tokens.refresh_token, tokens.expires_in,
+        base_url, tokens.access_token, tokens.refresh_token, tokens.expires_in,
     );
 
     Ok(Redirect::temporary(&redirect_url))
@@ -336,6 +369,7 @@ pub async fn link(
     Path(provider_id): Path<String>,
     State(db): State<Db>,
     State(config): State<AppConfig>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<OAuthLinkResponse>, ApiErr> {
     let provider = find_provider(&config, &provider_id)?;
@@ -371,10 +405,8 @@ pub async fn link(
     )
     .map_err(ApiErr::from_db("oauth state insert for link"))?;
 
-    let redirect_uri = format!(
-        "{}/api/auth/oauth/{}/callback",
-        config.base_url, provider_id
-    );
+    let base_url = resolve_base_url(&headers, &config.base_url);
+    let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
     let url = oauth::build_authorize_url(provider, &redirect_uri, &state);
 
     Ok(Json(OAuthLinkResponse { url }))

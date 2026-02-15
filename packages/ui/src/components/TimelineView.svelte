@@ -25,7 +25,9 @@
 	type TimelineItem = { kind: 'standalone'; event: Event };
 
 	let viewMode = $state<'timeline' | 'messages'>('timeline');
-	const laneColumnGapPx = 260;
+	let timelineLayout = $state<'linear' | 'split'>('split');
+	const splitLaneIndentPx = 120;
+	const depthIndentPx = $derived(timelineLayout === 'split' ? splitLaneIndentPx : 0);
 	let timelineScrollEl: HTMLDivElement | undefined = $state();
 	let isDragging = $state(false);
 	let dragStartX = $state(0);
@@ -94,7 +96,7 @@
 	const laneEvents = $derived.by(() => computeLaneEvents(events));
 	const taskInfoMap = $derived.by(() => computeTaskInfoMap(laneEvents));
 	const maxLane = $derived.by(() => computeMaxLane(laneEvents));
-	const minTrackWidth = $derived(`${Math.max(1, maxLane + 1) * laneColumnGapPx + 260}px`);
+	const minSplitTrackWidth = $derived(`${Math.max(1, maxLane + 1) * splitLaneIndentPx + 260}px`);
 
 	// --- Display pipeline: applyTaskViewMode → elideRedundantFileReads → pairToolCallResults → collapseConsecutiveEvents ---
 	const displayLaneEvents = $derived.by((): DisplayItem[] => {
@@ -135,7 +137,7 @@
 	}
 
 	function startDrag(e: PointerEvent) {
-		if (viewMode !== 'timeline') return;
+		if (viewMode !== 'timeline' || !hasSubAgents || timelineLayout !== 'split') return;
 		const target = e.target as HTMLElement;
 		if (target.closest('button') || target.closest('input') || target.closest('textarea') || target.closest('a')) {
 			return;
@@ -244,6 +246,25 @@
 
 			<div class="flex items-center gap-1.5">
 				{#if hasSubAgents}
+					<div class="flex items-center gap-1" role="tablist" aria-label="Timeline layout">
+						{#each [
+							{ mode: 'linear', label: 'Linear' },
+							{ mode: 'split', label: 'Split' }
+						] as layoutBtn}
+							<button
+								role="tab"
+								aria-selected={timelineLayout === layoutBtn.mode}
+								onclick={() => (timelineLayout = layoutBtn.mode as typeof timelineLayout)}
+								class="px-2 py-0.5 text-[11px] font-medium transition-colors
+									{timelineLayout === layoutBtn.mode
+									? 'text-accent'
+									: 'text-text-muted hover:text-text-secondary'}"
+								title="Layout: {layoutBtn.label}"
+							>
+								{timelineLayout === layoutBtn.mode ? `[${layoutBtn.label}]` : layoutBtn.label}
+							</button>
+						{/each}
+					</div>
 					<button
 						onclick={toggleTaskViewMode}
 						class="px-2 py-0.5 text-[11px] font-medium transition-colors
@@ -281,11 +302,6 @@
 		<div
 			bind:this={timelineScrollEl}
 			class="overflow-x-auto pb-2"
-			onpointerdown={startDrag}
-			style="cursor: {isDragging ? 'grabbing' : 'grab'};"
-			role="button"
-			tabindex="0"
-			aria-label="Drag horizontally to pan timeline"
 		>
 			<div>{@render flatEventList(timeline)}</div>
 		</div>
@@ -295,18 +311,19 @@
 			bind:this={timelineScrollEl}
 			class="overflow-x-auto pb-2"
 			onpointerdown={startDrag}
-			style="cursor: {isDragging ? 'grabbing' : 'grab'}; min-width: {minTrackWidth};"
+			style:cursor={timelineLayout === 'split' ? (isDragging ? 'grabbing' : 'grab') : 'auto'}
+			style:min-width={timelineLayout === 'split' ? minSplitTrackWidth : null}
 			role="button"
 			tabindex="0"
 			aria-label="Drag horizontally to pan timeline"
 		>
-			<div class="pb-1" style="min-width: {minTrackWidth}">
+			<div class="pb-1" style:min-width={timelineLayout === 'split' ? minSplitTrackWidth : null}>
 				{#each displayLaneEvents as item, idx}
 					{#if 'kind' in item && item.kind === 'collapsed'}
 						{@const info = item.info}
 						{@const breakdown = taskBreakdown(laneEvents, item.taskId)}
 						{@const depth = item.lane}
-						<div style="padding-left: {depth * laneColumnGapPx}px" data-timeline-idx={idx}>
+						<div style="padding-left: {depth * depthIndentPx}px" data-timeline-idx={idx}>
 							<button
 								onclick={() => toggleTask(item.taskId)}
 								class="group flex w-full items-center gap-2 border border-accent/20 bg-accent/5 px-3 py-1.5 text-left text-xs transition-colors hover:bg-bg-hover"
@@ -330,7 +347,7 @@
 						{@const depth = paired.lane}
 						{@const isNonMainLane = depth > 0}
 						{@const isLowPriority = isNonMainLane && !['UserMessage', 'AgentMessage', 'TaskStart', 'TaskEnd'].includes(paired.callEvent.event.event_type.type)}
-						<div style="padding-left: {depth * laneColumnGapPx}px" class:opacity-60={isLowPriority}>
+						<div style="padding-left: {depth * depthIndentPx}px" class:opacity-60={isLowPriority}>
 							{#if depth > 0}
 								<div style="border-left: 4px solid {getLaneColor(depth)}; padding-left: 0px">
 									<EventView event={paired.callEvent.event} pairedResult={paired.resultEvent.event} />
@@ -342,7 +359,7 @@
 					{:else if 'kind' in item && item.kind === 'consecutive'}
 						{@const group = item}
 						{@const depth = group.lane}
-						<div style="padding-left: {depth * laneColumnGapPx}px" data-timeline-idx={idx}>
+						<div style="padding-left: {depth * depthIndentPx}px" data-timeline-idx={idx}>
 							{#if depth > 0}
 								<div style="border-left: 4px solid {getLaneColor(depth)}; padding-left: 0px">
 									<div class="flex items-center gap-2 border border-border/30 bg-bg-secondary/50 px-3 py-1.5 text-xs">
@@ -370,7 +387,7 @@
 						{#if depth === 0 && previousRole && previousRole !== currentRole}
 							{@render roleSeparator(currentRole)}
 						{/if}
-						<div style="padding-left: {depth * laneColumnGapPx}px" class:opacity-60={isLowPriorityInLane} data-timeline-idx={idx}>
+						<div style="padding-left: {depth * depthIndentPx}px" class:opacity-60={isLowPriorityInLane} data-timeline-idx={idx}>
 							{#if laneEvent.event.event_type.type === 'TaskStart' && laneEvent.event.task_id}
 								{@const taskInfo = taskInfoMap.get(laneEvent.event.task_id)}
 								<button

@@ -376,7 +376,7 @@ function scrollSelectedIntoView() {
 					{#if authed}
 						<a href="/upload" class="text-accent hover:underline">Upload</a> a session to get started
 					{:else}
-						Sign in to upload private/team sessions, or keep browsing public sessions.
+						Sign in to upload sessions to your account or teams, or keep browsing public sessions.
 					{/if}
 				</p>
 			</div>
@@ -393,7 +393,11 @@ function scrollSelectedIntoView() {
 		{:else}
 			<div class="flex gap-3 overflow-x-auto px-2 py-2">
 				{#each groupedByAgents as group}
-					<section class="min-w-[280px] max-w-[360px] flex-1 border border-border bg-bg-secondary/30">
+					<section
+						class={`flex-1 border border-border bg-bg-secondary/30 ${
+							visibleColumnCount > 1 ? 'min-w-[300px] max-w-[420px]' : 'min-w-0'
+						}`}
+					>
 						<header class="flex items-center justify-between border-b border-border px-2 py-1 text-xs">
 							<span class="font-semibold" style="color: {group.color};">{group.label}</span>
 							<span class="text-text-muted">{group.sessions.length}</span>
@@ -401,7 +405,11 @@ function scrollSelectedIntoView() {
 						<div>
 							{#each group.sessions as session (session.id)}
 								<div data-session-idx={sessionIndex(session.id)} data-session-id={session.id}>
-									<SessionCard session={session} selected={selectedSessionId === session.id} />
+									<SessionCard
+										session={session}
+										selected={selectedSessionId === session.id}
+										compact={true}
+									/>
 								</div>
 							{/each}
 						</div>

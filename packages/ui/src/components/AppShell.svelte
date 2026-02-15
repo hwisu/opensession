@@ -97,10 +97,10 @@ function handleGlobalKey(e: KeyboardEvent) {
 			<ThemeToggle />
 		</div>
 		<div class="flex min-w-0 items-center gap-0.5 sm:gap-1">
-			{#each navLinks as link}
-				<a
-					href={link.href}
-					class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
+				{#each navLinks as link}
+					<a
+						href={link.href}
+						class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
 					class:text-accent={isLinkActive(link.href)}
 				>
 					{link.label}
@@ -108,38 +108,30 @@ function handleGlobalKey(e: KeyboardEvent) {
 						<span class="ml-1 inline-block min-w-[1.25rem] rounded bg-accent px-1 text-center text-[10px] font-semibold text-white">
 							{inboxCount}
 						</span>
-					{/if}
-				</a>
-			{/each}
-			{#if user}
-				<a
-					href="/settings"
-					class="ml-1 flex items-center gap-1 px-2 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-					title={user.nickname}
-				>
-					{#if user.avatar_url}
-						<img src={user.avatar_url} alt="{user.nickname} avatar" class="h-5 w-5 rounded-full" />
-					{/if}
-					[{user.nickname}]
-				</a>
-			{:else}
-				<div class="flex items-center gap-0.5 sm:gap-1">
+						{/if}
+					</a>
+				{/each}
+				{#if user}
+					<a
+						href="/settings"
+						class="ml-1 flex items-center gap-1 px-2 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+						title={user.nickname}
+					>
+						{#if user.avatar_url}
+							<img src={user.avatar_url} alt="{user.nickname} avatar" class="h-5 w-5 rounded-full" />
+						{/if}
+						[{user.nickname}]
+					</a>
+				{:else}
 					<a
 						href="/login"
 						class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
 					>
 						Login
 					</a>
-					<a
-						href="/register"
-						class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
-					>
-						Register
-					</a>
-				</div>
-			{/if}
-		</div>
-	</nav>
+				{/if}
+			</div>
+		</nav>
 
 	<!-- Main Content -->
 	<main class="overflow-y-auto px-4 py-3">

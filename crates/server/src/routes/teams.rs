@@ -31,7 +31,7 @@ pub async fn create_team(
     let name = service::validate_team_name(&req.name).map_err(ApiErr::from)?;
 
     let team_id = Uuid::new_v4().to_string();
-    let is_public = req.is_public.unwrap_or(false);
+    let is_public = true;
     let conn = db.conn();
 
     sq_execute(
@@ -264,10 +264,10 @@ pub async fn update_team(
             .map_err(ApiErr::from_db("update team description"))?;
     }
 
-    if let Some(is_public) = req.is_public {
-        sq_execute(&conn, db::teams::update_visibility(&id, is_public))
-            .map_err(ApiErr::from_db("update team visibility"))?;
-    }
+    // Team visibility is currently fixed to public.
+    let _ = &req.is_public;
+    sq_execute(&conn, db::teams::update_visibility(&id, true))
+        .map_err(ApiErr::from_db("update team visibility"))?;
 
     let team = sq_query_row(&conn, db::teams::get_by_id(&id), team_from_row)
         .map_err(|_| ApiErr::not_found("team not found"))?;

@@ -36,6 +36,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0007_sessions_list_perf_indexes",
         include_str!("../../migrations/0007_sessions_list_perf_indexes.sql"),
     ),
+    (
+        "0008_teams_force_public",
+        include_str!("../../migrations/0008_teams_force_public.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).

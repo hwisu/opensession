@@ -59,27 +59,33 @@ where
         match &event.event_type {
             EventType::TaskStart { .. } => {
                 if let Some(task_id) = task_id {
-                    lane = *task_lane.entry(task_id.clone()).or_insert_with(|| {
-                        if let Some(reused) = reusable_lanes.iter().next().copied() {
-                            reusable_lanes.remove(&reused);
-                            reused
-                        } else {
-                            let allocated = next_lane;
-                            next_lane += 1;
-                            allocated
-                        }
+                    lane = task_lane.get(task_id).copied().unwrap_or_else(|| {
+                        allocate_lane_for_task(
+                            &mut task_lane,
+                            &mut reusable_lanes,
+                            &mut next_lane,
+                            task_id,
+                        )
                     });
+                    let was_active = active_lanes.contains(&lane);
                     if lane > 0 {
                         active_lanes.insert(lane);
-                        marker = LaneMarker::Fork;
+                        if !was_active {
+                            marker = LaneMarker::Fork;
+                        }
                     }
                 }
             }
             EventType::TaskEnd { .. } => {
                 if let Some(task_id) = task_id {
-                    if let Some(existing) = task_lane.get(task_id) {
-                        lane = *existing;
-                    }
+                    lane = task_lane.get(task_id).copied().unwrap_or_else(|| {
+                        allocate_lane_for_task(
+                            &mut task_lane,
+                            &mut reusable_lanes,
+                            &mut next_lane,
+                            task_id,
+                        )
+                    });
                     if lane > 0 {
                         marker = LaneMarker::Merge;
                     }
@@ -87,8 +93,19 @@ where
             }
             _ => {
                 if let Some(task_id) = task_id {
-                    if let Some(existing) = task_lane.get(task_id) {
-                        lane = *existing;
+                    if let Some(existing) = task_lane.get(task_id).copied() {
+                        lane = existing;
+                    } else {
+                        lane = allocate_lane_for_task(
+                            &mut task_lane,
+                            &mut reusable_lanes,
+                            &mut next_lane,
+                            task_id,
+                        );
+                        if lane > 0 {
+                            active_lanes.insert(lane);
+                            marker = LaneMarker::Fork;
+                        }
                     }
                 }
             }
@@ -125,6 +142,24 @@ where
     }
 
     out
+}
+
+fn allocate_lane_for_task(
+    task_lane: &mut HashMap<String, usize>,
+    reusable_lanes: &mut BTreeSet<usize>,
+    next_lane: &mut usize,
+    task_id: &str,
+) -> usize {
+    let allocated = if let Some(reused) = reusable_lanes.iter().next().copied() {
+        reusable_lanes.remove(&reused);
+        reused
+    } else {
+        let value = *next_lane;
+        *next_lane += 1;
+        value
+    };
+    task_lane.insert(task_id.to_string(), allocated);
+    allocated
 }
 
 #[cfg(test)]
@@ -213,5 +248,64 @@ mod tests {
         assert_eq!(lanes[2].lane, 1);
         assert_eq!(lanes[3].lane, 1);
         assert_eq!(lanes[5].lane, 1);
+    }
+
+    #[test]
+    fn lane_is_lazily_allocated_for_task_id_without_task_start() {
+        let mut session = Session::new(
+            "s3".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+
+        session.events = vec![
+            mk_event("e1", EventType::AgentMessage, Some("spawn-1")),
+            mk_event(
+                "e2",
+                EventType::ToolCall {
+                    name: "exec".to_string(),
+                },
+                Some("spawn-1"),
+            ),
+            mk_event("e3", EventType::TaskEnd { summary: None }, Some("spawn-1")),
+        ];
+
+        let lanes = build_lane_events(&session, |_| true);
+        assert_eq!(lanes.len(), 3);
+        assert_eq!(lanes[0].lane, 1);
+        assert_eq!(lanes[0].marker, LaneMarker::Fork);
+        assert_eq!(lanes[1].lane, 1);
+        assert_eq!(lanes[1].marker, LaneMarker::None);
+        assert_eq!(lanes[2].lane, 1);
+        assert_eq!(lanes[2].marker, LaneMarker::Merge);
+    }
+
+    #[test]
+    fn late_task_start_does_not_double_fork_active_lane() {
+        let mut session = Session::new(
+            "s4".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+
+        session.events = vec![
+            mk_event("e1", EventType::AgentMessage, Some("spawn-2")),
+            mk_event("e2", EventType::TaskStart { title: None }, Some("spawn-2")),
+            mk_event("e3", EventType::TaskEnd { summary: None }, Some("spawn-2")),
+        ];
+
+        let lanes = build_lane_events(&session, |_| true);
+        assert_eq!(lanes.len(), 3);
+        assert_eq!(lanes[0].marker, LaneMarker::Fork);
+        assert_eq!(lanes[1].marker, LaneMarker::None);
+        assert_eq!(lanes[2].marker, LaneMarker::Merge);
     }
 }

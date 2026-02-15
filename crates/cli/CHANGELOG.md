@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix CLI/daemon for team model: add team_id config, API key auth, remove legacy fallback
 - Initial commit
 
-## [0.1.3](https://github.com/hwisu/opensession-core/compare/opensession-v0.1.2...opensession-v0.1.3) - 2026-02-12
+## [0.1.3](https://github.com/hwisu/opensession/compare/opensession-v0.1.2...opensession-v0.1.3) - 2026-02-12
 
 ### Other
 

@@ -7,14 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.3](https://github.com/hwisu/opensession-core/compare/opensession-api-types-v0.1.2...opensession-api-types-v0.1.3) - 2026-02-13
+## [0.1.3](https://github.com/hwisu/opensession/compare/opensession-api-v0.1.2...opensession-api-v0.1.3) - 2026-02-13
 
 ### Other
 
 - git-native crate, shadow commands, CLI enhancements, DB schema updates
 - unify DB schema with sea-query and dev context columns
 
-## [0.1.2](https://github.com/hwisu/opensession-core/compare/opensession-api-types-v0.1.1...opensession-api-types-v0.1.2) - 2026-02-12
+## [0.1.2](https://github.com/hwisu/opensession/compare/opensession-api-v0.1.1...opensession-api-v0.1.2) - 2026-02-12
 
 ### Added
 

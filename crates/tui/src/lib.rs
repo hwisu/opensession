@@ -2,6 +2,7 @@ mod app;
 mod async_ops;
 mod cli_export;
 mod config;
+mod live;
 mod platform_api_storage;
 mod session_timeline;
 mod theme;
@@ -12,7 +13,7 @@ mod views;
 use anyhow::Result;
 use app::{App, ServerInfo, ServerStatus, SetupStep, StartupStatus, UploadPhase, View};
 use crossterm::{
-    event::{self, Event, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -93,6 +94,7 @@ pub fn run_with_options(options: RunOptions) -> Result<()> {
 }
 
 fn run_with_options_sync(options: RunOptions) -> Result<()> {
+    let mouse_capture_enabled = env_flag_enabled("OPS_TUI_MOUSE_CAPTURE");
     // Start with empty sessions — they'll load in the background
     let mut app = App::new(vec![]);
     app.loading_sessions = true;
@@ -160,6 +162,9 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
     // Terminal setup — show UI immediately
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    if mouse_capture_enabled {
+        stdout().execute(EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -200,10 +205,19 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
     }
 
     // Main loop
-    let result = event_loop(&mut terminal, &mut app, bg_rx, options.auto_enter_detail);
+    let result = event_loop(
+        &mut terminal,
+        &mut app,
+        bg_rx,
+        options.auto_enter_detail,
+        mouse_capture_enabled,
+    );
 
     // Restore terminal
     disable_raw_mode()?;
+    if mouse_capture_enabled {
+        stdout().execute(DisableMouseCapture)?;
+    }
     stdout().execute(LeaveAlternateScreen)?;
 
     result
@@ -484,6 +498,7 @@ fn event_loop(
     app: &mut App,
     bg_rx: mpsc::Receiver<BgEvent>,
     auto_enter_detail: bool,
+    mouse_capture_enabled: bool,
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let (summary_tx, summary_rx) = mpsc::channel::<async_ops::CommandResult>();
@@ -621,11 +636,9 @@ fn event_loop(
             }
         }
 
-        // ── Realtime detail preview (mtime polling + selective reparse) ──
-        if let Some(path) = app.take_realtime_reload_path() {
-            if let Some(reloaded) = parse_single_session(&path) {
-                app.apply_reloaded_session(reloaded);
-            }
+        // ── Realtime detail preview (live provider + tail-follow aware update) ──
+        if let Some(batch) = app.poll_live_update_batch() {
+            app.apply_live_update_batch(batch);
         }
 
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -641,28 +654,50 @@ fn event_loop(
             }
         }
 
-        let mut handled_key_press = false;
+        let mut handled_user_input = false;
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    handled_user_input = true;
+                    if app.handle_key(key.code) {
+                        break;
+                    }
                 }
-                handled_key_press = true;
-                if app.handle_key(key.code) {
-                    break;
+                Event::Mouse(mouse) => {
+                    if !mouse_capture_enabled {
+                        continue;
+                    }
+                    handled_user_input = true;
+                    if app.handle_mouse(mouse) {
+                        break;
+                    }
                 }
+                _ => {}
             }
         }
 
         // ── Timeline summary queue (non-stream sessions, visible-first) ──
         // Keep input responsive: only schedule heavy summary work when idle.
-        if !handled_key_press {
+        if !handled_user_input {
             if let Some(cmd) = app.schedule_detail_summary_jobs() {
                 spawn_summary_worker(cmd, app.daemon_config.clone(), summary_tx.clone());
             }
         }
     }
     Ok(())
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
 }
 
 fn spawn_summary_worker(
@@ -872,14 +907,6 @@ fn is_hidden_claude_code_child_session(session: &opensession_core::trace::Sessio
     opensession_parsers::claude_code::is_claude_subagent_path(std::path::Path::new(path))
 }
 
-fn is_hidden_codex_child_session(session: &opensession_core::trace::Session) -> bool {
-    if session.agent.tool != "codex" {
-        return false;
-    }
-
-    session.stats.user_message_count == 0
-}
-
 fn filter_visible_discovered_sessions(
     sessions: Vec<opensession_core::trace::Session>,
 ) -> Vec<opensession_core::trace::Session> {
@@ -887,7 +914,6 @@ fn filter_visible_discovered_sessions(
         .into_iter()
         .filter(|session| {
             !is_hidden_opencode_child_session(session)
-                && !is_hidden_codex_child_session(session)
                 && !is_hidden_claude_code_child_session(session)
         })
         .collect()
@@ -943,7 +969,7 @@ fn parse_single_session(path: &Path) -> Option<opensession_core::trace::Session>
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_summary_launch_override, is_hidden_codex_child_session,
+        apply_summary_launch_override, env_flag_enabled, filter_visible_discovered_sessions,
         is_hidden_opencode_child_session, SummaryLaunchOverride,
     };
     use chrono::Utc;
@@ -1070,11 +1096,35 @@ mod tests {
     }
 
     #[test]
-    fn codex_session_without_user_message_is_hidden_in_discovery_list() {
+    fn codex_session_without_user_message_is_not_hidden_in_discovery_list() {
         let summary_session = make_codex_session("summary", "codex", 0);
         let normal_session = make_codex_session("normal", "codex", 1);
+        let visible = filter_visible_discovered_sessions(vec![
+            summary_session.clone(),
+            normal_session.clone(),
+        ]);
 
-        assert!(is_hidden_codex_child_session(&summary_session));
-        assert!(!is_hidden_codex_child_session(&normal_session));
+        assert_eq!(visible.len(), 2);
+        assert!(visible
+            .iter()
+            .any(|session| session.session_id == "summary"));
+        assert!(visible.iter().any(|session| session.session_id == "normal"));
+    }
+
+    #[test]
+    fn env_flag_enabled_defaults_false() {
+        let key = "OPS_TUI_FLAG_TEST_FALSE";
+        std::env::remove_var(key);
+        assert!(!env_flag_enabled(key));
+    }
+
+    #[test]
+    fn env_flag_enabled_accepts_true_values() {
+        let key = "OPS_TUI_FLAG_TEST_TRUE";
+        std::env::set_var(key, "true");
+        assert!(env_flag_enabled(key));
+        std::env::set_var(key, "1");
+        assert!(env_flag_enabled(key));
+        std::env::remove_var(key);
     }
 }

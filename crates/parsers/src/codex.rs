@@ -815,7 +815,7 @@ fn push_user_message_event(
 }
 
 fn remove_duplicate_response_fallback(events: &mut Vec<Event>, ts: DateTime<Utc>, text: &str) {
-    let normalized = normalize_user_text(text);
+    let normalized = normalize_user_text_for_dedupe(text);
     events.retain(|event| {
         if !matches!(event.event_type, EventType::UserMessage) {
             return true;
@@ -828,11 +828,11 @@ fn remove_duplicate_response_fallback(events: &mut Vec<Event>, ts: DateTime<Utc>
         {
             return true;
         }
-        if (event.timestamp - ts).num_seconds().abs() > 2 {
+        if (event.timestamp - ts).num_seconds().abs() > 12 {
             return true;
         }
         event_user_text(event)
-            .map(|existing| normalize_user_text(&existing) != normalized)
+            .map(|existing| !user_texts_equivalent(&existing, &normalized))
             .unwrap_or(true)
     });
 }
@@ -852,24 +852,24 @@ fn should_skip_duplicate_user_event(
         "response_fallback" => "event_msg",
         _ => return false,
     };
-    let normalized = normalize_user_text(text);
+    let normalized = normalize_user_text_for_dedupe(text);
     events.iter().any(|event| {
         if !matches!(event.event_type, EventType::UserMessage) {
             return false;
         }
-        if event
+        let event_source = event
             .attributes
             .get("source")
-            .and_then(|value| value.as_str())
-            != Some(opposite)
-        {
+            .and_then(|value| value.as_str());
+        if event_source != Some(opposite) && event_source != Some(source) {
             return false;
         }
-        if (event.timestamp - ts).num_seconds().abs() > 2 {
+        let duplicate_window_secs = if event_source == Some(source) { 2 } else { 12 };
+        if (event.timestamp - ts).num_seconds().abs() > duplicate_window_secs {
             return false;
         }
         event_user_text(event)
-            .map(|existing| normalize_user_text(&existing) == normalized)
+            .map(|existing| user_texts_equivalent(&existing, &normalized))
             .unwrap_or(false)
     })
 }
@@ -896,6 +896,41 @@ fn event_user_text(event: &Event) -> Option<String> {
     }
 }
 
+fn normalize_user_text_for_dedupe(text: &str) -> String {
+    let normalized = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            !matches!(
+                lower.as_str(),
+                "<image>" | "<file>" | "<audio>" | "<video>" | "[image]" | "[file]"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    normalized
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn user_texts_equivalent(lhs: &str, rhs: &str) -> bool {
+    let left = normalize_user_text_for_dedupe(lhs);
+    let right = normalize_user_text_for_dedupe(rhs);
+    if left == right {
+        return true;
+    }
+
+    let min_len = left.chars().count().min(right.chars().count());
+    min_len >= 16 && (left.contains(&right) || right.contains(&left))
+}
+
+#[allow(dead_code)]
 fn normalize_user_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -1816,6 +1851,63 @@ provider = "anthropic"
                 .and_then(|value| value.as_str()),
             Some("event_msg")
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_event_msg_dedupes_response_fallback_with_image_marker() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T11:10:00.000Z","type":"session_meta","payload":{"id":"desktop-user-image-dedupe","timestamp":"2026-02-14T11:10:00.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T11:10:00.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"same user prompt\n<image>"}]}}"#,
+            r#"{"timestamp":"2026-02-14T11:10:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"same user prompt"}}"#,
+            r#"{"timestamp":"2026-02-14T11:10:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_user_image_dedupe_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        let user_events: Vec<&Event> = session
+            .events
+            .iter()
+            .filter(|event| matches!(event.event_type, EventType::UserMessage))
+            .collect();
+        assert_eq!(user_events.len(), 1);
+        assert_eq!(
+            user_events[0]
+                .attributes
+                .get("source")
+                .and_then(|value| value.as_str()),
+            Some("event_msg")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_event_msg_same_source_duplicates_are_collapsed() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T11:20:00.000Z","type":"session_meta","payload":{"id":"desktop-user-same-source-dedupe","timestamp":"2026-02-14T11:20:00.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-02-14T11:20:00.100Z","type":"event_msg","payload":{"type":"user_message","message":"same user prompt"}}"#,
+            r#"{"timestamp":"2026-02-14T11:20:00.900Z","type":"event_msg","payload":{"type":"user_message","message":"same user prompt"}}"#,
+            r#"{"timestamp":"2026-02-14T11:20:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_same_source_dedupe_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        let user_events: Vec<&Event> = session
+            .events
+            .iter()
+            .filter(|event| matches!(event.event_type, EventType::UserMessage))
+            .collect();
+        assert_eq!(user_events.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

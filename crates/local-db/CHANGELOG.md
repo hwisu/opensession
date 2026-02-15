@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove duplicate crates, use shared ServiceError and service module
 - Remove cli, tui, local-db from workspace; point to opensession-core
 
-## [0.1.3](https://github.com/hwisu/opensession-core/compare/opensession-local-db-v0.1.2...opensession-local-db-v0.1.3) - 2026-02-13
+## [0.1.3](https://github.com/hwisu/opensession/compare/opensession-local-db-v0.1.2...opensession-local-db-v0.1.3) - 2026-02-13
 
 ### Fixed
 

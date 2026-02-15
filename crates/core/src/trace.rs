@@ -40,6 +40,15 @@ impl StatsAcc {
                 self.user_message_count += 1;
             }
             EventType::AgentMessage => self.message_count += 1,
+            EventType::TaskEnd { summary } => {
+                if summary
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|text| !text.is_empty())
+                {
+                    self.message_count += 1;
+                }
+            }
             EventType::ToolCall { .. }
             | EventType::FileRead { .. }
             | EventType::CodeSearch { .. }
@@ -487,6 +496,45 @@ mod tests {
         assert_eq!(session.stats.message_count, 2);
         assert_eq!(session.stats.tool_call_count, 1);
         assert_eq!(session.stats.task_count, 2);
+    }
+
+    #[test]
+    fn test_recompute_stats_counts_task_end_summary_as_message() {
+        let mut session = Session::new(
+            "test-task-end-summary".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus-4-6".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+
+        let ts = Utc::now();
+        session.events.push(Event {
+            event_id: "u1".to_string(),
+            timestamp: ts,
+            event_type: EventType::UserMessage,
+            task_id: Some("t1".to_string()),
+            content: Content::text("do this"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+        session.events.push(Event {
+            event_id: "t1-end".to_string(),
+            timestamp: ts,
+            event_type: EventType::TaskEnd {
+                summary: Some("finished successfully".to_string()),
+            },
+            task_id: Some("t1".to_string()),
+            content: Content::text("finished successfully"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+
+        session.recompute_stats();
+        assert_eq!(session.stats.message_count, 2);
+        assert_eq!(session.stats.user_message_count, 1);
     }
 
     #[test]

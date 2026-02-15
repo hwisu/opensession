@@ -154,7 +154,7 @@ pub fn team_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamResponse> 
         id: row.get(0)?,
         name: row.get(1)?,
         description: row.get(2)?,
-        is_public: row.get(3)?,
+        is_public: true,
         created_by: row.get(4)?,
         created_at: row.get(5)?,
     })

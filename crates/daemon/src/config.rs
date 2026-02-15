@@ -36,9 +36,29 @@ pub fn load_config() -> Result<DaemonConfig> {
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read daemon config at {}", path.display()))?;
-    let config: DaemonConfig = toml::from_str(&content)
+    let parsed: Option<toml::Value> = toml::from_str(&content).ok();
+    let mut config: DaemonConfig = toml::from_str(&content)
         .with_context(|| format!("Failed to parse daemon config at {}", path.display()))?;
+    if config_file_missing_git_storage_method(parsed.as_ref()) {
+        config.git_storage.method = GitStorageMethod::None;
+    }
     Ok(config)
+}
+
+fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
+    let Some(root) = root else {
+        return false;
+    };
+    let Some(table) = root.as_table() else {
+        return false;
+    };
+    let Some(git_storage) = table.get("git_storage") else {
+        return true;
+    };
+    match git_storage.as_table() {
+        Some(section) => !section.contains_key("method"),
+        None => true,
+    }
 }
 
 /// Resolve watch paths based on watcher config

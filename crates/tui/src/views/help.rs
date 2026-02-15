@@ -74,12 +74,12 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Cycle tool filter (Local/Team/Repo)", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  o         ", key_style),
-            Span::styled("Cycle sort (Recent/Popular/Longest)", desc_style),
-        ]),
-        Line::from(vec![
             Span::styled("  r         ", key_style),
             Span::styled("Cycle time range (All/24h/7d/30d)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  R         ", key_style),
+            Span::styled("Repo picker (search + open)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  f         ", key_style),
@@ -90,7 +90,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Delete session (Team/Repo)", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  [/]       ", key_style),
+            Span::styled("  PgDn/PgUp ", key_style),
             Span::styled("Previous/next page", desc_style),
         ]),
         Line::raw(""),
@@ -140,10 +140,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  RT        ", key_style),
-            Span::styled(
-                "Detail Live status (ignored when Neglect Live Session rule matches)",
-                desc_style,
-            ),
+            Span::styled("Auto-refresh status", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  Esc/q     ", key_style),

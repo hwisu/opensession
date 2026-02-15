@@ -696,9 +696,7 @@ fn spawn_summary_worker(
                     Err(err) => async_ops::CommandResult::SummaryDone {
                         key,
                         epoch,
-                        result: Box::new(Err(format!(
-                            "failed to start summary runtime: {err}"
-                        ))),
+                        result: Box::new(Err(format!("failed to start summary runtime: {err}"))),
                     },
                 }
             }

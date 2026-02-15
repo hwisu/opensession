@@ -4632,6 +4632,35 @@ impl App {
                     active_lanes: de.active_lanes().to_vec(),
                 });
             }
+
+            // Auto chronicle mode can end up with zero anchors on pure chat transcripts.
+            // Fallback to assistant messages so summary generation still progresses.
+            if auto_turn_window_mode && anchors.is_empty() {
+                for (idx, de) in events.iter().enumerate() {
+                    if !matches!(de.event().event_type, EventType::AgentMessage) {
+                        continue;
+                    }
+                    let key = TimelineSummaryWindowKey {
+                        session_id: session.session_id.clone(),
+                        event_index: de.source_index(),
+                        window_id: (5u64 << 56) | (de.source_index() as u64),
+                    };
+                    if !seen.insert(key.clone()) {
+                        continue;
+                    }
+                    anchors.push(SummaryAnchor {
+                        scope: SummaryScope::Window,
+                        key,
+                        anchor_event: de.event(),
+                        anchor_source_index: de.source_index(),
+                        display_index: idx,
+                        start_display_index: idx,
+                        end_display_index: idx,
+                        lane: de.lane(),
+                        active_lanes: de.active_lanes().to_vec(),
+                    });
+                }
+            }
         }
 
         if include_turn_anchors {
@@ -5299,8 +5328,8 @@ impl App {
                 if self.has_any_summary_api_key()
                     || self.has_openai_compatible_endpoint_config()
                     || std::env::var("OPS_TL_SUM_CLI_BIN")
-                    .ok()
-                    .is_some_and(|v| !v.trim().is_empty())
+                        .ok()
+                        .is_some_and(|v| !v.trim().is_empty())
                 {
                     None
                 } else {

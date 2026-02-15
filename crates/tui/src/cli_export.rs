@@ -78,6 +78,8 @@ pub fn export_session_timeline(
     app.detail_viewport_height = u16::MAX;
     app.detail_event_index = 0;
     app.realtime_preview_enabled = app.daemon_config.daemon.detail_realtime_preview_enabled;
+    // CLI export is non-interactive; skip detail warmup gating so summary jobs can run immediately.
+    app.detail_entered_at = Instant::now() - Duration::from_secs(1);
 
     if !options.include_summaries {
         app.daemon_config.daemon.summary_enabled = false;

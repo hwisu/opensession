@@ -206,10 +206,7 @@ fn choose_candidate(
         return Ok((candidates[0].clone(), false));
     }
 
-    let items: Vec<String> = candidates
-        .iter()
-        .map(candidate_display_line)
-        .collect();
+    let items: Vec<String> = candidates.iter().map(candidate_display_line).collect();
 
     let selection = Select::new()
         .with_prompt(format!("Select active {tool} session"))

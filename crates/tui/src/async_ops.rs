@@ -112,7 +112,7 @@ pub enum CommandResult {
     SummaryDone {
         key: TimelineSummaryWindowKey,
         epoch: u64,
-        result: Result<TimelineSummaryCacheEntry, String>,
+        result: Box<Result<TimelineSummaryCacheEntry, String>>,
     },
     SummaryCliProbeDone {
         session_id: String,
@@ -389,7 +389,11 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
             )
             .await
             .map_err(|e| format!("{e}"));
-            CommandResult::SummaryDone { key, epoch, result }
+            CommandResult::SummaryDone {
+                key,
+                epoch,
+                result: Box::new(result),
+            }
         }
         AsyncCommand::ProbeSummaryCli {
             session_id,

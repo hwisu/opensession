@@ -1569,7 +1569,7 @@ fn wrap_text_lines(
     text_style: Style,
     content_width: u16,
 ) -> Vec<Line<'static>> {
-    let prefix_width = UnicodeWidthStr::width(prefix) as usize;
+    let prefix_width = UnicodeWidthStr::width(prefix);
     let available = content_width.saturating_sub(prefix_width as u16).max(1) as usize;
     let mut lines = Vec::new();
     for text_line in text.split('\n') {

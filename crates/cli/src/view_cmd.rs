@@ -208,7 +208,7 @@ fn choose_candidate(
 
     let items: Vec<String> = candidates
         .iter()
-        .map(|candidate| candidate_display_line(candidate))
+        .map(candidate_display_line)
         .collect();
 
     let selection = Select::new()

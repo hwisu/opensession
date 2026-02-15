@@ -1500,7 +1500,7 @@ impl App {
         session
             .events
             .iter()
-            .any(|event| Self::is_internal_summary_user_event(event))
+            .any(Self::is_internal_summary_user_event)
     }
 
     fn is_internal_summary_row(row: &LocalSessionRow) -> bool {
@@ -3139,7 +3139,7 @@ impl App {
                 }
                 self.timeline_summary_inflight.remove(&key);
                 self.timeline_summary_inflight_started.remove(&key);
-                match result {
+                match *result {
                     Ok(summary) => {
                         if !summary.compact.trim().is_empty() {
                             self.timeline_summary_cache
@@ -3163,16 +3163,15 @@ impl App {
                         self.timeline_summary_cache
                             .insert(key.clone(), parse_timeline_summary_output(&fallback));
                         self.timeline_summary_lookup_keys.remove(&key);
-                        if Self::is_summary_setup_missing(&err)
-                            || Self::is_summary_cli_runtime_failure(&err)
+                        if (Self::is_summary_setup_missing(&err)
+                            || Self::is_summary_cli_runtime_failure(&err))
+                            && self.daemon_config.daemon.summary_enabled
                         {
-                            if self.daemon_config.daemon.summary_enabled {
-                                self.daemon_config.daemon.summary_enabled = false;
-                                self.cancel_timeline_summary_jobs();
-                                self.flash_info(
-                                    "LLM summary auto-disabled after summary backend failure",
-                                );
-                            }
+                            self.daemon_config.daemon.summary_enabled = false;
+                            self.cancel_timeline_summary_jobs();
+                            self.flash_info(
+                                "LLM summary auto-disabled after summary backend failure",
+                            );
                         }
                         self.maybe_prompt_summary_cli_setup(&key, &err);
                     }
@@ -5297,9 +5296,9 @@ impl App {
 
         match provider.as_str() {
             "" | "auto" => {
-                if self.has_any_summary_api_key() || self.has_openai_compatible_endpoint_config() {
-                    None
-                } else if std::env::var("OPS_TL_SUM_CLI_BIN")
+                if self.has_any_summary_api_key()
+                    || self.has_openai_compatible_endpoint_config()
+                    || std::env::var("OPS_TL_SUM_CLI_BIN")
                     .ok()
                     .is_some_and(|v| !v.trim().is_empty())
                 {
@@ -5735,16 +5734,14 @@ impl App {
                     session_id: key.session_id.clone(),
                 },
             });
+        } else if missing_setup {
+            self.flash_info(
+                "Summary is not configured. Install one CLI (codex/claude/cursor/gemini) or add an API key.",
+            );
         } else {
-            if missing_setup {
-                self.flash_info(
-                    "Summary is not configured. Install one CLI (codex/claude/cursor/gemini) or add an API key.",
-                );
-            } else {
-                self.flash_info(
-                    "Summary CLI failed. Ensure the selected CLI is authenticated, or switch provider in Settings.",
-                );
-            }
+            self.flash_info(
+                "Summary CLI failed. Ensure the selected CLI is authenticated, or switch provider in Settings.",
+            );
         }
     }
 
@@ -5857,9 +5854,7 @@ impl App {
             return None;
         }
 
-        let Some(session) = self.selected_session().cloned() else {
-            return None;
-        };
+        let session = self.selected_session().cloned()?;
         self.ensure_summary_ready_for_session(&session);
         if !self.summary_allowed_for_session(&session) {
             return None;

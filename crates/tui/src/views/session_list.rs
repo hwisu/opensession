@@ -55,7 +55,7 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
             let max_agents = agent_counts
                 .get(&session.session_id)
                 .copied()
-                .unwrap_or_else(|| if session.events.is_empty() { 0 } else { 1 });
+                .unwrap_or(if session.events.is_empty() { 0 } else { 1 });
             let date = format_relative_datetime(session.context.created_at);
 
             // Line 1: icon + title + actor

@@ -542,7 +542,7 @@ fn fallback_turn_summary_payload(raw_text: &str) -> TimelineSummaryPayload {
     } else {
         clipped
     };
-    let payload = TimelineSummaryPayload {
+    TimelineSummaryPayload {
         kind: "turn-summary".to_string(),
         version: "2.0".to_string(),
         scope: "turn".to_string(),
@@ -564,8 +564,7 @@ fn fallback_turn_summary_payload(raw_text: &str) -> TimelineSummaryPayload {
             severity: "warn".to_string(),
         }],
         next_steps: Vec::new(),
-    };
-    payload
+    }
 }
 
 fn sanitize_fallback_summary_text(raw_text: &str) -> String {
@@ -590,7 +589,7 @@ fn sanitize_fallback_summary_text(raw_text: &str) -> String {
         .collect::<Vec<_>>();
 
     let joined = lines.join(" ");
-    let joined = joined.replace('{', "").replace('}', "");
+    let joined = joined.replace(['{', '}'], "");
     let joined = joined.trim();
     if joined.is_empty() {
         String::new()
@@ -1183,7 +1182,7 @@ fn detect_cli_candidates(
 ) -> Vec<ResolvedCliCommand> {
     let from_tool = agent_tool
         .map(|t| t.to_ascii_lowercase())
-        .unwrap_or_else(String::new);
+        .unwrap_or_default();
 
     let preferred_targets: Vec<SummaryCliTarget> = match target {
         SummaryCliTarget::Codex => vec![SummaryCliTarget::Codex],
@@ -1300,10 +1299,8 @@ fn add_default_noninteractive_args(target: SummaryCliTarget, args: &mut Vec<Stri
 }
 
 fn add_prompt_arg(target: SummaryCliTarget, args: &mut Vec<String>, prompt: &str) {
-    if target == SummaryCliTarget::Gemini {
-        if !has_flag(args, "--prompt", "-p") {
-            args.push("--prompt".to_string());
-        }
+    if target == SummaryCliTarget::Gemini && !has_flag(args, "--prompt", "-p") {
+        args.push("--prompt".to_string());
     }
     args.push(prompt.to_string());
 }

@@ -22,7 +22,7 @@ use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
 use ratatui::prelude::*;
 use std::collections::HashMap;
 use std::io::stdout;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -696,7 +696,9 @@ fn spawn_summary_worker(
                     Err(err) => async_ops::CommandResult::SummaryDone {
                         key,
                         epoch,
-                        result: Err(format!("failed to start summary runtime: {err}")),
+                        result: Box::new(Err(format!(
+                            "failed to start summary runtime: {err}"
+                        ))),
                     },
                 }
             }
@@ -930,7 +932,7 @@ fn load_sessions() -> Vec<LoadedSession> {
     sessions
 }
 
-fn parse_single_session(path: &PathBuf) -> Option<opensession_core::trace::Session> {
+fn parse_single_session(path: &Path) -> Option<opensession_core::trace::Session> {
     let parsers = opensession_parsers::all_parsers();
     let parser = parsers.iter().find(|p| p.can_parse(path))?;
     let session = parser.parse(path).ok()?;

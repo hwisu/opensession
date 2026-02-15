@@ -26,7 +26,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // but keep compact session summary.
     if app.focus_detail_view {
         let show_footer = app.flash_message.is_some();
-        let [summary_area, body_area, footer_area] = if show_footer {
+        let (summary_area, body_area, footer_area) = if show_footer {
             let [summary, body, footer] = Layout::vertical([
                 Constraint::Length(2),
                 Constraint::Fill(1),

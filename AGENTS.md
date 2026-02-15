@@ -1,26 +1,24 @@
-# OpenSession Agent/UI Contracts
+# Principles
 
-## Message Count Contract (`stats.message_count`)
-- `message_count` MUST include:
-  - every `UserMessage`
-  - every `AgentMessage`
-  - every `TaskEnd` that has a non-empty `summary`
-- `user_message_count` remains user-only.
+1. If a problem occurs, it must be resolved.
+2. After resolving a problem, add test cases to prevent regression.
+3. Everything is testable. If testing is not possible in the current setup, add tools to make it possible.
+If there are additional suggestions, just continue and execute them.
 
-## Session List Display Contract
-- `msgs` label MUST display `message_count`.
-- `agents` MUST never render as `0`; minimum is `1 agent`.
-- `LIVE` badge is shown when the latest known activity timestamp is within 5 minutes.
-- Date formatting follows `calendar_display_mode` (`smart`, `relative`, `absolute`).
+## Auto-Continue Policy
+After completing the requested change, immediately continue fixing any build/test/runtime errors discovered during verification in the same scope.
 
-## Summary-Off Detail Contract
-- When LLM summary is unavailable/off, detail view MUST still render task-level execution visibility.
-- Fallback rendering uses task buckets (`main` + `task_id` buckets) with status, counters, and last output.
+Do not ask for confirmation for these follow-up fixes.
 
-## Deployment Profile Contract
-- Runtime stays Rust-first in this repository (no TS/Go runtime replacement in this phase).
-- Docker/Axum profile is team-focused and may disable anonymous session feed via `OPENSESSION_PUBLIC_FEED_ENABLED=false`.
-- Worker/Wrangler profile is personal-sharing focused with team APIs disabled via `ENABLE_TEAM_API=false`.
-- Web UI behavior must follow `VITE_APP_PROFILE=docker|worker`:
-  - `docker`: Teams/Inbox surface enabled.
-  - `worker`: Teams/Inbox surface hidden/blocked.
+Stop only when:
+1. A destructive action is required.
+2. A product decision is required.
+3. Secrets/credentials are required.
+
+Completion criteria:
+1. The failing command used for verification passes.
+2. Related tests pass.
+
+## Test Hook Policy
+For test validation gates, use `pre-commit` and `pre-push`.
+Treat both hook stages as required checks when available.

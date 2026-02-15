@@ -1,0 +1,24 @@
+[[file]]
+path = "src/app.rs"
+owner = "tui-core"
+domains = ["navigation-state", "timeline-summary-orchestration", "interaction-flow"]
+
+[[file]]
+path = "src/config.rs"
+owner = "tui-config"
+domains = ["runtime-config-io", "settings-layout", "timeline-intelligence-settings"]
+
+[[file]]
+path = "src/lib.rs"
+owner = "tui-runtime"
+domains = ["event-loop", "async-bridge", "launch-flags"]
+
+[[file]]
+path = "src/timeline_summary.rs"
+owner = "tui-summary"
+domains = ["llm-provider-adapters", "summary-prompting", "summary-payload-parsing"]
+
+[[file]]
+path = "src/views/session_detail.rs"
+owner = "tui-detail-view"
+domains = ["detail-rendering", "task-lane-aggregation", "summary-card-rendering"]

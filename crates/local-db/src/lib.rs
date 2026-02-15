@@ -55,6 +55,10 @@ const LOCAL_MIGRATIONS: &[Migration] = &[
         "local_0002_drop_unused_local_sessions",
         include_str!("../migrations/local_0002_drop_unused_local_sessions.sql"),
     ),
+    (
+        "local_0003_timeline_summary_cache",
+        include_str!("../migrations/local_0003_timeline_summary_cache.sql"),
+    ),
 ];
 
 /// A local session row stored in the local SQLite database.
@@ -103,6 +107,17 @@ pub struct CommitLink {
     pub repo_path: Option<String>,
     pub branch: Option<String>,
     pub created_at: String,
+}
+
+/// A cached timeline summary row stored in local DB.
+#[derive(Debug, Clone)]
+pub struct TimelineSummaryCacheRow {
+    pub lookup_key: String,
+    pub namespace: String,
+    pub compact: String,
+    pub payload: String,
+    pub raw: String,
+    pub cached_at: String,
 }
 
 /// Return true when a cached row corresponds to an OpenCode child session.
@@ -1018,6 +1033,67 @@ impl LocalDb {
         Ok(body)
     }
 
+    // ── Timeline summary cache ────────────────────────────────────────
+
+    pub fn upsert_timeline_summary_cache(
+        &self,
+        lookup_key: &str,
+        namespace: &str,
+        compact: &str,
+        payload: &str,
+        raw: &str,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO timeline_summary_cache \
+             (lookup_key, namespace, compact, payload, raw, cached_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+             ON CONFLICT(lookup_key) DO UPDATE SET \
+               namespace = excluded.namespace, \
+               compact = excluded.compact, \
+               payload = excluded.payload, \
+               raw = excluded.raw, \
+               cached_at = datetime('now')",
+            params![lookup_key, namespace, compact, payload, raw],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_timeline_summary_cache_by_namespace(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<TimelineSummaryCacheRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT lookup_key, namespace, compact, payload, raw, cached_at \
+             FROM timeline_summary_cache \
+             WHERE namespace = ?1 \
+             ORDER BY cached_at DESC",
+        )?;
+        let rows = stmt.query_map(params![namespace], |row| {
+            Ok(TimelineSummaryCacheRow {
+                lookup_key: row.get(0)?,
+                namespace: row.get(1)?,
+                compact: row.get(2)?,
+                payload: row.get(3)?,
+                raw: row.get(4)?,
+                cached_at: row.get(5)?,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn clear_timeline_summary_cache(&self) -> Result<usize> {
+        let affected = self
+            .conn()
+            .execute("DELETE FROM timeline_summary_cache", [])?;
+        Ok(affected)
+    }
+
     // ── Migration helper ───────────────────────────────────────────────
 
     /// Migrate entries from the old state.json UploadState into the local DB.
@@ -1446,6 +1522,7 @@ fn default_db_path() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    use std::collections::BTreeSet;
     use std::fs::{create_dir_all, write};
     use tempfile::tempdir;
 
@@ -1903,6 +1980,71 @@ mod tests {
         assert_eq!(
             db.get_cached_body("s1").unwrap(),
             Some(b"hello world".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_timeline_summary_cache_roundtrip() {
+        let db = test_db();
+        db.upsert_timeline_summary_cache(
+            "k1",
+            "timeline:v1",
+            "compact text",
+            "{\"kind\":\"turn-summary\"}",
+            "raw text",
+        )
+        .unwrap();
+
+        let rows = db
+            .list_timeline_summary_cache_by_namespace("timeline:v1")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].lookup_key, "k1");
+        assert_eq!(rows[0].namespace, "timeline:v1");
+        assert_eq!(rows[0].compact, "compact text");
+        assert_eq!(rows[0].payload, "{\"kind\":\"turn-summary\"}");
+        assert_eq!(rows[0].raw, "raw text");
+
+        let cleared = db.clear_timeline_summary_cache().unwrap();
+        assert_eq!(cleared, 1);
+        let rows_after = db
+            .list_timeline_summary_cache_by_namespace("timeline:v1")
+            .unwrap();
+        assert!(rows_after.is_empty());
+    }
+
+    #[test]
+    fn test_local_migrations_include_timeline_summary_cache() {
+        let db = test_db();
+        let conn = db.conn();
+        let applied: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM _migrations WHERE name = ?1",
+                params!["local_0003_timeline_summary_cache"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(applied);
+    }
+
+    #[test]
+    fn test_local_migration_files_match_api_local_migrations() {
+        fn collect_local_sql(dir: PathBuf) -> BTreeSet<String> {
+            std::fs::read_dir(dir)
+                .expect("read migrations directory")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .filter(|name| name.starts_with("local_") && name.ends_with(".sql"))
+                .collect()
+        }
+
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let local_files = collect_local_sql(manifest_dir.join("migrations"));
+        let api_files = collect_local_sql(manifest_dir.join("../api/migrations"));
+
+        assert_eq!(
+            local_files, api_files,
+            "local-db local migrations must stay in parity with api local migrations"
         );
     }
 

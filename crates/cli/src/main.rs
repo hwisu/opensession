@@ -17,6 +17,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::output::OutputFormat;
 
@@ -521,27 +522,207 @@ fn try_launch_external_tui(scope: &InteractiveScope) -> Result<bool> {
         InteractiveScope::File { path } => vec![path.clone()],
     };
 
-    let status = match Command::new("opensession-tui").args(&args).status() {
-        Ok(status) => status,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err).context("failed to launch opensession-tui"),
+    for candidate in opensession_tui_launch_candidates() {
+        let status = match launch_tui_candidate(&candidate, &args) {
+            Ok(status) => status,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to launch {}", candidate.display()));
+            }
+        };
+
+        if status.success() {
+            return Ok(true);
+        }
+        bail!("{} exited with status {status}", candidate.display());
+    }
+
+    Ok(false)
+}
+
+fn opensession_tui_launch_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let sibling = dir.join("opensession-tui");
+            if sibling.exists() {
+                candidates.push(sibling);
+            }
+
+            let sibling_exe = dir.join("opensession-tui.exe");
+            if sibling_exe.exists() {
+                candidates.push(sibling_exe);
+            }
+        }
+    }
+
+    candidates.push(PathBuf::from("opensession-tui"));
+    candidates
+}
+
+fn launch_tui_candidate(
+    candidate: &Path,
+    args: &[String],
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut retries = 0u8;
+    loop {
+        match Command::new(candidate).args(args).status() {
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock && retries < 1 => {
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            result => return result,
+        }
+    }
+}
+
+const INTERNAL_TURN_SUMMARY_MARKERS: &[&str] = &[
+    "you are generating a turn-summary payload",
+    "you are generating a hail-summary payload",
+    "generate a turn-summary payload",
+    "generate turn summary payload",
+    "summarize this coding timeline window",
+    "respond exactly: {\"kind\":\"hail-summary\"",
+    "return turn-summary json",
+    "return json only (no markdown, no prose)",
+    "\"kind\":\"turn-summary\"",
+    "turn-summary payload",
+    "\"kind\":\"hail-summary\"",
+    "hail-summary payload",
+];
+
+fn is_internal_turn_summary_text(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    let compact = normalized
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    let contains_marker = |marker: &str| {
+        let marker_compact = marker
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        normalized.contains(marker) || compact.contains(&marker_compact)
     };
 
-    if status.success() {
-        Ok(true)
-    } else {
-        bail!("opensession-tui exited with status {status}");
+    if INTERNAL_TURN_SUMMARY_MARKERS
+        .iter()
+        .any(|marker| contains_marker(marker))
+    {
+        return true;
     }
+
+    let has_turn_summary = contains_marker("turn-summary") || contains_marker("turn summary");
+    let has_json_only = contains_marker("return json only")
+        || contains_marker("no markdown, no prose")
+        || contains_marker("\"kind\":\"turn-summary\"");
+
+    has_turn_summary && has_json_only
+}
+
+struct SessionVisibility<'a> {
+    session_id: &'a str,
+    tool: &'a str,
+    title: Option<&'a str>,
+    description: Option<&'a str>,
+    message_count: i64,
+    user_message_count: i64,
+    task_count: i64,
+    event_count: i64,
+}
+
+fn should_hide_internal_summary_session(row: &SessionVisibility<'_>) -> bool {
+    if row.message_count > 4 || row.user_message_count > 1 {
+        return false;
+    }
+    let display_title = row.title.unwrap_or(row.session_id);
+
+    if is_internal_turn_summary_text(display_title)
+        || row.description.is_some_and(is_internal_turn_summary_text)
+        || (row.message_count <= 2 && is_probably_session_uuid(display_title))
+    {
+        return true;
+    }
+
+    let title_blank = row.title.is_none_or(|value| value.trim().is_empty());
+    let description_blank = row.description.is_none_or(|value| value.trim().is_empty());
+
+    if row.tool == "codex"
+        && title_blank
+        && description_blank
+        && row.user_message_count <= 0
+        && row.message_count <= 2
+        && row.task_count <= 2
+        && row.event_count <= 8
+    {
+        return true;
+    }
+
+    if row.tool == "claude-code"
+        && display_title
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("rollout-")
+        && row.user_message_count <= 0
+        && row.message_count <= 0
+    {
+        return true;
+    }
+
+    false
+}
+
+fn is_probably_session_uuid(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.len() != 36 {
+        return false;
+    }
+
+    for (idx, ch) in trimmed.chars().enumerate() {
+        let is_dash_slot = matches!(idx, 8 | 13 | 18 | 23);
+        if is_dash_slot {
+            if ch != '-' {
+                return false;
+            }
+        } else if !ch.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn print_session_overview(repo_name: Option<String>) -> Result<()> {
     let db = opensession_local_db::LocalDb::open()?;
     let filter = opensession_local_db::LocalSessionFilter {
         git_repo_name: repo_name.clone(),
-        limit: Some(30),
+        limit: Some(120),
         ..Default::default()
     };
     let rows = db.list_sessions(&filter)?;
+    let filtered_rows = rows
+        .into_iter()
+        .filter(|row| {
+            let visibility = SessionVisibility {
+                session_id: &row.id,
+                tool: &row.tool,
+                title: row.title.as_deref(),
+                description: row.description.as_deref(),
+                message_count: row.message_count,
+                user_message_count: row.user_message_count,
+                task_count: row.task_count,
+                event_count: row.event_count,
+            };
+            !should_hide_internal_summary_session(&visibility)
+        })
+        .take(30)
+        .collect::<Vec<_>>();
 
     if let Some(repo) = repo_name {
         println!("Scope: repo={repo}");
@@ -549,7 +730,7 @@ fn print_session_overview(repo_name: Option<String>) -> Result<()> {
         println!("Scope: local");
     }
 
-    if rows.is_empty() {
+    if filtered_rows.is_empty() {
         println!("No sessions found in this scope.");
         return Ok(());
     }
@@ -558,7 +739,7 @@ fn print_session_overview(repo_name: Option<String>) -> Result<()> {
         "{:<19}  {:<12}  {:>4}  {:<24}  Title",
         "Created", "Tool", "Msgs", "Repo"
     );
-    for row in rows {
+    for row in filtered_rows {
         let created = row
             .created_at
             .split('T')
@@ -728,4 +909,171 @@ async fn run_daemon_health() -> anyhow::Result<()> {
     server::run_status().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_internal_turn_summary_text, is_probably_session_uuid,
+        should_hide_internal_summary_session, SessionVisibility,
+    };
+    use std::{fs, path::Path};
+
+    fn visibility<'a>(
+        session_id: &'a str,
+        tool: &'a str,
+        title: Option<&'a str>,
+        description: Option<&'a str>,
+        message_count: i64,
+        user_message_count: i64,
+        task_count: i64,
+        event_count: i64,
+    ) -> SessionVisibility<'a> {
+        SessionVisibility {
+            session_id,
+            tool,
+            title,
+            description,
+            message_count,
+            user_message_count,
+            task_count,
+            event_count,
+        }
+    }
+
+    #[test]
+    fn internal_summary_prompt_title_is_detected() {
+        let text =
+            "You are generating a turn-summary payload. Return JSON only (no markdown, no prose).";
+        assert!(is_internal_turn_summary_text(text));
+    }
+
+    #[test]
+    fn regular_user_title_is_not_detected() {
+        let text = "Summarize migration risks for this release";
+        assert!(!is_internal_turn_summary_text(text));
+    }
+
+    #[test]
+    fn low_message_internal_session_is_hidden() {
+        assert!(should_hide_internal_summary_session(&visibility(
+            "session-1",
+            "codex",
+            Some("You are generating a turn-summary payload. Return JSON only."),
+            None,
+            2,
+            1,
+            1,
+            4
+        )));
+    }
+
+    #[test]
+    fn normal_session_is_kept() {
+        assert!(!should_hide_internal_summary_session(&visibility(
+            "session-2",
+            "codex",
+            Some("Fix OAuth redirect URI mismatch"),
+            None,
+            8,
+            4,
+            3,
+            12
+        )));
+    }
+
+    #[test]
+    fn hail_summary_prompt_title_is_detected() {
+        let text = "Respond exactly: {\"kind\":\"HAIL-summary\",\"version\":\"1.0\"}";
+        assert!(is_internal_turn_summary_text(text));
+    }
+
+    #[test]
+    fn uuid_title_is_hidden_only_for_low_message_rows() {
+        let uuid = "019c5c24-597c-7ca3-a005-aef3c8f1ecfd";
+        assert!(is_probably_session_uuid(uuid));
+        assert!(should_hide_internal_summary_session(&visibility(
+            uuid,
+            "codex",
+            Some(uuid),
+            None,
+            2,
+            1,
+            1,
+            4
+        )));
+        assert!(!should_hide_internal_summary_session(&visibility(
+            uuid,
+            "codex",
+            Some(uuid),
+            None,
+            9,
+            3,
+            3,
+            14
+        )));
+    }
+
+    #[test]
+    fn empty_title_tiny_codex_control_row_is_hidden() {
+        assert!(should_hide_internal_summary_session(&visibility(
+            "session-3",
+            "codex",
+            None,
+            None,
+            2,
+            0,
+            1,
+            4
+        )));
+    }
+
+    #[test]
+    fn non_codex_empty_title_row_is_not_hidden_by_codex_heuristic() {
+        assert!(!should_hide_internal_summary_session(&visibility(
+            "session-4",
+            "cursor",
+            None,
+            None,
+            2,
+            0,
+            1,
+            4
+        )));
+    }
+
+    #[test]
+    fn rollout_stub_row_is_hidden() {
+        assert!(should_hide_internal_summary_session(&visibility(
+            "rollout-2026-02-14T14-28-17-019c5a9f-081b-7c30-a798-4b4930c20195",
+            "claude-code",
+            None,
+            None,
+            0,
+            0,
+            0,
+            0
+        )));
+    }
+
+    #[test]
+    fn workspace_members_include_tui_crate() {
+        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+        let manifest_str = fs::read_to_string(&workspace_manifest)
+            .expect("read workspace Cargo.toml for membership check");
+        let manifest: toml::Value =
+            toml::from_str(&manifest_str).expect("parse workspace Cargo.toml");
+        let members = manifest
+            .get("workspace")
+            .and_then(|workspace| workspace.get("members"))
+            .and_then(toml::Value::as_array)
+            .expect("workspace.members must exist");
+
+        assert!(
+            members
+                .iter()
+                .any(|value| value.as_str() == Some("crates/tui")),
+            "workspace.members must include crates/tui"
+        );
+    }
 }

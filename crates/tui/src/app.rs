@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use opensession_api::{
@@ -6730,8 +6732,108 @@ impl App {
     }
 
     pub fn schedule_detail_summary_jobs(&mut self) -> Option<AsyncCommand> {
-        let _ = self;
-        None
+        if self.view != View::SessionDetail {
+            return None;
+        }
+
+        let session = self.selected_session().cloned()?;
+        self.ensure_summary_ready_for_session(&session);
+        if !self.summary_allowed_for_session(&session) {
+            return None;
+        }
+
+        if self.detail_entered_at.elapsed() < Self::detail_summary_warmup_duration() {
+            return None;
+        }
+
+        self.prune_stale_summary_inflight();
+
+        let base = self.get_base_visible_events(&session);
+        if base.is_empty() {
+            return None;
+        }
+        let anchors = self.build_summary_anchors(&session, &base);
+        if anchors.is_empty() {
+            return None;
+        }
+
+        let viewport_end = self
+            .detail_event_index
+            .saturating_add(self.detail_viewport_height as usize)
+            .saturating_add(4);
+
+        for anchor in anchors {
+            if self.timeline_summary_cache.contains_key(&anchor.key)
+                || self.pending_summary_contains(&anchor.key)
+                || self.timeline_summary_inflight.contains(&anchor.key)
+            {
+                continue;
+            }
+
+            let context = self.build_summary_context(&session, &base, &anchor);
+            if context.trim().is_empty() {
+                continue;
+            }
+
+            let cache_lookup_key = self.summary_cache_lookup_key(&anchor.key, &context);
+            if let Some(ref lookup_key) = cache_lookup_key {
+                if self.maybe_use_summary_disk_cache(&anchor.key, lookup_key) {
+                    continue;
+                }
+            }
+
+            let visible_priority = anchor.display_index <= viewport_end;
+            self.timeline_summary_pending
+                .push_back(TimelineSummaryWindowRequest {
+                    key: anchor.key,
+                    context,
+                    visible_priority,
+                    cache_lookup_key,
+                });
+        }
+
+        if self.timeline_summary_pending.is_empty() {
+            return None;
+        }
+
+        let max_inflight = self.daemon_config.daemon.summary_max_inflight.max(1) as usize;
+        if self.timeline_summary_inflight.len() >= max_inflight {
+            return None;
+        }
+
+        let debounce_ms = self.daemon_config.daemon.summary_debounce_ms.max(50);
+        if let Some(last) = self.last_summary_request_at {
+            if last.elapsed() < Duration::from_millis(debounce_ms) {
+                return None;
+            }
+        }
+
+        let next_index = self
+            .timeline_summary_pending
+            .iter()
+            .position(|request| request.visible_priority)
+            .unwrap_or(0);
+        let request = self.timeline_summary_pending.remove(next_index)?;
+
+        if let Some(ref lookup_key) = request.cache_lookup_key {
+            self.timeline_summary_lookup_keys
+                .insert(request.key.clone(), lookup_key.clone());
+        } else {
+            self.timeline_summary_lookup_keys.remove(&request.key);
+        }
+
+        self.timeline_summary_inflight.insert(request.key.clone());
+        self.timeline_summary_inflight_started
+            .insert(request.key.clone(), Instant::now());
+        self.last_summary_request_at = Some(Instant::now());
+
+        Some(AsyncCommand::GenerateTimelineSummary {
+            key: request.key,
+            epoch: self.timeline_summary_epoch,
+            provider: self.daemon_config.daemon.summary_provider.clone(),
+            context: request.context,
+            agent_tool: session.agent.tool.clone(),
+        })
     }
 
     pub fn turn_summary_key(
@@ -7090,18 +7192,36 @@ impl App {
     }
 
     pub fn llm_summary_status_label(&self) -> String {
-        let _ = self;
-        "off".to_string()
+        let Some(session) = self.selected_session() else {
+            return "off".to_string();
+        };
+        if !self.summary_allowed_for_session(session) {
+            return "off".to_string();
+        }
+        "on".to_string()
     }
 
     pub fn llm_summary_engine_label(&self) -> String {
-        let _ = self;
-        "backend:disabled".to_string()
+        if self.llm_summary_status_label() != "on" {
+            return "backend:disabled".to_string();
+        }
+        describe_summary_engine(
+            self.daemon_config.daemon.summary_provider.as_deref(),
+            Some(&self.summary_runtime_config()),
+        )
+        .unwrap_or_else(|_| "backend:unavailable".to_string())
     }
 
     pub fn llm_summary_runtime_badge(&self) -> String {
-        let _ = self;
-        "timeline-analysis:off".to_string()
+        if self.llm_summary_status_label() != "on" {
+            return "timeline-analysis:off".to_string();
+        }
+        format!(
+            "timeline-analysis:on (cache:{} pending:{} inflight:{})",
+            self.timeline_summary_cache.len(),
+            self.timeline_summary_pending.len(),
+            self.timeline_summary_inflight.len()
+        )
     }
 
     pub fn take_detail_hydrate_path(&mut self) -> Option<PathBuf> {

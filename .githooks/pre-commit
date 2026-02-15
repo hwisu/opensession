@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pre-commit hook: keep this fast so commits stay snappy
+# Pre-commit hook: keep this fast as an early validation gate
 set -e
 
 ROOT_DIR=$(pwd)
@@ -33,7 +33,7 @@ LOCK_HASH_AFTER=$(shasum Cargo.lock 2>/dev/null || echo "none")
 if [ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]; then
   echo ""
   echo "ERROR: Cargo.lock was modified during pre-commit checks."
-  echo "Please stage the updated Cargo.lock and commit again:"
+  echo "Please stage the updated Cargo.lock and re-run pre-commit:"
   echo "  git add Cargo.lock && git commit"
   exit 1
 fi

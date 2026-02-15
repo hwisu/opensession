@@ -26,10 +26,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("── Global ──", header_style)),
         Line::from(vec![
             Span::styled("  1/2/3     ", key_style),
-            Span::styled(
-                "Switch tabs (Sessions/Collaboration/Settings)",
-                desc_style,
-            ),
+            Span::styled("Switch tabs (Sessions/Collaboration/Settings)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  ?         ", key_style),

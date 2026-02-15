@@ -101,9 +101,9 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
 
     // ── Load full daemon config ──────────────────────────────────────
     let mut daemon_config = config::load_daemon_config();
-    // Timeline Intelligence feature removed: force-disable summary/live auto-refresh.
-    daemon_config.daemon.summary_enabled = false;
-    daemon_config.daemon.detail_realtime_preview_enabled = false;
+    if let Some(summary_override) = options.summary_override.as_ref() {
+        apply_summary_launch_override(&mut daemon_config, summary_override);
+    }
     let config_exists = config::config_dir()
         .map(|d| d.join("opensession.toml").exists())
         .unwrap_or(false);
@@ -116,7 +116,7 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
         Some(daemon_config.identity.team_id.clone())
     };
     app.daemon_config = daemon_config;
-    app.realtime_preview_enabled = false;
+    app.realtime_preview_enabled = app.daemon_config.daemon.detail_realtime_preview_enabled;
     app.connection_ctx = App::derive_connection_ctx(&app.daemon_config);
     app.focus_detail_view = options.focus_detail_view;
 
@@ -510,6 +510,7 @@ fn event_loop(
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let mut auto_enter_detail_pending = auto_enter_detail;
+    let (summary_tx, summary_rx) = mpsc::channel::<async_ops::CommandResult>();
 
     loop {
         // ── Poll background session loading ──────────────────────────
@@ -539,6 +540,10 @@ fn event_loop(
         if auto_enter_detail_pending && !app.loading_sessions && !app.sessions.is_empty() {
             app.enter_detail_for_startup();
             auto_enter_detail_pending = false;
+        }
+
+        while let Ok(result) = summary_rx.try_recv() {
+            app.apply_command_result(result);
         }
 
         if app.focus_detail_view
@@ -650,6 +655,10 @@ fn event_loop(
             app.apply_live_update_batch(batch);
         }
 
+        if let Some(cmd) = app.schedule_detail_summary_jobs() {
+            spawn_summary_worker(cmd, app.daemon_config.clone(), summary_tx.clone());
+        }
+
         terminal.draw(|frame| ui::render(frame, app))?;
 
         // ── Deferred health check (runs once, after first render) ────
@@ -663,14 +672,12 @@ fn event_loop(
             }
         }
 
-        let mut handled_user_input = false;
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    handled_user_input = true;
                     if app.handle_key(key.code) {
                         break;
                     }
@@ -679,7 +686,6 @@ fn event_loop(
                     if !mouse_capture_enabled {
                         continue;
                     }
-                    handled_user_input = true;
                     if app.handle_mouse(mouse) {
                         break;
                     }
@@ -687,8 +693,6 @@ fn event_loop(
                 _ => {}
             }
         }
-
-        // Timeline Intelligence feature removed.
     }
     Ok(())
 }

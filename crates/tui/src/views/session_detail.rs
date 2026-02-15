@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::app::{extract_visible_turns, App, DisplayEvent, EventFilter};
 use crate::session_timeline::LaneMarker;
 use crate::theme::{self, Theme};
@@ -3633,19 +3635,20 @@ fn parse_structured_turn_log_summary_json(
     value: &serde_json::Value,
 ) -> Option<StructuredTurnLogSummary> {
     let obj = value.as_object()?;
-    let mut summary = StructuredTurnLogSummary::default();
-    summary.timestamp = extract_structured_text(obj, &["ts", "timestamp", "time"])
-        .and_then(|value| normalize_structured_timestamp(&value));
-    summary.lane =
-        extract_structured_text(obj, &["lane"]).and_then(|value| normalize_structured_lane(&value));
-    summary.event_kind = extract_structured_text(obj, &["type", "event_type", "event", "kind"])
-        .and_then(|value| normalize_structured_event_kind(&value));
-    summary.task = extract_structured_text(obj, &["task", "task_id", "subagent_id"])
-        .and_then(|value| normalize_structured_task(&value));
-    summary.summary = extract_structured_value(obj, &["summary", "message", "text"])
-        .and_then(|value| json_value_hint(value, 140))
-        .map(|value| compact_text_snippet(&value, 140))
-        .filter(|value| !value.is_empty());
+    let summary = StructuredTurnLogSummary {
+        timestamp: extract_structured_text(obj, &["ts", "timestamp", "time"])
+            .and_then(|value| normalize_structured_timestamp(&value)),
+        lane: extract_structured_text(obj, &["lane"])
+            .and_then(|value| normalize_structured_lane(&value)),
+        event_kind: extract_structured_text(obj, &["type", "event_type", "event", "kind"])
+            .and_then(|value| normalize_structured_event_kind(&value)),
+        task: extract_structured_text(obj, &["task", "task_id", "subagent_id"])
+            .and_then(|value| normalize_structured_task(&value)),
+        summary: extract_structured_value(obj, &["summary", "message", "text"])
+            .and_then(|value| json_value_hint(value, 140))
+            .map(|value| compact_text_snippet(&value, 140))
+            .filter(|value| !value.is_empty()),
+    };
 
     let has_frame = summary.timestamp.is_some() || summary.lane.is_some() || summary.task.is_some();
     let has_payload = summary.summary.is_some() || summary.event_kind.is_some();
@@ -3732,10 +3735,7 @@ fn normalize_structured_event_kind(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let normalized = trimmed
-        .to_ascii_lowercase()
-        .replace('_', "-")
-        .replace(' ', "-");
+    let normalized = trimmed.to_ascii_lowercase().replace(['_', ' '], "-");
     Some(compact_text_snippet(&normalized, 12))
 }
 

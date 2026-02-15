@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -5,7 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 // Re-export shared runtime config types
 pub use opensession_runtime_config::{
-    apply_compat_fallbacks, CalendarDisplayMode, DaemonConfig, GitStorageMethod, CONFIG_FILE_NAME,
+    apply_compat_fallbacks, CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
+    CONFIG_FILE_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

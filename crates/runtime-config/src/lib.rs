@@ -44,6 +44,53 @@ pub struct DaemonSettings {
     /// Enable realtime file preview refresh in TUI session detail.
     #[serde(default = "default_detail_realtime_preview_enabled")]
     pub detail_realtime_preview_enabled: bool,
+    /// Enable timeline/event summary generation in TUI detail view.
+    #[serde(default = "default_false")]
+    pub summary_enabled: bool,
+    /// Summary engine/provider selection.
+    /// Examples: `anthropic`, `openai`, `openai-compatible`, `gemini`, `cli:auto`, `cli:codex`.
+    #[serde(default)]
+    pub summary_provider: Option<String>,
+    /// Optional model override for summary generation.
+    #[serde(default)]
+    pub summary_model: Option<String>,
+    /// Summary verbosity mode (`normal` or `minimal`).
+    #[serde(default = "default_summary_content_mode")]
+    pub summary_content_mode: String,
+    /// Persist summary cache entries on disk/local DB.
+    #[serde(default = "default_true")]
+    pub summary_disk_cache_enabled: bool,
+    /// OpenAI-compatible endpoint full URL override.
+    #[serde(default)]
+    pub summary_openai_compat_endpoint: Option<String>,
+    /// OpenAI-compatible base URL override.
+    #[serde(default)]
+    pub summary_openai_compat_base: Option<String>,
+    /// OpenAI-compatible path override.
+    #[serde(default)]
+    pub summary_openai_compat_path: Option<String>,
+    /// OpenAI-compatible payload style (`chat` or `responses`).
+    #[serde(default)]
+    pub summary_openai_compat_style: Option<String>,
+    /// OpenAI-compatible API key.
+    #[serde(default)]
+    pub summary_openai_compat_key: Option<String>,
+    /// OpenAI-compatible API key header (default `Authorization` when omitted).
+    #[serde(default)]
+    pub summary_openai_compat_key_header: Option<String>,
+    /// Number of events to include in each summary window.
+    /// `0` means adaptive mode.
+    #[serde(default = "default_summary_event_window")]
+    pub summary_event_window: u32,
+    /// Debounce before dispatching summary jobs.
+    #[serde(default = "default_summary_debounce_ms")]
+    pub summary_debounce_ms: u64,
+    /// Max concurrent summary jobs.
+    #[serde(default = "default_summary_max_inflight")]
+    pub summary_max_inflight: u32,
+    /// Internal one-way migration marker for summary window v2 semantics.
+    #[serde(default = "default_false")]
+    pub summary_window_migrated_v2: bool,
 }
 
 impl Default for DaemonSettings {
@@ -56,6 +103,21 @@ impl Default for DaemonSettings {
             health_check_interval_secs: 300,
             realtime_debounce_ms: 500,
             detail_realtime_preview_enabled: false,
+            summary_enabled: false,
+            summary_provider: None,
+            summary_model: None,
+            summary_content_mode: default_summary_content_mode(),
+            summary_disk_cache_enabled: true,
+            summary_openai_compat_endpoint: None,
+            summary_openai_compat_base: None,
+            summary_openai_compat_path: None,
+            summary_openai_compat_style: None,
+            summary_openai_compat_key: None,
+            summary_openai_compat_key_header: None,
+            summary_event_window: default_summary_event_window(),
+            summary_debounce_ms: default_summary_debounce_ms(),
+            summary_max_inflight: default_summary_max_inflight(),
+            summary_window_migrated_v2: false,
         }
     }
 }
@@ -232,6 +294,18 @@ fn default_detail_realtime_preview_enabled() -> bool {
 fn default_publish_on() -> PublishMode {
     PublishMode::Manual
 }
+fn default_summary_content_mode() -> String {
+    "normal".to_string()
+}
+fn default_summary_event_window() -> u32 {
+    0
+}
+fn default_summary_debounce_ms() -> u64 {
+    250
+}
+fn default_summary_max_inflight() -> u32 {
+    2
+}
 fn default_server_url() -> String {
     "https://opensession.io".to_string()
 }
@@ -378,5 +452,48 @@ method = "native"
         assert!(!encoded.contains("\nclaude_code ="));
         assert!(!encoded.contains("\nopencode ="));
         assert!(!encoded.contains("\ncursor ="));
+    }
+
+    #[test]
+    fn daemon_summary_defaults_are_stable() {
+        let cfg = DaemonConfig::default();
+        assert!(!cfg.daemon.summary_enabled);
+        assert_eq!(cfg.daemon.summary_provider, None);
+        assert_eq!(cfg.daemon.summary_model, None);
+        assert_eq!(cfg.daemon.summary_content_mode, "normal");
+        assert!(cfg.daemon.summary_disk_cache_enabled);
+        assert_eq!(cfg.daemon.summary_event_window, 0);
+        assert_eq!(cfg.daemon.summary_debounce_ms, 250);
+        assert_eq!(cfg.daemon.summary_max_inflight, 2);
+        assert!(!cfg.daemon.summary_window_migrated_v2);
+    }
+
+    #[test]
+    fn daemon_summary_fields_deserialize_from_toml() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[daemon]
+summary_enabled = true
+summary_provider = "openai"
+summary_model = "gpt-4o-mini"
+summary_content_mode = "minimal"
+summary_disk_cache_enabled = false
+summary_event_window = 8
+summary_debounce_ms = 100
+summary_max_inflight = 4
+summary_window_migrated_v2 = false
+"#,
+        )
+        .expect("parse summary config");
+
+        assert!(cfg.daemon.summary_enabled);
+        assert_eq!(cfg.daemon.summary_provider.as_deref(), Some("openai"));
+        assert_eq!(cfg.daemon.summary_model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(cfg.daemon.summary_content_mode, "minimal");
+        assert!(!cfg.daemon.summary_disk_cache_enabled);
+        assert_eq!(cfg.daemon.summary_event_window, 8);
+        assert_eq!(cfg.daemon.summary_debounce_ms, 100);
+        assert_eq!(cfg.daemon.summary_max_inflight, 4);
+        assert!(!cfg.daemon.summary_window_migrated_v2);
     }
 }

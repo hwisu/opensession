@@ -11,6 +11,7 @@ members = [
     "crates/server",
     "crates/daemon",
     "crates/cli",
+    "crates/tui",
     "crates/e2e",
 ]
 default-members = [

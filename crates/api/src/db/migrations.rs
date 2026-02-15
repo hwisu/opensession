@@ -20,6 +20,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0003_max_active_agents",
         include_str!("../../migrations/0003_max_active_agents.sql"),
     ),
+    (
+        "0004_oauth_states_provider",
+        include_str!("../../migrations/0004_oauth_states_provider.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).

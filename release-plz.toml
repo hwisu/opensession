@@ -43,17 +43,20 @@ publish = true
 [[package]]
 name = "opensession-server"
 publish = false
+release = false
 git_release_enable = false
 git_tag_enable = false
 
 [[package]]
 name = "opensession-daemon"
 publish = false
+release = false
 git_release_enable = false
 git_tag_enable = false
 
 [[package]]
 name = "opensession-e2e"
 publish = false
+release = false
 git_release_enable = false
 git_tag_enable = false

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish = false
 description = "Background daemon for automatic session detection and upload"
 keywords = ["ai", "session", "daemon", "opensession"]
 categories = ["command-line-utilities", "development-tools"]

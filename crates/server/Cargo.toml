@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish = false
 description = "Self-hosted server for opensession.io (Axum + SQLite)"
 keywords = ["ai", "session", "server", "opensession"]
 categories = ["web-programming::http-server", "development-tools"]

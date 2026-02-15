@@ -631,8 +631,15 @@ fn event_loop(
 
         // ── Lazy hydrate stub sessions from source_path on first detail enter ──
         if let Some(path) = app.take_detail_hydrate_path() {
-            if let Some(reloaded) = parse_single_session(&path) {
-                app.apply_reloaded_session(reloaded);
+            match parse_single_session(&path) {
+                Ok(reloaded) => {
+                    app.apply_reloaded_session(reloaded);
+                }
+                Err(err) => {
+                    let message = format!("Hydration skipped: {err}");
+                    app.record_selected_session_detail_issue(message.clone());
+                    app.flash_error(message);
+                }
             }
         }
 
@@ -956,14 +963,24 @@ fn load_sessions() -> Vec<LoadedSession> {
     sessions
 }
 
-fn parse_single_session(path: &Path) -> Option<opensession_core::trace::Session> {
+fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session, String> {
     let parsers = opensession_parsers::all_parsers();
-    let parser = parsers.iter().find(|p| p.can_parse(path))?;
-    let session = parser.parse(path).ok()?;
+    let Some(parser) = parsers.iter().find(|p| p.can_parse(path)) else {
+        return Err(format!("no parser matched {}", path.display()));
+    };
+    let session = parser
+        .parse(path)
+        .map_err(|err| format!("parse failed ({}): {err}", parser.name()))?;
     if session.stats.event_count == 0 || App::is_internal_summary_session(&session) {
-        return None;
+        if let Some(hint) = App::source_error_hint(path) {
+            return Err(format!(
+                "parsed as 0 events ({}), detected source error: {hint}",
+                parser.name()
+            ));
+        }
+        return Err(format!("parsed as 0 events ({})", parser.name()));
     }
-    Some(session)
+    Ok(session)
 }
 
 #[cfg(test)]

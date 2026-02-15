@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -1189,6 +1189,52 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn source_error_hint_detects_recent_json_error() {
+        let unique = format!(
+            "ops-source-error-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("session.log");
+        std::fs::write(
+            &path,
+            "ok line\n{\"level\":\"error\",\"message\":\"parse exploded\"}\n",
+        )
+        .expect("write");
+
+        let hint = App::source_error_hint(&path).expect("error hint");
+        assert!(hint.contains("parse exploded"));
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn enter_detail_marks_zero_event_issue_and_blocks_summary() {
+        let session = Session::new(
+            "zero-event".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+
+        let mut app = App::new(vec![session]);
+        app.daemon_config.daemon.summary_enabled = true;
+        app.enter_detail();
+
+        let sid = app.sessions[0].session_id.clone();
+        let issue = app
+            .detail_issue_for_session(&sid)
+            .expect("detail issue should be recorded");
+        assert!(issue.contains("No parsed events"));
+        assert_eq!(app.llm_summary_status_label(), "off");
+    }
+
+    #[test]
     fn jump_to_latest_turn_uses_tail_scroll_anchor() {
         let session = make_live_session("turn-tail-anchor", 6);
         let mut app = App::new(vec![session]);
@@ -1396,6 +1442,7 @@ pub struct App {
     pub detail_source_path: Option<PathBuf>,
     pub detail_source_mtime: Option<SystemTime>,
     pub detail_hydrate_pending: bool,
+    pub session_detail_issues: HashMap<String, String>,
     pub realtime_preview_enabled: bool,
     pub live_mode: bool,
     pub follow_tail_linear: FollowTailState,
@@ -1552,7 +1599,7 @@ impl App {
     const DETAIL_SPLIT_MIN_WIDTH: u16 = 160;
     // Bump this when turn-summary prompt or parsing compatibility changes.
     // Changing this invalidates on-disk summary cache and forces regeneration.
-    const SUMMARY_DISK_CACHE_NAMESPACE: &str = "turn-summary-cache-v3";
+    const SUMMARY_DISK_CACHE_NAMESPACE: &str = "turn-summary-cache-v4";
     const SUMMARY_DISK_CACHE_FORCE_RESET_ENV: &str = "OPS_TL_SUM_CACHE_RESET";
     const INTERNAL_SUMMARY_TITLE_PREFIX: &str = "summarize this coding timeline window";
     const INTERNAL_SUMMARY_HARD_MARKERS: &[&str] = &[
@@ -1758,6 +1805,7 @@ impl App {
             detail_source_path: None,
             detail_source_mtime: None,
             detail_hydrate_pending: false,
+            session_detail_issues: HashMap::new(),
             realtime_preview_enabled: false,
             live_mode: false,
             follow_tail_linear: FollowTailState::default(),
@@ -4457,6 +4505,14 @@ impl App {
                 self.realtime_preview_enabled =
                     self.daemon_config.daemon.detail_realtime_preview_enabled;
                 if let Some(session) = self.selected_session().cloned() {
+                    if session.events.is_empty() && session.stats.event_count == 0 {
+                        self.set_session_detail_issue(
+                            session.session_id.clone(),
+                            self.build_zero_event_detail_issue(),
+                        );
+                    } else {
+                        self.clear_session_detail_issue(&session.session_id);
+                    }
                     self.ensure_summary_ready_for_session(&session);
                     self.live_last_event_at = session.events.last().map(|event| event.timestamp);
                 }
@@ -5806,11 +5862,178 @@ impl App {
         }
     }
 
+    fn set_session_detail_issue(&mut self, session_id: String, message: String) {
+        self.session_detail_issues.insert(session_id, message);
+    }
+
+    fn clear_session_detail_issue(&mut self, session_id: &str) {
+        self.session_detail_issues.remove(session_id);
+    }
+
+    pub fn detail_issue_for_session(&self, session_id: &str) -> Option<&str> {
+        self.session_detail_issues
+            .get(session_id)
+            .map(String::as_str)
+    }
+
+    pub fn record_selected_session_detail_issue(&mut self, message: String) {
+        let Some(session_id) = self
+            .selected_session()
+            .map(|session| session.session_id.clone())
+        else {
+            return;
+        };
+        self.set_session_detail_issue(session_id, message);
+    }
+
+    fn build_zero_event_detail_issue(&self) -> String {
+        if let Some(path) = self.detail_source_path.as_deref() {
+            if let Some(err) = Self::source_error_hint(path) {
+                return format!("No parsed events. detected source error: {err}");
+            }
+            return format!("No parsed events from source log: {}", path.display());
+        }
+        "No parsed events for this session.".to_string()
+    }
+
+    pub(crate) fn source_error_hint(path: &Path) -> Option<String> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let mut lines: Vec<&str> = raw.lines().collect();
+        if lines.len() > 400 {
+            lines = lines.split_off(lines.len() - 400);
+        }
+        for line in lines.into_iter().rev() {
+            if let Some(err) = Self::source_line_error_hint(line) {
+                return Some(err);
+            }
+        }
+        None
+    }
+
+    fn source_line_error_hint(line: &str) -> Option<String> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if !Self::json_looks_error(&value) {
+                return None;
+            }
+            if let Some(msg) = Self::json_error_message(&value) {
+                return Some(msg);
+            }
+            return Some(Self::clip_plain(trimmed, 220));
+        }
+
+        let lower = trimmed.to_ascii_lowercase();
+        let plain_error = lower.starts_with("error")
+            || lower.contains(" error:")
+            || lower.contains(" failed")
+            || lower.contains(" exception")
+            || lower.contains(" panic")
+            || lower.contains(" traceback");
+        if plain_error {
+            return Some(Self::clip_plain(trimmed, 220));
+        }
+        None
+    }
+
+    fn json_looks_error(value: &serde_json::Value) -> bool {
+        let Some(obj) = value.as_object() else {
+            return false;
+        };
+
+        let bool_error = obj
+            .get("is_error")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if bool_error {
+            return true;
+        }
+
+        let level_error = obj
+            .get("level")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "error" | "fatal"));
+        if level_error {
+            return true;
+        }
+
+        let status_error = obj
+            .get("status")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "error" | "failed"));
+        if status_error {
+            return true;
+        }
+
+        obj.contains_key("error") || obj.contains_key("exception") || obj.contains_key("stderr")
+    }
+
+    fn json_error_message(value: &serde_json::Value) -> Option<String> {
+        let obj = value.as_object()?;
+
+        for key in [
+            "error",
+            "exception",
+            "message",
+            "detail",
+            "stderr",
+            "summary",
+            "text",
+            "output",
+        ] {
+            let Some(field) = obj.get(key) else {
+                continue;
+            };
+            if let Some(msg) = field.as_str() {
+                let msg = msg.trim();
+                if !msg.is_empty() {
+                    return Some(Self::clip_plain(msg, 220));
+                }
+            }
+            if let Some(inner) = field
+                .as_object()
+                .and_then(|inner| inner.get("message"))
+                .and_then(|v| v.as_str())
+            {
+                let msg = inner.trim();
+                if !msg.is_empty() {
+                    return Some(Self::clip_plain(msg, 220));
+                }
+            }
+        }
+        None
+    }
+
+    fn clip_plain(text: &str, max_chars: usize) -> String {
+        let trimmed = text.trim();
+        if trimmed.chars().count() <= max_chars {
+            return trimmed.to_string();
+        }
+        let mut out = String::new();
+        for ch in trimmed.chars().take(max_chars.saturating_sub(1)) {
+            out.push(ch);
+        }
+        out.push('…');
+        out
+    }
+
     fn summary_allowed_for_session(&self, session: &Session) -> bool {
         if self.focus_detail_view || self.live_mode {
             return false;
         }
         if !self.daemon_config.daemon.summary_enabled {
+            return false;
+        }
+        if session.events.is_empty() {
+            return false;
+        }
+        if self
+            .session_detail_issues
+            .contains_key(session.session_id.as_str())
+        {
             return false;
         }
         self.summary_backend_unavailable_reason(session).is_none()
@@ -6946,13 +7169,22 @@ impl App {
     }
 
     pub fn llm_summary_status_label(&self) -> String {
-        if self.selected_session().is_none() {
+        let Some(session) = self.selected_session() else {
             return "off".to_string();
-        }
+        };
         if self.focus_detail_view || self.live_mode {
             return "off".to_string();
         }
         if !self.daemon_config.daemon.summary_enabled {
+            return "off".to_string();
+        }
+        if session.events.is_empty() {
+            return "off".to_string();
+        }
+        if self
+            .session_detail_issues
+            .contains_key(session.session_id.as_str())
+        {
             return "off".to_string();
         }
         if describe_summary_engine(
@@ -6992,11 +7224,16 @@ impl App {
         }
         self.detail_hydrate_pending = false;
 
-        let session = self.selected_session()?;
-        if !session.events.is_empty() || session.stats.event_count == 0 {
+        let session = self.selected_session().cloned()?;
+        if !session.events.is_empty() {
+            self.clear_session_detail_issue(&session.session_id);
             return None;
         }
-
+        if session.stats.event_count == 0 {
+            self.set_session_detail_issue(session.session_id, self.build_zero_event_detail_issue());
+            return None;
+        }
+        self.clear_session_detail_issue(&session.session_id);
         self.detail_source_path.clone()
     }
 
@@ -7020,6 +7257,7 @@ impl App {
             .retain(|key, _| key.session_id != sid);
         self.timeline_summary_lookup_keys
             .retain(|key, _| key.session_id != sid);
+        self.session_detail_issues.remove(&sid);
         self.detail_hydrate_pending = false;
         if let Some(session) = self.selected_session() {
             self.live_last_event_at = session.events.last().map(|event| event.timestamp);

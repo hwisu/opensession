@@ -45,9 +45,28 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut visible_events = app.get_visible_events(&session);
     let mut base_events = app.get_base_visible_events(&session);
     if visible_events.is_empty() {
-        let p = Paragraph::new("No events match the current filter.")
+        let mut lines = vec![Line::from(Span::styled(
+            "No events match the current filter.",
+            Style::new().fg(Color::DarkGray),
+        ))];
+        if let Some(issue) = app.detail_issue_for_session(&session.session_id) {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Detected session parse issue:",
+                Style::new().fg(Theme::ACCENT_RED).bold(),
+            )));
+            lines.push(Line::from(Span::styled(
+                issue.to_string(),
+                Style::new().fg(Theme::ACCENT_RED),
+            )));
+            lines.push(Line::from(Span::styled(
+                "LLM summary calls are skipped for this session.",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            )));
+        }
+        let p = Paragraph::new(lines)
             .block(Theme::block_dim().title(" Timeline "))
-            .style(Style::new().fg(Color::DarkGray));
+            .wrap(Wrap { trim: false });
         frame.render_widget(p, timeline_area);
         return;
     }
@@ -1595,9 +1614,28 @@ fn render_turn_view(
     let turns = extract_visible_turns(events);
     app.observe_turn_tail_proximity(turns.len());
     if turns.is_empty() {
-        let p = Paragraph::new("No turns found.")
+        let mut lines = vec![Line::from(Span::styled(
+            "No turns found.",
+            Style::new().fg(Color::DarkGray),
+        ))];
+        if let Some(issue) = app.detail_issue_for_session(session_id) {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Detected session parse issue:",
+                Style::new().fg(Theme::ACCENT_RED).bold(),
+            )));
+            lines.push(Line::from(Span::styled(
+                issue.to_string(),
+                Style::new().fg(Theme::ACCENT_RED),
+            )));
+            lines.push(Line::from(Span::styled(
+                "LLM summary calls are skipped for this session.",
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            )));
+        }
+        let p = Paragraph::new(lines)
             .block(Theme::block_dim().title(" Split View "))
-            .style(Style::new().fg(Color::DarkGray));
+            .wrap(Wrap { trim: false });
         frame.render_widget(p, area);
         return;
     }

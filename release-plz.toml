@@ -4,45 +4,56 @@ git_tag_enable = true
 
 # --- Libraries (publish to crates.io) ---
 
-[package.opensession-core]
+[[package]]
+name = "opensession-core"
 publish = true
 
-[package.opensession-parsers]
+[[package]]
+name = "opensession-parsers"
 publish = true
 
-[package.opensession-api]
+[[package]]
+name = "opensession-api"
 publish = true
 
-[package.opensession-api-client]
+[[package]]
+name = "opensession-api-client"
 publish = true
 
-[package.opensession-local-db]
+[[package]]
+name = "opensession-local-db"
 publish = true
 
-[package.opensession-git-native]
+[[package]]
+name = "opensession-git-native"
 publish = true
 
-[package.opensession-tui]
+[[package]]
+name = "opensession-tui"
 publish = true
 
 # --- Main binary (cargo install opensession) ---
 
-[package.opensession]
+[[package]]
+name = "opensession"
 publish = true
 
 # --- Not published to crates.io ---
 
-[package.opensession-server]
+[[package]]
+name = "opensession-server"
 publish = false
 git_release_enable = false
 git_tag_enable = false
 
-[package.opensession-daemon]
+[[package]]
+name = "opensession-daemon"
 publish = false
 git_release_enable = false
 git_tag_enable = false
 
-[package.opensession-e2e]
+[[package]]
+name = "opensession-e2e"
 publish = false
 git_release_enable = false
 git_tag_enable = false

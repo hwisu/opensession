@@ -11,7 +11,7 @@ pub use state::FollowTailState;
 
 #[derive(Debug, Clone)]
 pub enum LiveUpdate {
-    SessionReloaded(Session),
+    SessionReloaded(Box<Session>),
     EventsAppended(Vec<Event>),
 }
 

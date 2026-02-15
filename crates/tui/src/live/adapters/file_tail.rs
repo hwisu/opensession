@@ -121,7 +121,7 @@ impl LiveAdapter for FileTailAdapter {
             return None;
         }
 
-        let mut updates = vec![LiveUpdate::SessionReloaded(latest.clone())];
+        let mut updates = vec![LiveUpdate::SessionReloaded(Box::new(latest.clone()))];
         if !appended_events.is_empty() {
             updates.push(LiveUpdate::EventsAppended(appended_events.clone()));
         }

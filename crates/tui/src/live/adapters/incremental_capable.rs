@@ -156,7 +156,7 @@ impl IncrementalCapableAdapter {
         state.active = true;
         Some(LiveUpdateBatch {
             updates: vec![
-                LiveUpdate::SessionReloaded(state.session.clone()),
+                LiveUpdate::SessionReloaded(Box::new(state.session.clone())),
                 LiveUpdate::EventsAppended(appended_events.clone()),
             ],
             cursor: Some(state.session.events.len() as u64),

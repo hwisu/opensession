@@ -1181,7 +1181,7 @@ mod turn_extract_tests {
 
         let batch = LiveUpdateBatch {
             updates: vec![
-                LiveUpdate::SessionReloaded(reloaded.clone()),
+                LiveUpdate::SessionReloaded(Box::new(reloaded.clone())),
                 LiveUpdate::EventsAppended(vec![spawned]),
             ],
             cursor: Some(reloaded.events.len() as u64),
@@ -1228,7 +1228,7 @@ mod turn_extract_tests {
 
         let detached_batch = LiveUpdateBatch {
             updates: vec![
-                LiveUpdate::SessionReloaded(reloaded.clone()),
+                LiveUpdate::SessionReloaded(Box::new(reloaded.clone())),
                 LiveUpdate::EventsAppended(vec![reloaded.events.last().cloned().expect("event")]),
             ],
             cursor: Some(reloaded.events.len() as u64),
@@ -1252,7 +1252,7 @@ mod turn_extract_tests {
 
         let attached_batch = LiveUpdateBatch {
             updates: vec![
-                LiveUpdate::SessionReloaded(reloaded2.clone()),
+                LiveUpdate::SessionReloaded(Box::new(reloaded2.clone())),
                 LiveUpdate::EventsAppended(vec![reloaded2.events.last().cloned().expect("event")]),
             ],
             cursor: Some(reloaded2.events.len() as u64),
@@ -6645,7 +6645,7 @@ impl App {
         for update in batch.updates {
             match update {
                 LiveUpdate::SessionReloaded(session) => {
-                    self.apply_reloaded_session(session);
+                    self.apply_reloaded_session(*session);
                     applied_reload = true;
                 }
                 LiveUpdate::EventsAppended(events) => {

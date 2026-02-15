@@ -133,7 +133,7 @@ strip_paths = true
 strip_env_vars = true
 
 [git_storage]
-method = "none"              # platform_api | native | none
+method = "native"            # platform_api | native | none
 ```
 
 ### Environment Variables (Server)

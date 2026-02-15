@@ -268,10 +268,11 @@ fn sanitize(session: &mut Session, config: &DaemonConfig) {
     sanitize_session(session, &sanitize_config);
 }
 
-/// If git-native storage is configured, store session to git branch.
+/// Store a session to the local git-native branch unless git storage is explicitly disabled.
 /// Returns the body_url (raw content URL) on success, or None on failure/not configured.
 fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<String> {
-    if config.git_storage.method != GitStorageMethod::Native {
+    // Local source-of-truth remains git-native unless explicitly disabled.
+    if config.git_storage.method == GitStorageMethod::None {
         return None;
     }
 

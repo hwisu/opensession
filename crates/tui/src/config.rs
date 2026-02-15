@@ -12,7 +12,6 @@ enum GitStorageMode {
     None,
     PlatformApi,
     Native,
-    SqliteLocal,
 }
 
 impl GitStorageMode {
@@ -28,8 +27,7 @@ impl GitStorageMode {
         match self {
             Self::PlatformApi => GitStorageMethod::PlatformApi,
             Self::Native => GitStorageMethod::Native,
-            // SQLite local is a TUI-only extension and maps to "disabled" in core.
-            Self::None | Self::SqliteLocal => GitStorageMethod::None,
+            Self::None => GitStorageMethod::None,
         }
     }
 
@@ -38,7 +36,6 @@ impl GitStorageMode {
             Self::None => "none",
             Self::PlatformApi => "platform_api",
             Self::Native => "native",
-            Self::SqliteLocal => "sqlite_local",
         }
     }
 }
@@ -132,7 +129,7 @@ fn parse_git_storage_mode(
         }
         Some(v) if v == "native" => GitStorageMode::Native,
         Some(v) if v == "sqlite_local" || v == "sqlite-local" || v == "sqlite" => {
-            GitStorageMode::SqliteLocal
+            GitStorageMode::Native
         }
         _ => GitStorageMode::from_core(fallback),
     }
@@ -206,7 +203,7 @@ pub fn load_daemon_config() -> DaemonConfig {
         let parsed: Option<toml::Value> = toml::from_str(&content).ok();
         let mut config: DaemonConfig = toml::from_str(&content).unwrap_or_default();
         if config_file_missing_git_storage_method(parsed.as_ref()) {
-            config.git_storage.method = GitStorageMethod::None;
+            config.git_storage.method = GitStorageMethod::Native;
         }
         sync_runtime_config_extensions(parsed.as_ref(), &mut config);
         if migrate_summary_window_v2(&mut config) {
@@ -419,7 +416,8 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     SettingItem::Field {
         field: SettingField::RealtimeDebounceMs,
         label: "Realtime Poll (ms)",
-        description: "Global polling interval for daemon realtime publish and detail auto-refresh checks",
+        description:
+            "Global polling interval for daemon realtime publish and detail auto-refresh checks",
         dependency_hint: Some("Used by daemon realtime publish and detail auto-refresh"),
     },
     SettingItem::Field {
@@ -475,7 +473,8 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     SettingItem::Field {
         field: SettingField::SummaryContentMode,
         label: "LLM Summary Detail Mode",
-        description: "normal: richer action detail · minimal: merge low-signal read/open/list actions",
+        description:
+            "normal: richer action detail · minimal: merge low-signal read/open/list actions",
         dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
     },
     SettingItem::Field {
@@ -555,14 +554,14 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     SettingItem::Field {
         field: SettingField::GitStorageMethod,
         label: "Method",
-        description: "native: git objects (default) · sqlite_local: local SQLite cache · platform_api: provider API · none: disabled",
+        description: "native: git objects (default) · platform_api: provider API · none: disabled",
         dependency_hint: None,
     },
     SettingItem::Field {
         field: SettingField::GitStorageToken,
         label: "Token",
         description: "GitHub PAT with 'repo' scope — github.com/settings/tokens",
-        dependency_hint: Some("Set method to Platform API, Native, or SQLite Local first"),
+        dependency_hint: Some("Set method to Platform API or Native first"),
     },
     SettingItem::Header("Privacy"),
     SettingItem::Field {
@@ -721,7 +720,6 @@ impl SettingField {
                 GitStorageMode::None => "None".to_string(),
                 GitStorageMode::PlatformApi => "Platform API".to_string(),
                 GitStorageMode::Native => "Native".to_string(),
-                GitStorageMode::SqliteLocal => "SQLite (Local)".to_string(),
             },
             Self::GitStorageToken => {
                 if config.git_storage.token.is_empty() {
@@ -837,8 +835,7 @@ impl SettingField {
                 let next = match git_storage_mode() {
                     GitStorageMode::None => GitStorageMode::PlatformApi,
                     GitStorageMode::PlatformApi => GitStorageMode::Native,
-                    GitStorageMode::Native => GitStorageMode::SqliteLocal,
-                    GitStorageMode::SqliteLocal => GitStorageMode::None,
+                    GitStorageMode::Native => GitStorageMode::None,
                 };
                 set_git_storage_mode(config, next);
             }
@@ -1035,7 +1032,7 @@ impl SettingField {
                 let mode = match value.trim().to_ascii_lowercase().as_str() {
                     "none" => GitStorageMode::None,
                     "platform_api" | "platform-api" | "api" => GitStorageMode::PlatformApi,
-                    "sqlite_local" | "sqlite-local" | "sqlite" => GitStorageMode::SqliteLocal,
+                    "sqlite_local" | "sqlite-local" | "sqlite" => GitStorageMode::Native,
                     _ => GitStorageMode::Native,
                 };
                 set_git_storage_mode(config, mode);

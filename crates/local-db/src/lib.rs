@@ -61,6 +61,16 @@ pub struct CommitLink {
     pub created_at: String,
 }
 
+/// A cached timeline summary row stored in local SQLite.
+#[derive(Debug, Clone)]
+pub struct TimelineSummaryCacheRow {
+    pub lookup_key: String,
+    pub namespace: String,
+    pub compact: String,
+    pub payload: String,
+    pub raw: String,
+}
+
 /// Return true when a cached row corresponds to an OpenCode child session.
 pub fn is_opencode_child_session(row: &LocalSessionRow) -> bool {
     if row.tool != "opencode" {
@@ -919,6 +929,62 @@ impl LocalDb {
             )
             .optional()?;
         Ok(body)
+    }
+
+    // ── Timeline summary cache ───────────────────────────────────────
+
+    pub fn upsert_timeline_summary_cache(
+        &self,
+        lookup_key: &str,
+        namespace: &str,
+        compact: &str,
+        payload: &str,
+        raw: &str,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO timeline_summary_cache (lookup_key, namespace, compact, payload, raw, cached_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+             ON CONFLICT(lookup_key) DO UPDATE SET \
+               namespace=excluded.namespace, \
+               compact=excluded.compact, \
+               payload=excluded.payload, \
+               raw=excluded.raw, \
+               cached_at=datetime('now')",
+            params![lookup_key, namespace, compact, payload, raw],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_timeline_summary_cache_by_namespace(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<TimelineSummaryCacheRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT lookup_key, namespace, compact, payload, raw \
+             FROM timeline_summary_cache \
+             WHERE namespace = ?1",
+        )?;
+        let rows = stmt.query_map(params![namespace], |row| {
+            Ok(TimelineSummaryCacheRow {
+                lookup_key: row.get(0)?,
+                namespace: row.get(1)?,
+                compact: row.get(2)?,
+                payload: row.get(3)?,
+                raw: row.get(4)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    pub fn clear_timeline_summary_cache(&self) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM timeline_summary_cache", [])?;
+        Ok(())
     }
 
     // ── Migration helper ───────────────────────────────────────────────
@@ -1807,6 +1873,36 @@ mod tests {
             db.get_cached_body("s1").unwrap(),
             Some(b"hello world".to_vec())
         );
+    }
+
+    #[test]
+    fn test_timeline_summary_cache_roundtrip() {
+        let db = test_db();
+        let namespace = "turn-summary-cache-v3";
+        db.upsert_timeline_summary_cache(
+            "k1",
+            namespace,
+            "compact summary",
+            "{\"kind\":\"turn-summary\"}",
+            "raw summary",
+        )
+        .unwrap();
+
+        let rows = db
+            .list_timeline_summary_cache_by_namespace(namespace)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].lookup_key, "k1");
+        assert_eq!(rows[0].namespace, namespace);
+        assert_eq!(rows[0].compact, "compact summary");
+        assert_eq!(rows[0].payload, "{\"kind\":\"turn-summary\"}");
+        assert_eq!(rows[0].raw, "raw summary");
+
+        db.clear_timeline_summary_cache().unwrap();
+        let rows = db
+            .list_timeline_summary_cache_by_namespace(namespace)
+            .unwrap();
+        assert!(rows.is_empty());
     }
 
     #[test]

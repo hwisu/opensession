@@ -40,7 +40,7 @@ pub fn load_config() -> Result<DaemonConfig> {
     let mut config: DaemonConfig = toml::from_str(&content)
         .with_context(|| format!("Failed to parse daemon config at {}", path.display()))?;
     if config_file_missing_git_storage_method(parsed.as_ref()) {
-        config.git_storage.method = GitStorageMethod::None;
+        config.git_storage.method = GitStorageMethod::Native;
     }
     Ok(config)
 }

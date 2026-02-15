@@ -5977,6 +5977,9 @@ impl App {
         }
 
         self.timeline_summary_disk_cache.clear();
+        if let Some(db) = self.db.as_ref() {
+            let _ = db.clear_timeline_summary_cache();
+        }
         if let Some(path) = Self::summary_cache_path() {
             let _ = std::fs::remove_file(path);
         }
@@ -6037,6 +6040,28 @@ impl App {
         }
         self.ensure_summary_disk_cache_namespace();
 
+        if let Some(db) = self.db.as_ref() {
+            if let Ok(rows) =
+                db.list_timeline_summary_cache_by_namespace(Self::summary_cache_namespace())
+            {
+                for row in rows {
+                    let Ok(payload) = serde_json::from_str::<TimelineSummaryPayload>(&row.payload)
+                    else {
+                        continue;
+                    };
+                    self.timeline_summary_disk_cache.insert(
+                        row.lookup_key,
+                        TimelineSummaryCacheEntry {
+                            compact: row.compact,
+                            payload,
+                            raw: row.raw,
+                        },
+                    );
+                }
+            }
+            return;
+        }
+
         let Some(path) = Self::summary_cache_path() else {
             return;
         };
@@ -6090,6 +6115,19 @@ impl App {
         self.ensure_summary_disk_cache_loaded();
         self.timeline_summary_disk_cache
             .insert(lookup_key.clone(), entry.clone());
+
+        if let Some(db) = self.db.as_ref() {
+            if let Ok(payload) = serde_json::to_string(&entry.payload) {
+                let _ = db.upsert_timeline_summary_cache(
+                    &lookup_key,
+                    Self::summary_cache_namespace(),
+                    &entry.compact,
+                    &payload,
+                    &entry.raw,
+                );
+            }
+            return;
+        }
 
         let Some(path) = Self::summary_cache_path() else {
             return;

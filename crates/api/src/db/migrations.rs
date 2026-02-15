@@ -28,6 +28,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0005_sessions_body_url_backfill",
         include_str!("../../migrations/0005_sessions_body_url_backfill.sql"),
     ),
+    (
+        "0006_sessions_remove_fk_constraints",
+        include_str!("../../migrations/0006_sessions_remove_fk_constraints.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).

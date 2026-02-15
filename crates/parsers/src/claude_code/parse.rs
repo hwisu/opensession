@@ -1150,7 +1150,8 @@ mod tests {
             .events
             .iter()
             .any(|e| matches!(e.event_type, EventType::TaskEnd { .. })));
-        assert_eq!(session.stats.message_count, 2);
+        // message_count includes user+agent messages and TaskEnd summaries.
+        assert_eq!(session.stats.message_count, 3);
     }
 
     #[test]

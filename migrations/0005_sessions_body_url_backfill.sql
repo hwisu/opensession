@@ -1,0 +1,115 @@
+-- Backfill sessions schema for legacy deployments.
+-- Some deployed databases were created before `body_url` existed.
+-- Rebuild into the canonical shape expected by the API.
+
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE IF NOT EXISTS sessions__backfill (
+    id                  TEXT PRIMARY KEY,
+    user_id             TEXT REFERENCES users(id),
+    team_id             TEXT NOT NULL REFERENCES teams(id),
+    tool                TEXT NOT NULL,
+    agent_provider      TEXT,
+    agent_model         TEXT,
+    title               TEXT,
+    description         TEXT,
+    tags                TEXT,
+    created_at          TEXT NOT NULL,
+    uploaded_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    message_count       INTEGER DEFAULT 0,
+    user_message_count  INTEGER DEFAULT 0,
+    task_count          INTEGER DEFAULT 0,
+    event_count         INTEGER DEFAULT 0,
+    duration_seconds    INTEGER DEFAULT 0,
+    total_input_tokens  INTEGER NOT NULL DEFAULT 0,
+    total_output_tokens INTEGER NOT NULL DEFAULT 0,
+    body_storage_key    TEXT NOT NULL,
+    body_url            TEXT,
+    git_remote          TEXT,
+    git_branch          TEXT,
+    git_commit          TEXT,
+    git_repo_name       TEXT,
+    pr_number           INTEGER,
+    pr_url              TEXT,
+    working_directory   TEXT,
+    files_modified      TEXT,
+    files_read          TEXT,
+    has_errors          BOOLEAN DEFAULT 0,
+    max_active_agents   INTEGER NOT NULL DEFAULT 1
+);
+
+INSERT INTO sessions__backfill (
+    id,
+    user_id,
+    team_id,
+    tool,
+    agent_provider,
+    agent_model,
+    title,
+    description,
+    tags,
+    created_at,
+    uploaded_at,
+    message_count,
+    user_message_count,
+    task_count,
+    event_count,
+    duration_seconds,
+    total_input_tokens,
+    total_output_tokens,
+    body_storage_key,
+    body_url,
+    git_remote,
+    git_branch,
+    git_commit,
+    git_repo_name,
+    pr_number,
+    pr_url,
+    working_directory,
+    files_modified,
+    files_read,
+    has_errors,
+    max_active_agents
+)
+SELECT
+    id,
+    user_id,
+    team_id,
+    tool,
+    agent_provider,
+    agent_model,
+    title,
+    description,
+    tags,
+    created_at,
+    uploaded_at,
+    COALESCE(message_count, 0),
+    0,
+    COALESCE(task_count, 0),
+    COALESCE(event_count, 0),
+    COALESCE(duration_seconds, 0),
+    COALESCE(total_input_tokens, 0),
+    COALESCE(total_output_tokens, 0),
+    body_storage_key,
+    NULL,
+    git_remote,
+    git_branch,
+    git_commit,
+    git_repo_name,
+    pr_number,
+    pr_url,
+    working_directory,
+    files_modified,
+    files_read,
+    COALESCE(has_errors, 0),
+    COALESCE(max_active_agents, 1)
+FROM sessions;
+
+DROP TABLE sessions;
+ALTER TABLE sessions__backfill RENAME TO sessions;
+
+CREATE INDEX IF NOT EXISTS idx_sessions_team_id ON sessions(team_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_uploaded_at ON sessions(uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_tool ON sessions(tool);
+
+PRAGMA foreign_keys = ON;

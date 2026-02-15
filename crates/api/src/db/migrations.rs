@@ -24,6 +24,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0004_oauth_states_provider",
         include_str!("../../migrations/0004_oauth_states_provider.sql"),
     ),
+    (
+        "0005_sessions_body_url_backfill",
+        include_str!("../../migrations/0005_sessions_body_url_backfill.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).

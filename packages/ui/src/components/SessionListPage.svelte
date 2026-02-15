@@ -1,5 +1,5 @@
 <script lang="ts">
-import { listSessions } from '../api';
+import { isAuthenticated, listSessions } from '../api';
 import { groupSessionsByAgentCount } from '../session-presentation';
 import type { SessionListItem, SortOrder, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
@@ -22,6 +22,7 @@ let selectedIndex = $state(0);
 let listLayout = $state<ListLayout>('single');
 let renderLimit = $state(20);
 let searchInput: HTMLInputElement | undefined = $state();
+let authed = $state(false);
 
 const perPage = 20;
 const layoutPreferenceKey = 'opensession_session_list_layout';
@@ -35,7 +36,9 @@ const navigableSessions = $derived(visibleSessions);
 const selectedSessionId = $derived(navigableSessions[selectedIndex]?.id ?? null);
 const sessionOrder = $derived.by(() => {
 	const order = new Map<string, number>();
-	navigableSessions.forEach((session, idx) => order.set(session.id, idx));
+	navigableSessions.forEach((session, idx) => {
+		order.set(session.id, idx);
+	});
 	return order;
 });
 
@@ -126,6 +129,7 @@ function cycleFilterValue<T extends string>(current: T, options: readonly T[]): 
 
 $effect(() => {
 	syncLayoutPreference();
+	authed = isAuthenticated();
 	fetchSessions(true);
 });
 
@@ -261,6 +265,13 @@ function scrollSelectedIntoView() {
 		</div>
 	</div>
 
+	{#if !authed}
+		<div class="border-b border-border bg-bg-secondary px-3 py-2 text-xs text-text-secondary">
+			You are browsing public/local sessions. Sign in to upload, manage teams, and use inbox.
+			<button onclick={() => onNavigate('/login')} class="ml-2 text-accent hover:underline">Sign in</button>
+		</div>
+	{/if}
+
 	{#if error}
 		<div class="border-b border-error/30 bg-error/10 px-4 py-2 text-xs text-error">
 			{error}
@@ -279,7 +290,11 @@ function scrollSelectedIntoView() {
 			<div class="py-16 text-center">
 				<p class="text-sm text-text-muted">No sessions found</p>
 				<p class="mt-1 text-xs text-text-muted">
-					<a href="/upload" class="text-accent hover:underline">Upload</a> a session to get started
+					{#if authed}
+						<a href="/upload" class="text-accent hover:underline">Upload</a> a session to get started
+					{:else}
+						Sign in to upload private/team sessions, or keep browsing public sessions.
+					{/if}
 				</p>
 			</div>
 		{/if}

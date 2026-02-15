@@ -9,13 +9,6 @@ const { currentPath, children }: { currentPath: string; children: Snippet } = $p
 let user = $state<UserSettings | null>(null);
 let inboxCount = $state(0);
 
-const navLinks = [
-	{ href: '/', label: 'Sessions' },
-	{ href: '/teams', label: 'Teams' },
-	{ href: '/invitations', label: 'Inbox' },
-	{ href: '/docs', label: 'Docs' },
-];
-
 $effect(() => {
 	// Re-fetch user on every navigation (currentPath change triggers re-run)
 	void currentPath;
@@ -38,6 +31,17 @@ $effect(() => {
 	} else {
 		inboxCount = 0;
 	}
+});
+
+const navLinks = $derived.by(() => {
+	const links: Array<{ href: string; label: string }> = [{ href: '/', label: 'Sessions' }];
+	if (user) {
+		links.push({ href: '/teams', label: 'Teams' });
+		links.push({ href: '/invitations', label: 'Inbox' });
+		links.push({ href: '/upload', label: 'Upload' });
+	}
+	links.push({ href: '/docs', label: 'Docs' });
+	return links;
 });
 
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
@@ -96,12 +100,20 @@ function handleGlobalKey(e: KeyboardEvent) {
 					[{user.nickname}]
 				</a>
 			{:else}
-				<a
-					href="/login"
-					class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
-				>
-					Login
-				</a>
+				<div class="flex items-center gap-0.5 sm:gap-1">
+					<a
+						href="/login"
+						class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
+					>
+						Login
+					</a>
+					<a
+						href="/register"
+						class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
+					>
+						Register
+					</a>
+				</div>
 			{/if}
 		</div>
 	</nav>

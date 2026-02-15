@@ -1,10 +1,20 @@
 <script lang="ts">
-import { createTeam, listTeams } from '../api';
+import { ApiError, createTeam, isAuthenticated, listTeams } from '../api';
 import type { TeamResponse } from '../types';
+import AuthGuideCard from './AuthGuideCard.svelte';
+
+const {
+	onNavigate = (path: string) => {
+		if (typeof window !== 'undefined') window.location.href = path;
+	},
+}: {
+	onNavigate?: (path: string) => void;
+} = $props();
 
 let teams = $state<TeamResponse[]>([]);
 let loading = $state(true);
 let error = $state<string | null>(null);
+let unauthorized = $state(false);
 let showCreateForm = $state(false);
 
 let newName = $state('');
@@ -15,10 +25,15 @@ let createError = $state<string | null>(null);
 async function fetchTeams() {
 	loading = true;
 	error = null;
+	unauthorized = false;
 	try {
 		const res = await listTeams();
 		teams = res.teams;
 	} catch (e) {
+		if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+			unauthorized = true;
+			return;
+		}
 		error = e instanceof Error ? e.message : 'Failed to load teams';
 	} finally {
 		loading = false;
@@ -46,6 +61,11 @@ async function handleCreate() {
 }
 
 $effect(() => {
+	if (!isAuthenticated()) {
+		loading = false;
+		unauthorized = true;
+		return;
+	}
 	fetchTeams();
 });
 </script>
@@ -57,15 +77,17 @@ $effect(() => {
 <div class="flex h-full flex-col">
 	<div class="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
 		<span class="text-xs text-text-muted">Teams ({teams.length})</span>
-		<button
-			onclick={() => (showCreateForm = !showCreateForm)}
-			class="px-2 py-0.5 text-xs text-accent transition-colors hover:text-accent/80"
-		>
-			{showCreateForm ? '[Cancel]' : '[Create Team]'}
-		</button>
+		{#if !unauthorized}
+			<button
+				onclick={() => (showCreateForm = !showCreateForm)}
+				class="px-2 py-0.5 text-xs text-accent transition-colors hover:text-accent/80"
+			>
+				{showCreateForm ? '[Cancel]' : '[Create Team]'}
+			</button>
+		{/if}
 	</div>
 
-	{#if showCreateForm}
+	{#if showCreateForm && !unauthorized}
 		<div class="shrink-0 border-b border-border p-3">
 			<h3 class="mb-2 text-sm font-medium text-text-primary">Create New Team</h3>
 			<div class="space-y-2">
@@ -110,7 +132,15 @@ $effect(() => {
 	{/if}
 
 	<div class="flex-1 overflow-y-auto">
-		{#if loading}
+		{#if unauthorized}
+			<div class="p-3">
+				<AuthGuideCard
+					title="Teams need an account"
+					description="Create or join teams after signing in. Public sessions are still visible from the Sessions menu."
+					{onNavigate}
+				/>
+			</div>
+		{:else if loading}
 			<div class="py-8 text-center text-xs text-text-muted">Loading teams...</div>
 		{:else if teams.length === 0}
 			<div class="py-8 text-center">

@@ -52,12 +52,17 @@ let passwordSuccess = $state(false);
 type SettingsTab = 'account' | 'access' | 'invitations' | 'local_ops';
 let activeTab = $state<SettingsTab>('account');
 
-const settingsTabs: { id: SettingsTab; label: string }[] = [
-	{ id: 'account', label: 'Account' },
-	{ id: 'access', label: 'Access (API/OAuth)' },
-	{ id: 'invitations', label: 'Invitations' },
-	{ id: 'local_ops', label: 'Local Ops' },
-];
+const settingsTabs = $derived.by(() => {
+	const tabs: { id: SettingsTab; label: string }[] = [
+		{ id: 'account', label: 'Account' },
+		{ id: 'access', label: 'Access (API/OAuth)' },
+	];
+	if (invitations.length > 0) {
+		tabs.push({ id: 'invitations', label: 'Invitations' });
+	}
+	tabs.push({ id: 'local_ops', label: 'Local Ops' });
+	return tabs;
+});
 
 async function fetchSettings() {
 	loading = true;
@@ -238,6 +243,13 @@ $effect(() => {
 			oauthLinkError = 'This account is already linked to another user';
 			window.history.replaceState(null, '', window.location.pathname);
 		}
+	}
+});
+
+$effect(() => {
+	const visibleTabs = settingsTabs.map((tab) => tab.id);
+	if (!visibleTabs.includes(activeTab)) {
+		activeTab = visibleTabs[0] ?? 'account';
 	}
 });
 </script>

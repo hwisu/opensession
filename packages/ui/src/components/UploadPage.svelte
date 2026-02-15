@@ -1,20 +1,26 @@
 <script lang="ts">
-import { listTeams, uploadSession } from '../api';
+import { ApiError, isAuthenticated, listTeams, uploadSession } from '../api';
 import type { Session, TeamResponse } from '../types';
 import { formatDuration, getToolConfig } from '../types';
+import AuthGuideCard from './AuthGuideCard.svelte';
 
 const {
 	teamMode = 'dropdown',
 	onSuccess,
+	onNavigate = (path: string) => {
+		if (typeof window !== 'undefined') window.location.href = path;
+	},
 }: {
 	teamMode?: 'dropdown' | 'manual';
 	onSuccess: (id: string) => void;
+	onNavigate?: (path: string) => void;
 } = $props();
 
 let parsedSession = $state<Session | null>(null);
 let parseError = $state<string | null>(null);
 let uploading = $state(false);
 let uploadError = $state<string | null>(null);
+let unauthorized = $state(false);
 let rawJson = $state('');
 let dragover = $state(false);
 
@@ -43,6 +49,7 @@ function parseJson(text: string) {
 }
 
 function handleFileInput(e: globalThis.Event) {
+	if (unauthorized) return;
 	const input = e.target as HTMLInputElement;
 	const file = input.files?.[0];
 	if (!file) return;
@@ -57,6 +64,7 @@ function handleFileInput(e: globalThis.Event) {
 function handleDrop(e: DragEvent) {
 	e.preventDefault();
 	dragover = false;
+	if (unauthorized) return;
 	const file = e.dataTransfer?.files[0];
 	if (!file) return;
 	const reader = new FileReader();
@@ -69,6 +77,7 @@ function handleDrop(e: DragEvent) {
 
 function handleDragOver(e: DragEvent) {
 	e.preventDefault();
+	if (unauthorized) return;
 	dragover = true;
 }
 
@@ -77,6 +86,7 @@ function handleDragLeave() {
 }
 
 function handlePasteInput() {
+	if (unauthorized) return;
 	if (rawJson.trim()) {
 		parseJson(rawJson);
 	}
@@ -90,6 +100,10 @@ async function handleUpload() {
 		const result = await uploadSession(parsedSession, effectiveTeamId);
 		onSuccess(result.id);
 	} catch (e) {
+		if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+			unauthorized = true;
+			return;
+		}
 		uploadError = e instanceof Error ? e.message : 'Upload failed';
 	} finally {
 		uploading = false;
@@ -99,6 +113,7 @@ async function handleUpload() {
 const tool = $derived(parsedSession ? getToolConfig(parsedSession.agent.tool) : null);
 
 $effect(() => {
+	unauthorized = !isAuthenticated();
 	if (teamMode === 'dropdown') {
 		teamsLoading = true;
 		listTeams()
@@ -108,7 +123,10 @@ $effect(() => {
 					selectedTeamId = teams[0].id;
 				}
 			})
-			.catch(() => {
+			.catch((e) => {
+				if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+					unauthorized = true;
+				}
 				teams = [];
 			})
 			.finally(() => {
@@ -128,8 +146,18 @@ $effect(() => {
 		Upload a HAIL session JSON file to share with the community
 	</p>
 
+	{#if unauthorized}
+		<div class="mb-4">
+			<AuthGuideCard
+				title="Upload requires sign in"
+				description="Sign in first, then choose a target team and upload your session JSON."
+				{onNavigate}
+			/>
+		</div>
+	{/if}
+
 	<!-- Team selection (branching) -->
-	<div class="mb-3">
+	<div class="mb-3" class:opacity-50={unauthorized}>
 		<label class="mb-1 block text-xs text-text-secondary" for="team-select">
 			Team
 		</label>
@@ -145,6 +173,7 @@ $effect(() => {
 				<select
 					id="team-select"
 					bind:value={selectedTeamId}
+					disabled={unauthorized}
 					class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary outline-none focus:border-accent"
 				>
 					{#each teams as team}
@@ -157,6 +186,7 @@ $effect(() => {
 				id="team-select"
 				type="text"
 				bind:value={manualTeamId}
+				disabled={unauthorized}
 				placeholder="Enter team ID"
 				class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
 			/>
@@ -174,6 +204,7 @@ $effect(() => {
 		class="mb-3 flex cursor-pointer flex-col items-center justify-center border-2 border-dashed p-6 transition-colors {dragover
 			? 'border-accent bg-accent/5'
 			: 'border-border hover:border-border-light'}"
+		aria-disabled={unauthorized}
 	>
 		<p class="text-xs text-text-secondary">
 			Drag and drop a session JSON file here
@@ -186,6 +217,7 @@ $effect(() => {
 				type="file"
 				accept=".json"
 				class="hidden"
+				disabled={unauthorized}
 				onchange={handleFileInput}
 			/>
 		</label>
@@ -203,6 +235,7 @@ $effect(() => {
 			placeholder={'{"version": "hail-1.0.0", ...}'}
 			rows={6}
 			class="w-full border border-border bg-bg-secondary p-3 font-mono text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+			disabled={unauthorized}
 		></textarea>
 	</div>
 
@@ -254,7 +287,7 @@ $effect(() => {
 
 		<button
 			onclick={handleUpload}
-			disabled={uploading || !effectiveTeamId.trim()}
+			disabled={unauthorized || uploading || !effectiveTeamId.trim()}
 			class="w-full bg-accent px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-50"
 		>
 			{uploading ? 'Uploading...' : 'Upload Session'}

@@ -1,10 +1,12 @@
 <script lang="ts">
 import {
-	createTeamInviteKey,
+	ApiError,
 	cancelTeamInvitation,
+	createTeamInviteKey,
 	getSettings,
 	getTeam,
 	inviteMember,
+	isAuthenticated,
 	listMembers,
 	listTeamInvitations,
 	listTeamInviteKeys,
@@ -17,6 +19,7 @@ import type {
 	TeamInviteKeySummary,
 	UserSettings,
 } from '../types';
+import AuthGuideCard from './AuthGuideCard.svelte';
 import SessionCard from './SessionCard.svelte';
 
 const { teamId }: { teamId: string } = $props();
@@ -26,6 +29,7 @@ let members = $state<MemberResponse[]>([]);
 let currentUser = $state<UserSettings | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
+let unauthorized = $state(false);
 
 // Invite form
 let inviteTarget = $state('');
@@ -54,6 +58,7 @@ const isTeamAdmin = $derived(
 async function fetchData() {
 	loading = true;
 	error = null;
+	unauthorized = false;
 	try {
 		const [t, m] = await Promise.all([getTeam(teamId), listMembers(teamId)]);
 		team = t;
@@ -64,7 +69,10 @@ async function fetchData() {
 			currentUser = null;
 		}
 
-		if (currentUser != null && members.some((mm) => mm.user_id === currentUser?.user_id && mm.role === 'admin')) {
+		if (
+			currentUser != null &&
+			members.some((mm) => mm.user_id === currentUser?.user_id && mm.role === 'admin')
+		) {
 			await refreshTeamInvitations();
 			await refreshInviteKeys();
 		} else {
@@ -72,6 +80,10 @@ async function fetchData() {
 			inviteKeys = [];
 		}
 	} catch (e) {
+		if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+			unauthorized = true;
+			return;
+		}
 		error = e instanceof Error ? e.message : 'Failed to load team';
 	} finally {
 		loading = false;
@@ -177,6 +189,11 @@ async function handleCancelInvitation(invitationId: string) {
 }
 
 $effect(() => {
+	if (!isAuthenticated()) {
+		loading = false;
+		unauthorized = true;
+		return;
+	}
 	fetchData();
 });
 </script>
@@ -187,6 +204,13 @@ $effect(() => {
 
 {#if loading}
 	<div class="py-8 text-center text-xs text-text-muted">Loading team...</div>
+{:else if unauthorized}
+	<div class="mx-auto max-w-2xl py-6">
+		<AuthGuideCard
+			title="Team pages require sign in"
+			description="Sign in with your account to view team members, invites, and private team sessions."
+		/>
+	</div>
 {:else if error}
 	<div class="py-8 text-center">
 		<p class="text-xs text-error">{error}</p>

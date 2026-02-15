@@ -5,7 +5,12 @@ const {
 	onNavigate?: (path: string) => void;
 } = $props();
 
-type TocItem = { id: string; flag: string; title: string; children?: { id: string; title: string }[] };
+type TocItem = {
+	id: string;
+	flag: string;
+	title: string;
+	children?: { id: string; title: string }[];
+};
 
 const sections: TocItem[] = [
 	{ id: 'getting-started', flag: '--init', title: 'Getting Started' },
@@ -14,7 +19,9 @@ const sections: TocItem[] = [
 	{ id: 'invitations', flag: '--invite', title: 'Invitations' },
 	{ id: 'team-stats', flag: '--stats', title: 'Team Stats' },
 	{
-		id: 'cli', flag: '--cli', title: 'CLI Reference',
+		id: 'cli',
+		flag: '--cli',
+		title: 'CLI Reference',
 		children: [
 			{ id: 'cli-config', title: 'config' },
 			{ id: 'cli-discover', title: 'discover' },
@@ -38,9 +45,52 @@ const sections: TocItem[] = [
 ];
 
 let activeId = $state('getting-started');
+let docQuery = $state('');
+
+function normalize(value: string): string {
+	return value.trim().toLowerCase();
+}
+
+const filteredSections = $derived.by(() => {
+	const query = normalize(docQuery);
+	if (!query) return sections;
+
+	const matches: TocItem[] = [];
+	for (const section of sections) {
+		const sectionMatch = [section.title, section.flag, section.id].some((value) =>
+			value.toLowerCase().includes(query),
+		);
+		const childMatches = (section.children ?? []).filter((child) =>
+			[child.title, child.id].some((value) => value.toLowerCase().includes(query)),
+		);
+		if (sectionMatch || childMatches.length > 0) {
+			matches.push({
+				...section,
+				children: sectionMatch ? section.children : childMatches,
+			});
+		}
+	}
+	return matches;
+});
+
+const docMatchCount = $derived.by(() => {
+	return filteredSections.reduce(
+		(count, section) => count + 1 + (section.children?.length ?? 0),
+		0,
+	);
+});
+
+const firstDocMatchId = $derived.by(() => filteredSections[0]?.id ?? null);
 
 function scrollTo(id: string) {
 	document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function handleDocsSearchKeydown(e: KeyboardEvent) {
+	if (e.key === 'Enter' && firstDocMatchId) {
+		e.preventDefault();
+		scrollTo(firstDocMatchId);
+	}
 }
 
 $effect(() => {
@@ -70,7 +120,10 @@ $effect(() => {
 			<div class="mb-3 text-[10px] font-bold uppercase tracking-widest text-text-muted">
 				Contents
 			</div>
-			{#each sections as sec}
+			{#if docQuery.trim() && docMatchCount === 0}
+				<p class="py-2 text-[11px] text-text-muted">No matches</p>
+			{/if}
+			{#each filteredSections as sec}
 				<button
 					onclick={() => scrollTo(sec.id)}
 					class="group flex w-full items-center gap-1.5 py-1 text-left text-xs transition-colors"
@@ -111,13 +164,33 @@ $effect(() => {
 			Everything you need to know about using OpenSession — uploading sessions,
 			managing teams, and self-hosting your own instance.
 		</p>
+		<div class="mt-4 max-w-xl border border-border bg-bg-secondary px-3 py-2">
+			<label for="docs-search" class="mb-1 block text-[11px] uppercase tracking-wider text-text-muted">
+				Quick Search
+			</label>
+			<input
+				id="docs-search"
+				type="text"
+				bind:value={docQuery}
+				onkeydown={handleDocsSearchKeydown}
+				placeholder="Search by section/command (e.g. upload, oauth, daemon)"
+				class="w-full bg-transparent text-sm text-text-primary placeholder-text-muted outline-none"
+			/>
+			<p class="mt-1 text-[11px] text-text-muted">
+				{#if docQuery.trim()}
+					{docMatchCount} match{docMatchCount === 1 ? '' : 'es'} · press Enter to jump
+				{:else}
+					Search filters the table of contents
+				{/if}
+			</p>
+		</div>
 	</div>
 
 	<!-- Inline Table of Contents (below xl) -->
 	<nav class="mb-12 border border-border p-5 xl:hidden">
 		<div class="mb-3 text-xs font-bold uppercase tracking-wider text-text-muted">Contents</div>
 		<div class="grid gap-1 sm:grid-cols-2">
-			{#each sections as sec}
+			{#each filteredSections as sec}
 				<button
 					onclick={() => scrollTo(sec.id)}
 					class="flex items-center gap-2 px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-accent"
@@ -135,6 +208,12 @@ $effect(() => {
 		<h2 class="mb-4 text-lg font-bold text-text-primary">Getting Started</h2>
 
 		<div class="space-y-4 text-sm leading-relaxed text-text-secondary">
+			<h3 class="text-sm font-bold text-text-primary">Browse Sessions Without Login</h3>
+			<p>
+				The <button onclick={() => onNavigate('/')} class="text-accent hover:underline">/</button> Sessions page is public.
+				You can explore local/public sessions immediately without signing in.
+			</p>
+
 			<h3 class="text-sm font-bold text-text-primary">Create an Account</h3>
 			<p>
 				Sign up at <button onclick={() => onNavigate('/register')} class="text-accent hover:underline">/register</button> with
@@ -144,7 +223,7 @@ $effect(() => {
 			<h3 class="text-sm font-bold text-text-primary">Sign In</h3>
 			<p>
 				Log in at <button onclick={() => onNavigate('/login')} class="text-accent hover:underline">/login</button>.
-				Password and OAuth methods are both supported. After signing in, you'll land on your session list.
+				Password and OAuth methods are both supported. Sign-in is required for teams, inbox, uploads, and account settings.
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Get Your API Key</h3>
@@ -152,6 +231,17 @@ $effect(() => {
 				Navigate to <button onclick={() => onNavigate('/settings')} class="text-accent hover:underline">/settings</button> to
 				find your API key (starts with <code class="text-accent">osk_</code>). You'll need this for uploading sessions via the CLI.
 			</p>
+
+			<div class="grid gap-px border border-border bg-border sm:grid-cols-2">
+				<div class="bg-bg-primary p-3">
+					<p class="mb-1 text-xs font-bold text-accent">Guest (not signed in)</p>
+					<p class="text-xs">Browse sessions, open docs, inspect session details.</p>
+				</div>
+				<div class="bg-bg-primary p-3">
+					<p class="mb-1 text-xs font-bold text-accent">Signed in</p>
+					<p class="text-xs">Everything above, plus teams/inbox/upload/settings and private account actions.</p>
+				</div>
+			</div>
 		</div>
 	</section>
 
@@ -173,7 +263,7 @@ $effect(() => {
 			<div class="border border-border bg-bg-secondary p-4">
 				<div class="mb-2 text-xs uppercase tracking-wider text-text-muted">Web Upload</div>
 				<p class="text-xs">
-					Drag and drop <code class="text-accent">.jsonl</code> files onto the
+					Drag and drop parsed session <code class="text-accent">.json</code> files onto the
 					<button onclick={() => onNavigate('/upload')} class="text-accent hover:underline">/upload</button> page,
 					or click to select files. You can optionally assign a team before uploading.
 				</p>
@@ -182,7 +272,7 @@ $effect(() => {
 			<h3 class="text-sm font-bold text-text-primary">Viewing Sessions</h3>
 			<p>
 				Your session list at <button onclick={() => onNavigate('/')} class="text-accent hover:underline">/</button> shows
-				all uploaded sessions. Each card displays the session tool, model, timestamp, token count, and a preview of the conversation.
+				public/local sessions without login. Each card displays the session tool, model, timestamp, token count, and a preview of the conversation.
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Timeline View</h3>
@@ -210,6 +300,7 @@ $effect(() => {
 				Go to <button onclick={() => onNavigate('/teams')} class="text-accent hover:underline">/teams</button> and
 				click <strong>Create Team</strong>. Give your team a name — you'll be the admin automatically.
 			</p>
+			<p class="text-xs text-text-muted">Team pages require sign-in.</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Inviting Members</h3>
 			<p>
@@ -249,6 +340,7 @@ $effect(() => {
 				Navigate to <button onclick={() => onNavigate('/invitations')} class="text-accent hover:underline">/invitations</button> to
 				see all pending invitations.
 			</p>
+			<p class="text-xs text-text-muted">Inbox is account-scoped, so sign-in is required.</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Accepting</h3>
 			<p>
@@ -415,8 +507,8 @@ $ opensession view gemini --summary-provider openai-compatible --sum-endpoint ht
 			<!-- upload / upload-all -->
 			<div id="cli-upload" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession upload</code> /
-					<code class="text-accent">upload-all</code>
+					<code class="text-accent">opensession publish upload</code> /
+					<code class="text-accent">opensession publish upload-all</code>
 				</h3>
 				<p>Upload session files to the server.</p>
 
@@ -965,34 +1057,36 @@ volumes:
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Structure</h3>
-			<p>Every HAIL file starts with a metadata line, followed by events:</p>
+			<p>Every HAIL file is JSONL: header line, event lines, then one stats line.</p>
 			<div class="border border-border bg-bg-secondary p-4">
 				<pre class="text-xs leading-relaxed"><span class="text-text-muted">// Line 1: Session metadata</span>
-<span class="text-accent">{`{"v":"hail/0.1","tool":"claude-code","model":"opus-4","ts":"..."}`}</span>
+<span class="text-accent">{`{"type":"header","version":"hail-1.0.0","session_id":"...","agent":{"tool":"codex","provider":"openai","model":"gpt-5"},"context":{"created_at":"...","updated_at":"..."}}`}</span>
 
-<span class="text-text-muted">// Subsequent lines: Events</span>
-<span class="text-role-human">{`{"role":"human","content":"Fix the auth bug"}`}</span>
-<span class="text-role-agent">{`{"role":"agent","content":"I'll update...","tool_calls":[...]}`}</span>
-<span class="text-role-tool">{`{"type":"file_edit","path":"src/auth.rs","diff":"..."}`}</span></pre>
+<span class="text-text-muted">// Line 2..N: Events</span>
+<span class="text-role-human">{`{"type":"event","event_id":"e1","timestamp":"...","event_type":{"type":"UserMessage"},"content":{"blocks":[{"type":"Text","text":"Fix auth"}]}}`}</span>
+<span class="text-role-tool">{`{"type":"event","event_id":"e2","timestamp":"...","event_type":{"type":"ToolCall","data":{"name":"edit_file"}},"content":{"blocks":[{"type":"Text","text":"Editing src/auth.rs"}]}}`}</span>
+
+<span class="text-text-muted">// Last line: Aggregate stats</span>
+<span class="text-role-agent">{`{"type":"stats","event_count":2,"message_count":1,"tool_call_count":1}`}</span></pre>
 			</div>
 
 			<h3 class="text-sm font-bold text-text-primary">Event Types</h3>
 			<div class="grid gap-px border border-border bg-border sm:grid-cols-2">
 				<div class="bg-bg-primary p-3">
-					<span class="text-xs font-bold text-role-human">human</span>
-					<p class="mt-0.5 text-xs">User messages and prompts</p>
+					<span class="text-xs font-bold text-role-human">UserMessage</span>
+					<p class="mt-0.5 text-xs">Human prompts/messages</p>
 				</div>
 				<div class="bg-bg-primary p-3">
-					<span class="text-xs font-bold text-role-agent">agent</span>
-					<p class="mt-0.5 text-xs">AI responses and reasoning</p>
+					<span class="text-xs font-bold text-role-agent">AgentMessage</span>
+					<p class="mt-0.5 text-xs">Assistant output/reasoning</p>
 				</div>
 				<div class="bg-bg-primary p-3">
-					<span class="text-xs font-bold text-role-tool">tool_call</span>
-					<p class="mt-0.5 text-xs">Tool invocations and file edits</p>
+					<span class="text-xs font-bold text-role-tool">ToolCall / FileEdit</span>
+					<p class="mt-0.5 text-xs">Tool activity and file changes</p>
 				</div>
 				<div class="bg-bg-primary p-3">
-					<span class="text-xs font-bold text-error">error</span>
-					<p class="mt-0.5 text-xs">Errors and failures</p>
+					<span class="text-xs font-bold text-error">TaskStart / TaskEnd / Error-like custom</span>
+					<p class="mt-0.5 text-xs">Task boundaries and custom events</p>
 				</div>
 			</div>
 

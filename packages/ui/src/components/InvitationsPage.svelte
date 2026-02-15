@@ -1,6 +1,13 @@
 <script lang="ts">
-import { acceptInvitation, declineInvitation, listInvitations } from '../api';
+import {
+	ApiError,
+	acceptInvitation,
+	declineInvitation,
+	isAuthenticated,
+	listInvitations,
+} from '../api';
 import type { InvitationResponse } from '../types';
+import AuthGuideCard from './AuthGuideCard.svelte';
 
 const {
 	onNavigate = (_path: string) => {},
@@ -11,15 +18,21 @@ const {
 let invitations = $state<InvitationResponse[]>([]);
 let loading = $state(true);
 let error = $state<string | null>(null);
+let unauthorized = $state(false);
 let actionLoading = $state<string | null>(null);
 
 async function fetchInvitations() {
 	loading = true;
 	error = null;
+	unauthorized = false;
 	try {
 		const resp = await listInvitations();
 		invitations = resp.invitations;
 	} catch (e) {
+		if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+			unauthorized = true;
+			return;
+		}
 		error = e instanceof Error ? e.message : 'Failed to load invitations';
 	} finally {
 		loading = false;
@@ -61,6 +74,11 @@ async function handleDecline(inv: InvitationResponse) {
 }
 
 $effect(() => {
+	if (!isAuthenticated()) {
+		loading = false;
+		unauthorized = true;
+		return;
+	}
 	fetchInvitations();
 });
 </script>
@@ -72,7 +90,13 @@ $effect(() => {
 <div class="mx-auto max-w-2xl">
 	<h1 class="mb-4 text-lg font-bold text-text-primary">Pending Invitations</h1>
 
-	{#if loading}
+	{#if unauthorized}
+		<AuthGuideCard
+			title="Inbox requires sign in"
+			description="Invitations are private to your account. Sign in to view and accept team invites."
+			{onNavigate}
+		/>
+	{:else if loading}
 		<div class="py-8 text-center text-xs text-text-muted">Loading...</div>
 	{:else if error}
 		<div class="mb-3 border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
@@ -80,9 +104,9 @@ $effect(() => {
 		</div>
 	{/if}
 
-	{#if !loading && invitations.length === 0}
+	{#if !unauthorized && !loading && invitations.length === 0}
 		<div class="py-8 text-center text-xs text-text-muted">No pending invitations</div>
-	{:else}
+	{:else if !unauthorized}
 		<div class="space-y-2">
 			{#each invitations as inv (inv.id)}
 				<div class="flex items-center justify-between border border-border bg-bg-secondary p-3">

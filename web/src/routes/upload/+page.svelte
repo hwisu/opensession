@@ -3,4 +3,4 @@
 	import { goto } from '$app/navigation';
 </script>
 
-<UploadPage teamMode="manual" onSuccess={(id) => goto(`/session/${id}`)} />
+<UploadPage teamMode="manual" onSuccess={(id) => goto(`/session/${id}`)} onNavigate={(path) => goto(path)} />

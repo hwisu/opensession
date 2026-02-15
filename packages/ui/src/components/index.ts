@@ -1,6 +1,7 @@
 // Page-level shared components
 export { default as AppShell } from './AppShell.svelte';
 export { default as AuthCallbackPage } from './AuthCallbackPage.svelte';
+export { default as AuthGuideCard } from './AuthGuideCard.svelte';
 export { default as CodeBlockView } from './CodeBlockView.svelte';
 export { default as ContentBlockList } from './ContentBlockList.svelte';
 export { default as DiffView } from './DiffView.svelte';

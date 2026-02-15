@@ -1,4 +1,4 @@
-use crate::app::{extract_visible_turns, App, DetailViewMode, DisplayEvent};
+use crate::app::{extract_visible_turns, App, DetailViewMode, DisplayEvent, EventFilter};
 use crate::session_timeline::LaneMarker;
 use crate::theme::{self, Theme};
 use crate::timeline_summary::TimelineSummaryPayload;
@@ -1433,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_summary_cards_limit_when_unfocused() {
+    fn turn_summary_cards_show_all_cards_without_ellipsis() {
         let payload = TimelineSummaryPayload {
             kind: "turn-summary".to_string(),
             version: "2.0".to_string(),
@@ -1472,13 +1472,62 @@ mod tests {
             next_steps: vec!["verify".to_string()],
         };
 
-        let lines = render_turn_summary_cards(&payload, false, 80);
+        let lines =
+            render_turn_summary_cards(&payload, false, 80, &HashSet::from([EventFilter::All]));
         let rendered = lines
             .iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("… 1 more cards"));
+        assert!(rendered.contains("Overview"));
+        assert!(rendered.contains("Files"));
+        assert!(rendered.contains("Plan"));
+        assert!(!rendered.contains("more cards"));
+    }
+
+    #[test]
+    fn turn_summary_cards_follow_file_filter() {
+        let payload = TimelineSummaryPayload {
+            kind: "turn-summary".to_string(),
+            version: "2.0".to_string(),
+            scope: "turn".to_string(),
+            turn_meta: crate::timeline_summary::TurnSummaryTurnMeta::default(),
+            prompt: crate::timeline_summary::TurnSummaryPrompt {
+                text: "prompt".to_string(),
+                intent: "Implement fix".to_string(),
+                constraints: vec![],
+            },
+            outcome: crate::timeline_summary::TurnSummaryOutcome {
+                status: "completed".to_string(),
+                summary: "done".to_string(),
+            },
+            evidence: crate::timeline_summary::TurnSummaryEvidence::default(),
+            cards: vec![
+                crate::timeline_summary::BehaviorCard {
+                    card_type: "overview".to_string(),
+                    title: "Overview".to_string(),
+                    lines: vec!["high-level".to_string()],
+                    severity: "info".to_string(),
+                },
+                crate::timeline_summary::BehaviorCard {
+                    card_type: "files".to_string(),
+                    title: "Files".to_string(),
+                    lines: vec!["path:src/main.rs".to_string()],
+                    severity: "info".to_string(),
+                },
+            ],
+            next_steps: vec![],
+        };
+
+        let lines =
+            render_turn_summary_cards(&payload, true, 100, &HashSet::from([EventFilter::FileOps]));
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Files"));
+        assert!(!rendered.contains("Overview"));
     }
 }
 
@@ -1807,7 +1856,12 @@ fn render_turn_response_panel(
             if !lines.is_empty() {
                 lines.push(Line::raw(""));
             }
-            lines.extend(render_turn_summary_cards(payload, focused, content_width));
+            lines.extend(render_turn_summary_cards(
+                payload,
+                focused,
+                content_width,
+                &app.event_filters,
+            ));
             return lines;
         }
     }
@@ -2924,7 +2978,7 @@ fn render_turn_raw_thread(
     )]));
     if has_summary && raw_override {
         lines.push(Line::from(vec![Span::styled(
-            " [Enter: return to summary cards]",
+            " [Enter/a: return to summary cards]",
             Style::new().fg(Theme::TEXT_MUTED),
         )]));
     }
@@ -2994,6 +3048,7 @@ fn render_turn_summary_cards(
     payload: &TimelineSummaryPayload,
     focused: bool,
     content_width: u16,
+    active_filters: &HashSet<EventFilter>,
 ) -> Vec<Line<'static>> {
     let scope = payload.scope.trim().to_ascii_lowercase();
     let accent = if scope == "window" {
@@ -3016,26 +3071,106 @@ fn render_turn_summary_cards(
         format!(" {title} ({})", payload.version),
         title_style,
     )]));
-    let card_limit = if focused { 4 } else { 2 };
-    for (idx, card) in payload.cards.iter().take(card_limit).enumerate() {
+    lines.push(Line::from(vec![Span::styled(
+        " [Enter/a: show raw behavior]",
+        Style::new().fg(Theme::TEXT_MUTED),
+    )]));
+
+    let visible_cards: Vec<&crate::timeline_summary::BehaviorCard> = payload
+        .cards
+        .iter()
+        .filter(|card| summary_card_matches_filters(card, active_filters))
+        .collect();
+    if visible_cards.is_empty() {
+        let label = if active_filters.contains(&EventFilter::All) {
+            " (no summary cards)"
+        } else {
+            " (no summary cards for current filter)"
+        };
+        lines.push(Line::from(vec![Span::styled(
+            label,
+            Style::new().fg(Theme::TEXT_MUTED),
+        )]));
+        return lines;
+    }
+
+    for (idx, card) in visible_cards.iter().enumerate() {
         if idx > 0 {
             lines.push(Line::raw(""));
         }
-        lines.extend(render_behavior_card(card, focused, content_width));
-    }
-    if payload.cards.len() > card_limit {
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![Span::styled(
-            format!(" … {} more cards", payload.cards.len() - card_limit),
-            Style::new().fg(Theme::TEXT_MUTED),
-        )]));
+        lines.extend(render_behavior_card(card, content_width));
     }
     lines
 }
 
+fn summary_card_matches_filters(
+    card: &crate::timeline_summary::BehaviorCard,
+    active_filters: &HashSet<EventFilter>,
+) -> bool {
+    if active_filters.contains(&EventFilter::All) || active_filters.is_empty() {
+        return true;
+    }
+
+    let card_type = card.card_type.to_ascii_lowercase();
+    let title = card.title.to_ascii_lowercase();
+    let severity = card.severity.to_ascii_lowercase();
+    let lines_joined = card
+        .lines
+        .iter()
+        .map(|line| line.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    for filter in active_filters {
+        let matches = match filter {
+            EventFilter::All => true,
+            EventFilter::Messages => {
+                card_type == "overview"
+                    || card_type == "plan"
+                    || title.contains("overview")
+                    || title.contains("message")
+                    || title.contains("prompt")
+            }
+            EventFilter::ToolCalls => {
+                card_type == "implementation"
+                    || card_type == "errors"
+                    || title.contains("tool")
+                    || lines_joined.contains("tool_")
+                    || lines_joined.contains("tool ")
+                    || lines_joined.contains("exec_command")
+                    || (severity == "error" && !card_type.eq("files"))
+            }
+            EventFilter::Thinking => {
+                card_type == "plan" || title.contains("plan") || title.contains("reason")
+            }
+            EventFilter::FileOps => {
+                card_type == "files"
+                    || title.contains("file")
+                    || lines_joined.contains(" path:")
+                    || lines_joined.contains(".rs")
+                    || lines_joined.contains(".ts")
+                    || lines_joined.contains(".js")
+                    || lines_joined.contains(".md")
+            }
+            EventFilter::Shell => {
+                title.contains("shell")
+                    || lines_joined.contains("shell:")
+                    || lines_joined.contains("cargo ")
+                    || lines_joined.contains("npm ")
+                    || lines_joined.contains("pnpm ")
+                    || lines_joined.contains("bash ")
+            }
+        };
+        if matches {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn render_behavior_card(
     card: &crate::timeline_summary::BehaviorCard,
-    focused: bool,
     content_width: u16,
 ) -> Vec<Line<'static>> {
     let border_color = summary_card_border_color(card);
@@ -3064,22 +3199,12 @@ fn render_behavior_card(
             }
         })
         .collect();
-    let line_limit = if focused { 8 } else { 4 };
-    for entry in entries.iter().take(line_limit) {
+    for entry in entries {
         lines.extend(wrap_text_lines(
             "  │ ",
-            &format!("- {}", truncate(entry, 220)),
+            &format!("- {}", truncate(&entry, 220)),
             border_style,
             body_style,
-            content_width,
-        ));
-    }
-    if entries.len() > line_limit {
-        lines.extend(wrap_text_lines(
-            "  │ ",
-            &format!("… {} more lines", entries.len() - line_limit),
-            border_style,
-            Style::new().fg(Theme::TEXT_MUTED),
             content_width,
         ));
     }

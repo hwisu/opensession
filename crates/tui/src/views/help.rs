@@ -116,8 +116,11 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Next/prev same-type event", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  Enter/Spc ", key_style),
-            Span::styled("Linear: expand event · Turn: raw thread toggle", desc_style),
+            Span::styled("  Enter/Spc/a ", key_style),
+            Span::styled(
+                "Linear: expand event · Turn: summary/raw toggle",
+                desc_style,
+            ),
         ]),
         Line::from(vec![
             Span::styled("  p         ", key_style),

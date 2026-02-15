@@ -1156,6 +1156,23 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn turn_mode_numeric_keys_toggle_event_filters() {
+        let session = make_live_session("turn-filter-toggle", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_view_mode = DetailViewMode::Turn;
+
+        assert!(app.event_filters.contains(&EventFilter::All));
+        app.handle_detail_key(KeyCode::Char('3'));
+        assert!(app.event_filters.contains(&EventFilter::ToolCalls));
+        assert!(!app.event_filters.contains(&EventFilter::All));
+
+        app.handle_detail_key(KeyCode::Char('1'));
+        assert!(app.event_filters.contains(&EventFilter::All));
+        assert_eq!(app.event_filters.len(), 1);
+    }
+
+    #[test]
     fn jump_to_latest_turn_uses_tail_scroll_anchor() {
         let session = make_live_session("turn-tail-anchor", 6);
         let mut app = App::new(vec![session]);
@@ -4552,33 +4569,43 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => {
                 self.jump_to_latest_turn();
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                if let Some(session) = self.selected_session().cloned() {
-                    let visible = self.get_visible_events(&session);
-                    let turns = extract_visible_turns(&visible);
-                    if let Some(turn) = turns.get(self.turn_index) {
-                        let has_summary = self
-                            .turn_summary_payload(
-                                &session.session_id,
-                                turn.turn_index,
-                                turn.anchor_source_index,
-                            )
-                            .is_some();
-                        if has_summary {
-                            let idx = self.turn_index;
-                            if self.turn_raw_overrides.contains(&idx) {
-                                self.turn_raw_overrides.remove(&idx);
-                            } else {
-                                self.turn_raw_overrides.insert(idx);
-                            }
-                        }
-                    }
-                }
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('a') => {
+                self.toggle_turn_raw_override();
             }
             KeyCode::Char('p') => self.toggle_turn_prompt_expanded(),
+            KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
+            KeyCode::Char('2') => self.toggle_event_filter(EventFilter::Messages),
+            KeyCode::Char('3') => self.toggle_event_filter(EventFilter::ToolCalls),
+            KeyCode::Char('4') => self.toggle_event_filter(EventFilter::Thinking),
+            KeyCode::Char('5') => self.toggle_event_filter(EventFilter::FileOps),
+            KeyCode::Char('6') => self.toggle_event_filter(EventFilter::Shell),
             _ => {}
         }
         false
+    }
+
+    fn toggle_turn_raw_override(&mut self) {
+        if let Some(session) = self.selected_session().cloned() {
+            let visible = self.get_visible_events(&session);
+            let turns = extract_visible_turns(&visible);
+            if let Some(turn) = turns.get(self.turn_index) {
+                let has_summary = self
+                    .turn_summary_payload(
+                        &session.session_id,
+                        turn.turn_index,
+                        turn.anchor_source_index,
+                    )
+                    .is_some();
+                if has_summary {
+                    let idx = self.turn_index;
+                    if self.turn_raw_overrides.contains(&idx) {
+                        self.turn_raw_overrides.remove(&idx);
+                    } else {
+                        self.turn_raw_overrides.insert(idx);
+                    }
+                }
+            }
+        }
     }
 
     fn toggle_turn_prompt_expanded(&mut self) {

@@ -20,7 +20,7 @@ fn parse_real_codex_session() {
         );
         let session = codex
             .parse(path)
-            .expect(&format!("Failed to parse {}", path.display()));
+            .unwrap_or_else(|_| panic!("Failed to parse {}", path.display()));
 
         println!(
             "Codex session: id={} title={:?} events={} model={}",
@@ -54,7 +54,7 @@ fn parse_real_gemini_session() {
         );
         let session = gemini
             .parse(path)
-            .expect(&format!("Failed to parse {}", path.display()));
+            .unwrap_or_else(|_| panic!("Failed to parse {}", path.display()));
 
         println!(
             "Gemini session: id={} title={:?} events={} model={}",
@@ -87,7 +87,7 @@ fn parse_real_opencode_session() {
         );
         let session = opencode
             .parse(path)
-            .expect(&format!("Failed to parse {}", path.display()));
+            .unwrap_or_else(|_| panic!("Failed to parse {}", path.display()));
 
         println!(
             "OpenCode session: id={} title={:?} events={} model={}",

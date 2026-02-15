@@ -1,35 +1,23 @@
 mod config;
 mod daemon_ctl;
-mod discover;
 mod handoff;
-mod index;
-mod log_cmd;
 mod output;
 pub mod server;
 mod session_ref;
-mod stats;
 mod stream_push;
-mod summarize;
 #[cfg(feature = "e2e")]
 mod test_cmd;
-mod tui_cmd;
 mod upload;
 mod upload_all;
-mod view_cmd;
 
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 use crate::output::OutputFormat;
-
-/// Time period for stats aggregation.
-#[derive(Debug, Clone, clap::ValueEnum)]
-pub enum StatsPeriod {
-    Day,
-    Week,
-    Month,
-    All,
-}
 
 /// Structured exit codes (gh CLI pattern).
 #[repr(u8)]
@@ -88,85 +76,19 @@ impl ExitCode {
 #[derive(Parser)]
 #[command(
     name = "opensession",
-    about = "opensession.io CLI - manage AI coding sessions"
+    about = "opensession.io CLI - handoff and sharing workflows",
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+    /// Scope path for interactive mode (`.` = current repo, omitted = all local sessions)
+    scope: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Launch the interactive terminal UI
-    Ui,
-
-    /// Open a live summary-focused detail view for an agent session
-    View {
-        /// Agent alias (claude|codex|cursor|gemini|opencode|cline|amp)
-        agent: String,
-
-        /// Active-session window in minutes (mtime-based)
-        #[arg(long, default_value_t = 20)]
-        active_within_minutes: u32,
-
-        /// Max candidates to keep before interactive selection
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-
-        /// Skip interactive picker and choose latest candidate automatically
-        #[arg(long)]
-        non_interactive: bool,
-
-        /// Ignore active window and pick by latest mtime only
-        #[arg(long)]
-        latest: bool,
-
-        /// Print chosen candidate + runtime summary config and exit
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Override summary provider for this run only
-        #[arg(long)]
-        summary_provider: Option<String>,
-
-        /// Override summary model for this run only
-        #[arg(long)]
-        summary_model: Option<String>,
-
-        /// Override summary content mode for this run only
-        #[arg(long, value_enum)]
-        summary_content_mode: Option<view_cmd::SummaryContentModeArg>,
-
-        /// Override summary disk cache for this run only
-        #[arg(long, value_enum)]
-        summary_disk_cache: Option<view_cmd::ToggleArg>,
-
-        /// Override OpenAI-compatible full endpoint for this run only
-        #[arg(long)]
-        sum_endpoint: Option<String>,
-
-        /// Override OpenAI-compatible base URL for this run only
-        #[arg(long)]
-        sum_base: Option<String>,
-
-        /// Override OpenAI-compatible path for this run only
-        #[arg(long)]
-        sum_path: Option<String>,
-
-        /// Override OpenAI-compatible style for this run only
-        #[arg(long, value_enum)]
-        sum_style: Option<view_cmd::SummaryStyleArg>,
-
-        /// Override OpenAI-compatible API key for this run only
-        #[arg(long)]
-        sum_key: Option<String>,
-
-        /// Override OpenAI-compatible API key header for this run only
-        #[arg(long)]
-        sum_key_header: Option<String>,
-    },
-
-    /// Session workflows (discover/history/diff/timeline)
+    /// Session workflows
     Session {
         #[command(subcommand)]
         action: SessionAction,
@@ -178,7 +100,7 @@ enum Commands {
         action: PublishAction,
     },
 
-    /// Runtime operations (daemon/stream/hooks)
+    /// Runtime operations (daemon/stream)
     Ops {
         #[command(subcommand)]
         action: OpsAction,
@@ -203,82 +125,6 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SessionAction {
-    /// List all local AI sessions found on this machine
-    Discover,
-    /// Build/update the local session index from discovered session files
-    Index,
-    /// Show session history (git-log style)
-    Log {
-        /// Show sessions from the last N hours/days (e.g. "3 hours", "2 days", "1 week")
-        #[arg(long)]
-        since: Option<String>,
-
-        /// Show sessions before this time
-        #[arg(long)]
-        before: Option<String>,
-
-        /// Filter by tool name (e.g. "claude-code", "gemini")
-        #[arg(long)]
-        tool: Option<String>,
-
-        /// Filter by model (supports * wildcards, e.g. "opus*")
-        #[arg(long)]
-        model: Option<String>,
-
-        /// Show sessions that touched a specific file
-        #[arg(long)]
-        touches: Option<String>,
-
-        /// Search in session titles and descriptions
-        #[arg(long)]
-        grep: Option<String>,
-
-        /// Show only sessions with errors
-        #[arg(long)]
-        has_errors: bool,
-
-        /// Filter by working directory / project path
-        #[arg(long)]
-        project: Option<String>,
-
-        /// Output format
-        #[arg(long, value_enum, default_value = "text")]
-        format: OutputFormat,
-
-        /// Maximum number of results
-        #[arg(short = 'n', long, default_value = "20")]
-        limit: u32,
-
-        /// Select specific JSON fields (e.g. "id,tool,title"). Use without value to list available fields
-        #[arg(long, num_args = 0..=1, default_missing_value = "")]
-        json: Option<String>,
-
-        /// Apply a jq filter to JSON output (built-in: ., .field, .[], .[].field, .[N], length, keys; complex: system jq)
-        #[arg(long)]
-        jq: Option<String>,
-    },
-    /// Show AI session usage statistics
-    Stats {
-        /// Time period
-        #[arg(long, value_enum, default_value = "week")]
-        period: StatsPeriod,
-
-        /// Output format
-        #[arg(long, value_enum, default_value = "text")]
-        format: OutputFormat,
-    },
-    /// Compare two sessions side-by-side
-    Diff {
-        /// First session (ID, file path, or reference like HEAD^2)
-        session_a: String,
-
-        /// Second session (ID, file path, or reference like HEAD^1)
-        session_b: String,
-
-        /// Use AI to analyze differences
-        #[arg(long)]
-        ai: bool,
-    },
     /// Generate a session handoff summary for the next agent
     Handoff {
         /// Session file(s). Multiple files can be specified for merged handoff
@@ -296,10 +142,6 @@ enum SessionAction {
         #[arg(long, value_enum, default_value = "markdown")]
         format: OutputFormat,
 
-        /// Generate additional LLM-powered summary (requires API key)
-        #[arg(long)]
-        summarize: bool,
-
         /// Claude Code session reference (e.g. HEAD, HEAD~2)
         #[arg(long)]
         claude: Option<String>,
@@ -311,64 +153,6 @@ enum SessionAction {
         /// Generic tool session reference (e.g. "amp HEAD~2")
         #[arg(long)]
         tool: Vec<String>,
-
-        /// AI provider for summarization: "claude", "openai", "gemini"
-        #[arg(long)]
-        ai: Option<String>,
-    },
-    /// Print timeline output as strings (pipe-friendly)
-    Timeline {
-        /// Session reference (HEAD, HEAD^N, ID) or direct session file path
-        #[arg(default_value = "HEAD")]
-        session: String,
-
-        /// Restrict HEAD/ID lookup to a specific tool (e.g. claude, codex)
-        #[arg(long)]
-        tool: Option<String>,
-
-        /// Output format
-        #[arg(long, value_enum, default_value = "text")]
-        format: tui_cmd::TuiOutputFormatArg,
-
-        /// Timeline view mode
-        #[arg(long, value_enum, default_value = "linear")]
-        view: tui_cmd::TimelineViewArg,
-
-        /// Disable collapsing of consecutive events
-        #[arg(long)]
-        no_collapse: bool,
-
-        /// Actively generate timeline summaries before printing
-        #[arg(long)]
-        summaries: bool,
-
-        /// Force summaries off for this render
-        #[arg(long)]
-        no_summary: bool,
-
-        /// Override summary provider for this render
-        #[arg(long)]
-        summary_provider: Option<String>,
-
-        /// Override summary content mode for this render
-        #[arg(long, value_enum)]
-        summary_content_mode: Option<view_cmd::SummaryContentModeArg>,
-
-        /// Override summary disk cache for this render
-        #[arg(long, value_enum)]
-        summary_disk_cache: Option<view_cmd::ToggleArg>,
-
-        /// Truncate rendered output to the first N rows
-        #[arg(long)]
-        max_rows: Option<usize>,
-
-        /// Max number of summaries to generate in this export run (default: 96)
-        #[arg(long)]
-        summary_budget: Option<usize>,
-
-        /// Max time budget (ms) to spend generating summaries (default: 12000, 0=unbounded)
-        #[arg(long)]
-        summary_timeout_ms: Option<u64>,
     },
 }
 
@@ -408,11 +192,6 @@ enum OpsAction {
         /// Agent name (e.g. "claude-code")
         #[arg(long)]
         agent: String,
-    },
-    /// Manage git hooks integration
-    Hooks {
-        #[command(subcommand)]
-        action: HooksAction,
     },
 }
 
@@ -454,21 +233,12 @@ impl Commands {
     fn wants_json_errors(&self) -> bool {
         match self {
             Commands::Session { action } => match action {
-                SessionAction::Log { format, json, .. } => {
-                    matches!(format, OutputFormat::Json | OutputFormat::Stream) || json.is_some()
-                }
                 SessionAction::Handoff { format, .. } => {
                     matches!(
                         format,
                         OutputFormat::Json | OutputFormat::Stream | OutputFormat::Jsonl
                     )
                 }
-                SessionAction::Stats { format, .. } => matches!(format, OutputFormat::Json),
-                SessionAction::Timeline { format, .. } => matches!(
-                    format,
-                    tui_cmd::TuiOutputFormatArg::Json | tui_cmd::TuiOutputFormatArg::Jsonl
-                ),
-                _ => false,
             },
             _ => false,
         }
@@ -478,19 +248,11 @@ impl Commands {
 fn suggestion_for_code(code: &ExitCode) -> Option<&'static str> {
     match code {
         ExitCode::AuthError => Some("opensession account config --api-key <key>"),
-        ExitCode::NoData => Some("opensession session index"),
+        ExitCode::NoData => Some("opensession session handoff --last"),
         ExitCode::NetworkError => Some("opensession account server status"),
         ExitCode::UsageError => Some("opensession --help"),
         _ => None,
     }
-}
-
-#[derive(Subcommand)]
-enum HooksAction {
-    /// Install the prepare-commit-msg hook
-    Install,
-    /// Remove the prepare-commit-msg hook
-    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -529,6 +291,17 @@ enum ServerAction {
     Verify,
 }
 
+enum InteractiveScope {
+    AllLocal,
+    Repo {
+        repo_name: String,
+        paths: Vec<String>,
+    },
+    File {
+        path: String,
+    },
+}
+
 /// Auto-start daemon if configured and not already running
 fn maybe_auto_start_daemon() {
     let cfg = match config::load_config() {
@@ -555,13 +328,20 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    // No subcommand → launch TUI
     let command = match cli.command {
         Some(cmd) => cmd,
         None => {
-            if let Err(e) = run_tui_blocking(None).await {
+            let scope = match resolve_interactive_scope(cli.scope.as_deref()) {
+                Ok(scope) => scope,
+                Err(e) => {
+                    eprintln!("Error: {e:#}");
+                    std::process::exit(ExitCode::UsageError as i32);
+                }
+            };
+
+            if let Err(e) = run_interactive_entry(scope) {
                 eprintln!("Error: {e:#}");
-                std::process::exit(1);
+                std::process::exit(ExitCode::GeneralError as i32);
             }
             return;
         }
@@ -569,10 +349,7 @@ async fn main() {
 
     // Auto-start daemon for commands that benefit from it
     match &command {
-        Commands::Session {
-            action: SessionAction::Discover,
-        }
-        | Commands::Publish {
+        Commands::Publish {
             action: PublishAction::Upload { .. },
         }
         | Commands::Publish {
@@ -588,47 +365,6 @@ async fn main() {
     let result = match command {
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,
-        Commands::Ui => run_tui_blocking(None).await,
-        Commands::View {
-            agent,
-            active_within_minutes,
-            limit,
-            non_interactive,
-            latest,
-            dry_run,
-            summary_provider,
-            summary_model,
-            summary_content_mode,
-            summary_disk_cache,
-            sum_endpoint,
-            sum_base,
-            sum_path,
-            sum_style,
-            sum_key,
-            sum_key_header,
-        } => tokio::task::spawn_blocking(move || {
-            view_cmd::run_view(view_cmd::ViewArgs {
-                agent,
-                active_within_minutes,
-                limit,
-                non_interactive,
-                latest,
-                dry_run,
-                summary_provider,
-                summary_model,
-                summary_content_mode,
-                summary_disk_cache,
-                sum_endpoint,
-                sum_base,
-                sum_path,
-                sum_style,
-                sum_key,
-                sum_key_header,
-            })
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("view command panicked: {e}"))
-        .and_then(|result| result),
         Commands::Session { action } => run_session_action(action).await,
         Commands::Publish { action } => run_publish_action(action).await,
         Commands::Ops { action } => run_ops_action(action).await,
@@ -652,103 +388,179 @@ async fn main() {
     }
 }
 
-async fn run_tui_blocking(paths: Option<Vec<String>>) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || opensession_tui::run(paths))
-        .await
-        .map_err(|e| anyhow::anyhow!("TUI thread panicked: {e}"))?
-}
-
 async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
     match action {
-        SessionAction::Discover => discover::run_discover(),
-        SessionAction::Index => index::run_index(),
-        SessionAction::Log {
-            since,
-            before,
-            tool,
-            model,
-            touches,
-            grep,
-            has_errors,
-            project,
-            format,
-            limit,
-            json,
-            jq,
-        } => log_cmd::run_log(
-            since.as_deref(),
-            before.as_deref(),
-            tool.as_deref(),
-            model.as_deref(),
-            touches.as_deref(),
-            grep.as_deref(),
-            has_errors,
-            project.as_deref(),
-            &format,
-            limit,
-            json.as_deref(),
-            jq.as_deref(),
-        ),
-        SessionAction::Stats { period, format } => stats::run_stats(period, &format),
-        SessionAction::Diff {
-            session_a,
-            session_b,
-            ai,
-        } => handoff::run_diff(&session_a, &session_b, ai).await,
         SessionAction::Handoff {
             files,
             last,
             output,
             format,
-            summarize,
             claude,
             gemini,
             tool,
-            ai,
         } => {
             handoff::run_handoff(
                 &files,
                 last,
                 output.as_deref(),
                 format,
-                summarize,
                 claude.as_deref(),
                 gemini.as_deref(),
                 &tool,
-                ai.as_deref(),
             )
             .await
         }
-        SessionAction::Timeline {
-            session,
-            tool,
-            format,
-            view,
-            no_collapse,
-            summaries,
-            no_summary,
-            summary_provider,
-            summary_content_mode,
-            summary_disk_cache,
-            max_rows,
-            summary_budget,
-            summary_timeout_ms,
-        } => tui_cmd::run_tui_timeline(
-            &session,
-            tool.as_deref(),
-            format,
-            view,
-            no_collapse,
-            summaries,
-            no_summary,
-            summary_provider.as_deref(),
-            summary_content_mode.map(|mode| mode.as_str()),
-            summary_disk_cache.map(|toggle| toggle.as_bool()),
-            max_rows,
-            summary_budget,
-            summary_timeout_ms,
-        ),
     }
+}
+
+fn resolve_interactive_scope(scope: Option<&Path>) -> Result<InteractiveScope> {
+    let Some(scope) = scope else {
+        return Ok(InteractiveScope::AllLocal);
+    };
+
+    let canonical = std::fs::canonicalize(scope)
+        .with_context(|| format!("Path not found: {}", scope.display()))?;
+
+    if canonical.is_file() {
+        return Ok(InteractiveScope::File {
+            path: canonical.to_string_lossy().into_owned(),
+        });
+    }
+
+    if !canonical.is_dir() {
+        bail!(
+            "Scope must be a file or directory path, got: {}",
+            canonical.display()
+        );
+    }
+
+    let git_ctx =
+        opensession_local_db::git::extract_git_context(canonical.to_string_lossy().as_ref());
+    let repo_name = git_ctx.repo_name.with_context(|| {
+        format!(
+            "{} is not inside a git repository. Use `opensession` for all local sessions.",
+            canonical.display()
+        )
+    })?;
+
+    let db = opensession_local_db::LocalDb::open()?;
+    let filter = opensession_local_db::LocalSessionFilter {
+        git_repo_name: Some(repo_name.clone()),
+        ..Default::default()
+    };
+    let rows = db.list_sessions(&filter)?;
+
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for row in rows {
+        let Some(source_path) = row.source_path else {
+            continue;
+        };
+        if source_path.trim().is_empty() || !seen.insert(source_path.clone()) {
+            continue;
+        }
+        if Path::new(&source_path).exists() {
+            paths.push(source_path);
+        }
+    }
+
+    Ok(InteractiveScope::Repo { repo_name, paths })
+}
+
+fn run_interactive_entry(scope: InteractiveScope) -> Result<()> {
+    if try_launch_external_tui(&scope)? {
+        return Ok(());
+    }
+
+    match scope {
+        InteractiveScope::File { .. } => {
+            bail!("`opensession-tui` is not installed. For file input, use `opensession session handoff <file>`.");
+        }
+        InteractiveScope::AllLocal => print_session_overview(None)?,
+        InteractiveScope::Repo { repo_name, .. } => print_session_overview(Some(repo_name))?,
+    }
+
+    Ok(())
+}
+
+fn try_launch_external_tui(scope: &InteractiveScope) -> Result<bool> {
+    let args: Vec<String> = match scope {
+        InteractiveScope::AllLocal => Vec::new(),
+        InteractiveScope::Repo { paths, .. } => {
+            if paths.is_empty() {
+                return Ok(false);
+            }
+            paths.clone()
+        }
+        InteractiveScope::File { path } => vec![path.clone()],
+    };
+
+    let status = match Command::new("opensession-tui").args(&args).status() {
+        Ok(status) => status,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err).context("failed to launch opensession-tui"),
+    };
+
+    if status.success() {
+        Ok(true)
+    } else {
+        bail!("opensession-tui exited with status {status}");
+    }
+}
+
+fn print_session_overview(repo_name: Option<String>) -> Result<()> {
+    let db = opensession_local_db::LocalDb::open()?;
+    let filter = opensession_local_db::LocalSessionFilter {
+        git_repo_name: repo_name.clone(),
+        limit: Some(30),
+        ..Default::default()
+    };
+    let rows = db.list_sessions(&filter)?;
+
+    if let Some(repo) = repo_name {
+        println!("Scope: repo={repo}");
+    } else {
+        println!("Scope: local");
+    }
+
+    if rows.is_empty() {
+        println!("No sessions found in this scope.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<19}  {:<12}  {:>4}  {:<24}  Title",
+        "Created", "Tool", "Msgs", "Repo"
+    );
+    for row in rows {
+        let created = row
+            .created_at
+            .split('T')
+            .next()
+            .unwrap_or(row.created_at.as_str())
+            .to_string();
+        let repo = row.git_repo_name.unwrap_or_else(|| "-".to_string());
+        let title = row.title.unwrap_or_else(|| row.id.clone());
+        println!(
+            "{:<19}  {:<12}  {:>4}  {:<24}  {}",
+            created,
+            row.tool,
+            row.message_count,
+            truncate_display(&repo, 24),
+            truncate_display(&title, 80)
+        );
+    }
+    println!();
+    println!("Tip: install `opensession-tui` to launch interactive mode from `opensession`.");
+    Ok(())
+}
+
+fn truncate_display(value: &str, max: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= max {
+        return value.to_string();
+    }
+    chars[..max.saturating_sub(3)].iter().collect::<String>() + "..."
 }
 
 async fn run_publish_action(action: PublishAction) -> anyhow::Result<()> {
@@ -770,10 +582,6 @@ async fn run_ops_action(action: OpsAction) -> anyhow::Result<()> {
         },
         OpsAction::Stream { action } => run_stream_action(action),
         OpsAction::StreamPush { agent } => stream_push::run_stream_push(&agent),
-        OpsAction::Hooks { action } => match action {
-            HooksAction::Install => handoff::run_hooks_install(),
-            HooksAction::Uninstall => handoff::run_hooks_uninstall(),
-        },
     }
 }
 

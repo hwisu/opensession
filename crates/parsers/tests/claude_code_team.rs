@@ -54,7 +54,7 @@ fn test_parse_team_session_with_subagents() {
 
     // Verify subagent events were merged
     assert!(
-        task_events.len() > 0,
+        !task_events.is_empty(),
         "Expected subagent tasks but found none"
     );
     assert!(

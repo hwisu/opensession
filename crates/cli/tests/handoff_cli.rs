@@ -39,6 +39,8 @@ fn top_help_hides_removed_commands() {
     assert!(!stdout.contains("\n  view"));
     assert!(!stdout.contains("discover"));
     assert!(!stdout.contains("timeline"));
+    assert!(!stdout.contains("\n  ops"));
+    assert!(stdout.contains("\n  daemon"));
 }
 
 #[test]

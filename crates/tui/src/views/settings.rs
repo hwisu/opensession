@@ -305,34 +305,6 @@ fn render_daemon_config(
             },
         )));
     }
-    if section == SettingsGroup::TimelineIntelligence {
-        let slot = app.timeline_preset_slot;
-        let slot_state = if app.timeline_preset_slots_filled.contains(&slot) {
-            "saved"
-        } else {
-            "empty"
-        };
-        let filled_slots = if app.timeline_preset_slots_filled.is_empty() {
-            "none".to_string()
-        } else {
-            app.timeline_preset_slots_filled
-                .iter()
-                .map(|slot| slot.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  preset slot #{} ({})  saved: {}",
-                slot, slot_state, filled_slots
-            ),
-            Style::new().fg(Theme::TEXT_MUTED),
-        )));
-        lines.push(Line::from(Span::styled(
-            "  keys: ','/'.' slot  Shift+S save  Shift+L load",
-            Style::new().fg(Theme::TEXT_HINT),
-        )));
-    }
     lines.push(Line::raw(""));
 
     let mut selected_line = 0usize;
@@ -374,15 +346,11 @@ fn render_daemon_config(
         let daemon_hint = !daemon_running
             && matches!(
                 field,
-                SettingField::AutoPublish
-                    | SettingField::PublishMode
-                    | SettingField::DebounceSecs
+                SettingField::DebounceSecs
                     | SettingField::RealtimeDebounceMs
                     | SettingField::HealthCheckSecs
                     | SettingField::MaxRetries
-                    | SettingField::WatchClaudeCode
-                    | SettingField::WatchOpenCode
-                    | SettingField::WatchCursor
+                    | SettingField::WatchPaths
             )
             && dependency_hint.is_some();
         let dimmed = blocked_reason.is_some();
@@ -594,6 +562,40 @@ fn render_daemon_config(
                         Style::new().fg(Theme::TEXT_MUTED),
                     ),
                 ]));
+            }
+
+            if is_selected && field == SettingField::AutoPublish {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "ON: daemon running + session-end publish forced. OFF: daemon stopped + manual only.",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::WatchPaths {
+                let paths = &app.daemon_config.watchers.custom_paths;
+                if paths.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("     "),
+                        Span::styled(
+                            "No paths configured. Add comma-separated paths.",
+                            Style::new().fg(Theme::ACCENT_YELLOW),
+                        ),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw("     "),
+                        Span::styled("Current paths:", Style::new().fg(Theme::TEXT_MUTED)),
+                    ]));
+                    for p in paths {
+                        lines.push(Line::from(vec![
+                            Span::raw("       - "),
+                            Span::styled(p, Style::new().fg(Theme::TEXT_MUTED)),
+                        ]));
+                    }
+                }
             }
 
             if is_selected && field == SettingField::DetailRealtimePreviewEnabled {

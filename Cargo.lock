@@ -2110,6 +2110,7 @@ dependencies = [
  "opensession-git-native",
  "opensession-local-db",
  "opensession-parsers",
+ "opensession-runtime-config",
  "reqwest",
  "serde",
  "serde_json",
@@ -2259,6 +2260,7 @@ name = "opensession-runtime-config"
 version = "0.2.0"
 dependencies = [
  "serde",
+ "toml",
 ]
 
 [[package]]

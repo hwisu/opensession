@@ -197,16 +197,14 @@ pub enum TeamDetailFocus {
 pub enum SettingsSection {
     Workspace,
     CaptureSync,
-    TimelineIntelligence,
     StoragePrivacy,
     Account,
 }
 
 impl SettingsSection {
-    pub const ORDER: [Self; 5] = [
+    pub const ORDER: [Self; 4] = [
         Self::Workspace,
         Self::CaptureSync,
-        Self::TimelineIntelligence,
         Self::StoragePrivacy,
         Self::Account,
     ];
@@ -215,7 +213,6 @@ impl SettingsSection {
         match self {
             Self::Workspace => "Workspace",
             Self::CaptureSync => "Capture & Sync",
-            Self::TimelineIntelligence => "Timeline Intel",
             Self::StoragePrivacy => "Storage & Privacy",
             Self::Account => "Account",
         }
@@ -225,7 +222,6 @@ impl SettingsSection {
         match self {
             Self::Workspace => "Workspace",
             Self::CaptureSync => "Capture & Sync",
-            Self::TimelineIntelligence => "Timeline Intelligence",
             Self::StoragePrivacy => "Storage & Privacy",
             Self::Account => "Account",
         }
@@ -235,7 +231,6 @@ impl SettingsSection {
         match self {
             Self::Workspace => Some(config::SettingsGroup::Workspace),
             Self::CaptureSync => Some(config::SettingsGroup::CaptureSync),
-            Self::TimelineIntelligence => Some(config::SettingsGroup::TimelineIntelligence),
             Self::StoragePrivacy => Some(config::SettingsGroup::StoragePrivacy),
             Self::Account => None,
         }
@@ -1145,26 +1140,22 @@ mod turn_extract_tests {
     }
 
     #[test]
-    fn focus_detail_view_v_toggles_turn_and_linear() {
+    fn focus_detail_view_v_does_not_toggle_detail_mode() {
         let session = make_live_session("focus-v-toggle", 4);
         let mut app = App::new(vec![session]);
         app.focus_detail_view = true;
         app.enter_detail();
-        assert_eq!(app.detail_view_mode, DetailViewMode::Turn);
-
-        app.handle_detail_key(KeyCode::Char('v'));
         assert_eq!(app.detail_view_mode, DetailViewMode::Linear);
 
         app.handle_detail_key(KeyCode::Char('v'));
-        assert_eq!(app.detail_view_mode, DetailViewMode::Turn);
+        assert_eq!(app.detail_view_mode, DetailViewMode::Linear);
     }
 
     #[test]
-    fn turn_mode_esc_leaves_detail_view_instead_of_switching_to_linear() {
+    fn detail_esc_leaves_detail_view() {
         let session = make_live_session("turn-esc-back", 4);
         let mut app = App::new(vec![session]);
         app.enter_detail();
-        app.detail_view_mode = DetailViewMode::Turn;
         assert_eq!(app.view, View::SessionDetail);
 
         let should_quit = app.handle_detail_key(KeyCode::Esc);
@@ -1174,41 +1165,35 @@ mod turn_extract_tests {
     }
 
     #[test]
-    fn turn_mode_left_scrolls_without_switching_to_linear() {
+    fn detail_left_scrolls_horizontal_timeline() {
         let session = make_live_session("turn-left-stays-turn", 4);
         let mut app = App::new(vec![session]);
         app.enter_detail();
-        app.detail_view_mode = DetailViewMode::Turn;
-        app.turn_h_scroll = 8;
+        app.detail_h_scroll = 8;
 
         app.handle_detail_key(KeyCode::Left);
 
-        assert_eq!(app.detail_view_mode, DetailViewMode::Turn);
-        assert_eq!(app.turn_h_scroll, 4);
+        assert_eq!(app.detail_view_mode, DetailViewMode::Linear);
+        assert_eq!(app.detail_h_scroll, 4);
     }
 
     #[test]
-    fn turn_mode_p_toggles_prompt_expand_for_current_turn() {
+    fn detail_p_key_is_noop_in_linear_mode() {
         let session = make_live_session("turn-prompt-toggle", 4);
         let mut app = App::new(vec![session]);
         app.enter_detail();
-        app.detail_view_mode = DetailViewMode::Turn;
         app.turn_index = 1;
 
         assert!(!app.turn_prompt_expanded.contains(&1));
         app.handle_detail_key(KeyCode::Char('p'));
-        assert!(app.turn_prompt_expanded.contains(&1));
-
-        app.handle_detail_key(KeyCode::Char('p'));
         assert!(!app.turn_prompt_expanded.contains(&1));
     }
 
     #[test]
-    fn turn_mode_numeric_keys_toggle_event_filters() {
+    fn detail_numeric_keys_toggle_event_filters() {
         let session = make_live_session("turn-filter-toggle", 4);
         let mut app = App::new(vec![session]);
         app.enter_detail();
-        app.detail_view_mode = DetailViewMode::Turn;
 
         assert!(app.event_filters.contains(&EventFilter::All));
         app.handle_detail_key(KeyCode::Char('3'));
@@ -1648,7 +1633,6 @@ pub struct TeamInfo {
 }
 
 impl App {
-    const DETAIL_SPLIT_MIN_WIDTH: u16 = 160;
     // Bump this when turn-summary prompt or parsing compatibility changes.
     // Changing this invalidates on-disk summary cache and forces regeneration.
     const SUMMARY_DISK_CACHE_NAMESPACE: &str = "turn-summary-cache-v4";
@@ -2081,23 +2065,16 @@ impl App {
             MouseEventKind::ScrollUp => match self.view {
                 View::SessionList => self.list_prev(),
                 View::SessionDetail => {
-                    if self.detail_view_mode == DetailViewMode::Turn {
-                        self.turn_agent_scroll = self.turn_agent_scroll.saturating_sub(2);
-                        self.detach_live_follow_turn();
-                    } else {
-                        self.detail_event_index = self.detail_event_index.saturating_sub(2);
-                        self.detach_live_follow_linear();
-                        self.update_detail_selection_anchor();
-                    }
+                    self.detail_event_index = self.detail_event_index.saturating_sub(2);
+                    self.detach_live_follow_linear();
+                    self.update_detail_selection_anchor();
                 }
                 _ => {}
             },
             MouseEventKind::ScrollDown => match self.view {
                 View::SessionList => self.list_next(),
                 View::SessionDetail => {
-                    if self.detail_view_mode == DetailViewMode::Turn {
-                        self.turn_agent_scroll = self.turn_agent_scroll.saturating_add(2);
-                    } else if let Some(session) = self.selected_session() {
+                    if let Some(session) = self.selected_session() {
                         let visible = self.visible_event_count(session);
                         if visible > 0 {
                             self.detail_event_index =
@@ -2426,11 +2403,6 @@ impl App {
     }
 
     fn handle_detail_key(&mut self, key: KeyCode) -> bool {
-        // Turn mode has its own key handling
-        if self.detail_view_mode == DetailViewMode::Turn {
-            return self.handle_turn_key(key);
-        }
-
         match key {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
                 if self.focus_detail_view {
@@ -2460,10 +2432,6 @@ impl App {
             KeyCode::Char('U') => self.jump_to_prev_user_message(),
             KeyCode::Char('n') => self.jump_to_next_same_type(),
             KeyCode::Char('N') => self.jump_to_prev_same_type(),
-            KeyCode::Char('v') => {
-                self.detail_view_mode = DetailViewMode::Turn;
-                self.sync_linear_to_turn();
-            }
             KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
             KeyCode::Char('2') => self.toggle_event_filter(EventFilter::Messages),
             KeyCode::Char('3') => self.toggle_event_filter(EventFilter::ToolCalls),
@@ -2533,7 +2501,7 @@ impl App {
                 self.view = View::SessionList;
                 self.active_tab = Tab::Sessions;
                 self.flash_info(
-                    "You can configure this later in Settings > Workspace (~/.config/opensession/daemon.toml)",
+                    "You can configure this later in Settings > Workspace (~/.config/opensession/opensession.toml)",
                 );
             }
             _ => {}
@@ -2613,7 +2581,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Workspace (~/.config/opensession/daemon.toml)",
+                        "You can configure this later in Settings > Workspace (~/.config/opensession/opensession.toml)",
                     );
                 }
             }
@@ -2684,7 +2652,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Workspace (~/.config/opensession/daemon.toml)",
+                        "You can configure this later in Settings > Workspace (~/.config/opensession/opensession.toml)",
                     );
                 }
             }
@@ -2956,17 +2924,11 @@ impl App {
                 // Next settings section
                 self.settings_section = self.settings_section.next();
                 self.settings_index = 0;
-                if self.settings_section == SettingsSection::TimelineIntelligence {
-                    self.refresh_timeline_preset_slots();
-                }
             }
             KeyCode::Char('[') => {
                 // Previous settings section
                 self.settings_section = self.settings_section.prev();
                 self.settings_index = 0;
-                if self.settings_section == SettingsSection::TimelineIntelligence {
-                    self.refresh_timeline_preset_slots();
-                }
             }
             _ => {
                 // Delegate to section-specific handling
@@ -2976,7 +2938,6 @@ impl App {
                     }
                     SettingsSection::Workspace
                     | SettingsSection::CaptureSync
-                    | SettingsSection::TimelineIntelligence
                     | SettingsSection::StoragePrivacy => {
                         self.handle_daemon_config_key(key);
                     }
@@ -3051,6 +3012,14 @@ impl App {
         let field_count = self.settings_field_count();
 
         match key {
+            KeyCode::Char('d') if self.settings_section == SettingsSection::CaptureSync => {
+                self.toggle_daemon();
+            }
+            KeyCode::Char('r') if self.settings_section == SettingsSection::CaptureSync => {
+                self.startup_status.daemon_pid = config::daemon_pid();
+                self.sync_daemon_publish_policy_from_runtime();
+                self.flash_info("Capture & Sync status refreshed");
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.settings_index + 1 < field_count {
                     self.settings_index += 1;
@@ -3061,6 +3030,10 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(field) = self.nth_settings_field(self.settings_index) {
+                    if field == SettingField::AutoPublish {
+                        self.toggle_daemon();
+                        return;
+                    }
                     if let Some(reason) = self.daemon_config_field_block_reason(field) {
                         self.flash_info(reason);
                         return;
@@ -3078,26 +3051,6 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char(',')
-                if self.settings_section == SettingsSection::TimelineIntelligence =>
-            {
-                self.cycle_timeline_preset_slot(false);
-            }
-            KeyCode::Char('.')
-                if self.settings_section == SettingsSection::TimelineIntelligence =>
-            {
-                self.cycle_timeline_preset_slot(true);
-            }
-            KeyCode::Char('S')
-                if self.settings_section == SettingsSection::TimelineIntelligence =>
-            {
-                self.save_timeline_preset_slot();
-            }
-            KeyCode::Char('L')
-                if self.settings_section == SettingsSection::TimelineIntelligence =>
-            {
-                self.load_timeline_preset_slot();
-            }
             KeyCode::Char('s') => {
                 self.save_config();
             }
@@ -3112,9 +3065,9 @@ impl App {
                 self.switch_tab(Tab::Sessions);
             }
             KeyCode::Char('d') => self.toggle_daemon(),
-            KeyCode::Char('s') => self.save_config(),
             KeyCode::Char('r') => {
                 self.startup_status.daemon_pid = config::daemon_pid();
+                self.sync_daemon_publish_policy_from_runtime();
                 self.flash_info("Operations status refreshed");
             }
             _ => {}
@@ -3171,29 +3124,52 @@ impl App {
         }
     }
 
+    fn apply_daemon_publish_policy(config: &mut DaemonConfig, daemon_running: bool) {
+        if daemon_running {
+            config.daemon.auto_publish = true;
+            config.daemon.publish_on = PublishMode::SessionEnd;
+        } else {
+            config.daemon.auto_publish = false;
+            config.daemon.publish_on = PublishMode::Manual;
+        }
+    }
+
+    pub(crate) fn sync_daemon_publish_policy_from_runtime(&mut self) {
+        let daemon_running = self.startup_status.daemon_pid.is_some();
+        Self::apply_daemon_publish_policy(&mut self.daemon_config, daemon_running);
+    }
+
+    fn persist_daemon_publish_policy(&mut self, daemon_running: bool) -> Result<(), String> {
+        let was_dirty = self.config_dirty;
+        Self::apply_daemon_publish_policy(&mut self.daemon_config, daemon_running);
+        let mut persisted = config::load_daemon_config();
+        Self::apply_daemon_publish_policy(&mut persisted, daemon_running);
+        config::save_daemon_config(&persisted)
+            .map_err(|err| format!("Failed to save daemon publish policy: {err}"))?;
+        self.config_dirty = was_dirty;
+        Ok(())
+    }
+
     fn find_daemon_binary() -> Option<std::path::PathBuf> {
         // Look next to our own binary first
         if let Ok(exe) = std::env::current_exe() {
             let dir = exe.parent().unwrap_or(std::path::Path::new("."));
             let candidate = dir.join("opensession-daemon");
-            if candidate.exists() {
+            if candidate.is_file() {
                 return Some(candidate);
             }
             // Try with .exe on Windows
             let candidate = dir.join("opensession-daemon.exe");
-            if candidate.exists() {
+            if candidate.is_file() {
                 return Some(candidate);
             }
         }
-        // Try PATH via `which`
-        if let Ok(output) = std::process::Command::new("which")
-            .arg("opensession-daemon")
-            .output()
-        {
-            if output.status.success() {
-                let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !p.is_empty() {
-                    return Some(std::path::PathBuf::from(p));
+        // Try PATH without spawning an external command to avoid UI stalls.
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                let candidate = dir.join("opensession-daemon");
+                if candidate.is_file() {
+                    return Some(candidate);
                 }
             }
         }
@@ -3201,6 +3177,10 @@ impl App {
     }
 
     fn start_daemon(&mut self) {
+        if let Err(err) = self.persist_daemon_publish_policy(true) {
+            self.flash_error(err);
+            return;
+        }
         let bin = match Self::find_daemon_binary() {
             Some(b) => b,
             None => {
@@ -3225,6 +3205,7 @@ impl App {
                 }
             }
             Err(e) => {
+                let _ = self.persist_daemon_publish_policy(false);
                 self.flash_error(format!("Failed to start daemon: {e}"));
             }
         }
@@ -3241,7 +3222,11 @@ impl App {
                 }
             }
             if self.startup_status.daemon_pid.is_none() {
-                self.flash_success("Daemon stopped");
+                if let Err(err) = self.persist_daemon_publish_policy(false) {
+                    self.flash_error(err);
+                } else {
+                    self.flash_success("Daemon stopped");
+                }
             } else {
                 self.flash_error("Daemon may still be running");
             }
@@ -3841,7 +3826,7 @@ impl App {
                             }
                         ));
                         self.modal = Some(Modal::Confirm {
-                            title: "Configure LLM Summary".to_string(),
+                            title: "Configure Timeline Analysis".to_string(),
                             message: format!(
                                 "Responsive CLI: {}. Set provider to {} now?",
                                 report.responsive_providers.join(", "),
@@ -3875,7 +3860,7 @@ impl App {
 
                         if let Some(provider) = self.recommended_summary_cli_provider(&session_id) {
                             self.modal = Some(Modal::Confirm {
-                                title: "Configure LLM Summary".to_string(),
+                                title: "Configure Timeline Analysis".to_string(),
                                 message: format!(
                                     "Probe found no responder. Set detected provider {} anyway?",
                                     provider
@@ -3968,7 +3953,7 @@ impl App {
             Ok(()) => {
                 self.config_dirty = false;
                 self.startup_status.config_exists = true;
-                self.flash_success("Config saved to daemon.toml");
+                self.flash_success("Config saved to opensession.toml");
                 // Update team_id in case it changed
                 let tid = &self.daemon_config.identity.team_id;
                 self.team_id = if tid.is_empty() {
@@ -4587,16 +4572,7 @@ impl App {
                 self.expanded_events.clear();
                 self.turn_raw_overrides.clear();
                 self.turn_prompt_expanded.clear();
-                self.detail_view_mode = if self.focus_detail_view {
-                    DetailViewMode::Turn
-                } else {
-                    match crossterm::terminal::size() {
-                        Ok((width, _)) if width >= Self::DETAIL_SPLIT_MIN_WIDTH => {
-                            DetailViewMode::Turn
-                        }
-                        _ => DetailViewMode::Linear,
-                    }
-                };
+                self.detail_view_mode = DetailViewMode::Linear;
                 self.detail_selected_event_id = None;
                 self.turn_index = 0;
                 self.turn_agent_scroll = 0;
@@ -4619,8 +4595,7 @@ impl App {
                     .map(|session| session.events.is_empty() && session.stats.event_count > 0)
                     .unwrap_or(false);
                 self.detail_entered_at = Instant::now();
-                self.realtime_preview_enabled =
-                    self.daemon_config.daemon.detail_realtime_preview_enabled;
+                self.realtime_preview_enabled = false;
                 if let Some(session) = self.selected_session().cloned() {
                     if session.events.is_empty() && session.stats.event_count == 0 {
                         self.set_session_detail_issue(
@@ -4630,16 +4605,12 @@ impl App {
                     } else {
                         self.clear_session_detail_issue(&session.session_id);
                     }
-                    self.ensure_summary_ready_for_session(&session);
                     self.live_last_event_at = session.events.last().map(|event| event.timestamp);
                 }
                 self.refresh_live_subscription();
                 self.refresh_live_mode();
                 if self.live_mode {
                     self.jump_to_latest_linear();
-                    self.jump_to_latest_turn();
-                } else if self.detail_view_mode == DetailViewMode::Turn {
-                    self.sync_linear_to_turn();
                 }
                 self.update_detail_selection_anchor();
             }
@@ -5238,8 +5209,8 @@ impl App {
         let configured_window = self.daemon_config.daemon.summary_event_window;
         let auto_turn_window_mode = configured_window == 0;
         let window = configured_window.max(1) as usize;
-        let include_window_anchors = self.detail_view_mode != DetailViewMode::Turn;
-        let include_turn_anchors = self.detail_view_mode == DetailViewMode::Turn;
+        let include_window_anchors = true;
+        let include_turn_anchors = false;
         let mut seen: HashSet<TimelineSummaryWindowKey> = HashSet::new();
         let mut anchors: Vec<SummaryAnchor<'a>> = Vec::new();
         let source_to_event: HashMap<usize, &'a Event> = events
@@ -6168,7 +6139,7 @@ impl App {
                     None
                 } else {
                     Some(
-                        "no summary backend configured for auto mode; set API key/endpoint in Settings > Timeline Intelligence, set OPS_TL_SUM_CLI_BIN, or switch LLM Summary Mode".to_string(),
+                        "no summary backend configured for auto mode; set API key/endpoint, set OPS_TL_SUM_CLI_BIN, or switch LLM Summary Mode".to_string(),
                     )
                 }
             }
@@ -6193,7 +6164,7 @@ impl App {
                     None
                 } else {
                     Some(
-                        "OpenAI-compatible mode needs key or endpoint/base config (Settings > Timeline Intelligence or OPS_TL_SUM_*)"
+                        "OpenAI-compatible mode needs key or endpoint/base config (OPS_TL_SUM_*)"
                             .to_string(),
                     )
                 }
@@ -6558,10 +6529,7 @@ impl App {
             self.timeline_summary_cache.clear();
             self.timeline_summary_lookup_keys.clear();
             self.cancel_timeline_summary_jobs();
-            self.flash_info(format!(
-                "LLM summary auto-disabled: {} (Settings > Timeline Intelligence)",
-                reason
-            ));
+            self.flash_info(format!("LLM summary auto-disabled: {}", reason));
         }
     }
 
@@ -6672,7 +6640,7 @@ impl App {
                 )
             };
             self.modal = Some(Modal::Confirm {
-                title: "Configure LLM Summary".to_string(),
+                title: "Configure Timeline Analysis".to_string(),
                 message,
                 action: ConfirmAction::ProbeSummaryCli {
                     session_id: key.session_id.clone(),
@@ -6786,139 +6754,8 @@ impl App {
     }
 
     pub fn schedule_detail_summary_jobs(&mut self) -> Option<AsyncCommand> {
-        if self.view != View::SessionDetail {
-            return None;
-        }
-        if self.focus_detail_view {
-            return None;
-        }
-        self.refresh_live_mode();
-        if self.live_mode {
-            return None;
-        }
-        if self.detail_entered_at.elapsed() < Self::detail_summary_warmup_duration() {
-            return None;
-        }
-        self.prune_stale_summary_inflight();
-        let max_inflight = self.daemon_config.daemon.summary_max_inflight.max(1) as usize;
-        if self.timeline_summary_inflight.len() >= max_inflight {
-            return None;
-        }
-
-        let session = self.selected_session().cloned()?;
-        self.ensure_summary_ready_for_session(&session);
-        if !self.summary_allowed_for_session(&session) {
-            return None;
-        }
-
-        let base = self.get_base_visible_events(&session);
-        if base.is_empty() {
-            return None;
-        }
-
-        let viewport = self.detail_viewport_height.max(6) as usize;
-        let visible_start = self.detail_event_index.saturating_sub(viewport / 2);
-        let visible_end = self
-            .detail_event_index
-            .saturating_add(viewport.saturating_mul(2));
-
-        let mut visible_candidates: Vec<(usize, SummaryAnchor<'_>)> = Vec::new();
-        let mut background_candidates: Vec<(usize, SummaryAnchor<'_>)> = Vec::new();
-        self.ensure_summary_disk_cache_loaded();
-
-        for anchor in self.build_summary_anchors(&session, &base) {
-            if self.timeline_summary_cache.contains_key(&anchor.key)
-                || self.timeline_summary_inflight.contains(&anchor.key)
-                || self.pending_summary_contains(&anchor.key)
-            {
-                continue;
-            }
-
-            let distance = anchor.display_index.abs_diff(self.detail_event_index);
-            let turn_focus_priority = self.detail_view_mode == DetailViewMode::Turn
-                && matches!(anchor.scope, SummaryScope::Turn)
-                && distance <= viewport;
-            if turn_focus_priority
-                || (anchor.display_index >= visible_start && anchor.display_index <= visible_end)
-            {
-                visible_candidates.push((distance, anchor));
-            } else {
-                background_candidates.push((distance, anchor));
-            }
-        }
-
-        if !visible_candidates.is_empty() {
-            const VISIBLE_ENQUEUE_BATCH: usize = 48;
-            visible_candidates.sort_by_key(|(distance, _)| *distance);
-            visible_candidates.truncate(VISIBLE_ENQUEUE_BATCH);
-            for (_, anchor) in visible_candidates.into_iter().rev() {
-                let context = self.build_summary_context(&session, &base, &anchor);
-                let cache_lookup_key = self.summary_cache_lookup_key(&anchor.key, &context);
-                if let Some(lookup_key) = cache_lookup_key.as_deref() {
-                    if self.maybe_use_summary_disk_cache(&anchor.key, lookup_key) {
-                        continue;
-                    }
-                }
-                let req = TimelineSummaryWindowRequest {
-                    context,
-                    key: anchor.key,
-                    visible_priority: true,
-                    cache_lookup_key,
-                };
-                self.timeline_summary_pending.push_front(req);
-            }
-        }
-
-        // Keep background fill lazy: only enqueue a small near-range batch per tick.
-        background_candidates.sort_by_key(|(distance, _)| *distance);
-        const BACKGROUND_ENQUEUE_BATCH: usize = 24;
-        for (_, anchor) in background_candidates
-            .into_iter()
-            .take(BACKGROUND_ENQUEUE_BATCH)
-        {
-            let context = self.build_summary_context(&session, &base, &anchor);
-            let cache_lookup_key = self.summary_cache_lookup_key(&anchor.key, &context);
-            if let Some(lookup_key) = cache_lookup_key.as_deref() {
-                if self.maybe_use_summary_disk_cache(&anchor.key, lookup_key) {
-                    continue;
-                }
-            }
-            let req = TimelineSummaryWindowRequest {
-                context,
-                key: anchor.key,
-                visible_priority: false,
-                cache_lookup_key,
-            };
-            self.timeline_summary_pending.push_back(req);
-        }
-
-        let req = self.timeline_summary_pending.pop_front()?;
-        let debounce_ms = self.daemon_config.daemon.summary_debounce_ms.max(100);
-        if !req.visible_priority
-            && self
-                .last_summary_request_at
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(debounce_ms))
-        {
-            self.timeline_summary_pending.push_front(req);
-            return None;
-        }
-
-        self.timeline_summary_inflight.insert(req.key.clone());
-        if let Some(lookup_key) = req.cache_lookup_key.clone() {
-            self.timeline_summary_lookup_keys
-                .insert(req.key.clone(), lookup_key);
-        }
-        let now = Instant::now();
-        self.timeline_summary_inflight_started
-            .insert(req.key.clone(), now);
-        self.last_summary_request_at = Some(now);
-        Some(AsyncCommand::GenerateTimelineSummary {
-            key: req.key,
-            epoch: self.timeline_summary_epoch,
-            provider: self.daemon_config.daemon.summary_provider.clone(),
-            context: req.context,
-            agent_tool: session.agent.tool.clone(),
-        })
+        let _ = self;
+        None
     }
 
     pub fn turn_summary_key(
@@ -7277,53 +7114,18 @@ impl App {
     }
 
     pub fn llm_summary_status_label(&self) -> String {
-        let Some(session) = self.selected_session() else {
-            return "off".to_string();
-        };
-        if self.focus_detail_view || self.live_mode {
-            return "off".to_string();
-        }
-        if !self.daemon_config.daemon.summary_enabled {
-            return "off".to_string();
-        }
-        if session.events.is_empty() {
-            return "off".to_string();
-        }
-        if self
-            .session_detail_issues
-            .contains_key(session.session_id.as_str())
-        {
-            return "off".to_string();
-        }
-        if describe_summary_engine(
-            self.daemon_config.daemon.summary_provider.as_deref(),
-            Some(&self.summary_runtime_config()),
-        )
-        .is_err()
-        {
-            return "off(no-backend)".to_string();
-        }
-        "on".to_string()
+        let _ = self;
+        "off".to_string()
     }
 
     pub fn llm_summary_engine_label(&self) -> String {
-        describe_summary_engine(
-            self.daemon_config.daemon.summary_provider.as_deref(),
-            Some(&self.summary_runtime_config()),
-        )
-        .unwrap_or_else(|_| "backend:none".to_string())
+        let _ = self;
+        "backend:disabled".to_string()
     }
 
     pub fn llm_summary_runtime_badge(&self) -> String {
-        let status = self.llm_summary_status_label();
-        match status.as_str() {
-            "on" => format!("llm-summary:on {}", self.llm_summary_engine_label()),
-            "off(no-backend)" => format!(
-                "llm-summary:off(no-backend) {}",
-                self.llm_summary_engine_label()
-            ),
-            _ => "llm-summary:off".to_string(),
-        }
+        let _ = self;
+        "timeline-analysis:off".to_string()
     }
 
     pub fn take_detail_hydrate_path(&mut self) -> Option<PathBuf> {

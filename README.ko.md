@@ -17,9 +17,17 @@
 ```bash
 cargo install opensession
 
+opensession --help
 opensession session handoff --last
 opensession publish upload-all
-opensession ops stream enable --agent claude-code
+opensession daemon start --agent claude-code --repo .
+```
+
+수동 로컬 탐색 모드(TUI):
+
+```bash
+opensession      # 전체 로컬 세션
+opensession .    # 현재 git 레포 범위
 ```
 
 ### 배포 프로필
@@ -77,25 +85,32 @@ docker compose up -d
 
 | 명령어 | 설명 |
 |--------|------|
+| `opensession` / `opensession .` | 로컬 인터랙티브 모드 실행 (전체 / 현재 레포 범위) |
 | `opensession session handoff` | 다음 에이전트를 위한 핸드오프 요약 생성 |
 | `opensession publish upload <file>` | 세션 파일 업로드 |
 | `opensession publish upload-all` | 모든 세션 탐색 후 업로드 |
-| `opensession ops daemon start\|stop\|status\|health` | 백그라운드 데몬 관리 |
-| `opensession ops stream enable\|disable` | 로컬 스트림 훅 활성화/비활성화 |
-| `opensession ops stream-push --agent <agent>` | 훅에서 호출되는 스트림 인덱싱 명령 |
-| `opensession account config` | 설정 조회/변경 |
-| `opensession account server status\|verify` | 서버 연결 확인 |
+| `opensession daemon start\|stop\|status\|health` | 데몬 실행/중지/상태 관리 |
+| `opensession daemon select --agent ... --repo ...` | 감시 에이전트/레포 선택 |
+| `opensession daemon show` | 현재 데몬 대상 확인 |
+| `opensession daemon stream-push --agent <agent>` | 내부 훅 대상 명령 |
+| `opensession account connect --server --api-key [--team-id]` | 서버/계정 빠른 연결 |
+| `opensession account team --id <team-id>` | 기본 팀 설정 |
+| `opensession account status\|verify` | 서버 연결/인증 확인 |
 | `opensession docs completion <shell>` | 쉘 자동완성 생성 |
+
+숨김/레거시 알리아스는 제거되었으며, 위 표의 명령 집합이 현재 표준 CLI 표면입니다.
 
 ## 설정
 
-### CLI 설정 (`~/.config/opensession/config.toml`)
+### 통합 설정 (`~/.config/opensession/opensession.toml`)
 
 ```bash
-opensession account config --server https://opensession.io --api-key osk_xxx --team-id my-team
+opensession account connect --server https://opensession.io --api-key osk_xxx --team-id my-team
 ```
 
-### 데몬 설정 (`~/.config/opensession/daemon.toml`)
+전역 설정은 `opensession.toml`만 사용합니다. 레거시 폴백(`daemon.toml`, `config.toml`)은 더 이상 읽지 않습니다.
+
+### 데몬 설정 (`~/.config/opensession/opensession.toml`)
 
 TUI 설정 화면이나 파일 직접 편집으로 설정:
 
@@ -116,8 +131,6 @@ team_id = ""
 [watchers]
 claude_code = true
 opencode = true
-goose = true
-aider = true
 cursor = false
 
 [privacy]
@@ -145,8 +158,7 @@ method = "native"            # platform_api | native | none
 | 경로 | 설명 |
 |------|------|
 | `~/.local/share/opensession/local.db` | 로컬 SQLite 캐시 |
-| `~/.config/opensession/config.toml` | CLI 설정 |
-| `~/.config/opensession/daemon.toml` | 데몬 설정 |
+| `~/.config/opensession/opensession.toml` | CLI/데몬 통합 설정 |
 
 ## API 엔드포인트
 

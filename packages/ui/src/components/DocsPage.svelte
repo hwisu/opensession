@@ -24,18 +24,11 @@ const sections: TocItem[] = [
 		title: 'CLI Reference',
 		children: [
 			{ id: 'cli-config', title: 'config' },
-			{ id: 'cli-discover', title: 'discover' },
-			{ id: 'cli-view', title: 'view' },
 			{ id: 'cli-upload', title: 'upload' },
-			{ id: 'cli-log', title: 'log' },
-			{ id: 'cli-stats', title: 'stats' },
 			{ id: 'cli-handoff', title: 'handoff' },
-			{ id: 'cli-diff', title: 'diff' },
 			{ id: 'cli-daemon', title: 'daemon' },
-			{ id: 'cli-server', title: 'server' },
-			{ id: 'cli-hooks', title: 'hooks' },
 			{ id: 'cli-stream', title: 'stream' },
-			{ id: 'cli-misc', title: 'index & completion' },
+			{ id: 'cli-completion', title: 'completion' },
 			{ id: 'cli-refs', title: 'Session References' },
 			{ id: 'cli-formats', title: 'Output Formats' },
 		],
@@ -223,7 +216,7 @@ $effect(() => {
 			<h3 class="text-sm font-bold text-text-primary">Sign In</h3>
 			<p>
 				Log in at <button onclick={() => onNavigate('/login')} class="text-accent hover:underline">/login</button>.
-				Password and OAuth methods are both supported. Sign-in is required for teams, inbox, uploads, and account settings.
+				Password and OAuth methods are both supported. Sign-in is required for uploads and account settings.
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Deployment Profiles</h3>
@@ -275,7 +268,7 @@ $effect(() => {
 			<div class="border border-border bg-bg-secondary p-4">
 				<div class="mb-2 text-xs uppercase tracking-wider text-text-muted">Web Upload</div>
 				<p class="text-xs">
-					Drag and drop parsed session <code class="text-accent">.json</code> files onto the
+					Drag and drop session <code class="text-accent">.jsonl</code> files onto the
 					<button onclick={() => onNavigate('/upload')} class="text-accent hover:underline">/upload</button> page,
 					or click to select files. Docker profile supports team-target upload, while Worker profile uses personal mode.
 				</p>
@@ -296,7 +289,7 @@ $effect(() => {
 			<h3 class="text-sm font-bold text-text-primary">Search &amp; Filter</h3>
 			<p>
 				Use the search bar (<kbd class="border border-border bg-bg-secondary px-1.5 py-0.5 text-xs">/</kbd> to focus)
-				to search across all sessions by content. Filter by tool, model, or team using the filter controls.
+				to search across all sessions by content. Filter by tool/model, and by team when the Docker profile is enabled.
 			</p>
 		</div>
 	</section>
@@ -410,110 +403,38 @@ $effect(() => {
 			<!-- config -->
 			<div id="cli-config" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession account config</code>
+					<code class="text-accent">opensession account connect / team / status</code>
 				</h3>
-				<p>Show or set CLI configuration.</p>
+				<p>Connect server/API key/team quickly and verify connectivity.</p>
 
 				<div class="mt-3 space-y-2">
 					<div class="cli-flags">
-						<code>--server &lt;URL&gt;</code> <span>Server URL</span>
+						<code>account connect --server &lt;URL&gt;</code> <span>Server URL</span>
 					</div>
 					<div class="cli-flags">
-						<code>--api-key &lt;KEY&gt;</code> <span>API key (<code class="text-accent">osk_</code> prefix)</span>
+						<code>account connect --api-key &lt;KEY&gt;</code> <span>API key (<code class="text-accent">osk_</code> prefix)</span>
 					</div>
 					<div class="cli-flags">
-						<code>--team-id &lt;ID&gt;</code> <span>Default team ID</span>
+						<code>account team --id &lt;ID&gt;</code> <span>Default team ID</span>
 					</div>
 				</div>
 
 				<div class="mt-3 border border-border bg-bg-secondary p-4">
 					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
 					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Show current configuration</span>
-$ opensession account config
+$ opensession account show
 
 <span class="text-text-muted"># Set server URL and API key</span>
-$ opensession account config --server https://opensession.io --api-key osk_abc123
+$ opensession account connect --server https://opensession.io --api-key osk_abc123
 
 <span class="text-text-muted"># Set default team for uploads</span>
-$ opensession account config --team-id my-team</pre>
+$ opensession account team --id my-team
+
+<span class="text-text-muted"># Check server/auth</span>
+$ opensession account status
+$ opensession account verify</pre>
 				</div>
-				<p class="mt-2 text-xs text-text-muted">Config file: <code class="text-accent">~/.config/opensession/config.toml</code></p>
-			</div>
-
-			<!-- discover -->
-			<div id="cli-discover" class="docs-section border-t border-border pt-5">
-				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession session discover</code>
-				</h3>
-				<p>Scan this machine for AI sessions from all supported tools.</p>
-
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Example</div>
-					<pre class="text-xs text-accent leading-relaxed">$ opensession session discover
-
-<span class="text-text-muted">Found 47 sessions:</span>
-<span class="text-tool-claude">  claude-code</span>  <span class="text-text-muted">32 sessions  ~/.claude/projects/</span>
-<span class="text-tool-cursor">  cursor</span>       <span class="text-text-muted"> 8 sessions  ~/.cursor/</span>
-<span class="text-tool-codex">  codex</span>        <span class="text-text-muted"> 4 sessions  ~/.codex/sessions/</span>
-<span class="text-tool-opencode">  opencode</span>     <span class="text-text-muted"> 3 sessions  ~/.local/share/opencode/</span></pre>
-				</div>
-				<p class="mt-2 text-xs text-text-muted">Supported: Claude Code, Cursor, Codex, OpenCode, Cline, Amp, Gemini</p>
-			</div>
-
-			<!-- view -->
-			<div id="cli-view" class="docs-section border-t border-border pt-5">
-				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession view &lt;agent&gt;</code>
-				</h3>
-				<p>Open a real-time Session Detail view focused on one active agent session.</p>
-
-				<div class="mt-3 space-y-2">
-					<div class="cli-flags">
-						<code>&lt;agent&gt;</code> <span>claude | codex | cursor | gemini | opencode | cline | amp</span>
-					</div>
-					<div class="cli-flags">
-						<code>--active-within-minutes &lt;N&gt;</code> <span>Active window by file mtime (default: 20)</span>
-					</div>
-					<div class="cli-flags">
-						<code>--latest</code> <span>Ignore active window and always choose latest</span>
-					</div>
-					<div class="cli-flags">
-						<code>--non-interactive</code> <span>Skip picker and auto-select latest candidate</span>
-					</div>
-					<div class="cli-flags">
-						<code>--dry-run</code> <span>Print selected session/runtime overrides and exit</span>
-					</div>
-					<div class="cli-flags">
-						<code>--summary-provider &lt;PROVIDER&gt;</code> <span>Runtime-only summary provider override</span>
-					</div>
-					<div class="cli-flags">
-						<code>--summary-model &lt;MODEL&gt;</code> <span>Runtime-only model override</span>
-					</div>
-					<div class="cli-flags">
-						<code>--sum-endpoint / --sum-base / --sum-path</code> <span>OpenAI-compatible endpoint overrides</span>
-					</div>
-					<div class="cli-flags">
-						<code>--sum-style &lt;chat|responses&gt;</code> <span>OpenAI-compatible payload style</span>
-					</div>
-					<div class="cli-flags">
-						<code>--sum-key / --sum-key-header</code> <span>Runtime-only API key/header override</span>
-					</div>
-				</div>
-
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Open active Claude session in live detail view</span>
-$ opensession view claude
-
-<span class="text-text-muted"># Prefer latest only, no picker</span>
-$ opensession view codex --latest --non-interactive
-
-<span class="text-text-muted"># Dry-run selection and runtime summary settings</span>
-$ opensession view cursor --dry-run --non-interactive
-
-<span class="text-text-muted"># Runtime summary API override (not persisted)</span>
-$ opensession view gemini --summary-provider openai-compatible --sum-endpoint https://example.com/v1/responses --sum-style responses</pre>
-				</div>
+				<p class="mt-2 text-xs text-text-muted">Config file: <code class="text-accent">~/.config/opensession/opensession.toml</code></p>
 			</div>
 
 			<!-- upload / upload-all -->
@@ -555,113 +476,6 @@ $ opensession publish upload ./session.jsonl --git</pre>
 				</p>
 			</div>
 
-			<!-- log -->
-			<div id="cli-log" class="docs-section border-t border-border pt-5">
-				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession session log</code>
-				</h3>
-				<p>Show session history in a git-log style format.</p>
-
-				<div class="mt-3 space-y-2">
-					<div class="cli-flags">
-						<code>--since &lt;TIME&gt;</code> <span>Filter by time (e.g. "3 hours", "2 days", "1 week")</span>
-					</div>
-					<div class="cli-flags">
-						<code>--before &lt;TIME&gt;</code> <span>Show sessions before this time</span>
-					</div>
-					<div class="cli-flags">
-						<code>--tool &lt;TOOL&gt;</code> <span>Filter by tool (e.g. "claude-code", "cursor")</span>
-					</div>
-					<div class="cli-flags">
-						<code>--model &lt;MODEL&gt;</code> <span>Filter by model (supports wildcards: "opus*")</span>
-					</div>
-					<div class="cli-flags">
-						<code>--grep &lt;QUERY&gt;</code> <span>Search in titles and descriptions</span>
-					</div>
-					<div class="cli-flags">
-						<code>--touches &lt;FILE&gt;</code> <span>Show sessions that touched a specific file</span>
-					</div>
-					<div class="cli-flags">
-						<code>--has-errors</code> <span>Show only sessions with errors</span>
-					</div>
-					<div class="cli-flags">
-						<code>--project &lt;PATH&gt;</code> <span>Filter by working directory</span>
-					</div>
-					<div class="cli-flags">
-						<code>-n, --limit &lt;N&gt;</code> <span>Max results (default: 20)</span>
-					</div>
-					<div class="cli-flags">
-						<code>--format &lt;FMT&gt;</code> <span>Output format (text, json, jsonl, markdown)</span>
-					</div>
-					<div class="cli-flags">
-						<code>--json [FIELDS]</code> <span>Select JSON fields (e.g. "id,tool,title")</span>
-					</div>
-					<div class="cli-flags">
-						<code>--jq &lt;FILTER&gt;</code> <span>Apply jq filter to JSON output</span>
-					</div>
-				</div>
-
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Show recent sessions</span>
-$ opensession session log
-
-<span class="text-text-muted"># Sessions from the last 3 hours</span>
-$ opensession session log --since "3 hours"
-
-<span class="text-text-muted"># Only Claude Code sessions with errors</span>
-$ opensession session log --tool claude-code --has-errors
-
-<span class="text-text-muted"># Search for sessions about authentication</span>
-$ opensession session log --grep "auth" --limit 5
-
-<span class="text-text-muted"># Sessions that touched a specific file</span>
-$ opensession session log --touches src/auth.rs
-
-<span class="text-text-muted"># Filter by model using wildcards</span>
-$ opensession session log --model "opus*"
-
-<span class="text-text-muted"># Export as JSON with specific fields</span>
-$ opensession session log --json "id,tool,title,created_at"
-
-<span class="text-text-muted"># Pipe through jq for custom queries</span>
-$ opensession session log --format json --jq '.[] | select(.has_errors)'</pre>
-				</div>
-			</div>
-
-			<!-- stats -->
-			<div id="cli-stats" class="docs-section border-t border-border pt-5">
-				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession session stats</code>
-				</h3>
-				<p>Show AI usage statistics — sessions, tokens, costs, and breakdowns by tool.</p>
-
-				<div class="mt-3 space-y-2">
-					<div class="cli-flags">
-						<code>--period &lt;PERIOD&gt;</code> <span>Time period: day, week (default), month, all</span>
-					</div>
-					<div class="cli-flags">
-						<code>--format &lt;FMT&gt;</code> <span>Output format: text (default), json</span>
-					</div>
-				</div>
-
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># This week's stats</span>
-$ opensession session stats
-
-<span class="text-text-muted"># All-time usage</span>
-$ opensession session stats --period all
-
-<span class="text-text-muted"># Today's stats in JSON</span>
-$ opensession session stats --period day --format json</pre>
-				</div>
-				<p class="mt-2 text-xs text-text-muted">
-					Shows: total sessions, duration, token counts (input/output),
-					breakdown by tool, top edited files, error rate, and estimated cost.
-				</p>
-			</div>
-
 			<!-- handoff -->
 			<div id="cli-handoff" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-1 text-sm font-bold text-text-primary">
@@ -686,12 +500,6 @@ $ opensession session stats --period day --format json</pre>
 						<code>--tool &lt;TOOL_REF&gt;</code> <span>Generic tool reference (e.g. "amp HEAD~2"), repeatable</span>
 					</div>
 					<div class="cli-flags">
-						<code>--summarize</code> <span>Generate LLM-powered summary</span>
-					</div>
-					<div class="cli-flags">
-						<code>--ai &lt;PROVIDER&gt;</code> <span>AI provider for summarization: claude, openai, gemini</span>
-					</div>
-					<div class="cli-flags">
 						<code>-o, --output &lt;PATH&gt;</code> <span>Write to file instead of stdout</span>
 					</div>
 					<div class="cli-flags">
@@ -699,61 +507,26 @@ $ opensession session stats --period day --format json</pre>
 					</div>
 				</div>
 
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Handoff from the last Claude Code session</span>
+					<div class="mt-3 border border-border bg-bg-secondary p-4">
+						<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
+						<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Handoff from the last Claude Code session</span>
 $ opensession session handoff --claude HEAD
 
-<span class="text-text-muted"># Handoff with AI-powered summary</span>
-$ opensession session handoff --last --summarize
+<span class="text-text-muted"># Handoff from most recent session</span>
+$ opensession session handoff --last
 
 <span class="text-text-muted"># Merge multiple sessions into one handoff</span>
 $ opensession session handoff session1.jsonl session2.jsonl
 
 <span class="text-text-muted"># Save handoff to a file</span>
-$ opensession session handoff --claude HEAD -o handoff.md
-
-<span class="text-text-muted"># Cross-tool handoff: Claude to Gemini</span>
-$ opensession session handoff --claude HEAD~3 --summarize --ai gemini</pre>
-				</div>
-			</div>
-
-			<!-- diff -->
-			<div id="cli-diff" class="docs-section border-t border-border pt-5">
-				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession session diff</code>
-				</h3>
-				<p>Compare two sessions side-by-side.</p>
-
-				<div class="mt-3 space-y-2">
-					<div class="cli-flags">
-						<code>&lt;session_a&gt;</code> <span>First session (ID, file path, or reference)</span>
-					</div>
-					<div class="cli-flags">
-						<code>&lt;session_b&gt;</code> <span>Second session</span>
-					</div>
-					<div class="cli-flags">
-						<code>--ai</code> <span>Use AI to analyze differences</span>
+$ opensession session handoff --claude HEAD -o handoff.md</pre>
 					</div>
 				</div>
-
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Compare two sessions by file path</span>
-$ opensession session diff ./before.jsonl ./after.jsonl
-
-<span class="text-text-muted"># Compare using session references</span>
-$ opensession session diff HEAD^2 HEAD^1
-
-<span class="text-text-muted"># AI-powered diff analysis</span>
-$ opensession session diff HEAD^2 HEAD^1 --ai</pre>
-				</div>
-			</div>
 
 			<!-- daemon -->
 			<div id="cli-daemon" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession ops daemon</code>
+					<code class="text-accent">opensession daemon</code>
 				</h3>
 				<p>Manage the background daemon that watches for new sessions and syncs them.</p>
 
@@ -770,30 +543,39 @@ $ opensession session diff HEAD^2 HEAD^1 --ai</pre>
 					<div class="cli-flags">
 						<code>health</code> <span>Check daemon and server health</span>
 					</div>
+					<div class="cli-flags">
+						<code>select --agent ... --repo ...</code> <span>Update watcher targets without starting daemon</span>
+					</div>
+					<div class="cli-flags">
+						<code>show</code> <span>Show current watcher targets</span>
+					</div>
 				</div>
 
 				<div class="mt-3 border border-border bg-bg-secondary p-4">
 					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
 					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Start the daemon in the background</span>
-$ opensession ops daemon start
+$ opensession daemon start
 
 <span class="text-text-muted"># Check if daemon is running</span>
-$ opensession ops daemon status
+$ opensession daemon status
 
 <span class="text-text-muted"># Verify daemon + server connectivity</span>
-$ opensession ops daemon health
+$ opensession daemon health
 
 <span class="text-text-muted"># Stop the daemon</span>
-$ opensession ops daemon stop</pre>
+$ opensession daemon stop
+
+<span class="text-text-muted"># Select agents/repos to watch</span>
+$ opensession daemon select --agent claude-code --repo .</pre>
 				</div>
 
 				<p class="mt-3 text-xs text-text-muted">
 					The daemon watches for new sessions from configured tools and syncs them to the server.
-					Configure via <code class="text-accent">~/.config/opensession/daemon.toml</code> or the TUI settings.
+					Configure via <code class="text-accent">~/.config/opensession/opensession.toml</code> or the TUI settings.
 				</p>
 
 				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">daemon.toml</div>
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">opensession.toml</div>
 					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted">[daemon]</span>
 publish_on = "manual"        <span class="text-text-muted"># session_end | realtime | manual</span>
 debounce_secs = 5
@@ -809,103 +591,27 @@ strip_env_vars = true</pre>
 				</div>
 			</div>
 
-			<!-- server -->
-			<div id="cli-server" class="docs-section border-t border-border pt-5">
-				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession account server</code>
-				</h3>
-				<p>Check server connection and authentication.</p>
-
-				<div class="mt-3 space-y-2">
-					<div class="cli-flags">
-						<code>status</code> <span>Check server health and version</span>
-					</div>
-					<div class="cli-flags">
-						<code>verify</code> <span>Verify API key authentication</span>
-					</div>
-				</div>
-
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Check if server is reachable</span>
-$ opensession account server status
-
-<span class="text-text-muted"># Verify your API key works</span>
-$ opensession account server verify</pre>
-				</div>
-			</div>
-
-			<!-- hooks -->
-			<div id="cli-hooks" class="docs-section border-t border-border pt-5">
-				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession ops hooks</code>
-				</h3>
-				<p>Manage git hooks that link AI sessions to git commits.</p>
-
-				<div class="mt-3 space-y-2">
-					<div class="cli-flags">
-						<code>install</code> <span>Install the prepare-commit-msg hook</span>
-					</div>
-					<div class="cli-flags">
-						<code>uninstall</code> <span>Remove the hook</span>
-					</div>
-				</div>
-
-				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Install in current repo</span>
-$ opensession ops hooks install
-
-<span class="text-text-muted"># Remove from current repo</span>
-$ opensession ops hooks uninstall</pre>
-				</div>
-				<p class="mt-2 text-xs text-text-muted">
-					When installed, the hook appends AI session metadata (tool, model, prompt) to your commit messages automatically.
-				</p>
-			</div>
-
 			<!-- stream -->
 			<div id="cli-stream" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession ops stream</code>
+					<code class="text-accent">opensession daemon stream-push</code>
 				</h3>
-				<p>Enable or disable real-time session streaming to the server.</p>
-
-				<div class="mt-3 space-y-2">
-					<div class="cli-flags">
-						<code>enable [--agent &lt;AGENT&gt;]</code> <span>Enable streaming (auto-detects agent if omitted)</span>
-					</div>
-					<div class="cli-flags">
-						<code>disable [--agent &lt;AGENT&gt;]</code> <span>Disable streaming</span>
-					</div>
-				</div>
-
+				<p>Internal hook target command for daemon streaming (normally invoked automatically).</p>
 				<div class="mt-3 border border-border bg-bg-secondary p-4">
-					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Enable for auto-detected agent</span>
-$ opensession ops stream enable
-
-<span class="text-text-muted"># Enable for a specific agent</span>
-$ opensession ops stream enable --agent claude-code
-
-<span class="text-text-muted"># Disable streaming</span>
-$ opensession ops stream disable</pre>
+					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Example</div>
+					<pre class="text-xs text-accent leading-relaxed">$ opensession daemon stream-push --agent claude-code</pre>
 				</div>
 			</div>
 
-			<!-- index & completion -->
-			<div id="cli-misc" class="docs-section border-t border-border pt-5">
+			<!-- completion -->
+			<div id="cli-completion" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-1 text-sm font-bold text-text-primary">
-					<code class="text-accent">opensession session index</code> /
-					<code class="text-accent">completion</code>
+					<code class="text-accent">opensession docs completion</code>
 				</h3>
 
 				<div class="mt-3 border border-border bg-bg-secondary p-4">
 					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">Examples</div>
-					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Build/update the local session index</span>
-$ opensession session index
-
-<span class="text-text-muted"># Generate shell completions</span>
+					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted"># Generate shell completions</span>
 $ opensession docs completion bash >> ~/.bashrc
 $ opensession docs completion zsh >> ~/.zshrc
 $ opensession docs completion fish > ~/.config/fish/completions/opensession.fish</pre>
@@ -916,7 +622,7 @@ $ opensession docs completion fish > ~/.config/fish/completions/opensession.fish
 			<div id="cli-refs" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-2 text-sm font-bold text-text-primary">Session References</h3>
 				<p>
-					The <code class="text-accent">handoff</code> and <code class="text-accent">diff</code> commands accept flexible session references:
+					The <code class="text-accent">handoff</code> command accepts flexible session references:
 				</p>
 
 				<div class="mt-3 grid gap-px border border-border bg-border">
@@ -950,9 +656,6 @@ $ opensession session handoff --claude HEAD
 <span class="text-text-muted"># Last 3 Claude Code sessions merged</span>
 $ opensession session handoff --claude HEAD~3
 
-<span class="text-text-muted"># Compare 2nd-most-recent vs most-recent</span>
-$ opensession session diff HEAD^1 HEAD^0
-
 <span class="text-text-muted"># Reference by ID prefix</span>
 $ opensession session handoff abc12</pre>
 				</div>
@@ -962,14 +665,13 @@ $ opensession session handoff abc12</pre>
 			<div id="cli-formats" class="docs-section border-t border-border pt-5">
 				<h3 class="mb-2 text-sm font-bold text-text-primary">Output Formats</h3>
 				<p>
-					Available via <code class="text-accent">--format</code> across <code class="text-accent">log</code>,
-					<code class="text-accent">handoff</code>, <code class="text-accent">stats</code>, and other commands:
+					Available via <code class="text-accent">opensession session handoff --format ...</code>:
 				</p>
 
 				<div class="mt-3 grid gap-px border border-border bg-border">
 					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
 						<code class="w-24 shrink-0 font-bold text-accent">text</code>
-						<span>Human-readable text (default for log, stats)</span>
+						<span>Human-readable plain text</span>
 					</div>
 					<div class="flex bg-bg-primary px-4 py-2 text-xs">
 						<code class="w-24 shrink-0 font-bold text-accent">markdown</code>
@@ -1023,7 +725,8 @@ $ opensession session handoff abc12</pre>
       - opensession-data:/data
     environment:
       - JWT_SECRET=your-secret-here
-      - OPENSESSION_BASE_URL=https://your-domain.com
+      - BASE_URL=https://your-domain.com
+      - OPENSESSION_PUBLIC_FEED_ENABLED=false
     restart: unless-stopped
 
 volumes:
@@ -1031,28 +734,32 @@ volumes:
 			</div>
 
 			<h3 class="text-sm font-bold text-text-primary">Environment Variables</h3>
-			<div class="grid gap-px border border-border bg-border">
-				<div class="flex bg-bg-secondary px-4 py-2 text-xs">
-					<code class="w-48 shrink-0 font-bold text-accent">JWT_SECRET</code>
-					<span>Secret for JWT token signing (required)</span>
+				<div class="grid gap-px border border-border bg-border">
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-48 shrink-0 font-bold text-accent">JWT_SECRET</code>
+						<span>Secret for JWT token signing (required)</span>
+					</div>
+					<div class="flex bg-bg-primary px-4 py-2 text-xs">
+						<code class="w-48 shrink-0 font-bold text-accent">OPENSESSION_DATA_DIR</code>
+						<span>SQLite DB and session storage (default: data/)</span>
+					</div>
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-48 shrink-0 font-bold text-accent">BASE_URL</code>
+						<span>Public-facing URL (default: http://localhost:3000)</span>
+					</div>
+					<div class="flex bg-bg-primary px-4 py-2 text-xs">
+						<code class="w-48 shrink-0 font-bold text-accent">OPENSESSION_PUBLIC_FEED_ENABLED</code>
+						<span>Set false to block anonymous <code class="text-accent">GET /api/sessions</code></span>
+					</div>
+					<div class="flex bg-bg-secondary px-4 py-2 text-xs">
+						<code class="w-48 shrink-0 font-bold text-accent">PORT</code>
+						<span>HTTP listen port (default: 3000)</span>
+					</div>
 				</div>
-				<div class="flex bg-bg-primary px-4 py-2 text-xs">
-					<code class="w-48 shrink-0 font-bold text-accent">OPENSESSION_DATA_DIR</code>
-					<span>SQLite DB and session storage (default: data/)</span>
-				</div>
-				<div class="flex bg-bg-secondary px-4 py-2 text-xs">
-					<code class="w-48 shrink-0 font-bold text-accent">OPENSESSION_BASE_URL</code>
-					<span>Public-facing URL (default: http://localhost:3000)</span>
-				</div>
-				<div class="flex bg-bg-primary px-4 py-2 text-xs">
-					<code class="w-48 shrink-0 font-bold text-accent">PORT</code>
-					<span>HTTP listen port (default: 3000)</span>
-				</div>
-			</div>
 
 			<h3 class="text-sm font-bold text-text-primary">Point the CLI to Your Instance</h3>
 			<div class="border border-border bg-bg-secondary p-4">
-				<code class="block text-xs text-accent">$ opensession account config --server http://localhost:3000</code>
+				<code class="block text-xs text-accent">$ opensession account connect --server http://localhost:3000</code>
 			</div>
 		</div>
 	</section>

@@ -27,7 +27,13 @@ macro_rules! for_each_spec {
         $mac!(auth::logout);
         $mac!(auth::change_password);
         $mac!(auth::regenerate_key);
+    };
+}
 
+/// Invoke `$mac!(module::name)` for Docker-only specs.
+#[macro_export]
+macro_rules! for_each_docker_only_spec {
+    ($mac:ident) => {
         // sessions (10)
         $mac!(sessions::upload_session);
         $mac!(sessions::upload_requires_membership);
@@ -58,11 +64,4 @@ macro_rules! for_each_spec {
         $mac!(sync::sync_pull_cursor);
         $mac!(sync::sync_pull_non_member);
     };
-}
-
-/// Invoke `$mac!(module::name)` for Docker-only specs.
-/// Currently empty — all specs are now common across targets.
-#[macro_export]
-macro_rules! for_each_docker_only_spec {
-    ($mac:ident) => {};
 }

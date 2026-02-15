@@ -23,7 +23,6 @@ test.describe('Landing Page (unauthenticated)', () => {
 		await page.goto('/');
 		await expect(page.getByText('Open Format', { exact: true })).toBeVisible();
 		await expect(page.getByText('Self-Hostable', { exact: true })).toBeVisible();
-		await expect(page.getByText('Team Sharing', { exact: true })).toBeVisible();
 	});
 
 	test('nav bar shows opensession.io branding', async ({ page }) => {

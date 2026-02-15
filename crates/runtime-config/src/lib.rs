@@ -1,13 +1,16 @@
 //! Shared daemon/TUI configuration types.
 //!
-//! Both `opensession-daemon` and `opensession-tui` read/write `daemon.toml`
+//! Both `opensession-daemon` and `opensession-tui` read/write `opensession.toml`
 //! using these types. Daemon-specific logic (watch-path resolution, project
 //! config merging) lives in the daemon crate; TUI-specific logic (settings
 //! layout, field editing) lives in the TUI crate.
 
 use serde::{Deserialize, Serialize};
 
-/// Top-level daemon configuration (persisted as `daemon.toml`).
+/// Canonical config file name used by daemon/cli/tui.
+pub const CONFIG_FILE_NAME: &str = "opensession.toml";
+
+/// Top-level daemon configuration (persisted as `opensession.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DaemonConfig {
     #[serde(default)]
@@ -41,9 +44,6 @@ pub struct DaemonSettings {
     /// Enable realtime file preview refresh in TUI session detail.
     #[serde(default = "default_detail_realtime_preview_enabled")]
     pub detail_realtime_preview_enabled: bool,
-    /// Neglect-live tool rules (stream-write/PostToolUse).
-    #[serde(default)]
-    pub stream_write: Vec<String>,
 }
 
 impl Default for DaemonSettings {
@@ -56,7 +56,6 @@ impl Default for DaemonSettings {
             health_check_interval_secs: 300,
             realtime_debounce_ms: 500,
             detail_realtime_preview_enabled: false,
-            stream_write: Vec::new(),
         }
     }
 }
@@ -155,13 +154,16 @@ impl Default for PrivacySettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatcherSettings {
+    /// Deprecated agent toggles kept for backward-compatible config parsing.
     #[serde(default = "default_true")]
     pub claude_code: bool,
+    /// Deprecated agent toggles kept for backward-compatible config parsing.
     #[serde(default = "default_true")]
     pub opencode: bool,
-    #[serde(default)]
+    /// Deprecated agent toggles kept for backward-compatible config parsing.
+    #[serde(default = "default_true")]
     pub cursor: bool,
-    #[serde(default)]
+    #[serde(default = "default_watch_paths")]
     pub custom_paths: Vec<String>,
 }
 
@@ -170,8 +172,8 @@ impl Default for WatcherSettings {
         Self {
             claude_code: true,
             opencode: true,
-            cursor: false,
-            custom_paths: Vec::new(),
+            cursor: true,
+            custom_paths: default_watch_paths(),
         }
     }
 }
@@ -242,4 +244,123 @@ fn default_exclude_patterns() -> Vec<String> {
         "*secret*".to_string(),
         "*credential*".to_string(),
     ]
+}
+
+pub fn default_watch_paths() -> Vec<String> {
+    vec![
+        "~/.claude/projects".to_string(),
+        "~/.codex/sessions".to_string(),
+        "~/.local/share/opencode/storage/session".to_string(),
+        "~/.cline/data/tasks".to_string(),
+        "~/.local/share/amp/threads".to_string(),
+        "~/.gemini/tmp".to_string(),
+        "~/Library/Application Support/Cursor/User".to_string(),
+        "~/.config/Cursor/User".to_string(),
+    ]
+}
+
+/// Apply compatibility fallbacks after loading raw TOML.
+/// Returns true when any field was updated.
+pub fn apply_compat_fallbacks(config: &mut DaemonConfig, root: Option<&toml::Value>) -> bool {
+    let mut changed = false;
+
+    if config_file_missing_git_storage_method(root)
+        && config.git_storage.method == GitStorageMethod::None
+    {
+        config.git_storage.method = GitStorageMethod::Native;
+        changed = true;
+    }
+
+    if config.identity.team_id.trim().is_empty() {
+        if let Some(team_id) = root
+            .and_then(toml::Value::as_table)
+            .and_then(|table| table.get("server"))
+            .and_then(toml::Value::as_table)
+            .and_then(|section| section.get("team_id"))
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            config.identity.team_id = team_id.to_string();
+            changed = true;
+        }
+    }
+
+    if config.watchers.custom_paths.is_empty() {
+        config.watchers.custom_paths = default_watch_paths();
+        changed = true;
+    }
+
+    changed
+}
+
+/// True when `[git_storage].method` is absent/invalid in the source TOML.
+pub fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
+    let Some(root) = root else {
+        return false;
+    };
+    let Some(table) = root.as_table() else {
+        return false;
+    };
+    let Some(git_storage) = table.get("git_storage") else {
+        return true;
+    };
+    match git_storage.as_table() {
+        Some(section) => !section.contains_key("method"),
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_compat_fallbacks_populates_legacy_fields() {
+        let mut cfg = DaemonConfig::default();
+        cfg.git_storage.method = GitStorageMethod::None;
+        cfg.identity.team_id.clear();
+        cfg.watchers.custom_paths.clear();
+
+        let root: toml::Value = toml::from_str(
+            r#"
+[server]
+team_id = "team-legacy"
+
+[git_storage]
+"#,
+        )
+        .expect("parse toml");
+
+        let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
+        assert!(changed);
+        assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
+        assert_eq!(cfg.identity.team_id, "team-legacy");
+        assert!(!cfg.watchers.custom_paths.is_empty());
+    }
+
+    #[test]
+    fn apply_compat_fallbacks_is_noop_for_modern_values() {
+        let mut cfg = DaemonConfig::default();
+        cfg.identity.team_id = "team-modern".to_string();
+        cfg.watchers.custom_paths = vec!["/tmp/one".to_string()];
+
+        let root: toml::Value = toml::from_str(
+            r#"
+[server]
+team_id = "team-from-file"
+
+[git_storage]
+method = "native"
+"#,
+        )
+        .expect("parse toml");
+
+        let before = cfg.clone();
+        let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
+        assert!(!changed);
+        assert_eq!(cfg.identity.team_id, before.identity.team_id);
+        assert_eq!(cfg.watchers.custom_paths, before.watchers.custom_paths);
+        assert_eq!(cfg.git_storage.method, before.git_storage.method);
+    }
 }

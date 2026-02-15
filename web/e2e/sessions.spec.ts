@@ -1,14 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { getAdmin, injectAuth, uploadSession, createTeam } from './helpers';
+import { getAdmin, injectAuth, uploadSession } from './helpers';
 
 test.describe('Sessions', () => {
 	test('upload and view session in list', async ({ page, request }) => {
 		const admin = await getAdmin(request);
-		const teamId = await createTeam(request, admin.access_token);
 		const title = `PW List ${crypto.randomUUID().slice(0, 8)}`;
-		const sessionId = await uploadSession(request, admin.access_token, {
+		await uploadSession(request, admin.access_token, {
 			title,
-			teamId,
 		});
 
 		await injectAuth(page, admin);
@@ -20,10 +18,8 @@ test.describe('Sessions', () => {
 
 	test('navigate to session detail', async ({ page, request }) => {
 		const admin = await getAdmin(request);
-		const teamId = await createTeam(request, admin.access_token);
 		const sessionId = await uploadSession(request, admin.access_token, {
 			title: 'PW Detail Test',
-			teamId,
 		});
 
 		await injectAuth(page, admin);
@@ -35,8 +31,7 @@ test.describe('Sessions', () => {
 
 	test('session detail shows agent info', async ({ page, request }) => {
 		const admin = await getAdmin(request);
-		const teamId = await createTeam(request, admin.access_token);
-		const sessionId = await uploadSession(request, admin.access_token, { teamId });
+		const sessionId = await uploadSession(request, admin.access_token);
 
 		await injectAuth(page, admin);
 		await page.goto(`/session/${sessionId}`);

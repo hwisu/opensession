@@ -1,4 +1,4 @@
-//! `opensession ops stream-push --agent <agent>` — incremental local session indexing.
+//! `opensession daemon stream-push --agent <agent>` — incremental local session indexing.
 //!
 //! Called by the agent's PostToolUse hook on every tool use. Must be fast
 //! (< 2s). Parses the full session file and upserts it into the local DB.
@@ -178,14 +178,6 @@ pub fn enable_stream_write(agent: &str) -> Result<()> {
     }
 }
 
-/// Disable stream-write for an agent by removing the PostToolUse hook.
-pub fn disable_stream_write(agent: &str) -> Result<()> {
-    match agent {
-        "claude-code" => disable_claude_code_hook(),
-        _ => bail!("Unsupported agent: {agent}"),
-    }
-}
-
 fn claude_settings_path() -> Result<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -194,7 +186,7 @@ fn claude_settings_path() -> Result<PathBuf> {
 }
 
 const HOOK_MATCHER: &str = "Edit|Write|Bash|NotebookEdit";
-const HOOK_COMMAND: &str = "opensession ops stream-push --agent claude-code";
+const HOOK_COMMAND: &str = "opensession daemon stream-push --agent claude-code";
 
 fn enable_claude_code_hook() -> Result<()> {
     let settings_path = claude_settings_path()?;
@@ -261,57 +253,5 @@ fn enable_claude_code_hook() -> Result<()> {
 
     println!("Stream-write enabled for claude-code.");
     println!("Hook installed in {}", settings_path.display());
-    Ok(())
-}
-
-fn disable_claude_code_hook() -> Result<()> {
-    let settings_path = claude_settings_path()?;
-
-    if !settings_path.exists() {
-        println!("No Claude settings found. Nothing to disable.");
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(&settings_path)?;
-    let mut settings: serde_json::Value =
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
-
-    // Remove hook entries that match our command
-    let removed = if let Some(arr) = settings
-        .pointer_mut("/hooks/PostToolUse")
-        .and_then(|v| v.as_array_mut())
-    {
-        let before = arr.len();
-        arr.retain(|entry| {
-            !entry
-                .get("hooks")
-                .and_then(|h| h.as_array())
-                .is_some_and(|hooks| {
-                    hooks
-                        .iter()
-                        .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND))
-                })
-        });
-        before != arr.len()
-    } else {
-        false
-    };
-
-    if removed {
-        let content = serde_json::to_string_pretty(&settings)?;
-        std::fs::write(&settings_path, content)?;
-        println!("Stream-write disabled for claude-code.");
-    } else {
-        println!("No stream-write hook found for claude-code.");
-    }
-
-    // Clean up state files
-    if let Ok(dir) = state_dir() {
-        if dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&dir);
-            println!("Cleaned up stream state files.");
-        }
-    }
-
     Ok(())
 }

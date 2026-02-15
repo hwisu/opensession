@@ -1,4 +1,4 @@
-use crate::app::{extract_visible_turns, App, DetailViewMode, DisplayEvent, EventFilter};
+use crate::app::{extract_visible_turns, App, DisplayEvent, EventFilter};
 use crate::session_timeline::LaneMarker;
 use crate::theme::{self, Theme};
 use crate::timeline_summary::TimelineSummaryPayload;
@@ -21,17 +21,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
-    if app.focus_detail_view && app.detail_view_mode == DetailViewMode::Turn {
-        let mut base_events = app.get_base_visible_events(&session);
-        if base_events.is_empty() {
-            base_events = app.get_visible_events(&session);
-        }
-        let turns = extract_visible_turns(&base_events);
-        app.observe_turn_tail_proximity(turns.len());
-        render_turn_view(frame, app, &session.session_id, &base_events, area);
-        return;
-    }
-
     let [header_area, bar_area, timeline_area] = Layout::vertical([
         Constraint::Length(7),
         Constraint::Length(1),
@@ -43,7 +32,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     app.detail_viewport_height = timeline_area.height.saturating_sub(2);
 
     let mut visible_events = app.get_visible_events(&session);
-    let mut base_events = app.get_base_visible_events(&session);
     if visible_events.is_empty() {
         let mut lines = vec![Line::from(Span::styled(
             "No events match the current filter.",
@@ -60,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::new().fg(Theme::ACCENT_RED),
             )));
             lines.push(Line::from(Span::styled(
-                "LLM summary calls are skipped for this session.",
+                "Extra timeline analysis is disabled for this session.",
                 Style::new().fg(Theme::TEXT_SECONDARY),
             )));
         }
@@ -77,15 +65,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     app.observe_linear_tail_proximity(visible_events.len());
 
     render_timeline_bar(frame, bar_area, &visible_events, app.detail_event_index);
-
-    if app.detail_view_mode == DetailViewMode::Turn {
-        if base_events.is_empty() {
-            base_events = visible_events.clone();
-        }
-        render_turn_view(frame, app, &session.session_id, &base_events, timeline_area);
-        return;
-    }
-
     render_lane_timeline(frame, app, &mut visible_events, timeline_area);
 }
 
@@ -289,7 +268,7 @@ fn render_lane_timeline(
                     ));
                 }
                 spans.push(Span::styled(
-                    event_summary(&event.event_type, &event.content.blocks),
+                    event_compact_summary(&event.event_type, &event.content.blocks),
                     Style::new().fg(Theme::TEXT_PRIMARY),
                 ));
                 if let Some(badge) = lane_assignment_badge(event, *lane, *marker) {
@@ -314,7 +293,7 @@ fn render_lane_timeline(
         };
         lines.push(Line::from(spans).style(line_style));
 
-        let expanded = app.expanded_events.contains(&i) || selected;
+        let expanded = app.expanded_events.contains(&i);
         if expanded {
             if let DisplayEvent::Single { event, .. } = display_event {
                 append_content_preview(&mut lines, event, 3);
@@ -474,6 +453,87 @@ fn event_type_display(event_type: &EventType, summary_off: bool) -> (&'static st
             },
         ),
         _ => ("other", Theme::TEXT_MUTED),
+    }
+}
+
+fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
+    match event_type {
+        EventType::UserMessage => {
+            let text = first_text_line(blocks, 56);
+            if text.is_empty() {
+                "(user prompt)".to_string()
+            } else {
+                text
+            }
+        }
+        EventType::AgentMessage => {
+            let text = first_meaningful_text_line_opt(blocks, 56)
+                .or_else(|| first_text_line_opt(blocks, 56))
+                .unwrap_or_default();
+            if text.is_empty() {
+                "(agent reply)".to_string()
+            } else {
+                text
+            }
+        }
+        EventType::SystemMessage => "(system)".to_string(),
+        EventType::Thinking => "reasoning".to_string(),
+        EventType::ToolCall { name } => format!("{name}()"),
+        EventType::ToolResult { name, is_error, .. } => {
+            let hint = first_meaningful_text_line_opt(blocks, 48)
+                .or_else(|| first_json_block_hint(blocks, 48))
+                .or_else(|| first_code_line(blocks, 48));
+            if *is_error {
+                if let Some(hint) = hint {
+                    format!("{name} error: {hint}")
+                } else {
+                    format!("{name} error")
+                }
+            } else if let Some(hint) = hint {
+                format!("{name}: {hint}")
+            } else {
+                format!("{name} ok")
+            }
+        }
+        EventType::FileRead { path } => short_path(path).to_string(),
+        EventType::CodeSearch { query } => truncate(query, 52),
+        EventType::FileSearch { pattern } => truncate(pattern, 52),
+        EventType::FileEdit { path, diff } => {
+            if let Some(d) = diff {
+                let (add, del) = count_diff_lines(d);
+                format!("{} +{} -{}", short_path(path), add, del)
+            } else {
+                short_path(path).to_string()
+            }
+        }
+        EventType::FileCreate { path } => format!("+ {}", short_path(path)),
+        EventType::FileDelete { path } => format!("- {}", short_path(path)),
+        EventType::ShellCommand { command, exit_code } => {
+            let cmd = compact_shell_command(command, 52);
+            match exit_code {
+                Some(code) if *code != 0 => format!("{cmd} => {code}"),
+                _ => cmd,
+            }
+        }
+        EventType::WebSearch { query } => truncate(query, 52),
+        EventType::WebFetch { url } => truncate(url, 52),
+        EventType::ImageGenerate { prompt }
+        | EventType::VideoGenerate { prompt }
+        | EventType::AudioGenerate { prompt } => truncate(prompt, 52),
+        EventType::TaskStart { title } => title
+            .as_deref()
+            .map(|text| compact_text_snippet(text, 48))
+            .filter(|text| !text.is_empty())
+            .map(|text| format!("start {text}"))
+            .unwrap_or_else(|| "start".to_string()),
+        EventType::TaskEnd { summary } => summary
+            .as_deref()
+            .map(|text| compact_text_snippet(text, 48))
+            .filter(|text| !text.is_empty())
+            .map(|text| format!("end {text}"))
+            .unwrap_or_else(|| "end".to_string()),
+        EventType::Custom { kind } => compact_text_snippet(kind, 52),
+        _ => event_summary(event_type, blocks),
     }
 }
 
@@ -1864,7 +1924,7 @@ fn render_turn_view(
                 Style::new().fg(Theme::ACCENT_RED),
             )));
             lines.push(Line::from(Span::styled(
-                "LLM summary calls are skipped for this session.",
+                "Extra timeline analysis is disabled for this session.",
                 Style::new().fg(Theme::TEXT_SECONDARY),
             )));
         }
@@ -2164,11 +2224,8 @@ fn render_turn_response_panel(
 }
 
 fn turn_right_panel_title(summary_status: &str) -> &'static str {
-    match summary_status {
-        "on" => " Turn Summaries ",
-        "off(no-backend)" => " Agent Chronicle (no backend) ",
-        _ => " Agent Chronicle ",
-    }
+    let _ = summary_status;
+    " Agent Chronicle "
 }
 
 fn render_agent_output_preview(
@@ -2232,23 +2289,17 @@ fn render_turn_fallback_panel(
     content_width: u16,
     live_mode: bool,
 ) -> Vec<Line<'static>> {
-    let (status_text, status_color) = match (summary_status, live_mode) {
-        ("off", true) => (
-            "Live mode: summaries disabled. Rendering task activity board.",
+    let _ = summary_status;
+    let (status_text, status_color) = if live_mode {
+        (
+            "Live mode: rendering task-level execution board.",
             Theme::ACCENT_YELLOW,
-        ),
-        ("off", false) => (
-            "Summary is off. Rendering task-level execution board.",
-            Theme::ACCENT_ORANGE,
-        ),
-        ("off(no-backend)", _) => (
-            "No summary backend configured. Rendering task-level execution board.",
-            Theme::ACCENT_YELLOW,
-        ),
-        _ => (
-            "Summary unavailable. Rendering task-level execution board.",
+        )
+    } else {
+        (
+            "Rendering task-level execution board.",
             Theme::TEXT_SECONDARY,
-        ),
+        )
     };
     let title_style = if focused {
         Style::new().fg(status_color).bold()
@@ -4014,16 +4065,14 @@ fn render_turn_pending_row(
     } else {
         Style::new().fg(Theme::GUTTER)
     };
-    let pending = if !app.daemon_config.daemon.summary_enabled {
-        "LLM summary is off"
-    } else if app.should_skip_realtime_for_selected() {
-        "LLM summary waiting while live updates are active"
+    let pending = if app.should_skip_realtime_for_selected() {
+        "Waiting while live updates are active"
     } else {
-        "LLM summary pending"
+        "Task board pending"
     };
     let mut lines = Vec::new();
     lines.push(Line::from(vec![Span::styled(
-        " Summary Status",
+        " Task Status",
         Style::new().fg(Theme::TEXT_SECONDARY).bold(),
     )]));
     lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));

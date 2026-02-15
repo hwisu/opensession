@@ -9,6 +9,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let daemon_on = app.startup_status.daemon_pid.is_some();
+    let watch_path_count = app.daemon_config.watchers.custom_paths.len();
 
     let mut lines = vec![
         Line::from(Span::styled(
@@ -39,106 +40,68 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Realtime Publish:      ",
+                "  Capture Policy:        ",
                 Style::new().fg(Theme::TEXT_SECONDARY),
             ),
             Span::styled(
-                format!(
-                    "{} / {}",
-                    on_off(app.daemon_config.daemon.auto_publish),
-                    app.daemon_config.daemon.publish_on.display()
-                ),
+                if daemon_on {
+                    "ON (forced: Session End)".to_string()
+                } else {
+                    "OFF (Manual only)".to_string()
+                },
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Publish Debounce:      ",
+                "  Watch Path Roots:      ",
                 Style::new().fg(Theme::TEXT_SECONDARY),
             ),
             Span::styled(
-                format!("{}s", app.daemon_config.daemon.debounce_secs),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Realtime Poll:         ",
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            ),
-            Span::styled(
-                format!("{}ms", app.daemon_config.daemon.realtime_debounce_ms),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Calendar Mode:         ",
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            ),
-            Span::styled(
-                format!("{:?}", crate::config::calendar_display_mode()).to_ascii_lowercase(),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "── Capture Watchers ──",
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled(
-                "  Claude Code:           ",
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            ),
-            Span::styled(
-                on_off(app.daemon_config.watchers.claude_code),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  OpenCode:              ",
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            ),
-            Span::styled(
-                on_off(app.daemon_config.watchers.opencode),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Cursor:                ",
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            ),
-            Span::styled(
-                on_off(app.daemon_config.watchers.cursor),
+                watch_path_count.to_string(),
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
     ];
+    if watch_path_count > 0 {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "  First configured roots:",
+            Style::new().fg(Theme::TEXT_HINT),
+        )));
+        for path in app.daemon_config.watchers.custom_paths.iter().take(3) {
+            lines.push(Line::from(vec![
+                Span::raw("    - "),
+                Span::styled(path, Style::new().fg(Theme::TEXT_MUTED)),
+            ]));
+        }
+        if watch_path_count > 3 {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    format!("... and {} more", watch_path_count - 3),
+                    Style::new().fg(Theme::TEXT_MUTED),
+                ),
+            ]));
+        }
+    }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "Actions: d=daemon on/off  s=save config  r=refresh status  4=Settings",
+        "Actions: d=daemon on/off  r=refresh status  4=Settings",
         Style::new().fg(Theme::TEXT_HINT),
+    )));
+    lines.push(Line::from(Span::styled(
+        "Edit watch paths and publish behavior in Settings > Capture & Sync",
+        Style::new().fg(Theme::TEXT_MUTED),
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn on_off(on: bool) -> &'static str {
-    if on {
-        "ON"
-    } else {
-        "OFF"
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{on_off, render};
+    use super::render;
     use crate::app::App;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -163,12 +126,6 @@ mod tests {
             .draw(|frame| render(frame, app, frame.area()))
             .expect("draw");
         buffer_to_string(terminal.backend().buffer())
-    }
-
-    #[test]
-    fn on_off_formats_boolean_values() {
-        assert_eq!(on_off(true), "ON");
-        assert_eq!(on_off(false), "OFF");
     }
 
     #[test]

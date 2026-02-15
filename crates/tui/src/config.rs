@@ -5,7 +5,8 @@ use std::sync::{Mutex, OnceLock};
 
 // Re-export shared runtime config types
 pub use opensession_runtime_config::{
-    CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
+    apply_compat_fallbacks, CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
+    CONFIG_FILE_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,8 +186,7 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config").join("opensession"))
 }
 
-/// Load daemon config from `~/.config/opensession/daemon.toml`.
-/// Falls back to migrating from CLI `config.toml` if daemon.toml doesn't exist.
+/// Load daemon config from `~/.config/opensession/opensession.toml`.
 pub fn load_daemon_config() -> DaemonConfig {
     let dir = match config_dir() {
         Ok(d) => d,
@@ -197,14 +197,15 @@ pub fn load_daemon_config() -> DaemonConfig {
         }
     };
 
-    let daemon_path = dir.join("daemon.toml");
+    let daemon_path = dir.join(CONFIG_FILE_NAME);
     let mut migrated = false;
+
     if daemon_path.exists() {
         let content = std::fs::read_to_string(&daemon_path).unwrap_or_default();
         let parsed: Option<toml::Value> = toml::from_str(&content).ok();
         let mut config: DaemonConfig = toml::from_str(&content).unwrap_or_default();
-        if config_file_missing_git_storage_method(parsed.as_ref()) {
-            config.git_storage.method = GitStorageMethod::Native;
+        if apply_compat_fallbacks(&mut config, parsed.as_ref()) {
+            migrated = true;
         }
         sync_runtime_config_extensions(parsed.as_ref(), &mut config);
         if migrate_summary_window_v2(&mut config) {
@@ -221,22 +222,6 @@ pub fn load_daemon_config() -> DaemonConfig {
     config
 }
 
-fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
-    let Some(root) = root else {
-        return false;
-    };
-    let Some(table) = root.as_table() else {
-        return false;
-    };
-    let Some(git_storage) = table.get("git_storage") else {
-        return true;
-    };
-    match git_storage.as_table() {
-        Some(section) => !section.contains_key("method"),
-        None => true,
-    }
-}
-
 fn migrate_summary_window_v2(config: &mut DaemonConfig) -> bool {
     if config.daemon.summary_window_migrated_v2 {
         return false;
@@ -250,12 +235,27 @@ fn migrate_summary_window_v2(config: &mut DaemonConfig) -> bool {
     true
 }
 
-/// Save daemon config to `~/.config/opensession/daemon.toml`.
+/// Save daemon config to `~/.config/opensession/opensession.toml`.
 pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join("daemon.toml");
+    let path = dir.join(CONFIG_FILE_NAME);
     let mut doc = toml::Value::try_from(config.clone()).context("Failed to serialize config")?;
+    let root = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("config root is not a table"))?;
+    let server = root
+        .entry("server")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !server.is_table() {
+        *server = toml::Value::Table(toml::map::Map::new());
+    }
+    if let Some(server_table) = server.as_table_mut() {
+        server_table.insert(
+            "team_id".to_string(),
+            toml::Value::String(config.identity.team_id.clone()),
+        );
+    }
     apply_runtime_extensions_to_toml(&mut doc);
     let content = toml::to_string_pretty(&doc).context("Failed to serialize config")?;
     std::fs::write(&path, content)
@@ -479,9 +479,7 @@ pub enum SettingField {
     SummaryEventWindow,
     SummaryDebounceMs,
     SummaryMaxInflight,
-    WatchClaudeCode,
-    WatchOpenCode,
-    WatchCursor,
+    WatchPaths,
     GitStorageMethod,
     GitStorageToken,
     StripPaths,
@@ -557,15 +555,9 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     SettingItem::Header("Daemon Publish"),
     SettingItem::Field {
         field: SettingField::AutoPublish,
-        label: "Auto Publish",
-        description: "Automatically upload captured sessions",
-        dependency_hint: Some("Applies when daemon is running"),
-    },
-    SettingItem::Field {
-        field: SettingField::PublishMode,
-        label: "Publish Mode",
-        description: "When to send data: session_end / realtime / manual",
-        dependency_hint: Some("Applies when daemon is running"),
+        label: "Daemon Capture",
+        description: "Toggle daemon capture. ON => forced publish on session end",
+        dependency_hint: None,
     },
     SettingItem::Field {
         field: SettingField::DebounceSecs,
@@ -695,21 +687,9 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     },
     SettingItem::Header("Watchers"),
     SettingItem::Field {
-        field: SettingField::WatchClaudeCode,
-        label: "Claude Code",
-        description: "Monitor Claude Code sessions for auto-capture",
-        dependency_hint: Some("Applies when daemon is running"),
-    },
-    SettingItem::Field {
-        field: SettingField::WatchOpenCode,
-        label: "OpenCode",
-        description: "Monitor OpenCode sessions for auto-capture",
-        dependency_hint: Some("Applies when daemon is running"),
-    },
-    SettingItem::Field {
-        field: SettingField::WatchCursor,
-        label: "Cursor",
-        description: "Monitor Cursor sessions (experimental)",
+        field: SettingField::WatchPaths,
+        label: "Parse Paths",
+        description: "Folders watched for all supported agents (comma-separated)",
         dependency_hint: Some("Applies when daemon is running"),
     },
     SettingItem::Header("Git Storage"),
@@ -749,9 +729,6 @@ impl SettingField {
                 | Self::DetailRealtimePreviewEnabled
                 | Self::SummaryEnabled
                 | Self::SummaryDiskCacheEnabled
-                | Self::WatchClaudeCode
-                | Self::WatchOpenCode
-                | Self::WatchCursor
                 | Self::StripPaths
                 | Self::StripEnvVars
         )
@@ -761,8 +738,7 @@ impl SettingField {
     pub fn is_enum(self) -> bool {
         matches!(
             self,
-            Self::PublishMode
-                | Self::CalendarDisplayMode
+            Self::CalendarDisplayMode
                 | Self::GitStorageMethod
                 | Self::SummaryProvider
                 | Self::SummaryCliAgent
@@ -875,9 +851,7 @@ impl SettingField {
             }
             Self::SummaryDebounceMs => config.daemon.summary_debounce_ms.to_string(),
             Self::SummaryMaxInflight => config.daemon.summary_max_inflight.to_string(),
-            Self::WatchClaudeCode => on_off(config.watchers.claude_code),
-            Self::WatchOpenCode => on_off(config.watchers.opencode),
-            Self::WatchCursor => on_off(config.watchers.cursor),
+            Self::WatchPaths => format!("{} paths", config.watchers.custom_paths.len()),
             Self::GitStorageMethod => match git_storage_mode() {
                 GitStorageMode::None => "None".to_string(),
                 GitStorageMode::PlatformApi => "Platform API".to_string(),
@@ -953,6 +927,7 @@ impl SettingField {
             }
             Self::SummaryDebounceMs => config.daemon.summary_debounce_ms.to_string(),
             Self::SummaryMaxInflight => config.daemon.summary_max_inflight.to_string(),
+            Self::WatchPaths => config.watchers.custom_paths.join(", "),
             Self::GitStorageToken => config.git_storage.token.clone(),
             _ => String::new(),
         }
@@ -961,14 +936,13 @@ impl SettingField {
     /// Toggle a boolean field in the config.
     pub fn toggle(self, config: &mut DaemonConfig) {
         match self {
-            Self::AutoPublish => config.daemon.auto_publish = !config.daemon.auto_publish,
+            // DaemonCapture (AutoPublish field) is handled by App::toggle_daemon
+            // so publish policy and daemon process state stay in sync.
+            Self::AutoPublish => {}
             Self::DetailRealtimePreviewEnabled => {
                 config.daemon.detail_realtime_preview_enabled =
                     !config.daemon.detail_realtime_preview_enabled;
             }
-            Self::WatchClaudeCode => config.watchers.claude_code = !config.watchers.claude_code,
-            Self::WatchOpenCode => config.watchers.opencode = !config.watchers.opencode,
-            Self::WatchCursor => config.watchers.cursor = !config.watchers.cursor,
             Self::SummaryEnabled => config.daemon.summary_enabled = !config.daemon.summary_enabled,
             Self::SummaryDiskCacheEnabled => {
                 config.daemon.summary_disk_cache_enabled = !config.daemon.summary_disk_cache_enabled
@@ -1132,6 +1106,14 @@ impl SettingField {
                 if let Ok(v) = value.parse::<u32>() {
                     config.daemon.summary_max_inflight = v.max(1);
                 }
+            }
+            Self::WatchPaths => {
+                let parsed = parse_watch_paths(value);
+                config.watchers.custom_paths = if parsed.is_empty() {
+                    DaemonConfig::default().watchers.custom_paths
+                } else {
+                    parsed
+                };
             }
             Self::GitStorageToken => {
                 config.git_storage.token = value.to_string();
@@ -1304,6 +1286,22 @@ fn normalize_optional_string(value: &str) -> Option<String> {
     }
 }
 
+fn parse_watch_paths(value: &str) -> Vec<String> {
+    let normalized = value.replace('\n', ",");
+    let mut out = Vec::new();
+    for part in normalized.split(',') {
+        let path = part.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let path = path.to_string();
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
 fn group_for_field(field: SettingField) -> SettingsGroup {
     match field {
         SettingField::ServerUrl
@@ -1313,14 +1311,11 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         | SettingField::CalendarDisplayMode => SettingsGroup::Workspace,
 
         SettingField::AutoPublish
-        | SettingField::PublishMode
         | SettingField::DebounceSecs
         | SettingField::RealtimeDebounceMs
         | SettingField::HealthCheckSecs
         | SettingField::MaxRetries
-        | SettingField::WatchClaudeCode
-        | SettingField::WatchOpenCode
-        | SettingField::WatchCursor => SettingsGroup::CaptureSync,
+        | SettingField::WatchPaths => SettingsGroup::CaptureSync,
 
         SettingField::DetailRealtimePreviewEnabled
         | SettingField::SummaryEnabled

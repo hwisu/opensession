@@ -1,6 +1,14 @@
 import { type Page, type APIRequestContext } from '@playwright/test';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const PROFILE_ENV = (process.env.E2E_APP_PROFILE || process.env.VITE_APP_PROFILE || 'docker')
+	.trim()
+	.toLowerCase();
+
+export type AppProfile = 'docker' | 'worker';
+export const appProfile: AppProfile = PROFILE_ENV === 'worker' ? 'worker' : 'docker';
+export const isDockerProfile = appProfile === 'docker';
+export const isWorkerProfile = appProfile === 'worker';
 
 export interface TestUser {
 	user_id: string;
@@ -165,10 +173,20 @@ export async function uploadSession(
 		uploadBody.team_id = opts.teamId;
 	}
 
-	const resp = await request.post(`${BASE_URL}/api/sessions`, {
+	let resp = await request.post(`${BASE_URL}/api/sessions`, {
 		data: uploadBody,
 		headers: { Authorization: `Bearer ${accessToken}` },
 	});
+
+	// Some deployments require explicit team membership even for uploads.
+	// If personal upload is rejected, create a team and retry once.
+	if (resp.status() === 403 && !opts?.teamId) {
+		const teamId = await createTeam(request, accessToken);
+		resp = await request.post(`${BASE_URL}/api/sessions`, {
+			data: { ...uploadBody, team_id: teamId },
+			headers: { Authorization: `Bearer ${accessToken}` },
+		});
+	}
 
 	if (!resp.ok()) {
 		throw new Error(`Upload failed: ${resp.status()} ${await resp.text()}`);

@@ -1,9 +1,13 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 // Re-export shared runtime config types
-pub use opensession_runtime_config::{DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode};
+pub use opensession_runtime_config::{
+    apply_compat_fallbacks, DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode,
+    CONFIG_FILE_NAME,
+};
 
 /// Get the config directory path
 pub fn config_dir() -> Result<PathBuf> {
@@ -15,7 +19,7 @@ pub fn config_dir() -> Result<PathBuf> {
 
 /// Get the daemon config file path
 pub fn config_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("daemon.toml"))
+    Ok(config_dir()?.join(CONFIG_FILE_NAME))
 }
 
 /// Get the PID file path
@@ -34,31 +38,14 @@ pub fn load_config() -> Result<DaemonConfig> {
     if !path.exists() {
         return Ok(DaemonConfig::default());
     }
+
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read daemon config at {}", path.display()))?;
     let parsed: Option<toml::Value> = toml::from_str(&content).ok();
     let mut config: DaemonConfig = toml::from_str(&content)
         .with_context(|| format!("Failed to parse daemon config at {}", path.display()))?;
-    if config_file_missing_git_storage_method(parsed.as_ref()) {
-        config.git_storage.method = GitStorageMethod::Native;
-    }
+    apply_compat_fallbacks(&mut config, parsed.as_ref());
     Ok(config)
-}
-
-fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
-    let Some(root) = root else {
-        return false;
-    };
-    let Some(table) = root.as_table() else {
-        return false;
-    };
-    let Some(git_storage) = table.get("git_storage") else {
-        return true;
-    };
-    match git_storage.as_table() {
-        Some(section) => !section.contains_key("method"),
-        None => true,
-    }
 }
 
 /// Resolve watch paths based on watcher config
@@ -68,26 +55,18 @@ pub fn resolve_watch_paths(config: &DaemonConfig) -> Vec<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
 
+    let raw_paths = if config.watchers.custom_paths.is_empty() {
+        // Backward compatibility: older configs may not have custom_paths yet.
+        DaemonConfig::default().watchers.custom_paths
+    } else {
+        config.watchers.custom_paths.clone()
+    };
+
     let mut paths = Vec::new();
-
-    let builtins: &[(bool, &[&str])] = &[
-        (config.watchers.claude_code, &[".claude", "projects"]),
-        (config.watchers.opencode, &[".local", "share", "opencode"]),
-        (config.watchers.cursor, &[".cursor"]),
-    ];
-
-    for &(enabled, segments) in builtins {
-        if enabled {
-            let p = segments.iter().fold(home.clone(), |acc, s| acc.join(s));
-            if p.exists() {
-                paths.push(p);
-            }
-        }
-    }
-
-    for custom in &config.watchers.custom_paths {
-        let p = PathBuf::from(shellexpand(custom, &home));
-        if p.exists() {
+    let mut seen = HashSet::new();
+    for raw in raw_paths {
+        let p = PathBuf::from(shellexpand(&raw, &home));
+        if p.exists() && seen.insert(p.clone()) {
             paths.push(p);
         }
     }
@@ -356,7 +335,8 @@ mod tests {
         assert_eq!(parsed.daemon.health_check_interval_secs, 300);
         assert_eq!(parsed.daemon.realtime_debounce_ms, 500);
         assert!(parsed.watchers.claude_code);
-        assert!(!parsed.watchers.cursor);
+        assert!(parsed.watchers.cursor);
+        assert!(!parsed.watchers.custom_paths.is_empty());
     }
 
     #[test]

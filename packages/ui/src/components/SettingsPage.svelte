@@ -462,16 +462,16 @@ $effect(() => {
 					<h2 class="mb-2 text-sm font-medium text-text-primary">Local Ops</h2>
 					<p class="mb-2 text-xs text-text-secondary">
 						Web cannot directly control local daemon settings. Use CLI/TUI with the same terms:
-						`Realtime Publish`, `Detail Live`, `LLM Summary`, `Stream-write Tool`.
+						`Publish Mode`, `Watchers`, `Stream Push`.
 					</p>
 					<div class="space-y-1 bg-bg-primary p-3 font-mono text-xs text-text-secondary">
 						<p class="text-text-muted"># Open TUI</p>
-						<p>opensession ui</p>
+						<p>opensession</p>
 						<p class="mt-2 text-text-muted"># Start/stop daemon</p>
-						<p>opensession ops daemon start</p>
-						<p>opensession ops daemon stop</p>
+						<p>opensession daemon start --agent claude-code --repo .</p>
+						<p>opensession daemon stop</p>
 						<p class="mt-2 text-text-muted"># Configure account key</p>
-						<p>opensession account config --api-key {showKey ? settings.api_key : '<your-api-key>'}</p>
+						<p>opensession account connect --api-key {showKey ? settings.api_key : '<your-api-key>'}</p>
 					</div>
 				</div>
 			{/if}

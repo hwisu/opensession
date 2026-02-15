@@ -256,7 +256,7 @@ fn render_scenario_picker(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Theme::TEXT_HINT),
         )),
         Line::from(Span::styled(
-            "Config file: ~/.config/opensession/daemon.toml",
+            "Config file: ~/.config/opensession/opensession.toml",
             Style::new().fg(Theme::TEXT_HINT),
         )),
     ]);

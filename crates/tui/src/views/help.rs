@@ -101,7 +101,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  h/l, ←/→  ", key_style),
-            Span::styled("Horizontal scroll/drag (Turn + Linear)", desc_style),
+            Span::styled("Horizontal scroll", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  PgDn/PgUp ", key_style),
@@ -116,19 +116,8 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Next/prev same-type event", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  Enter/Spc/a ", key_style),
-            Span::styled(
-                "Linear: expand event · Turn: summary/raw toggle",
-                desc_style,
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  p         ", key_style),
-            Span::styled("Turn only: toggle full user prompt", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  v         ", key_style),
-            Span::styled("Toggle turn view (side-by-side)", desc_style),
+            Span::styled("  Enter/Spc ", key_style),
+            Span::styled("Expand/collapse selected event details", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  1-6       ", key_style),
@@ -136,18 +125,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  c         ", key_style),
-            Span::styled("Linear only: toggle consecutive collapse", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  LLM       ", key_style),
-            Span::styled(
-                "Timeline summary status (Settings > Timeline Intelligence)",
-                desc_style,
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  RT        ", key_style),
-            Span::styled("Auto-refresh status", desc_style),
+            Span::styled("Toggle consecutive event collapse", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  Esc/q     ", key_style),
@@ -163,29 +141,21 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Open inbox from collaboration view", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  d/s/r     ", key_style),
-            Span::styled("Operations actions: daemon/save/refresh", desc_style),
+            Span::styled("  d/r       ", key_style),
+            Span::styled("Operations actions: daemon/refresh", desc_style),
         ]),
         Line::raw(""),
         Line::from(Span::styled("── Settings ──", header_style)),
         Line::from(vec![
             Span::styled("  [/]       ", key_style),
             Span::styled(
-                "Switch section (Workspace/Capture/Timeline/Storage/Account)",
+                "Switch section (Workspace/Capture/Storage/Account)",
                 desc_style,
             ),
         ]),
         Line::from(vec![
             Span::styled("  s         ", key_style),
             Span::styled("Save config", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  ,/.       ", key_style),
-            Span::styled("Timeline Intel: preset slot prev/next", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  Shift+S/L ", key_style),
-            Span::styled("Timeline Intel: preset save/load slot", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  g         ", key_style),

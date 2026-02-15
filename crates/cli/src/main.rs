@@ -101,10 +101,10 @@ enum Commands {
         action: PublishAction,
     },
 
-    /// Runtime operations (daemon/stream)
-    Ops {
+    /// Background daemon controls (watch agents/repos + lifecycle)
+    Daemon {
         #[command(subcommand)]
-        action: OpsAction,
+        action: DaemonAction,
     },
 
     /// Account and server connectivity
@@ -178,29 +178,9 @@ enum PublishAction {
 }
 
 #[derive(Subcommand)]
-enum OpsAction {
-    /// Manage the background daemon
-    Daemon {
-        #[command(subcommand)]
-        action: DaemonAction,
-    },
-    /// Real-time session streaming
-    Stream {
-        #[command(subcommand)]
-        action: StreamAction,
-    },
-    /// Stream new events from a local session file (called by hooks)
-    StreamPush {
-        /// Agent name (e.g. "claude-code")
-        #[arg(long)]
-        agent: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum AccountAction {
-    /// Show or set configuration
-    Config {
+    /// Connect server/API key/team in one command
+    Connect {
         /// Set the server URL
         #[arg(long)]
         server: Option<String>,
@@ -213,11 +193,18 @@ enum AccountAction {
         #[arg(long)]
         team_id: Option<String>,
     },
-    /// Check server connection and authentication
-    Server {
-        #[command(subcommand)]
-        action: ServerAction,
+    /// Set default team ID quickly
+    Team {
+        /// Team ID
+        #[arg(long, short = 't')]
+        id: String,
     },
+    /// Show current account/server config
+    Show,
+    /// Check server health and version
+    Status,
+    /// Verify API key authentication
+    Verify,
 }
 
 #[derive(Subcommand)]
@@ -251,48 +238,50 @@ impl Commands {
 
 fn suggestion_for_code(code: &ExitCode) -> Option<&'static str> {
     match code {
-        ExitCode::AuthError => Some("opensession account config --api-key <key>"),
+        ExitCode::AuthError => Some("opensession account connect --api-key <key>"),
         ExitCode::NoData => Some("opensession session handoff --last"),
-        ExitCode::NetworkError => Some("opensession account server status"),
+        ExitCode::NetworkError => Some("opensession account status"),
         ExitCode::UsageError => Some("opensession --help"),
         _ => None,
     }
 }
 
 #[derive(Subcommand)]
-enum StreamAction {
-    /// Enable real-time session streaming
-    Enable {
-        /// Agent name (auto-detected if omitted)
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// Disable real-time session streaming
-    Disable {
-        /// Agent name (auto-detected if omitted)
-        #[arg(long)]
-        agent: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
 enum DaemonAction {
-    /// Start the background daemon
-    Start,
+    /// Start the background daemon (optionally update watch targets first)
+    Start {
+        /// Deprecated. Agent selection is now path-based and always supports all parsers.
+        #[arg(long)]
+        agent: Vec<String>,
+
+        /// Repo directories to watch/upload
+        #[arg(long)]
+        repo: Vec<PathBuf>,
+    },
     /// Stop the background daemon
     Stop,
     /// Show daemon status
     Status,
     /// Check daemon and server health
     Health,
-}
+    /// Update daemon watch targets (paths) without starting daemon
+    Select {
+        /// Deprecated. Agent selection is now path-based and always supports all parsers.
+        #[arg(long)]
+        agent: Vec<String>,
 
-#[derive(Subcommand)]
-enum ServerAction {
-    /// Check server health and version
-    Status,
-    /// Verify API key authentication
-    Verify,
+        /// Repo directories to watch/upload
+        #[arg(long)]
+        repo: Vec<PathBuf>,
+    },
+    /// Show current daemon watch targets
+    Show,
+    /// Stream new events from a local session file (hook target)
+    StreamPush {
+        /// Agent name (e.g. "claude-code")
+        #[arg(long)]
+        agent: String,
+    },
 }
 
 enum InteractiveScope {
@@ -371,7 +360,7 @@ async fn main() {
         Commands::Test(args) => test_cmd::run_test(args).await,
         Commands::Session { action } => run_session_action(action).await,
         Commands::Publish { action } => run_publish_action(action).await,
-        Commands::Ops { action } => run_ops_action(action).await,
+        Commands::Daemon { action } => run_daemon_action(action).await,
         Commands::Account { action } => run_account_action(action).await,
         Commands::Docs { action } => run_docs_action(action),
     };
@@ -497,8 +486,16 @@ fn resolve_interactive_scope(scope: Option<&Path>) -> Result<InteractiveScope> {
 }
 
 fn run_interactive_entry(scope: InteractiveScope) -> Result<()> {
-    if try_launch_external_tui(&scope)? {
-        return Ok(());
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        match try_launch_external_tui(&scope) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(err) => {
+                eprintln!(
+                    "Warning: failed to launch opensession-tui ({err:#}). Falling back to text mode."
+                );
+            }
+        }
     }
 
     match scope {
@@ -601,22 +598,33 @@ async fn run_publish_action(action: PublishAction) -> anyhow::Result<()> {
     }
 }
 
-async fn run_ops_action(action: OpsAction) -> anyhow::Result<()> {
+async fn run_daemon_action(action: DaemonAction) -> anyhow::Result<()> {
     match action {
-        OpsAction::Daemon { action } => match action {
-            DaemonAction::Start => daemon_ctl::daemon_start(),
-            DaemonAction::Stop => daemon_ctl::daemon_stop(),
-            DaemonAction::Status => daemon_ctl::daemon_status(),
-            DaemonAction::Health => run_daemon_health().await,
-        },
-        OpsAction::Stream { action } => run_stream_action(action),
-        OpsAction::StreamPush { agent } => stream_push::run_stream_push(&agent),
+        DaemonAction::Start { agent, repo } => {
+            if !agent.is_empty() || !repo.is_empty() {
+                update_daemon_targets(&agent, &repo)?;
+            }
+            ensure_enabled_stream_hooks()?;
+            daemon_ctl::daemon_start()
+        }
+        DaemonAction::Stop => daemon_ctl::daemon_stop(),
+        DaemonAction::Status => daemon_ctl::daemon_status(),
+        DaemonAction::Health => run_daemon_health().await,
+        DaemonAction::Select { agent, repo } => {
+            if agent.is_empty() && repo.is_empty() {
+                bail!("No changes requested. Use --repo.");
+            }
+            update_daemon_targets(&agent, &repo)?;
+            print_daemon_targets()
+        }
+        DaemonAction::Show => print_daemon_targets(),
+        DaemonAction::StreamPush { agent } => stream_push::run_stream_push(&agent),
     }
 }
 
 async fn run_account_action(action: AccountAction) -> anyhow::Result<()> {
     match action {
-        AccountAction::Config {
+        AccountAction::Connect {
             server,
             api_key,
             team_id,
@@ -627,10 +635,10 @@ async fn run_account_action(action: AccountAction) -> anyhow::Result<()> {
                 config::set_config(server, api_key, team_id)
             }
         }
-        AccountAction::Server { action } => match action {
-            ServerAction::Status => server::run_status().await,
-            ServerAction::Verify => server::run_verify().await,
-        },
+        AccountAction::Team { id } => config::set_team(id),
+        AccountAction::Show => config::show_config(),
+        AccountAction::Status => server::run_status().await,
+        AccountAction::Verify => server::run_verify().await,
     }
 }
 
@@ -644,56 +652,66 @@ fn run_docs_action(action: DocsAction) -> anyhow::Result<()> {
     }
 }
 
-/// Run stream enable/disable with auto-detection when `--agent` is omitted.
-fn run_stream_action(action: StreamAction) -> anyhow::Result<()> {
-    let (agent_arg, is_enable) = match &action {
-        StreamAction::Enable { agent } => (agent.clone(), true),
-        StreamAction::Disable { agent } => (agent.clone(), false),
-    };
+fn update_daemon_targets(agent_flags: &[String], repo_flags: &[PathBuf]) -> anyhow::Result<()> {
+    if !agent_flags.is_empty() {
+        eprintln!(
+            "Note: --agent is deprecated and ignored. All supported agents are watched via configured paths."
+        );
+    }
 
-    let agents = if let Some(agent) = agent_arg {
-        vec![agent]
+    let current_repos = config::daemon_watch_paths()?;
+
+    let next_repos = if repo_flags.is_empty() {
+        current_repos
     } else {
-        // Auto-detect: discover tools with sessions on this machine
-        let locations = opensession_parsers::discover::discover_sessions();
-        let available: Vec<String> = locations
-            .into_iter()
-            .filter(|loc| !loc.paths.is_empty())
-            .map(|loc| loc.tool)
-            .collect();
-
-        match available.len() {
-            0 => anyhow::bail!("No AI sessions found. Use --agent to specify manually."),
-            1 => {
-                println!("Auto-detected: {}", available[0]);
-                available
-            }
-            _ => {
-                let selections = dialoguer::MultiSelect::new()
-                    .with_prompt("Select agents to stream")
-                    .items(&available)
-                    .interact()?;
-
-                if selections.is_empty() {
-                    anyhow::bail!("No agents selected.");
-                }
-
-                selections
-                    .into_iter()
-                    .map(|i| available[i].clone())
-                    .collect()
-            }
-        }
+        normalize_repo_flags(repo_flags)?
     };
 
-    for agent in &agents {
-        if is_enable {
-            stream_push::enable_stream_write(agent)?;
-        } else {
-            stream_push::disable_stream_write(agent)?;
+    config::set_daemon_watch_paths(next_repos)
+}
+
+fn normalize_repo_flags(repo_flags: &[PathBuf]) -> anyhow::Result<Vec<String>> {
+    let mut repos = Vec::new();
+    let mut seen = HashSet::new();
+
+    for raw in repo_flags {
+        let canonical = std::fs::canonicalize(raw)
+            .with_context(|| format!("Repo path not found: {}", raw.display()))?;
+        if !canonical.is_dir() {
+            bail!("Repo path must be a directory: {}", canonical.display());
+        }
+        let path = canonical.to_string_lossy().to_string();
+        if seen.insert(path.clone()) {
+            repos.push(path);
         }
     }
 
+    Ok(repos)
+}
+
+fn print_daemon_targets() -> anyhow::Result<()> {
+    let path = config::config_path()?;
+    let repos = config::daemon_watch_paths()?;
+    println!("Config file: {}", path.display());
+    println!();
+    println!("[daemon.watchers]");
+    if repos.is_empty() {
+        println!("  repos       = (none)");
+    } else {
+        println!("  repos:");
+        for repo in repos {
+            println!("    - {repo}");
+        }
+    }
+    println!();
+    println!("Tip: use TUI for manual control: `opensession` or `opensession .`");
+    Ok(())
+}
+
+fn ensure_enabled_stream_hooks() -> anyhow::Result<()> {
+    if let Err(err) = stream_push::enable_stream_write("claude-code") {
+        eprintln!("Warning: failed to install claude-code stream hook: {err}");
+    }
     Ok(())
 }
 

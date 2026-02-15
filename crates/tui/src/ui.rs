@@ -1,6 +1,6 @@
 use crate::app::{
-    App, ConnectionContext, DetailViewMode, EventFilter, FlashLevel, ListLayout, ServerStatus,
-    SettingsSection, UploadPhase, View, ViewMode,
+    App, ConnectionContext, EventFilter, FlashLevel, ServerStatus, SettingsSection, UploadPhase,
+    View, ViewMode,
 };
 use crate::theme::Theme;
 use crate::views::{
@@ -23,14 +23,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // `opensession view` focus mode: hide global tab chrome,
-    // but keep compact session summary + footer shortcuts.
+    // but keep compact session summary.
     if app.focus_detail_view {
-        let [summary_area, body_area, footer_area] = Layout::vertical([
-            Constraint::Length(2),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-        ])
-        .areas(frame.area());
+        let show_footer = app.flash_message.is_some();
+        let [summary_area, body_area, footer_area] = if show_footer {
+            let [summary, body, footer] = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Fill(1),
+                Constraint::Length(1),
+            ])
+            .areas(frame.area());
+            (summary, body, Some(footer))
+        } else {
+            let [summary, body] =
+                Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(frame.area());
+            (summary, body, None)
+        };
         render_focus_session_summary(frame, app, summary_area);
         if matches!(app.view, View::Help) {
             help::render(frame, body_area);
@@ -43,20 +51,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .style(Style::new().fg(Theme::TEXT_MUTED));
             frame.render_widget(waiting, body_area);
         }
-        render_footer(frame, app, footer_area);
+        if let Some(footer_area) = footer_area {
+            render_footer(frame, app, footer_area);
+        }
         if let Some(ref m) = app.modal {
             modal::render(frame, m, &app.edit_buffer);
         }
         return;
     }
 
-    let [tab_area, header_area, body_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(3),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(frame.area());
+    let show_footer = app.flash_message.is_some();
+    let (tab_area, header_area, body_area, footer_area) = if show_footer {
+        let [tab, header, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
+        (tab, header, body, Some(footer))
+    } else {
+        let [tab, header, body] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Fill(1),
+        ])
+        .areas(frame.area());
+        (tab, header, body, None)
+    };
 
     // Tab bar
     tab_bar::render(
@@ -83,8 +105,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Setup => {} // handled above
     }
 
-    // Footer
-    render_footer(frame, app, footer_area);
+    if let Some(footer_area) = footer_area {
+        render_footer(frame, app, footer_area);
+    }
 
     // Upload popup overlay
     if app.upload_popup.is_some() {
@@ -255,87 +278,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled(" ", Style::new()));
             }
 
-            spans.push(Span::styled(" ", Style::new()));
-            let turn_mode_label = if app.detail_view_mode == DetailViewMode::Turn {
-                "turn-mode:thread"
-            } else {
-                "turn-mode:linear"
-            };
-            let turn_mode_style = if app.detail_view_mode == DetailViewMode::Turn {
-                Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
-            } else {
-                Style::new().fg(Theme::TEXT_MUTED)
-            };
-            spans.push(Span::styled(
-                format!(" {} ", turn_mode_label),
-                turn_mode_style,
-            ));
-
-            if app.detail_view_mode != DetailViewMode::Turn {
-                spans.push(Span::styled(" ", Style::new()));
-                let collapse_style = if app.collapse_consecutive {
-                    Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
-                } else {
-                    Style::new().fg(Theme::TEXT_MUTED)
-                };
-                let collapse_label = if app.collapse_consecutive {
-                    "collapse:on"
-                } else {
-                    "collapse:off"
-                };
-                spans.push(Span::styled(
-                    format!(" {} ", collapse_label),
-                    collapse_style,
-                ));
-            }
-
-            spans.push(Span::styled(" │ ", Style::new().fg(Theme::GUTTER)));
-            let summary_status = app.llm_summary_status_label();
-            let summary_badge = app.llm_summary_runtime_badge();
-            let (summary_label, summary_style) = match summary_status.as_str() {
-                "on" => (
-                    summary_badge.as_str(),
-                    Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold(),
-                ),
-                "off(no-backend)" => (summary_badge.as_str(), Style::new().fg(Theme::TEXT_MUTED)),
-                _ => (summary_badge.as_str(), Style::new().fg(Theme::TEXT_MUTED)),
-            };
-            spans.push(Span::styled(format!(" {} ", summary_label), summary_style));
-            spans.push(Span::styled(" ", Style::new()));
-            let (rt_label, rt_style) = if !app.daemon_config.daemon.detail_realtime_preview_enabled
-            {
-                ("auto-refresh:off", Style::new().fg(Theme::TEXT_MUTED))
-            } else if app.realtime_preview_enabled {
-                (
-                    "auto-refresh:on",
-                    Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold(),
-                )
-            } else {
-                ("auto-refresh:off", Style::new().fg(Theme::TEXT_MUTED))
-            };
-            spans.push(Span::styled(format!(" {} ", rt_label), rt_style));
-            if app.live_mode {
-                spans.push(Span::styled(" ", Style::new()));
-                spans.push(Span::styled(
-                    " LIVE ",
-                    Style::new().fg(Color::Black).bg(Theme::ACCENT_RED).bold(),
-                ));
-                spans.push(Span::styled(" ", Style::new()));
-                let follow_label = format!(" follow:{} ", app.detail_follow_status_label());
-                let follow_style = if app.detail_follow_state().is_following {
-                    Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
-                } else {
-                    Style::new().fg(Theme::TEXT_MUTED)
-                };
-                spans.push(Span::styled(follow_label, follow_style));
-            }
-            if app.detail_view_mode != DetailViewMode::Turn {
-                spans.push(Span::styled(
-                    format!(" h-scroll:{} ", app.detail_h_scroll),
-                    Style::new().fg(Theme::TEXT_MUTED),
-                ));
-            }
-
             let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());
             frame.render_widget(p, area);
@@ -434,280 +376,18 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let key_style = Style::new().fg(Theme::TEXT_KEY);
-    let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
-
-    let help = match app.view {
-        View::SessionList => {
-            if app.searching {
-                Line::from(vec![
-                    Span::styled(
-                        " / ",
-                        Style::new()
-                            .fg(Color::Black)
-                            .bg(Theme::ACCENT_YELLOW)
-                            .bold(),
-                    ),
-                    Span::styled(
-                        format!(" {}", app.search_query),
-                        Style::new().fg(Theme::TEXT_PRIMARY),
-                    ),
-                    Span::styled("_", Style::new().fg(Theme::ACCENT_YELLOW)),
-                    Span::styled("  ESC cancel  Enter confirm", desc_style),
-                ])
-            } else if app.list_layout == ListLayout::ByUser {
-                let spans = vec![
-                    Span::styled("m ", key_style),
-                    Span::styled("single  ", desc_style),
-                    Span::styled("t ", key_style),
-                    Span::styled("tool  ", desc_style),
-                    Span::styled("r ", key_style),
-                    Span::styled("range  ", desc_style),
-                    Span::styled("R ", key_style),
-                    Span::styled("repos  ", desc_style),
-                    Span::styled("Tab ", key_style),
-                    Span::styled("view  ", desc_style),
-                    Span::styled("q ", key_style),
-                    Span::styled("quit", desc_style),
-                ];
-                Line::from(spans)
-            } else {
-                let mut spans = vec![
-                    Span::styled("PgUp/PgDn ", key_style),
-                    Span::styled("page  ", desc_style),
-                    Span::styled("/ ", key_style),
-                    Span::styled("search  ", desc_style),
-                    Span::styled("Tab ", key_style),
-                    Span::styled("view  ", desc_style),
-                ];
-                if !app.available_tools.is_empty() {
-                    spans.push(Span::styled("t ", key_style));
-                    spans.push(Span::styled("tool  ", desc_style));
-                }
-                spans.push(Span::styled("r ", key_style));
-                spans.push(Span::styled("range  ", desc_style));
-                spans.push(Span::styled("R ", key_style));
-                spans.push(Span::styled("repos  ", desc_style));
-                spans.push(Span::styled("m ", key_style));
-                spans.push(Span::styled("by-agent-count  ", desc_style));
-                if app.is_db_view() {
-                    spans.push(Span::styled("f ", key_style));
-                    spans.push(Span::styled("tool(next)  ", desc_style));
-                    spans.push(Span::styled("d ", key_style));
-                    spans.push(Span::styled("delete  ", desc_style));
-                }
-                if !matches!(app.connection_ctx, ConnectionContext::Local) {
-                    spans.push(Span::styled("p ", key_style));
-                    spans.push(Span::styled("publish  ", desc_style));
-                }
-                spans.push(Span::styled("q ", key_style));
-                spans.push(Span::styled("quit", desc_style));
-                Line::from(spans)
-            }
-        }
-        View::SessionDetail => {
-            let realtime_state = if !app.daemon_config.daemon.detail_realtime_preview_enabled {
-                "off"
-            } else if app.realtime_preview_enabled {
-                "on"
-            } else {
-                "off"
-            };
-            let collapse_state = if app.collapse_consecutive {
-                "on"
-            } else {
-                "off"
-            };
-
-            if app.detail_view_mode == DetailViewMode::Turn {
-                let mut spans = vec![
-                    Span::styled(" j/k ", key_style),
-                    Span::styled("scroll  ", desc_style),
-                    Span::styled("n/N ", key_style),
-                    Span::styled("prompt jump  ", desc_style),
-                    Span::styled("p ", key_style),
-                    Span::styled("prompt fold  ", desc_style),
-                    Span::styled("Enter/a ", key_style),
-                    Span::styled("summary/raw  ", desc_style),
-                    Span::styled("1-6 ", key_style),
-                    Span::styled("filter  ", desc_style),
-                    Span::styled("g/G ", key_style),
-                    Span::styled("first/last  ", desc_style),
-                    Span::styled("auto-refresh ", key_style),
-                    Span::styled(format!("{realtime_state}  "), desc_style),
-                    Span::styled("v ", key_style),
-                    Span::styled("linear  ", desc_style),
-                    Span::styled("Esc ", key_style),
-                    Span::styled(
-                        if app.focus_detail_view {
-                            "exit"
-                        } else {
-                            "back"
-                        },
-                        desc_style,
-                    ),
-                ];
-                if app.live_mode {
-                    spans.push(Span::styled("  LIVE ", key_style));
-                    spans.push(Span::styled(
-                        format!("follow:{}  ", app.detail_follow_status_label()),
-                        desc_style,
-                    ));
-                    spans.push(Span::styled("End ", key_style));
-                    spans.push(Span::styled("jump latest", desc_style));
-                }
-                Line::from(spans)
-            } else {
-                let mut spans = vec![
-                    Span::styled(" j/k ", key_style),
-                    Span::styled("scroll  ", desc_style),
-                    Span::styled("h/l ", key_style),
-                    Span::styled("h-scroll  ", desc_style),
-                    Span::styled("u/U ", key_style),
-                    Span::styled("user  ", desc_style),
-                    Span::styled("n/N ", key_style),
-                    Span::styled("type  ", desc_style),
-                    Span::styled("c ", key_style),
-                    Span::styled(format!("collapse:{collapse_state}  "), desc_style),
-                    Span::styled("auto-refresh ", key_style),
-                    Span::styled(format!("{realtime_state}  "), desc_style),
-                    Span::styled("Enter ", key_style),
-                    Span::styled("expand  ", desc_style),
-                    Span::styled("v ", key_style),
-                    Span::styled("split  ", desc_style),
-                    Span::styled("1-6 ", key_style),
-                    Span::styled("filter  ", desc_style),
-                    Span::styled("Esc/q ", key_style),
-                    Span::styled(
-                        if app.focus_detail_view {
-                            "exit"
-                        } else {
-                            "back"
-                        },
-                        desc_style,
-                    ),
-                ];
-                if app.live_mode {
-                    spans.push(Span::styled("  LIVE ", key_style));
-                    spans.push(Span::styled(
-                        format!("follow:{}  ", app.detail_follow_status_label()),
-                        desc_style,
-                    ));
-                    spans.push(Span::styled("End ", key_style));
-                    spans.push(Span::styled("jump latest", desc_style));
-                }
-                Line::from(spans)
-            }
-        }
-        View::Operations => Line::from(vec![
-            Span::styled(" d ", key_style),
-            Span::styled("daemon on/off  ", desc_style),
-            Span::styled("s ", key_style),
-            Span::styled("save config  ", desc_style),
-            Span::styled("r ", key_style),
-            Span::styled("refresh status  ", desc_style),
-            Span::styled("4 ", key_style),
-            Span::styled("settings  ", desc_style),
-            Span::styled("Esc ", key_style),
-            Span::styled("sessions", desc_style),
-        ]),
-        View::Teams => Line::from(vec![
-            Span::styled(" j/k ", key_style),
-            Span::styled("navigate  ", desc_style),
-            Span::styled("Enter ", key_style),
-            Span::styled("detail  ", desc_style),
-            Span::styled("n ", key_style),
-            Span::styled("new team  ", desc_style),
-            Span::styled("i ", key_style),
-            Span::styled("inbox  ", desc_style),
-            Span::styled("r ", key_style),
-            Span::styled("refresh  ", desc_style),
-            Span::styled("q ", key_style),
-            Span::styled("quit", desc_style),
-        ]),
-        View::TeamDetail => Line::from(vec![
-            Span::styled(" Tab ", key_style),
-            Span::styled("section  ", desc_style),
-            Span::styled("j/k ", key_style),
-            Span::styled("navigate  ", desc_style),
-            Span::styled("d ", key_style),
-            Span::styled("remove  ", desc_style),
-            Span::styled("r ", key_style),
-            Span::styled("refresh  ", desc_style),
-            Span::styled("Esc ", key_style),
-            Span::styled("back", desc_style),
-        ]),
-        View::Invitations => Line::from(vec![
-            Span::styled(" j/k ", key_style),
-            Span::styled("navigate  ", desc_style),
-            Span::styled("a ", key_style),
-            Span::styled("accept  ", desc_style),
-            Span::styled("d ", key_style),
-            Span::styled("decline  ", desc_style),
-            Span::styled("r ", key_style),
-            Span::styled("refresh  ", desc_style),
-            Span::styled("q ", key_style),
-            Span::styled("quit", desc_style),
-        ]),
-        View::Settings => {
-            let mut spans = vec![
-                Span::styled(" [/] ", key_style),
-                Span::styled("section  ", desc_style),
-            ];
-            match app.settings_section {
-                SettingsSection::Account => {
-                    spans.push(Span::styled("j/k ", key_style));
-                    spans.push(Span::styled("navigate  ", desc_style));
-                    spans.push(Span::styled("Enter ", key_style));
-                    spans.push(Span::styled("edit  ", desc_style));
-                    spans.push(Span::styled("r ", key_style));
-                    spans.push(Span::styled("profile refresh  ", desc_style));
-                    spans.push(Span::styled("g ", key_style));
-                    spans.push(Span::styled("regen key  ", desc_style));
-                }
-                SettingsSection::Workspace
-                | SettingsSection::CaptureSync
-                | SettingsSection::TimelineIntelligence
-                | SettingsSection::StoragePrivacy => {
-                    spans.push(Span::styled("j/k ", key_style));
-                    spans.push(Span::styled("navigate  ", desc_style));
-                    spans.push(Span::styled("Enter ", key_style));
-                    spans.push(Span::styled("edit  ", desc_style));
-                    spans.push(Span::styled("s ", key_style));
-                    spans.push(Span::styled("save  ", desc_style));
-                }
-            }
-            spans.push(Span::styled("Esc ", key_style));
-            spans.push(Span::styled("back", desc_style));
-            Line::from(spans)
-        }
-        _ => Line::raw(""),
-    };
-
-    let mut spans = help.spans;
-    // Persistent first-run hint after setup skip
-    if matches!(app.view, View::SessionList) && !app.startup_status.config_exists {
-        spans.push(Span::styled("  |  ", Style::new().fg(Theme::GUTTER)));
-        spans.push(Span::styled(
-            "setup later: 4:Settings > Workspace",
-            Style::new().fg(Theme::TEXT_HINT),
-        ));
+    if area.height == 0 {
+        return;
     }
-
-    // Append flash message to any view's footer
     if let Some((ref msg, level)) = app.flash_message {
         let color = match level {
             FlashLevel::Success => Theme::ACCENT_GREEN,
             FlashLevel::Error => Theme::ACCENT_RED,
             FlashLevel::Info => Theme::ACCENT_BLUE,
         };
-        spans.push(Span::styled("  ", Style::new()));
-        spans.push(Span::styled(msg.as_str(), Style::new().fg(color)));
+        let line = Line::from(vec![Span::styled(msg.as_str(), Style::new().fg(color))]);
+        frame.render_widget(Paragraph::new(line), area);
     }
-    let help = Line::from(spans);
-
-    let paragraph = Paragraph::new(help);
-    frame.render_widget(paragraph, area);
 }
 
 fn render_focus_session_summary(frame: &mut Frame, app: &App, area: Rect) {

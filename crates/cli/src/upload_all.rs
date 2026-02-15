@@ -10,10 +10,10 @@ use opensession_parsers::{all_parsers, SessionParser};
 pub async fn run_upload_all() -> Result<()> {
     let config = load_config()?;
     if config.server.api_key.is_empty() {
-        bail!("API key not configured. Run: opensession account config --api-key <key>");
+        bail!("API key not configured. Run: opensession account connect --api-key <key>");
     }
     if config.server.team_id.is_empty() {
-        bail!("Team ID not configured. Run: opensession account config --team-id <id>");
+        bail!("Team ID not configured. Run: opensession account team --id <team-id>");
     }
 
     let locations = discover_sessions();

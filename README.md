@@ -18,9 +18,17 @@ from Claude Code, Cursor, Codex, Goose, Aider, and other AI tools.
 ```bash
 cargo install opensession
 
+opensession --help
 opensession session handoff --last
 opensession publish upload-all
-opensession ops stream enable --agent claude-code
+opensession daemon start --agent claude-code --repo .
+```
+
+Manual local browsing mode (TUI):
+
+```bash
+opensession      # all local sessions
+opensession .    # current git repo scope
 ```
 
 ### Deployment Profiles
@@ -92,25 +100,32 @@ Single Cargo workspace with 12 crates:
 
 | Command | Description |
 |---------|-------------|
+| `opensession` / `opensession .` | Launch local interactive mode (all sessions / current repo scope) |
 | `opensession session handoff` | Generate handoff summary for next agent |
 | `opensession publish upload <file>` | Upload a session file |
 | `opensession publish upload-all` | Discover and upload all sessions |
-| `opensession ops daemon start\|stop\|status\|health` | Manage background daemon |
-| `opensession ops stream enable\|disable` | Enable/disable local streaming hook |
-| `opensession ops stream-push --agent <agent>` | Hook target command for incremental stream indexing |
-| `opensession account config` | Show or set configuration |
-| `opensession account server status\|verify` | Check server connection |
+| `opensession daemon start\|stop\|status\|health` | Manage daemon lifecycle |
+| `opensession daemon select --agent ... --repo ...` | Select watcher agents/repos |
+| `opensession daemon show` | Show daemon watcher targets |
+| `opensession daemon stream-push --agent <agent>` | Internal hook target command |
+| `opensession account connect --server --api-key [--team-id]` | Connect account/server quickly |
+| `opensession account team --id <team-id>` | Set default team |
+| `opensession account status\|verify` | Check server connection/auth |
 | `opensession docs completion <shell>` | Generate shell completions |
+
+Legacy hidden aliases are removed. Use the commands above as canonical CLI surface.
 
 ## Configuration
 
-### CLI Config (`~/.config/opensession/config.toml`)
+### Unified Config (`~/.config/opensession/opensession.toml`)
 
 ```bash
-opensession account config --server https://opensession.io --api-key osk_xxx --team-id my-team
+opensession account connect --server https://opensession.io --api-key osk_xxx --team-id my-team
 ```
 
-### Daemon Config (`~/.config/opensession/daemon.toml`)
+Only `opensession.toml` is used as global config. Legacy fallbacks (`daemon.toml`, `config.toml`) are not read.
+
+### Daemon Settings (`~/.config/opensession/opensession.toml`)
 
 Configurable via TUI settings or direct file editing:
 
@@ -131,8 +146,6 @@ team_id = ""
 [watchers]
 claude_code = true
 opencode = true
-goose = true
-aider = true
 cursor = false
 
 [privacy]
@@ -160,8 +173,7 @@ method = "native"            # platform_api | native | none
 | Path | Description |
 |------|-------------|
 | `~/.local/share/opensession/local.db` | Local SQLite cache |
-| `~/.config/opensession/config.toml` | CLI configuration |
-| `~/.config/opensession/daemon.toml` | Daemon configuration |
+| `~/.config/opensession/opensession.toml` | Unified CLI/daemon configuration |
 
 ## API Endpoints
 

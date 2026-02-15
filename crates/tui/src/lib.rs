@@ -101,11 +101,11 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
 
     // ── Load full daemon config ──────────────────────────────────────
     let mut daemon_config = config::load_daemon_config();
-    if let Some(summary_override) = options.summary_override.as_ref() {
-        apply_summary_launch_override(&mut daemon_config, summary_override);
-    }
+    // Timeline Intelligence feature removed: force-disable summary/live auto-refresh.
+    daemon_config.daemon.summary_enabled = false;
+    daemon_config.daemon.detail_realtime_preview_enabled = false;
     let config_exists = config::config_dir()
-        .map(|d| d.join("daemon.toml").exists())
+        .map(|d| d.join("opensession.toml").exists())
         .unwrap_or(false);
 
     // Build server info from daemon config
@@ -116,9 +116,8 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
         Some(daemon_config.identity.team_id.clone())
     };
     app.daemon_config = daemon_config;
-    app.realtime_preview_enabled = app.daemon_config.daemon.detail_realtime_preview_enabled;
+    app.realtime_preview_enabled = false;
     app.connection_ctx = App::derive_connection_ctx(&app.daemon_config);
-    app.refresh_timeline_preset_slots();
     app.focus_detail_view = options.focus_detail_view;
 
     // ── Build startup status ─────────────────────────────────────────
@@ -129,6 +128,7 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
         config_exists,
     };
     app.startup_status = status;
+    app.sync_daemon_publish_policy_from_runtime();
 
     // ── Open main DB connection (fast — just opens SQLite file) ──────
     if let Ok(db) = LocalDb::open() {
@@ -509,7 +509,6 @@ fn event_loop(
     mouse_capture_enabled: bool,
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    let (summary_tx, summary_rx) = mpsc::channel::<async_ops::CommandResult>();
     let mut auto_enter_detail_pending = auto_enter_detail;
 
     loop {
@@ -551,11 +550,6 @@ fn event_loop(
                 app.list_state.select(Some(0));
             }
             app.enter_detail_for_startup();
-        }
-
-        // ── Poll summary worker results ─────────────────────────────
-        while let Ok(result) = summary_rx.try_recv() {
-            app.apply_command_result(result);
         }
 
         // ── Handle pending async command ─────────────────────────────
@@ -694,13 +688,7 @@ fn event_loop(
             }
         }
 
-        // ── Timeline summary queue (non-stream sessions, visible-first) ──
-        // Keep input responsive: only schedule heavy summary work when idle.
-        if !handled_user_input {
-            if let Some(cmd) = app.schedule_detail_summary_jobs() {
-                spawn_summary_worker(cmd, app.daemon_config.clone(), summary_tx.clone());
-            }
-        }
+        // Timeline Intelligence feature removed.
     }
     Ok(())
 }

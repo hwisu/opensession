@@ -2236,13 +2236,13 @@ fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) ->
         let (kind, _) = event_type_display(&event.event_type, true);
         let mut summary = task_board_event_summary(event, 120);
         summary = strip_kind_prefix(&summary, kind);
-        if summary.is_empty() {
-            if !matches!(
+        if summary.is_empty()
+            && !matches!(
                 event.event_type,
                 EventType::TaskStart { .. } | EventType::TaskEnd { .. }
-            ) {
-                continue;
-            }
+            )
+        {
+            continue;
         }
         let summary_key = normalize_activity_key(&summary);
         if !output_key.is_empty()

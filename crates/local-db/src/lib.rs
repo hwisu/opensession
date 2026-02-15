@@ -1143,19 +1143,7 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
     // Disable FK constraints for local DB (it's a cache, not source of truth)
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
 
-    // Run migrations, ignoring benign schema-already-applied errors.
-    // SQLite lacks ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so re-running
-    // ADD COLUMN on an existing DB hits "duplicate column name" errors.
-    for (_name, sql) in MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
-        if let Err(e) = conn.execute_batch(sql) {
-            let msg = e.to_string();
-            if msg.contains("duplicate column name") || msg.contains("no such column") {
-                // Schema already has the column or it was already dropped — skip
-                continue;
-            }
-            return Err(e.into());
-        }
-    }
+    apply_local_migrations(&conn)?;
 
     // Backfill missing columns for legacy local DBs where `sessions` already
     // existed before newer fields were introduced.
@@ -1163,6 +1151,52 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
     validate_local_schema(&conn)?;
 
     Ok(conn)
+}
+
+fn apply_local_migrations(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _migrations (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )
+    .context("create _migrations table for local db")?;
+
+    for (name, sql) in MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
+        let already_applied: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM _migrations WHERE name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if already_applied {
+            continue;
+        }
+
+        if let Err(e) = conn.execute_batch(sql) {
+            let msg = e.to_string().to_ascii_lowercase();
+            if !is_local_migration_compat_error(&msg) {
+                return Err(e).with_context(|| format!("apply local migration {name}"));
+            }
+        }
+
+        conn.execute(
+            "INSERT OR IGNORE INTO _migrations (name) VALUES (?1)",
+            [name],
+        )
+        .with_context(|| format!("record local migration {name}"))?;
+    }
+
+    Ok(())
+}
+
+fn is_local_migration_compat_error(msg: &str) -> bool {
+    msg.contains("duplicate column name")
+        || msg.contains("no such column")
+        || msg.contains("already exists")
 }
 
 fn validate_local_schema(conn: &Connection) -> Result<()> {

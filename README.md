@@ -59,6 +59,20 @@ Single Cargo workspace with 12 crates:
 | `worker` | Cloudflare Workers backend (WASM, excluded from workspace) |
 | `e2e` | End-to-end tests |
 
+## Migration & DB Parity
+
+| Platform | DB Engine | Migration Set | Notes |
+|----------|-----------|---------------|-------|
+| Server (Axum) | SQLite | `MIGRATIONS` | Tracks applied migrations in `_migrations` |
+| Worker (Cloudflare) | D1 (SQLite) | `migrations/*.sql` | Applied by `wrangler d1 migrations apply` |
+| TUI + Daemon | SQLite (local cache) | `MIGRATIONS + LOCAL_MIGRATIONS` | Also tracked in `_migrations` |
+
+- Remote migrations must remain byte-identical between:
+  - `migrations/*.sql`
+  - `crates/api/migrations/[0-9][0-9][0-9][0-9]_*.sql`
+- Use `scripts/check-migration-parity.sh` to verify parity.
+- Use `scripts/sync-migrations.sh` to sync remote migrations into `crates/api/migrations`.
+
 ## CLI Commands
 
 | Command | Description |

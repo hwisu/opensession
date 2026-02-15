@@ -36,7 +36,13 @@ pub const MIGRATIONS: &[Migration] = &[
 
 /// Local-only migrations (TUI + Daemon).
 /// These run AFTER the shared MIGRATIONS to add sync-tracking tables.
-pub const LOCAL_MIGRATIONS: &[Migration] = &[(
-    "local_0001_schema",
-    include_str!("../../migrations/local_0001_schema.sql"),
-)];
+pub const LOCAL_MIGRATIONS: &[Migration] = &[
+    (
+        "local_0001_schema",
+        include_str!("../../migrations/local_0001_schema.sql"),
+    ),
+    (
+        "local_0002_drop_unused_local_sessions",
+        include_str!("../../migrations/local_0002_drop_unused_local_sessions.sql"),
+    ),
+];

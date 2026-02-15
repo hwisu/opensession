@@ -21,6 +21,13 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
+  migration-parity:
+    name: Migration Parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/check-migration-parity.sh
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

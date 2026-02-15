@@ -1140,6 +1140,22 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn turn_mode_p_toggles_prompt_expand_for_current_turn() {
+        let session = make_live_session("turn-prompt-toggle", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_view_mode = DetailViewMode::Turn;
+        app.turn_index = 1;
+
+        assert!(!app.turn_prompt_expanded.contains(&1));
+        app.handle_detail_key(KeyCode::Char('p'));
+        assert!(app.turn_prompt_expanded.contains(&1));
+
+        app.handle_detail_key(KeyCode::Char('p'));
+        assert!(!app.turn_prompt_expanded.contains(&1));
+    }
+
+    #[test]
     fn jump_to_latest_turn_uses_tail_scroll_anchor() {
         let session = make_live_session("turn-tail-anchor", 6);
         let mut app = App::new(vec![session]);
@@ -1370,6 +1386,7 @@ pub struct App {
     pub turn_h_scroll: u16,
     pub turn_line_offsets: Vec<u16>,
     pub turn_raw_overrides: HashSet<usize>,
+    pub turn_prompt_expanded: HashSet<usize>,
 
     // Server connection info
     pub server_info: Option<ServerInfo>,
@@ -1727,6 +1744,7 @@ impl App {
             turn_h_scroll: 0,
             turn_line_offsets: Vec::new(),
             turn_raw_overrides: HashSet::new(),
+            turn_prompt_expanded: HashSet::new(),
             server_info: None,
             db: None,
             view_mode: ViewMode::Local,
@@ -4366,6 +4384,7 @@ impl App {
                 self.event_filters = HashSet::from([EventFilter::All]);
                 self.expanded_events.clear();
                 self.turn_raw_overrides.clear();
+                self.turn_prompt_expanded.clear();
                 self.detail_view_mode = if self.focus_detail_view {
                     DetailViewMode::Turn
                 } else {
@@ -4556,9 +4575,19 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('p') => self.toggle_turn_prompt_expanded(),
             _ => {}
         }
         false
+    }
+
+    fn toggle_turn_prompt_expanded(&mut self) {
+        let idx = self.turn_index;
+        if self.turn_prompt_expanded.contains(&idx) {
+            self.turn_prompt_expanded.remove(&idx);
+        } else {
+            self.turn_prompt_expanded.insert(idx);
+        }
     }
 
     fn turn_next(&mut self) {

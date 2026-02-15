@@ -737,6 +737,31 @@ mod tests {
     }
 
     #[test]
+    fn turn_prompt_card_shows_expand_hint_when_collapsed() {
+        let prompt = (1..=20)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user_event = make_event(EventType::UserMessage, &prompt);
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 0,
+            anchor_source_index: 0,
+            user_events: vec![&user_event],
+            agent_events: vec![],
+        };
+
+        let lines = render_turn_prompt_card(0, &turn, true, false, 90);
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("more prompt lines (p: expand)"));
+    }
+
+    #[test]
     fn summary_payload_prefers_cards_over_raw_thread() {
         let session = Session::new(
             "test-session".to_string(),
@@ -1099,6 +1124,98 @@ mod tests {
     }
 
     #[test]
+    fn task_board_action_hints_prioritize_meaningful_actions() {
+        let mut file_edit = make_event(
+            EventType::FileEdit {
+                path: "/tmp/project/src/main.rs".to_string(),
+                diff: None,
+            },
+            "",
+        );
+        file_edit.timestamp = Utc::now() - Duration::seconds(3);
+
+        let mut shell = make_event(
+            EventType::ShellCommand {
+                command: "cargo test -p opensession-tui".to_string(),
+                exit_code: Some(0),
+            },
+            "",
+        );
+        shell.timestamp = Utc::now() - Duration::seconds(2);
+
+        let mut low_signal_result = make_event(
+            EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            "Chunk ID: 123abc\nWall time: 0.1s",
+        );
+        low_signal_result.timestamp = Utc::now() - Duration::seconds(1);
+
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 2,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&file_edit, &shell, &low_signal_result],
+        };
+        let buckets = build_task_chronicle_buckets(&turn);
+        let bucket = buckets
+            .iter()
+            .find(|bucket| bucket.task_key == "main")
+            .expect("main bucket");
+
+        let hints = task_bucket_action_hints(bucket, 3);
+        let rendered = hints.join(" | ").to_ascii_lowercase();
+        assert!(rendered.contains("edit"));
+        assert!(rendered.contains("shell"));
+        assert!(!rendered.contains("chunk id"));
+    }
+
+    #[test]
+    fn task_activity_lines_skip_low_signal_chunk_rows() {
+        let mut shell = make_event(
+            EventType::ShellCommand {
+                command: "pnpm test".to_string(),
+                exit_code: Some(0),
+            },
+            "",
+        );
+        shell.timestamp = Utc::now() - Duration::seconds(2);
+
+        let mut low_signal_result = make_event(
+            EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            "Chunk ID: abc123",
+        );
+        low_signal_result.timestamp = Utc::now() - Duration::seconds(1);
+
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 1,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&shell, &low_signal_result],
+        };
+        let buckets = build_task_chronicle_buckets(&turn);
+        let bucket = buckets
+            .iter()
+            .find(|bucket| bucket.task_key == "main")
+            .expect("main bucket");
+
+        let lines = task_bucket_activity_lines(bucket, 2);
+        let rendered = lines.join(" | ").to_ascii_lowercase();
+        assert!(rendered.contains("shell"));
+        assert!(!rendered.contains("chunk id"));
+    }
+
+    #[test]
     fn task_board_prioritizes_running_buckets_over_main_done() {
         let mut main = make_event(EventType::AgentMessage, "main output");
         main.timestamp = Utc::now() - Duration::minutes(3);
@@ -1354,8 +1471,10 @@ fn render_turn_view(
             app.turn_summary_payload(session_id, turn.turn_index, turn.anchor_source_index);
         let left_width = left_area.width.saturating_sub(4).max(1);
         let right_width = right_area.width.saturating_sub(4).max(1);
+        let prompt_expanded = app.turn_prompt_expanded.contains(&turn_idx);
 
-        let prompt_rows = render_turn_prompt_card(turn_idx, turn, focused, left_width);
+        let prompt_rows =
+            render_turn_prompt_card(turn_idx, turn, focused, prompt_expanded, left_width);
         for line in prompt_rows {
             left_lines.push(line);
             right_lines.push(Line::raw(""));
@@ -1450,6 +1569,7 @@ fn render_turn_prompt_card(
     turn_idx: usize,
     turn: &crate::app::Turn<'_>,
     focused: bool,
+    prompt_expanded: bool,
     content_width: u16,
 ) -> Vec<Line<'static>> {
     let title_style = if focused {
@@ -1471,7 +1591,13 @@ fn render_turn_prompt_card(
     lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));
 
     let prompt_lines = collect_turn_user_lines(turn);
-    let prompt_limit = if focused { 12 } else { 4 };
+    let prompt_limit = if prompt_expanded {
+        usize::MAX
+    } else if focused {
+        12
+    } else {
+        4
+    };
     let total_prompt_lines = prompt_lines.len();
     for text in prompt_lines.into_iter().take(prompt_limit) {
         lines.extend(wrap_text_lines(
@@ -1483,9 +1609,25 @@ fn render_turn_prompt_card(
         ));
     }
     if total_prompt_lines > prompt_limit {
+        let more_line = if focused {
+            format!(
+                "… {} more prompt lines (p: expand)",
+                total_prompt_lines - prompt_limit
+            )
+        } else {
+            format!("… {} more prompt lines", total_prompt_lines - prompt_limit)
+        };
         lines.extend(wrap_text_lines(
             "  │ ",
-            &format!("… {} more prompt lines", total_prompt_lines - prompt_limit),
+            &more_line,
+            border_style,
+            Style::new().fg(Theme::TEXT_MUTED),
+            content_width,
+        ));
+    } else if focused && prompt_expanded && total_prompt_lines > 12 {
+        lines.extend(wrap_text_lines(
+            "  │ ",
+            "(p: collapse)",
             border_style,
             Style::new().fg(Theme::TEXT_MUTED),
             content_width,
@@ -1765,6 +1907,16 @@ fn render_turn_fallback_panel(
             body_style,
             content_width,
         ));
+        let action_hints = task_bucket_action_hints(bucket, if focused { 3 } else { 2 });
+        if !action_hints.is_empty() {
+            lines.extend(wrap_text_lines(
+                "  │ ",
+                &format!("actions: {}", action_hints.join("  ·  ")),
+                border_style,
+                Style::new().fg(Theme::ACCENT_GREEN),
+                content_width,
+            ));
+        }
         if let Some(last_output) = bucket.last_output.as_deref() {
             lines.extend(wrap_text_lines(
                 "  │ ",
@@ -2109,6 +2261,42 @@ fn first_text_line_opt(blocks: &[ContentBlock], max_len: usize) -> Option<String
     }
 }
 
+fn is_low_signal_text_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return true;
+    }
+    if lower.starts_with("chunk id:") || lower.contains("chunk id:") {
+        return true;
+    }
+    if lower.starts_with("wall time:")
+        || lower.starts_with("process exited with code")
+        || lower.starts_with("original token count:")
+        || lower.starts_with("token count:")
+    {
+        return true;
+    }
+    false
+}
+
+fn first_meaningful_text_line_opt(blocks: &[ContentBlock], max_len: usize) -> Option<String> {
+    for block in blocks {
+        if let ContentBlock::Text { text } = block {
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || is_low_signal_text_line(trimmed) {
+                    continue;
+                }
+                let snippet = compact_text_snippet(trimmed, max_len);
+                if !snippet.is_empty() {
+                    return Some(snippet);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn attributes_hint(
     attributes: &std::collections::HashMap<String, serde_json::Value>,
     max_len: usize,
@@ -2191,12 +2379,16 @@ fn task_board_event_summary(event: &Event, max_len: usize) -> String {
             }
         }
         EventType::ToolResult { name, is_error, .. } => {
-            let hint = first_text_line_opt(&event.content.blocks, max_len.saturating_sub(16))
-                .or_else(|| first_code_line(&event.content.blocks, max_len.saturating_sub(16)))
-                .or_else(|| {
-                    first_json_block_hint(&event.content.blocks, max_len.saturating_sub(16))
-                })
-                .or_else(|| attributes_hint(&event.attributes, max_len.saturating_sub(16)));
+            let hint =
+                first_meaningful_text_line_opt(&event.content.blocks, max_len.saturating_sub(16))
+                    .or_else(|| {
+                        first_text_line_opt(&event.content.blocks, max_len.saturating_sub(16))
+                    })
+                    .or_else(|| first_code_line(&event.content.blocks, max_len.saturating_sub(16)))
+                    .or_else(|| {
+                        first_json_block_hint(&event.content.blocks, max_len.saturating_sub(16))
+                    })
+                    .or_else(|| attributes_hint(&event.attributes, max_len.saturating_sub(16)));
             match (is_error, hint) {
                 (true, Some(hint)) => format!("{name} error: {hint}"),
                 (false, Some(hint)) => format!("{name}: {hint}"),
@@ -2206,6 +2398,12 @@ fn task_board_event_summary(event: &Event, max_len: usize) -> String {
         }
         EventType::Custom { kind } => {
             let hint = attributes_hint(&event.attributes, max_len.saturating_sub(10))
+                .or_else(|| {
+                    first_meaningful_text_line_opt(
+                        &event.content.blocks,
+                        max_len.saturating_sub(10),
+                    )
+                })
                 .or_else(|| first_text_line_opt(&event.content.blocks, max_len.saturating_sub(10)))
                 .or_else(|| {
                     first_json_block_hint(&event.content.blocks, max_len.saturating_sub(10))
@@ -2223,8 +2421,126 @@ fn task_board_event_summary(event: &Event, max_len: usize) -> String {
     compact_text_snippet(&summary, max_len)
 }
 
+fn is_low_signal_tool_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "read" | "view" | "open" | "list_dir" | "glob" | "file_search" | "search" | "grep" | "ls"
+    )
+}
+
+fn is_low_signal_activity_summary(summary: &str) -> bool {
+    let lower = summary.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return true;
+    }
+    if lower == "thinking" || lower == "start" || lower == "completed" {
+        return true;
+    }
+    if lower.contains("chunk id:")
+        || lower.contains("wall time:")
+        || lower.contains("process exited with code")
+    {
+        return true;
+    }
+    false
+}
+
+fn task_event_activity_priority(event: &Event, summary: &str) -> u8 {
+    match &event.event_type {
+        EventType::FileEdit { .. }
+        | EventType::FileCreate { .. }
+        | EventType::FileDelete { .. } => 4,
+        EventType::ShellCommand { .. } => 4,
+        EventType::ToolCall { name } => {
+            if is_low_signal_tool_name(name) {
+                2
+            } else {
+                4
+            }
+        }
+        EventType::ToolResult { is_error, .. } => {
+            if *is_error {
+                4
+            } else if is_low_signal_activity_summary(summary) {
+                0
+            } else {
+                2
+            }
+        }
+        EventType::TaskEnd { .. } => {
+            if is_low_signal_activity_summary(summary) {
+                1
+            } else {
+                3
+            }
+        }
+        EventType::FileRead { .. }
+        | EventType::CodeSearch { .. }
+        | EventType::FileSearch { .. }
+        | EventType::WebSearch { .. }
+        | EventType::WebFetch { .. } => 2,
+        EventType::Custom { .. } => {
+            if is_low_signal_activity_summary(summary) {
+                1
+            } else {
+                3
+            }
+        }
+        EventType::AgentMessage => {
+            if is_low_signal_activity_summary(summary) {
+                0
+            } else {
+                1
+            }
+        }
+        EventType::TaskStart { .. } | EventType::Thinking => 0,
+        _ => 1,
+    }
+}
+
+fn task_bucket_action_hints(bucket: &TaskChronicleBucket<'_>, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut hints = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for event in bucket.events.iter().rev() {
+        let (kind, _) = event_type_display(&event.event_type, true);
+        let mut summary = task_board_event_summary(event, 110);
+        summary = strip_kind_prefix(&summary, kind);
+        if summary.is_empty() {
+            continue;
+        }
+        if task_event_activity_priority(event, &summary) < 3 {
+            continue;
+        }
+        let action = compact_text_snippet(&format!("{kind} {summary}"), 140);
+        if action.is_empty() {
+            continue;
+        }
+        let key = normalize_activity_key(&action);
+        if !seen.insert(key) {
+            continue;
+        }
+        hints.push(action);
+        if hints.len() >= limit {
+            break;
+        }
+    }
+
+    hints.reverse();
+    hints
+}
+
 fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) -> Vec<String> {
-    let mut lines = Vec::new();
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut strong_lines = Vec::new();
+    let mut weak_lines = Vec::new();
+    let mut fallback_line: Option<String> = None;
     let mut seen: HashSet<String> = HashSet::new();
     let output_key = bucket
         .last_output
@@ -2244,6 +2560,7 @@ fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) ->
         {
             continue;
         }
+        let priority = task_event_activity_priority(event, &summary);
         let summary_key = normalize_activity_key(&summary);
         if !output_key.is_empty()
             && summary_key == output_key
@@ -2271,11 +2588,38 @@ fn task_bucket_activity_lines(bucket: &TaskChronicleBucket<'_>, limit: usize) ->
         if !seen.insert(row_key) {
             continue;
         }
+        match priority {
+            3..=u8::MAX => strong_lines.push(row),
+            1..=2 => weak_lines.push(row),
+            _ => {
+                if fallback_line.is_none() {
+                    fallback_line = Some(row);
+                }
+            }
+        }
+    }
+
+    let mut lines = Vec::new();
+    for row in strong_lines {
         lines.push(row);
         if lines.len() >= limit {
             break;
         }
     }
+    if lines.len() < limit {
+        for row in weak_lines {
+            lines.push(row);
+            if lines.len() >= limit {
+                break;
+            }
+        }
+    }
+    if lines.is_empty() {
+        if let Some(row) = fallback_line {
+            lines.push(row);
+        }
+    }
+
     lines.reverse();
     lines
 }

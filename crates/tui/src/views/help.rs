@@ -120,6 +120,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Linear: expand event · Turn: raw thread toggle", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  p         ", key_style),
+            Span::styled("Turn only: toggle full user prompt", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  v         ", key_style),
             Span::styled("Toggle turn view (side-by-side)", desc_style),
         ]),

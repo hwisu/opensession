@@ -525,6 +525,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("scroll  ", desc_style),
                     Span::styled("n/N ", key_style),
                     Span::styled("prompt jump  ", desc_style),
+                    Span::styled("p ", key_style),
+                    Span::styled("prompt fold  ", desc_style),
                     Span::styled("Enter ", key_style),
                     Span::styled("summary/raw  ", desc_style),
                     Span::styled("g/G ", key_style),

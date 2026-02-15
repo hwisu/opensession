@@ -1,10 +1,182 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 // Re-export shared config types from core
 pub use opensession_core::config::{
     CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitStorageMode {
+    None,
+    PlatformApi,
+    Native,
+    SqliteLocal,
+}
+
+impl GitStorageMode {
+    fn from_core(method: GitStorageMethod) -> Self {
+        match method {
+            GitStorageMethod::None => Self::None,
+            GitStorageMethod::PlatformApi => Self::PlatformApi,
+            GitStorageMethod::Native => Self::Native,
+        }
+    }
+
+    fn to_core(self) -> GitStorageMethod {
+        match self {
+            Self::PlatformApi => GitStorageMethod::PlatformApi,
+            Self::Native => GitStorageMethod::Native,
+            // SQLite local is a TUI-only extension and maps to "disabled" in core.
+            Self::None | Self::SqliteLocal => GitStorageMethod::None,
+        }
+    }
+
+    fn as_toml_method(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::PlatformApi => "platform_api",
+            Self::Native => "native",
+            Self::SqliteLocal => "sqlite_local",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UiConfigState {
+    calendar_display_mode: CalendarDisplayMode,
+    git_storage_mode: GitStorageMode,
+}
+
+impl Default for UiConfigState {
+    fn default() -> Self {
+        Self {
+            calendar_display_mode: CalendarDisplayMode::Smart,
+            git_storage_mode: GitStorageMode::from_core(DaemonConfig::default().git_storage.method),
+        }
+    }
+}
+
+fn ui_config_state() -> &'static Mutex<UiConfigState> {
+    static STATE: OnceLock<Mutex<UiConfigState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(UiConfigState::default()))
+}
+
+pub fn calendar_display_mode() -> CalendarDisplayMode {
+    ui_config_state()
+        .lock()
+        .map(|state| state.calendar_display_mode.clone())
+        .unwrap_or(CalendarDisplayMode::Smart)
+}
+
+fn set_calendar_display_mode(mode: CalendarDisplayMode) {
+    if let Ok(mut state) = ui_config_state().lock() {
+        state.calendar_display_mode = mode;
+    }
+}
+
+fn git_storage_mode() -> GitStorageMode {
+    ui_config_state()
+        .lock()
+        .map(|state| state.git_storage_mode)
+        .unwrap_or_else(|_| GitStorageMode::from_core(DaemonConfig::default().git_storage.method))
+}
+
+fn set_git_storage_mode(config: &mut DaemonConfig, mode: GitStorageMode) {
+    if let Ok(mut state) = ui_config_state().lock() {
+        state.git_storage_mode = mode;
+    }
+    config.git_storage.method = mode.to_core();
+}
+
+fn sync_runtime_config_extensions(root: Option<&toml::Value>, config: &mut DaemonConfig) {
+    let calendar_mode = parse_calendar_display_mode(root);
+    let git_mode = parse_git_storage_mode(root, config.git_storage.method.clone());
+
+    set_calendar_display_mode(calendar_mode);
+    set_git_storage_mode(config, git_mode);
+}
+
+fn parse_calendar_display_mode(root: Option<&toml::Value>) -> CalendarDisplayMode {
+    let value = root
+        .and_then(|v| v.as_table())
+        .and_then(|table| table.get("daemon"))
+        .and_then(|section| section.as_table())
+        .and_then(|section| section.get("calendar_display_mode"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("smart");
+
+    match value.trim().to_ascii_lowercase().as_str() {
+        "relative" | "rel" => CalendarDisplayMode::Relative,
+        "absolute" | "abs" => CalendarDisplayMode::Absolute,
+        _ => CalendarDisplayMode::Smart,
+    }
+}
+
+fn parse_git_storage_mode(
+    root: Option<&toml::Value>,
+    fallback: GitStorageMethod,
+) -> GitStorageMode {
+    let value = root
+        .and_then(|v| v.as_table())
+        .and_then(|table| table.get("git_storage"))
+        .and_then(|section| section.as_table())
+        .and_then(|section| section.get("method"))
+        .and_then(toml::Value::as_str);
+
+    match value.map(|s| s.trim().to_ascii_lowercase()) {
+        Some(v) if v == "none" => GitStorageMode::None,
+        Some(v) if v == "platform_api" || v == "platform-api" || v == "api" => {
+            GitStorageMode::PlatformApi
+        }
+        Some(v) if v == "native" => GitStorageMode::Native,
+        Some(v) if v == "sqlite_local" || v == "sqlite-local" || v == "sqlite" => {
+            GitStorageMode::SqliteLocal
+        }
+        _ => GitStorageMode::from_core(fallback),
+    }
+}
+
+fn calendar_display_mode_toml_value(mode: CalendarDisplayMode) -> &'static str {
+    match mode {
+        CalendarDisplayMode::Smart => "smart",
+        CalendarDisplayMode::Relative => "relative",
+        CalendarDisplayMode::Absolute => "absolute",
+    }
+}
+
+fn apply_runtime_extensions_to_toml(doc: &mut toml::Value) {
+    let Ok(state) = ui_config_state().lock().map(|guard| guard.clone()) else {
+        return;
+    };
+
+    let Some(root) = doc.as_table_mut() else {
+        return;
+    };
+
+    let daemon_entry = root
+        .entry("daemon")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if let Some(daemon_table) = daemon_entry.as_table_mut() {
+        daemon_table.insert(
+            "calendar_display_mode".to_string(),
+            toml::Value::String(
+                calendar_display_mode_toml_value(state.calendar_display_mode).to_string(),
+            ),
+        );
+    }
+
+    let git_entry = root
+        .entry("git_storage")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if let Some(git_table) = git_entry.as_table_mut() {
+        git_table.insert(
+            "method".to_string(),
+            toml::Value::String(state.git_storage_mode.as_toml_method().to_string()),
+        );
+    }
+}
 
 // ── File I/O ────────────────────────────────────────────────────────────
 
@@ -20,7 +192,11 @@ pub fn config_dir() -> Result<PathBuf> {
 pub fn load_daemon_config() -> DaemonConfig {
     let dir = match config_dir() {
         Ok(d) => d,
-        Err(_) => return DaemonConfig::default(),
+        Err(_) => {
+            let mut config = DaemonConfig::default();
+            sync_runtime_config_extensions(None, &mut config);
+            return config;
+        }
     };
 
     let daemon_path = dir.join("daemon.toml");
@@ -32,6 +208,7 @@ pub fn load_daemon_config() -> DaemonConfig {
         if config_file_missing_git_storage_method(parsed.as_ref()) {
             config.git_storage.method = GitStorageMethod::None;
         }
+        sync_runtime_config_extensions(parsed.as_ref(), &mut config);
         if migrate_summary_window_v2(&mut config) {
             migrated = true;
         }
@@ -41,7 +218,9 @@ pub fn load_daemon_config() -> DaemonConfig {
         return config;
     }
 
-    DaemonConfig::default()
+    let mut config = DaemonConfig::default();
+    sync_runtime_config_extensions(None, &mut config);
+    config
 }
 
 fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
@@ -78,7 +257,9 @@ pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("daemon.toml");
-    let content = toml::to_string_pretty(config).context("Failed to serialize config")?;
+    let mut doc = toml::Value::try_from(config.clone()).context("Failed to serialize config")?;
+    apply_runtime_extensions_to_toml(&mut doc);
+    let content = toml::to_string_pretty(&doc).context("Failed to serialize config")?;
     std::fs::write(&path, content)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
@@ -457,7 +638,7 @@ impl SettingField {
             Self::DetailRealtimePreviewEnabled => {
                 on_off(config.daemon.detail_realtime_preview_enabled)
             }
-            Self::CalendarDisplayMode => match config.daemon.calendar_display_mode {
+            Self::CalendarDisplayMode => match calendar_display_mode() {
                 CalendarDisplayMode::Smart => "smart".to_string(),
                 CalendarDisplayMode::Relative => "relative".to_string(),
                 CalendarDisplayMode::Absolute => "absolute".to_string(),
@@ -536,11 +717,11 @@ impl SettingField {
             Self::WatchClaudeCode => on_off(config.watchers.claude_code),
             Self::WatchOpenCode => on_off(config.watchers.opencode),
             Self::WatchCursor => on_off(config.watchers.cursor),
-            Self::GitStorageMethod => match config.git_storage.method {
-                GitStorageMethod::None => "None".to_string(),
-                GitStorageMethod::PlatformApi => "Platform API".to_string(),
-                GitStorageMethod::Native => "Native".to_string(),
-                GitStorageMethod::SqliteLocal => "SQLite (Local)".to_string(),
+            Self::GitStorageMethod => match git_storage_mode() {
+                GitStorageMode::None => "None".to_string(),
+                GitStorageMode::PlatformApi => "Platform API".to_string(),
+                GitStorageMode::Native => "Native".to_string(),
+                GitStorageMode::SqliteLocal => "SQLite (Local)".to_string(),
             },
             Self::GitStorageToken => {
                 if config.git_storage.token.is_empty() {
@@ -645,19 +826,21 @@ impl SettingField {
                 config.daemon.publish_on = config.daemon.publish_on.cycle();
             }
             Self::CalendarDisplayMode => {
-                config.daemon.calendar_display_mode = match config.daemon.calendar_display_mode {
+                let next = match calendar_display_mode() {
                     CalendarDisplayMode::Smart => CalendarDisplayMode::Relative,
                     CalendarDisplayMode::Relative => CalendarDisplayMode::Absolute,
                     CalendarDisplayMode::Absolute => CalendarDisplayMode::Smart,
                 };
+                set_calendar_display_mode(next);
             }
             Self::GitStorageMethod => {
-                config.git_storage.method = match config.git_storage.method {
-                    GitStorageMethod::None => GitStorageMethod::PlatformApi,
-                    GitStorageMethod::PlatformApi => GitStorageMethod::Native,
-                    GitStorageMethod::Native => GitStorageMethod::SqliteLocal,
-                    GitStorageMethod::SqliteLocal => GitStorageMethod::None,
+                let next = match git_storage_mode() {
+                    GitStorageMode::None => GitStorageMode::PlatformApi,
+                    GitStorageMode::PlatformApi => GitStorageMode::Native,
+                    GitStorageMode::Native => GitStorageMode::SqliteLocal,
+                    GitStorageMode::SqliteLocal => GitStorageMode::None,
                 };
+                set_git_storage_mode(config, next);
             }
             Self::SummaryProvider => {
                 let mode = summary_mode_key(config.daemon.summary_provider.as_deref());
@@ -810,12 +993,12 @@ impl SettingField {
                     matches!(lowered.as_str(), "on" | "1" | "true" | "yes");
             }
             Self::CalendarDisplayMode => {
-                config.daemon.calendar_display_mode =
-                    match value.trim().to_ascii_lowercase().as_str() {
-                        "relative" | "rel" => CalendarDisplayMode::Relative,
-                        "absolute" | "abs" => CalendarDisplayMode::Absolute,
-                        _ => CalendarDisplayMode::Smart,
-                    };
+                let mode = match value.trim().to_ascii_lowercase().as_str() {
+                    "relative" | "rel" => CalendarDisplayMode::Relative,
+                    "absolute" | "abs" => CalendarDisplayMode::Absolute,
+                    _ => CalendarDisplayMode::Smart,
+                };
+                set_calendar_display_mode(mode);
             }
             Self::SummaryProvider => {
                 let normalized = value.to_lowercase();
@@ -849,12 +1032,13 @@ impl SettingField {
                 config.daemon.summary_provider = Some(cli_provider_for_agent(agent));
             }
             Self::GitStorageMethod => {
-                config.git_storage.method = match value.trim().to_ascii_lowercase().as_str() {
-                    "none" => GitStorageMethod::None,
-                    "platform_api" | "platform-api" | "api" => GitStorageMethod::PlatformApi,
-                    "sqlite_local" | "sqlite-local" | "sqlite" => GitStorageMethod::SqliteLocal,
-                    _ => GitStorageMethod::Native,
+                let mode = match value.trim().to_ascii_lowercase().as_str() {
+                    "none" => GitStorageMode::None,
+                    "platform_api" | "platform-api" | "api" => GitStorageMode::PlatformApi,
+                    "sqlite_local" | "sqlite-local" | "sqlite" => GitStorageMode::SqliteLocal,
+                    _ => GitStorageMode::Native,
                 };
+                set_git_storage_mode(config, mode);
             }
             _ => {}
         }

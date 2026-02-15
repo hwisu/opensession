@@ -77,8 +77,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Theme::TEXT_SECONDARY),
             ),
             Span::styled(
-                format!("{:?}", app.daemon_config.daemon.calendar_display_mode)
-                    .to_ascii_lowercase(),
+                format!("{:?}", crate::config::calendar_display_mode()).to_ascii_lowercase(),
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),

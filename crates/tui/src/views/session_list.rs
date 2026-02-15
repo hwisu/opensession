@@ -38,7 +38,7 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let page_range = app.page_range();
     let agent_counts = &app.session_max_active_agents;
-    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
+    let calendar_mode = crate::config::calendar_display_mode();
     let items: Vec<ListItem> = app.filtered_sessions[page_range]
         .iter()
         .map(|&idx| {
@@ -59,7 +59,7 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
                 .copied()
                 .unwrap_or(1)
                 .max(1);
-            let date = format_relative_datetime(session.context.created_at, calendar_mode);
+            let date = format_relative_datetime(session.context.created_at, &calendar_mode);
             let live = is_live_local_session(session);
 
             // Line 1: icon + title + actor
@@ -150,7 +150,7 @@ fn render_local_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|_| Constraint::Ratio(1, col_count as u32))
         .collect();
     let columns = Layout::horizontal(constraints).split(columns_area);
-    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
+    let calendar_mode = crate::config::calendar_display_mode();
 
     for (visible_idx, col_idx) in (start_col..start_col + col_count).enumerate() {
         let Some(label) = app.column_users.get(col_idx).cloned() else {
@@ -170,7 +170,7 @@ fn render_local_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
                 Some(local_session_to_compact_item(
                     session,
                     max_agents,
-                    calendar_mode,
+                    &calendar_mode,
                 ))
             })
             .collect();
@@ -228,7 +228,7 @@ fn render_db(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_db_single(frame: &mut Frame, app: &mut App, area: Rect) {
     let page_range = app.page_range();
     let agent_counts = &app.session_max_active_agents;
-    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
+    let calendar_mode = crate::config::calendar_display_mode();
     let items: Vec<ListItem> = app.db_sessions[page_range]
         .iter()
         .map(|row| {
@@ -236,7 +236,7 @@ fn render_db_single(frame: &mut Frame, app: &mut App, area: Rect) {
                 .get(&row.id)
                 .copied()
                 .or_else(|| Some(row.max_active_agents.max(1) as usize));
-            db_row_to_list_item(row, max_agents, calendar_mode)
+            db_row_to_list_item(row, max_agents, &calendar_mode)
         })
         .collect();
 
@@ -275,7 +275,7 @@ fn render_db_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|_| Constraint::Ratio(1, col_count as u32))
         .collect();
     let columns = Layout::horizontal(constraints).split(columns_area);
-    let calendar_mode = &app.daemon_config.daemon.calendar_display_mode;
+    let calendar_mode = crate::config::calendar_display_mode();
 
     for (visible_idx, col_idx) in (start_col..start_col + col_count).enumerate() {
         let Some(user) = app.column_users.get(col_idx).cloned() else {
@@ -294,7 +294,7 @@ fn render_db_multi_column(frame: &mut Frame, app: &mut App, area: Rect) {
                     .get(&row.id)
                     .copied()
                     .or_else(|| Some(row.max_active_agents.max(1) as usize));
-                db_row_to_compact_item(row, max_agents, calendar_mode)
+                db_row_to_compact_item(row, max_agents, &calendar_mode)
             })
             .collect();
 

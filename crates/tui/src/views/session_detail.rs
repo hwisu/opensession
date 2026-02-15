@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use opensession_core::trace::{ContentBlock, Event, EventType};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -523,8 +523,8 @@ fn event_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
         EventType::FileCreate { path } => short_path(path).to_string(),
         EventType::FileDelete { path } => short_path(path).to_string(),
         EventType::ShellCommand { command, exit_code } => match exit_code {
-            Some(code) => format!("{} => {}", truncate(command, 70), code),
-            None => truncate(command, 70),
+            Some(code) => format!("{} => {}", compact_shell_command(command, 70), code),
+            None => compact_shell_command(command, 70),
         },
         EventType::WebSearch { query } => truncate(query, 70),
         EventType::WebFetch { url } => truncate(url, 70),
@@ -644,6 +644,50 @@ fn short_path(path: &str) -> &str {
     } else {
         path
     }
+}
+
+fn compact_shell_command(command: &str, max_len: usize) -> String {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
+    }
+
+    let mut compact = Vec::new();
+    for token in tokens.iter().take(8) {
+        compact.push(compact_shell_token(token));
+    }
+    if tokens.len() > 8 {
+        compact.push("…".to_string());
+    }
+    compact_text_snippet(&compact.join(" "), max_len)
+}
+
+fn compact_shell_token(token: &str) -> String {
+    let mut start = 0usize;
+    let mut end = token.len();
+    for (idx, ch) in token.char_indices() {
+        if ch == '/' || ch.is_ascii_alphanumeric() || ch == '~' {
+            start = idx;
+            break;
+        }
+    }
+    for (idx, ch) in token.char_indices().rev() {
+        if ch == '/' || ch.is_ascii_alphanumeric() || ch == '~' {
+            end = idx + ch.len_utf8();
+            break;
+        }
+    }
+    if start >= end || start >= token.len() || end > token.len() {
+        return token.to_string();
+    }
+
+    let core = &token[start..end];
+    let compact_core = if core.starts_with('/') {
+        short_path(core).to_string()
+    } else {
+        core.to_string()
+    };
+    format!("{}{}{}", &token[..start], compact_core, &token[end..])
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
@@ -942,6 +986,197 @@ mod tests {
         assert!(rendered.contains("[main]"));
         assert!(rendered.contains("task task-"));
         assert!(rendered.contains("output: subagent response"));
+    }
+
+    #[test]
+    fn summary_off_shows_event_chunks_for_long_lane() {
+        let session = Session::new(
+            "test-session-chunks".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let app = App::new(vec![session]);
+        let user_event = make_event(EventType::UserMessage, "prompt");
+        let mut lane_events: Vec<Event> = Vec::new();
+        for idx in 0..21 {
+            lane_events.push(make_event_with_task(
+                EventType::AgentMessage,
+                &format!("lane event {idx}"),
+                "task-chunk-1234567890abcdef",
+            ));
+        }
+        let agent_refs: Vec<&Event> = lane_events.iter().collect();
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 21,
+            anchor_source_index: 0,
+            user_events: vec![&user_event],
+            agent_events: agent_refs,
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, None, false, true, 120, "off");
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("events chunk 1/2"));
+        assert!(rendered.contains("events chunk 2/2"));
+        assert!(rendered.contains("lane event 0"));
+    }
+
+    #[test]
+    fn summary_off_collapses_extra_lanes_into_overflow_panel() {
+        let session = Session::new(
+            "test-session-overflow".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let app = App::new(vec![session]);
+        let user_event = make_event(EventType::UserMessage, "prompt");
+
+        let mut events = vec![make_event(EventType::AgentMessage, "main output")];
+        for idx in 0..5 {
+            events.push(make_event_with_task(
+                EventType::AgentMessage,
+                &format!("subagent {idx}"),
+                &format!("task-overflow-{idx}"),
+            ));
+        }
+        let agent_refs: Vec<&Event> = events.iter().collect();
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 6,
+            anchor_source_index: 0,
+            user_events: vec![&user_event],
+            agent_events: agent_refs,
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, None, false, true, 160, "off");
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("[main]"));
+        assert!(rendered.contains("[+2 lanes]"));
+    }
+
+    #[test]
+    fn lane_inference_assigns_codex_untagged_events_to_active_task() {
+        let mut start = make_event_with_task(
+            EventType::TaskStart { title: None },
+            "start task",
+            "turn-active-123456",
+        );
+        start.event_id = "codex-1".to_string();
+        let mut think = make_event(EventType::Thinking, "plan next steps");
+        think.event_id = "codex-2".to_string();
+        let mut shell = make_event(
+            EventType::ShellCommand {
+                command: "rg -n lane".to_string(),
+                exit_code: None,
+            },
+            "rg -n lane",
+        );
+        shell.event_id = "codex-3".to_string();
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 2,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&start, &think, &shell],
+        };
+
+        let entries = build_turn_lane_entries(&turn, &HashSet::new());
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].lane, 1);
+        assert_eq!(entries[1].lane, 1);
+        assert_eq!(entries[2].lane, 1);
+    }
+
+    #[test]
+    fn lane_inference_routes_tool_result_to_tool_call_lane() {
+        let mut call = make_event_with_task(
+            EventType::ToolCall {
+                name: "exec_command".to_string(),
+            },
+            "exec",
+            "task-lane-xyz",
+        );
+        call.event_id = "call-event-1".to_string();
+        let mut result = make_event(
+            EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: Some("call-event-1".to_string()),
+            },
+            "ok",
+        );
+        result.event_id = "result-event-2".to_string();
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 1,
+            anchor_source_index: 0,
+            user_events: vec![],
+            agent_events: vec![&call, &result],
+        };
+
+        let entries = build_turn_lane_entries(&turn, &HashSet::new());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].lane, 1);
+        assert_eq!(entries[1].lane, 1);
+    }
+
+    #[test]
+    fn summary_off_formats_structured_json_event_rows() {
+        let session = Session::new(
+            "test-session-structured-json".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let app = App::new(vec![session]);
+        let user_event = make_event(EventType::UserMessage, "prompt");
+        let structured = make_event(
+            EventType::Custom {
+                kind: "agent_reasoning".to_string(),
+            },
+            r#"{"lane":"main","summary":"thinking","task":"main","ts":"13:25:18","type":"think"}"#,
+        );
+        let turn = crate::app::Turn {
+            turn_index: 0,
+            start_display_index: 0,
+            end_display_index: 1,
+            anchor_source_index: 0,
+            user_events: vec![&user_event],
+            agent_events: vec![&structured],
+        };
+
+        let lines = render_turn_response_panel(&app, &turn, None, false, true, 120, "off");
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("13:25:18"));
+        assert!(rendered.contains("thinking"));
+        assert!(!rendered.contains("{\"lane\":\"main\""));
     }
 
     #[test]
@@ -2056,40 +2291,77 @@ fn render_turn_fallback_panel(
         return lines;
     }
 
-    let mut visible_buckets: Vec<&TaskChronicleBucket<'_>> = Vec::new();
     let mut synthetic_stub_count = 0usize;
     let mut synthetic_latest: Option<DateTime<Utc>> = None;
+    let mut synthetic_stub_task_ids: HashSet<String> = HashSet::new();
     for bucket in &buckets {
         if task_bucket_is_synthetic_end_stub(bucket) {
             synthetic_stub_count += 1;
+            synthetic_stub_task_ids.insert(bucket.task_key.clone());
             if let Some(ts) = bucket.last_timestamp {
                 if synthetic_latest.map(|current| ts > current).unwrap_or(true) {
                     synthetic_latest = Some(ts);
                 }
             }
-        } else {
-            visible_buckets.push(bucket);
         }
     }
 
-    let running = visible_buckets
+    let lane_panels = build_turn_lane_panels(turn, &synthetic_stub_task_ids);
+    if lane_panels.is_empty() {
+        if synthetic_stub_count > 0 {
+            lines.push(Line::from(vec![Span::styled(
+                "  (only synthetic-end stub tasks in this turn)",
+                Style::new().fg(Theme::TEXT_MUTED),
+            )]));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "  (no lane events captured)",
+                Style::new().fg(Theme::TEXT_MUTED),
+            )]));
+        }
+        return lines;
+    }
+
+    let running = lane_panels
         .iter()
-        .filter(|bucket| bucket.status == TaskBucketStatus::Running)
+        .filter(|panel| panel.status == TaskBucketStatus::Running)
         .count();
-    let errors = visible_buckets
+    let errors = lane_panels
         .iter()
-        .filter(|bucket| bucket.status == TaskBucketStatus::Error)
+        .filter(|panel| panel.status == TaskBucketStatus::Error)
         .count();
-    let done = visible_buckets
+    let done = lane_panels
         .iter()
-        .filter(|bucket| bucket.status == TaskBucketStatus::Done)
+        .filter(|panel| panel.status == TaskBucketStatus::Done)
         .count();
+    let total_tool_ops = lane_panels
+        .iter()
+        .map(|panel| panel.tool_ops)
+        .sum::<usize>();
+    let total_file_ops = lane_panels
+        .iter()
+        .map(|panel| panel.file_ops)
+        .sum::<usize>();
+    let total_shell_ops = lane_panels
+        .iter()
+        .map(|panel| panel.shell_ops)
+        .sum::<usize>();
+    let total_error_ops = lane_panels
+        .iter()
+        .map(|panel| panel.error_count)
+        .sum::<usize>();
     lines.push(Line::from(vec![Span::styled(
         format!(
             " running:{running}  error:{errors}  done:{done}  buckets:{}",
-            visible_buckets.len()
+            lane_panels.len()
         ),
         Style::new().fg(Theme::TEXT_SECONDARY),
+    )]));
+    lines.push(Line::from(vec![Span::styled(
+        format!(
+            " ops  tool:{total_tool_ops}  file:{total_file_ops}  shell:{total_shell_ops}  err:{total_error_ops}"
+        ),
+        Style::new().fg(Theme::TEXT_MUTED),
     )]));
     if synthetic_stub_count > 0 {
         let suffix = synthetic_latest
@@ -2103,106 +2375,15 @@ fn render_turn_fallback_panel(
     }
     lines.push(Line::raw(""));
 
-    for (idx, bucket) in visible_buckets.iter().enumerate() {
-        let (status_label, status_badge_color) = task_bucket_status_badge(&bucket.status);
-        let border_style = Style::new().fg(status_badge_color);
-        let header_style = Style::new().fg(status_badge_color).bold();
-        let body_style = Style::new().fg(Theme::TEXT_PRIMARY);
-        let label = if bucket.task_key == "main" {
-            "main".to_string()
-        } else {
-            format!("task {}", compact_task_id(&bucket.task_key))
-        };
-        let age_label = bucket
-            .last_timestamp
-            .map(format_time_ago)
-            .unwrap_or_else(|| "-".to_string());
+    let lane_panels = select_turn_lane_panels_for_render(lane_panels);
+    lines.extend(render_turn_lane_panel_grid(
+        &lane_panels,
+        focused,
+        content_width,
+    ));
 
-        lines.push(Line::from(vec![Span::styled("  ┌", border_style)]));
-        lines.extend(wrap_text_lines(
-            "  │ ",
-            &format!(
-                "[{label}] {status_label} · {} events · last {age_label}",
-                bucket.events.len()
-            ),
-            border_style,
-            header_style,
-            content_width,
-        ));
-        lines.extend(wrap_text_lines(
-            "  │ ",
-            &format!(
-                "ops  tool:{}  file:{}  shell:{}  err:{}",
-                bucket.tool_ops, bucket.file_ops, bucket.shell_ops, bucket.error_count
-            ),
-            border_style,
-            body_style,
-            content_width,
-        ));
-        let action_hints = task_bucket_action_hints(bucket, if focused { 3 } else { 2 });
-        if !action_hints.is_empty() {
-            lines.extend(wrap_text_lines(
-                "  │ ",
-                &format!("actions: {}", action_hints.join("  ·  ")),
-                border_style,
-                Style::new().fg(Theme::ACCENT_GREEN),
-                content_width,
-            ));
-        }
-        if let Some(last_output) = bucket.last_output.as_deref() {
-            lines.extend(wrap_text_lines(
-                "  │ ",
-                &format!("output: {}", truncate(last_output, 180)),
-                border_style,
-                Style::new().fg(Theme::ACCENT_CYAN),
-                content_width,
-            ));
-        } else {
-            lines.extend(wrap_text_lines(
-                "  │ ",
-                "output: (none)",
-                border_style,
-                Style::new().fg(Theme::TEXT_SECONDARY),
-                content_width,
-            ));
-        }
-
-        let activity_limit = if focused { 4 } else { 2 };
-        let activity_lines = task_bucket_activity_lines(bucket, activity_limit);
-        if !activity_lines.is_empty() {
-            lines.extend(wrap_text_lines(
-                "  │ ",
-                "recent activity:",
-                border_style,
-                Style::new().fg(Theme::TEXT_SECONDARY),
-                content_width,
-            ));
-            for line in activity_lines {
-                lines.extend(wrap_text_lines(
-                    "  │   - ",
-                    &line,
-                    border_style,
-                    Style::new().fg(Theme::TEXT_PRIMARY),
-                    content_width,
-                ));
-            }
-        } else {
-            lines.extend(wrap_text_lines(
-                "  │ ",
-                "(no recent activity details)",
-                border_style,
-                Style::new().fg(Theme::TEXT_MUTED),
-                content_width,
-            ));
-        }
-
-        lines.push(Line::from(vec![Span::styled("  └", border_style)]));
-        if idx + 1 < visible_buckets.len() {
-            lines.push(Line::raw(""));
-        }
-    }
-
-    if visible_buckets.is_empty() && synthetic_stub_count > 0 {
+    if synthetic_stub_count > 0 {
+        lines.push(Line::raw(""));
         lines.push(Line::from(vec![Span::styled(
             "  (only synthetic-end stub tasks in this turn)",
             Style::new().fg(Theme::TEXT_MUTED),
@@ -2230,6 +2411,718 @@ struct TaskChronicleBucket<'a> {
     shell_ops: usize,
     error_count: usize,
     last_output: Option<String>,
+}
+
+const TURN_RAW_CHUNK_SIZE: usize = 20;
+const TURN_MAX_INDIVIDUAL_PANELS: usize = 4;
+
+#[derive(Debug, Clone)]
+struct TurnLaneEntry<'a> {
+    event: &'a Event,
+    lane: usize,
+    marker: LaneMarker,
+}
+
+#[derive(Debug, Clone)]
+struct LaneChroniclePanel<'a> {
+    label: String,
+    lane: usize,
+    entries: Vec<TurnLaneEntry<'a>>,
+    status: TaskBucketStatus,
+    tool_ops: usize,
+    file_ops: usize,
+    shell_ops: usize,
+    error_count: usize,
+    last_output: Option<String>,
+    last_timestamp: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct TurnLaneRow {
+    timestamp: String,
+    lane_label: String,
+    event_kind: String,
+    task_label: String,
+    marker: Option<&'static str>,
+    summary: String,
+}
+
+#[derive(Default)]
+struct StructuredTurnLogSummary {
+    timestamp: Option<String>,
+    lane: Option<String>,
+    event_kind: Option<String>,
+    task: Option<String>,
+    summary: Option<String>,
+}
+
+fn build_turn_lane_panels<'a>(
+    turn: &crate::app::Turn<'a>,
+    synthetic_stub_task_ids: &HashSet<String>,
+) -> Vec<LaneChroniclePanel<'a>> {
+    let entries = build_turn_lane_entries(turn, synthetic_stub_task_ids);
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut groups: Vec<(usize, Vec<TurnLaneEntry<'a>>)> = Vec::new();
+    for entry in entries {
+        if let Some((_, lane_entries)) = groups.iter_mut().find(|(lane, _)| *lane == entry.lane) {
+            lane_entries.push(entry);
+        } else {
+            groups.push((entry.lane, vec![entry]));
+        }
+    }
+
+    groups.sort_by_key(|(lane, _)| *lane);
+    groups
+        .into_iter()
+        .map(|(lane, lane_entries)| build_lane_chronicle_panel(lane, lane_entries, None))
+        .collect()
+}
+
+fn build_turn_lane_entries<'a>(
+    turn: &crate::app::Turn<'a>,
+    synthetic_stub_task_ids: &HashSet<String>,
+) -> Vec<TurnLaneEntry<'a>> {
+    let mut entries = Vec::new();
+    let mut task_lane: HashMap<String, usize> = HashMap::new();
+    let mut active_lanes: BTreeSet<usize> = BTreeSet::new();
+    let mut reusable_lanes: BTreeSet<usize> = BTreeSet::new();
+    let mut tool_call_lane_by_event_id: HashMap<String, usize> = HashMap::new();
+    let mut next_lane = 1usize;
+
+    for &event in &turn.agent_events {
+        let task_id = event_task_key(event);
+        if task_id.is_some_and(|task| {
+            synthetic_stub_task_ids.contains(task) && is_synthetic_task_end_event(event)
+        }) {
+            continue;
+        }
+
+        let mut lane = 0usize;
+        let mut marker = LaneMarker::None;
+        let call_result_lane = match &event.event_type {
+            EventType::ToolResult {
+                call_id: Some(call_event_id),
+                ..
+            } => tool_call_lane_by_event_id.get(call_event_id).copied(),
+            _ => None,
+        };
+
+        match &event.event_type {
+            EventType::TaskStart { .. } => {
+                if let Some(task_id) = task_id {
+                    let existed = task_lane.contains_key(task_id);
+                    lane = task_lane.get(task_id).copied().unwrap_or_else(|| {
+                        allocate_turn_lane(
+                            &mut task_lane,
+                            &mut reusable_lanes,
+                            &mut next_lane,
+                            task_id,
+                        )
+                    });
+                    if lane > 0 {
+                        let was_active = active_lanes.contains(&lane);
+                        active_lanes.insert(lane);
+                        if !existed && !was_active {
+                            marker = LaneMarker::Fork;
+                        }
+                    }
+                }
+            }
+            EventType::TaskEnd { .. } => {
+                if let Some(task_id) = task_id {
+                    lane = task_lane.get(task_id).copied().unwrap_or_else(|| {
+                        allocate_turn_lane(
+                            &mut task_lane,
+                            &mut reusable_lanes,
+                            &mut next_lane,
+                            task_id,
+                        )
+                    });
+                    if lane > 0 {
+                        marker = LaneMarker::Merge;
+                    }
+                } else if let Some(mapped_lane) = call_result_lane {
+                    lane = mapped_lane;
+                } else if let Some(inferred_lane) = infer_codex_untagged_lane(event, &active_lanes)
+                {
+                    lane = inferred_lane;
+                }
+            }
+            _ => {
+                if let Some(task_id) = task_id {
+                    if let Some(existing_lane) = task_lane.get(task_id).copied() {
+                        lane = existing_lane;
+                        if lane > 0 {
+                            active_lanes.insert(lane);
+                        }
+                    } else {
+                        lane = allocate_turn_lane(
+                            &mut task_lane,
+                            &mut reusable_lanes,
+                            &mut next_lane,
+                            task_id,
+                        );
+                        if lane > 0 {
+                            active_lanes.insert(lane);
+                            marker = LaneMarker::Fork;
+                        }
+                    }
+                } else if let Some(mapped_lane) = call_result_lane {
+                    lane = mapped_lane;
+                } else if let Some(inferred_lane) = infer_codex_untagged_lane(event, &active_lanes)
+                {
+                    lane = inferred_lane;
+                }
+            }
+        }
+
+        if matches!(event.event_type, EventType::ToolCall { .. }) && lane > 0 {
+            tool_call_lane_by_event_id.insert(event.event_id.clone(), lane);
+        }
+
+        entries.push(TurnLaneEntry {
+            event,
+            lane,
+            marker,
+        });
+
+        if matches!(event.event_type, EventType::TaskEnd { .. }) {
+            if let Some(task_id) = task_id {
+                if let Some(ended_lane) = task_lane.remove(task_id) {
+                    if ended_lane > 0 {
+                        active_lanes.remove(&ended_lane);
+                        reusable_lanes.insert(ended_lane);
+                    }
+                }
+            }
+        }
+    }
+
+    entries
+}
+
+fn event_task_key(event: &Event) -> Option<&str> {
+    event
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            event
+                .attributes
+                .get("subagent_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn infer_codex_untagged_lane(event: &Event, active_lanes: &BTreeSet<usize>) -> Option<usize> {
+    if !event.event_id.starts_with("codex-") || active_lanes.len() != 1 {
+        return None;
+    }
+
+    if matches!(
+        event.event_type,
+        EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+    ) {
+        return None;
+    }
+
+    active_lanes.iter().next().copied()
+}
+
+fn allocate_turn_lane(
+    task_lane: &mut HashMap<String, usize>,
+    reusable_lanes: &mut BTreeSet<usize>,
+    next_lane: &mut usize,
+    task_id: &str,
+) -> usize {
+    let allocated = if let Some(reused) = reusable_lanes.iter().next().copied() {
+        reusable_lanes.remove(&reused);
+        reused
+    } else {
+        let lane = *next_lane;
+        *next_lane += 1;
+        lane
+    };
+    task_lane.insert(task_id.to_string(), allocated);
+    allocated
+}
+
+fn build_lane_chronicle_panel<'a>(
+    lane: usize,
+    entries: Vec<TurnLaneEntry<'a>>,
+    custom_label: Option<String>,
+) -> LaneChroniclePanel<'a> {
+    let mut open_tasks: HashSet<String> = HashSet::new();
+    let mut open_untagged = 0usize;
+    let mut saw_end = false;
+    let mut tool_ops = 0usize;
+    let mut file_ops = 0usize;
+    let mut shell_ops = 0usize;
+    let mut error_count = 0usize;
+    let mut seen_tasks: HashSet<String> = HashSet::new();
+    let mut task_ids: Vec<String> = Vec::new();
+
+    for entry in &entries {
+        if let Some(task_id) = entry
+            .event
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if seen_tasks.insert(task_id.to_string()) {
+                task_ids.push(task_id.to_string());
+            }
+        }
+
+        match &entry.event.event_type {
+            EventType::TaskStart { .. } => {
+                if let Some(task_id) = entry
+                    .event
+                    .task_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    open_tasks.insert(task_id.to_string());
+                } else {
+                    open_untagged = open_untagged.saturating_add(1);
+                }
+            }
+            EventType::TaskEnd { .. } => {
+                saw_end = true;
+                if let Some(task_id) = entry
+                    .event
+                    .task_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    open_tasks.remove(task_id);
+                } else {
+                    open_untagged = open_untagged.saturating_sub(1);
+                }
+            }
+            EventType::ToolCall { .. } => tool_ops += 1,
+            EventType::ToolResult { is_error, .. } => {
+                if *is_error {
+                    error_count += 1;
+                }
+            }
+            EventType::FileRead { .. }
+            | EventType::FileEdit { .. }
+            | EventType::FileCreate { .. }
+            | EventType::FileDelete { .. } => file_ops += 1,
+            EventType::ShellCommand { .. } => shell_ops += 1,
+            EventType::Custom { kind } => {
+                let lower = kind.to_ascii_lowercase();
+                if lower.contains("error") || lower.contains("fail") {
+                    error_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let status = if error_count > 0 {
+        TaskBucketStatus::Error
+    } else if !open_tasks.is_empty() || open_untagged > 0 {
+        TaskBucketStatus::Running
+    } else if saw_end || !entries.is_empty() {
+        TaskBucketStatus::Done
+    } else {
+        TaskBucketStatus::Running
+    };
+
+    let last_output = entries.iter().rev().find_map(|entry| {
+        if !matches!(
+            entry.event.event_type,
+            EventType::AgentMessage
+                | EventType::TaskEnd { .. }
+                | EventType::ToolResult { .. }
+                | EventType::Custom { .. }
+        ) {
+            return None;
+        }
+        let text = task_board_event_summary(entry.event, 220);
+        if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    });
+
+    let label = custom_label.unwrap_or_else(|| lane_panel_label(lane, &entries, &task_ids));
+
+    LaneChroniclePanel {
+        label,
+        lane,
+        last_timestamp: entries.last().map(|entry| entry.event.timestamp),
+        entries,
+        status,
+        tool_ops,
+        file_ops,
+        shell_ops,
+        error_count,
+        last_output,
+    }
+}
+
+fn lane_panel_label(lane: usize, entries: &[TurnLaneEntry<'_>], task_ids: &[String]) -> String {
+    if lane == 0 {
+        return "main".to_string();
+    }
+
+    if let Some(title) = entries
+        .iter()
+        .find_map(|entry| match &entry.event.event_type {
+            EventType::TaskStart { title } => title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| compact_text_snippet(value, 28)),
+            _ => None,
+        })
+    {
+        if !title.is_empty() {
+            return format!("lane {lane} {title}");
+        }
+    }
+
+    if let Some(task_id) = task_ids.first() {
+        return format!("lane {lane} task {}", compact_task_id(task_id));
+    }
+
+    format!("lane {lane}")
+}
+
+fn select_turn_lane_panels_for_render<'a>(
+    mut panels: Vec<LaneChroniclePanel<'a>>,
+) -> Vec<LaneChroniclePanel<'a>> {
+    panels.sort_by_key(|panel| panel.lane);
+    if panels.len() <= TURN_MAX_INDIVIDUAL_PANELS {
+        return panels;
+    }
+
+    let overflow = panels.split_off(TURN_MAX_INDIVIDUAL_PANELS);
+    panels.push(merge_overflow_lane_panels(overflow));
+    panels
+}
+
+fn merge_overflow_lane_panels<'a>(panels: Vec<LaneChroniclePanel<'a>>) -> LaneChroniclePanel<'a> {
+    let lane_count = panels.len();
+    let mut entries: Vec<TurnLaneEntry<'a>> = panels
+        .into_iter()
+        .flat_map(|panel| panel.entries.into_iter())
+        .collect();
+    entries.sort_by(|lhs, rhs| {
+        lhs.event
+            .timestamp
+            .cmp(&rhs.event.timestamp)
+            .then_with(|| lhs.event.event_id.cmp(&rhs.event.event_id))
+    });
+    build_lane_chronicle_panel(usize::MAX, entries, Some(format!("+{lane_count} lanes")))
+}
+
+fn render_turn_lane_panel_grid(
+    panels: &[LaneChroniclePanel<'_>],
+    focused: bool,
+    content_width: u16,
+) -> Vec<Line<'static>> {
+    if panels.is_empty() {
+        return Vec::new();
+    }
+
+    let panel_count = panels.len().max(1);
+    let gap_width = 2usize;
+    let usable_width = content_width as usize;
+    let panel_width =
+        usable_width.saturating_sub(gap_width * panel_count.saturating_sub(1)) / panel_count;
+    let panel_width = panel_width.max(1);
+
+    let rendered_panels: Vec<Vec<String>> = panels
+        .iter()
+        .map(|panel| render_single_turn_lane_panel(panel, focused, panel_width))
+        .collect();
+    let max_rows = rendered_panels
+        .iter()
+        .map(std::vec::Vec::len)
+        .max()
+        .unwrap_or(0);
+
+    let mut lines = Vec::new();
+    for row_idx in 0..max_rows {
+        let mut spans = Vec::new();
+        for (panel_idx, panel) in panels.iter().enumerate() {
+            let cell_raw = rendered_panels[panel_idx]
+                .get(row_idx)
+                .map(String::as_str)
+                .unwrap_or("");
+            let cell = pad_panel_cell(cell_raw, panel_width);
+            let style = if row_idx == 0 {
+                Style::new()
+                    .fg(task_bucket_status_badge(&panel.status).1)
+                    .bold()
+            } else if cell_raw.starts_with("events chunk")
+                || cell_raw.starts_with("... ")
+                || cell_raw.starts_with("events:")
+            {
+                Style::new().fg(Theme::TEXT_MUTED)
+            } else if cell_raw.starts_with("output:") {
+                Style::new().fg(Theme::ACCENT_CYAN)
+            } else {
+                Style::new().fg(Theme::TEXT_PRIMARY)
+            };
+            spans.push(Span::styled(cell, style));
+            if panel_idx + 1 < panel_count {
+                spans.push(Span::styled(
+                    " ".repeat(gap_width),
+                    Style::new().fg(Theme::GUTTER),
+                ));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+fn render_single_turn_lane_panel(
+    panel: &LaneChroniclePanel<'_>,
+    focused: bool,
+    width: usize,
+) -> Vec<String> {
+    let age = panel
+        .last_timestamp
+        .map(format_time_ago)
+        .unwrap_or_else(|| "-".to_string());
+    let (status_label, _) = task_bucket_status_badge(&panel.status);
+
+    let mut lines = vec![
+        truncate_to_width(
+            format!(
+                "[{}] {status_label} · {} events · last {age}",
+                panel.label,
+                panel.entries.len()
+            ),
+            width,
+        ),
+        truncate_to_width(
+            format!(
+                "ops  tool:{}  file:{}  shell:{}  err:{}",
+                panel.tool_ops, panel.file_ops, panel.shell_ops, panel.error_count
+            ),
+            width,
+        ),
+    ];
+
+    let bucket = lane_panel_to_bucket(panel);
+    let action_hints = task_bucket_action_hints(&bucket, if focused { 3 } else { 2 });
+    if !action_hints.is_empty() {
+        lines.push(truncate_to_width(
+            format!("actions: {}", action_hints.join("  ·  ")),
+            width,
+        ));
+    }
+
+    if let Some(last_output) = panel.last_output.as_deref() {
+        lines.push(truncate_to_width(
+            format!("output: {}", truncate(last_output, 180)),
+            width,
+        ));
+    } else {
+        lines.push(truncate_to_width("output: (none)".to_string(), width));
+    }
+
+    let activity_lines = task_bucket_activity_lines(&bucket, if focused { 2 } else { 1 });
+    if !activity_lines.is_empty() {
+        lines.push(truncate_to_width(
+            format!("recent: {}", activity_lines.join("  |  ")),
+            width,
+        ));
+    }
+
+    let rows = lane_panel_rows(panel);
+    if rows.is_empty() {
+        lines.push(truncate_to_width("events: (none)".to_string(), width));
+        return lines;
+    }
+
+    let chunks: Vec<&[TurnLaneRow]> = rows.chunks(TURN_RAW_CHUNK_SIZE).collect();
+    let visible_chunk_count = if focused {
+        chunks.len()
+    } else {
+        chunks.len().min(1)
+    };
+    for (chunk_idx, chunk) in chunks.iter().take(visible_chunk_count).enumerate() {
+        lines.push(truncate_to_width(
+            format!("events chunk {}/{}", chunk_idx + 1, chunks.len()),
+            width,
+        ));
+        for row in *chunk {
+            lines.push(truncate_to_width(format_lane_panel_row(row), width));
+        }
+    }
+
+    if visible_chunk_count < chunks.len() {
+        lines.push(truncate_to_width(
+            format!("... {} more chunks", chunks.len() - visible_chunk_count),
+            width,
+        ));
+    }
+
+    lines
+}
+
+fn lane_panel_to_bucket<'a>(panel: &'a LaneChroniclePanel<'a>) -> TaskChronicleBucket<'a> {
+    TaskChronicleBucket {
+        task_key: panel.label.clone(),
+        events: panel.entries.iter().map(|entry| entry.event).collect(),
+        last_timestamp: panel.last_timestamp,
+        status: panel.status,
+        tool_ops: panel.tool_ops,
+        file_ops: panel.file_ops,
+        shell_ops: panel.shell_ops,
+        error_count: panel.error_count,
+        last_output: panel.last_output.clone(),
+    }
+}
+
+fn lane_panel_rows(panel: &LaneChroniclePanel<'_>) -> Vec<TurnLaneRow> {
+    let mut rows = Vec::new();
+    let mut last_key = String::new();
+
+    for entry in &panel.entries {
+        let row = build_turn_lane_row(entry);
+        if should_hide_lane_row(entry.event, &row.summary) {
+            continue;
+        }
+
+        let dedupe_key = normalize_activity_key(&format!("{} {}", row.event_kind, row.summary));
+        let is_boundary = matches!(
+            entry.event.event_type,
+            EventType::TaskStart { .. }
+                | EventType::TaskEnd { .. }
+                | EventType::ToolResult { is_error: true, .. }
+        );
+        if !is_boundary && !last_key.is_empty() && dedupe_key == last_key {
+            continue;
+        }
+        last_key = dedupe_key;
+        rows.push(row);
+    }
+
+    if rows.is_empty() {
+        if let Some(entry) = panel.entries.last() {
+            rows.push(build_turn_lane_row(entry));
+        }
+    }
+
+    rows
+}
+
+fn build_turn_lane_row(entry: &TurnLaneEntry<'_>) -> TurnLaneRow {
+    let (kind, _) = event_type_display(&entry.event.event_type, true);
+    let mut summary = task_board_event_summary(entry.event, 120);
+    summary = strip_kind_prefix(&summary, kind);
+    if summary.is_empty() {
+        summary = kind.to_string();
+    }
+    let task_label = event_task_key(entry.event)
+        .map(compact_task_id)
+        .unwrap_or_else(|| "main".to_string());
+    let mut row = TurnLaneRow {
+        timestamp: entry.event.timestamp.format("%H:%M:%S").to_string(),
+        lane_label: if entry.lane == 0 {
+            "main".to_string()
+        } else {
+            format!("L{}", entry.lane)
+        },
+        event_kind: kind.to_string(),
+        task_label,
+        marker: lane_marker_text(entry.marker),
+        summary,
+    };
+
+    if let Some(structured) = parse_structured_turn_log_summary(entry.event) {
+        if let Some(ts) = structured.timestamp {
+            row.timestamp = ts;
+        }
+        if let Some(kind) = structured.event_kind {
+            row.event_kind = kind;
+        }
+        if row.task_label == "main" {
+            if let Some(task) = structured.task {
+                row.task_label = task;
+            }
+        }
+        if entry.lane == 0 {
+            if let Some(lane) = structured.lane {
+                row.lane_label = lane;
+            }
+        }
+        if let Some(summary) = structured.summary {
+            row.summary = summary;
+        }
+    }
+
+    row
+}
+
+fn should_hide_lane_row(event: &Event, summary: &str) -> bool {
+    match &event.event_type {
+        EventType::Thinking => true,
+        EventType::ToolResult { is_error, .. } => {
+            !*is_error
+                && (is_low_signal_activity_summary(summary)
+                    || summary.eq_ignore_ascii_case("ok")
+                    || normalize_activity_key(summary).ends_with(" ok"))
+        }
+        EventType::AgentMessage | EventType::Custom { .. } => {
+            is_low_signal_activity_summary(summary)
+        }
+        _ => false,
+    }
+}
+
+fn format_lane_panel_row(row: &TurnLaneRow) -> String {
+    let marker = row
+        .marker
+        .map(|value| format!(" [{value}]"))
+        .unwrap_or_default();
+    let task_hint =
+        if row.task_label != "main" && matches!(row.event_kind.as_str(), "start" | "end") {
+            format!(" [task {}]", row.task_label)
+        } else {
+            String::new()
+        };
+    format!(
+        "{} {:<6} {}{}{}",
+        row.timestamp, row.event_kind, row.summary, task_hint, marker
+    )
+}
+
+fn lane_marker_text(marker: LaneMarker) -> Option<&'static str> {
+    match marker {
+        LaneMarker::Fork => Some("fork"),
+        LaneMarker::Merge => Some("merge"),
+        LaneMarker::None => None,
+    }
+}
+
+fn pad_panel_cell(text: &str, width: usize) -> String {
+    let mut out = truncate_to_width(text.to_string(), width);
+    let current_width = UnicodeWidthStr::width(out.as_str());
+    if current_width < width {
+        out.push_str(&" ".repeat(width - current_width));
+    }
+    out
 }
 
 fn task_bucket_status_badge(status: &TaskBucketStatus) -> (&'static str, Color) {
@@ -2568,6 +3461,12 @@ fn strip_kind_prefix(summary: &str, kind: &str) -> String {
 }
 
 fn task_board_event_summary(event: &Event, max_len: usize) -> String {
+    if let Some(parsed) = parse_structured_turn_log_summary(event) {
+        if let Some(summary) = parsed.summary.filter(|value| !value.is_empty()) {
+            return compact_text_snippet(&summary, max_len);
+        }
+    }
+
     let summary = match &event.event_type {
         EventType::TaskStart { title } => {
             if let Some(title) = title
@@ -2647,6 +3546,157 @@ fn task_board_event_summary(event: &Event, max_len: usize) -> String {
     };
 
     compact_text_snippet(&summary, max_len)
+}
+
+fn parse_structured_turn_log_summary(event: &Event) -> Option<StructuredTurnLogSummary> {
+    for block in &event.content.blocks {
+        match block {
+            ContentBlock::Json { data } => {
+                if let Some(summary) = parse_structured_turn_log_summary_json(data) {
+                    return Some(summary);
+                }
+            }
+            ContentBlock::Text { text } => {
+                for line in text.lines() {
+                    if let Some(summary) = parse_structured_turn_log_summary_line(line) {
+                        return Some(summary);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_structured_turn_log_summary_line(line: &str) -> Option<StructuredTurnLogSummary> {
+    let trimmed = line.trim();
+    if !(trimmed.starts_with('{') && trimmed.ends_with('}')) {
+        return None;
+    }
+    let parsed = serde_json::from_str::<serde_json::Value>(trimmed).ok()?;
+    parse_structured_turn_log_summary_json(&parsed)
+}
+
+fn parse_structured_turn_log_summary_json(
+    value: &serde_json::Value,
+) -> Option<StructuredTurnLogSummary> {
+    let obj = value.as_object()?;
+    let mut summary = StructuredTurnLogSummary::default();
+    summary.timestamp = extract_structured_text(obj, &["ts", "timestamp", "time"])
+        .and_then(|value| normalize_structured_timestamp(&value));
+    summary.lane =
+        extract_structured_text(obj, &["lane"]).and_then(|value| normalize_structured_lane(&value));
+    summary.event_kind = extract_structured_text(obj, &["type", "event_type", "event", "kind"])
+        .and_then(|value| normalize_structured_event_kind(&value));
+    summary.task = extract_structured_text(obj, &["task", "task_id", "subagent_id"])
+        .and_then(|value| normalize_structured_task(&value));
+    summary.summary = extract_structured_value(obj, &["summary", "message", "text"])
+        .and_then(|value| json_value_hint(value, 140))
+        .map(|value| compact_text_snippet(&value, 140))
+        .filter(|value| !value.is_empty());
+
+    let has_frame = summary.timestamp.is_some() || summary.lane.is_some() || summary.task.is_some();
+    let has_payload = summary.summary.is_some() || summary.event_kind.is_some();
+    if has_frame && has_payload {
+        Some(summary)
+    } else {
+        None
+    }
+}
+
+fn extract_structured_text(
+    map: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    extract_structured_value(map, keys).and_then(|value| json_value_hint(value, 80))
+}
+
+fn extract_structured_value<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<&'a serde_json::Value> {
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn normalize_structured_timestamp(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if is_hms_timestamp(trimmed) {
+        return Some(trimmed.to_string());
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(parsed.with_timezone(&Utc).format("%H:%M:%S").to_string());
+    }
+    None
+}
+
+fn is_hms_timestamp(value: &str) -> bool {
+    value.len() == 8
+        && value.chars().enumerate().all(|(idx, ch)| {
+            if idx == 2 || idx == 5 {
+                ch == ':'
+            } else {
+                ch.is_ascii_digit()
+            }
+        })
+}
+
+fn normalize_structured_lane(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case("main") {
+        return Some("main".to_string());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(num) = lower
+        .strip_prefix('l')
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        return Some(format!("L{num}"));
+    }
+    if let Some(num) = lower
+        .strip_prefix("lane ")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        return Some(format!("L{num}"));
+    }
+    if let Ok(num) = lower.parse::<usize>() {
+        return Some(format!("L{num}"));
+    }
+    None
+}
+
+fn normalize_structured_event_kind(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .replace(' ', "-");
+    Some(compact_text_snippet(&normalized, 12))
+}
+
+fn normalize_structured_task(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case("main") {
+        return Some("main".to_string());
+    }
+    Some(compact_task_id(trimmed))
 }
 
 fn is_low_signal_tool_name(name: &str) -> bool {
@@ -2743,7 +3793,12 @@ fn task_bucket_action_hints(bucket: &TaskChronicleBucket<'_>, limit: usize) -> V
         if task_event_activity_priority(event, &summary) < 3 {
             continue;
         }
-        let action = compact_text_snippet(&format!("{kind} {summary}"), 140);
+        let summary = if kind.eq_ignore_ascii_case("shell") {
+            compact_shell_command(&summary, 80)
+        } else {
+            compact_text_snippet(&summary, 80)
+        };
+        let action = compact_text_snippet(&format!("{kind} {summary}"), 110);
         if action.is_empty() {
             continue;
         }

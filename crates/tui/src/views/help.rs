@@ -180,6 +180,14 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Save config", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  ,/.       ", key_style),
+            Span::styled("Timeline Intel: preset slot prev/next", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Shift+S/L ", key_style),
+            Span::styled("Timeline Intel: preset save/load slot", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  g         ", key_style),
             Span::styled("Regenerate API key (Account)", desc_style),
         ]),
@@ -192,4 +200,57 @@ pub fn render(frame: &mut Frame, area: Rect) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn render_shows_shortcuts_and_close_hint() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, area);
+            })
+            .expect("draw");
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("Keyboard Shortcuts"));
+        assert!(text.contains("Session List"));
+        assert!(text.contains("Session Detail"));
+        assert!(text.contains("Press any key to close"));
+    }
+
+    #[test]
+    fn render_handles_small_terminal_area() {
+        let backend = TestBackend::new(30, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render(frame, Rect::new(0, 0, 30, 10));
+            })
+            .expect("draw");
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("Keyboard"));
+    }
 }

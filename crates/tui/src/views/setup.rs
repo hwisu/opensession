@@ -430,3 +430,107 @@ fn render_login_form(frame: &mut Frame, app: &App, area: Rect) {
     let form_paragraph = Paragraph::new(lines);
     frame.render_widget(form_paragraph, inner);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+    use crate::app::{App, FlashLevel, SetupMode, SetupScenario, SetupStep};
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn render_text(app: &App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, app, frame.area()))
+            .expect("draw");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn scenario_step_shows_all_setup_options() {
+        let mut app = App::new(vec![]);
+        app.setup_step = SetupStep::Scenario;
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("How do you want to use OpenSession?"));
+        assert!(text.contains("Local mode"));
+        assert!(text.contains("Team mode"));
+        assert!(text.contains("Public mode"));
+    }
+
+    #[test]
+    fn apikey_team_scenario_includes_team_id_field() {
+        let mut app = App::new(vec![]);
+        app.setup_step = SetupStep::Configure;
+        app.setup_mode = SetupMode::ApiKey;
+        app.setup_scenario = Some(SetupScenario::Team);
+
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("API/Account"));
+        assert!(text.contains("Team ID"));
+        assert!(text.contains("Server URL"));
+    }
+
+    #[test]
+    fn apikey_public_scenario_hides_team_id_and_shows_git_hint() {
+        let mut app = App::new(vec![]);
+        app.setup_step = SetupStep::Configure;
+        app.setup_mode = SetupMode::ApiKey;
+        app.setup_scenario = Some(SetupScenario::Public);
+
+        let text = render_text(&app, 120, 40);
+        assert!(!text.contains("Team ID"));
+        assert!(text.contains("Public mode requires Git setup"));
+    }
+
+    #[test]
+    fn login_mode_masks_saved_password_value() {
+        let mut app = App::new(vec![]);
+        app.setup_step = SetupStep::Configure;
+        app.setup_mode = SetupMode::Login;
+        app.login_state.password = "secret".to_string();
+
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("Password"));
+        assert!(text.contains("******"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn login_mode_masks_edit_buffer_while_editing_password() {
+        let mut app = App::new(vec![]);
+        app.setup_step = SetupStep::Configure;
+        app.setup_mode = SetupMode::Login;
+        app.login_state.field_index = 1;
+        app.login_state.editing = true;
+        app.edit_buffer = "abcd".to_string();
+
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("****|"));
+        assert!(!text.contains("abcd|"));
+    }
+
+    #[test]
+    fn configure_step_renders_flash_message() {
+        let mut app = App::new(vec![]);
+        app.setup_step = SetupStep::Configure;
+        app.setup_mode = SetupMode::ApiKey;
+        app.flash_message = Some(("saved successfully".to_string(), FlashLevel::Success));
+
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("saved successfully"));
+    }
+}

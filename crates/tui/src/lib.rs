@@ -118,6 +118,7 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
     app.daemon_config = daemon_config;
     app.realtime_preview_enabled = app.daemon_config.daemon.detail_realtime_preview_enabled;
     app.connection_ctx = App::derive_connection_ctx(&app.daemon_config);
+    app.refresh_timeline_preset_slots();
     app.focus_detail_view = options.focus_detail_view;
 
     // ── Build startup status ─────────────────────────────────────────
@@ -441,11 +442,11 @@ fn load_cached_sessions_from_db(db: &LocalDb) -> Vec<Session> {
 
 fn refresh_discovery_on_start() -> bool {
     let Ok(raw) = std::env::var("OPS_TUI_REFRESH_DISCOVERY_ON_START") else {
-        return false;
+        return true;
     };
-    matches!(
+    !matches!(
         raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -461,32 +462,39 @@ async fn check_health(server_url: &str) -> ServerStatus {
 }
 
 /// Cache parsed sessions into the local DB with git context.
-/// Skips git extraction for sessions already in the DB (only updates stats).
+/// Existing rows are backfilled with git/cwd metadata when parsed `cwd` is available.
 fn cache_sessions_to_db(db: &LocalDb, sessions: &[LoadedSession]) {
     let existing = db.existing_session_ids();
 
     for item in sessions {
         let session = &item.session;
         let source = item.source_path.to_string_lossy();
-
-        if App::is_internal_summary_session(session) {
-            continue;
-        }
-
-        if existing.contains(&session.session_id) {
-            // Already cached → only update stats and keep source path in sync.
-            let _ = db.update_session_stats(session);
-            let _ = db.set_session_sync_path(&session.session_id, &source);
-            continue;
-        }
-
-        // New session → full insert with git context extraction
         let cwd = session
             .context
             .attributes
             .get("cwd")
             .or_else(|| session.context.attributes.get("working_directory"))
             .and_then(|v| v.as_str().map(String::from));
+
+        if App::is_internal_summary_session(session) {
+            continue;
+        }
+
+        if existing.contains(&session.session_id) {
+            if cwd.is_some() {
+                // Existing rows can miss repo/cwd metadata. When cwd exists in parsed data,
+                // re-upsert to backfill git context as well as stats.
+                let git = cwd.as_deref().map(extract_git_context).unwrap_or_default();
+                let _ = db.upsert_local_session(session, &source, &git);
+            } else {
+                // Legacy fallback when no cwd is present in parsed data.
+                let _ = db.update_session_stats(session);
+                let _ = db.set_session_sync_path(&session.session_id, &source);
+            }
+            continue;
+        }
+
+        // New session → full insert with git context extraction
         let git = cwd.as_deref().map(extract_git_context).unwrap_or_default();
 
         let _ = db.upsert_local_session(session, &source, &git);
@@ -987,7 +995,7 @@ fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session,
 mod tests {
     use super::{
         apply_summary_launch_override, env_flag_enabled, filter_visible_discovered_sessions,
-        is_hidden_opencode_child_session, SummaryLaunchOverride,
+        is_hidden_opencode_child_session, refresh_discovery_on_start, SummaryLaunchOverride,
     };
     use chrono::Utc;
     use opensession_core::trace::{Agent, Session, SessionContext};
@@ -1142,6 +1150,23 @@ mod tests {
         assert!(env_flag_enabled(key));
         std::env::set_var(key, "1");
         assert!(env_flag_enabled(key));
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn refresh_discovery_on_start_defaults_true() {
+        let key = "OPS_TUI_REFRESH_DISCOVERY_ON_START";
+        std::env::remove_var(key);
+        assert!(refresh_discovery_on_start());
+    }
+
+    #[test]
+    fn refresh_discovery_on_start_accepts_false_values() {
+        let key = "OPS_TUI_REFRESH_DISCOVERY_ON_START";
+        std::env::set_var(key, "off");
+        assert!(!refresh_discovery_on_start());
+        std::env::set_var(key, "0");
+        assert!(!refresh_discovery_on_start());
         std::env::remove_var(key);
     }
 }

@@ -259,7 +259,7 @@ async fn poll_config(api: &ApiClient, current_etag: &Option<String>) -> Result<P
 mod tests {
     use super::*;
     use crate::config::DaemonConfig;
-    use opensession_core::config::PrivacySettings;
+    use opensession_runtime_config::PrivacySettings;
 
     #[test]
     fn test_merge_configs_union_patterns() {

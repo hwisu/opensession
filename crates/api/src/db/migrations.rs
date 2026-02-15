@@ -53,8 +53,4 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
         "local_0002_drop_unused_local_sessions",
         include_str!("../../migrations/local_0002_drop_unused_local_sessions.sql"),
     ),
-    (
-        "local_0003_timeline_summary_cache",
-        include_str!("../../migrations/local_0003_timeline_summary_cache.sql"),
-    ),
 ];

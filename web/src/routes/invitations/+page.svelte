@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { InvitationsPage } from '@opensession/ui/components';
 	import { goto } from '$app/navigation';
+	import { isWorkerProfile } from '$lib/profile';
 </script>
 
-<InvitationsPage onNavigate={(path) => goto(path)} />
+{#if isWorkerProfile}
+	<div class="mx-auto max-w-2xl border border-border bg-bg-secondary p-6 text-sm text-text-secondary">
+		Inbox is disabled in this deployment profile.
+		<a href="/" class="ml-1 underline">Back to sessions</a>
+	</div>
+{:else}
+	<InvitationsPage onNavigate={(path) => goto(path)} />
+{/if}

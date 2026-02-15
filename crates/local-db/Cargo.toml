@@ -5,7 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Local SQLite database shared by TUI and Daemon"
-include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+include = [
+    "src/**/*.rs",
+    "migrations/*.sql",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+]
 
 [lib]
 doctest = false
@@ -15,7 +21,6 @@ workspace = true
 
 [dependencies]
 opensession-core = { workspace = true }
-opensession-api = { workspace = true, features = ["backend"] }
 rusqlite = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }

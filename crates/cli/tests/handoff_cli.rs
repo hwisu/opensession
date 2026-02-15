@@ -1,0 +1,98 @@
+use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+fn make_home() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tempdir")
+}
+
+fn write_file(path: &Path, body: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent dir");
+    }
+    fs::write(path, body).expect("write file");
+}
+
+fn create_codex_session(home: &Path, rel: &str) -> PathBuf {
+    let path = home.join(".codex").join("sessions").join(rel);
+    let body = r#"{"type":"user","uuid":"u1","sessionId":"handoff-cli-test","timestamp":"2026-02-14T00:00:01Z","message":{"role":"user","content":"fix handoff command"}}
+{"type":"assistant","uuid":"a1","sessionId":"handoff-cli-test","timestamp":"2026-02-14T00:00:02Z","message":{"role":"assistant","model":"gpt-4.1","content":[{"type":"text","text":"I will update it."}]}}"#;
+    write_file(&path, body);
+    path
+}
+
+fn run(home: &Path, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
+    cmd.args(args).env("HOME", home).env("NO_COLOR", "1");
+    cmd.output().expect("run opensession")
+}
+
+#[test]
+fn top_help_hides_removed_commands() {
+    let tmp = make_home();
+    let output = run(tmp.path(), &["--help"]);
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    assert!(!stdout.contains("\n  ui"));
+    assert!(!stdout.contains("\n  view"));
+    assert!(!stdout.contains("discover"));
+    assert!(!stdout.contains("timeline"));
+}
+
+#[test]
+fn handoff_help_hides_llm_flags() {
+    let tmp = make_home();
+    let output = run(tmp.path(), &["session", "handoff", "--help"]);
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("--summarize"));
+    assert!(!stdout.contains("--ai"));
+}
+
+#[test]
+fn handoff_last_supports_all_output_formats() {
+    let tmp = make_home();
+    let home = tmp.path();
+    create_codex_session(home, "2026/02/14/handoff-cli-test.jsonl");
+
+    for format in ["text", "markdown", "json", "jsonl", "hail", "stream"] {
+        let output = run(home, &["session", "handoff", "--last", "--format", format]);
+        assert!(
+            output.status.success(),
+            "format {format} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        match format {
+            "text" | "markdown" => {
+                assert!(stdout.contains("Session Handoff"));
+            }
+            "json" => {
+                let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+                let arr = parsed.as_array().expect("json array");
+                assert_eq!(arr.len(), 1);
+            }
+            "jsonl" => {
+                let first = stdout.lines().next().expect("jsonl line");
+                let parsed: Value = serde_json::from_str(first).expect("jsonl object");
+                assert!(parsed.get("session_id").is_some());
+            }
+            "hail" => {
+                assert!(stdout.contains("hail-1.0.0"));
+            }
+            "stream" => {
+                let first = stdout.lines().next().expect("stream line");
+                let parsed: Value = serde_json::from_str(first).expect("stream object");
+                assert_eq!(
+                    parsed.get("type").and_then(|v| v.as_str()),
+                    Some("session_summary")
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+}

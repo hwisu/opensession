@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub mod crypto;
 #[cfg(feature = "backend")]
 pub mod db;
+pub mod deploy;
 pub mod oauth;
 #[cfg(feature = "backend")]
 pub mod service;

@@ -1,6 +1,22 @@
 # Documentation
 
-Everything you need to know about using OpenSession — uploading sessions, managing teams, and self-hosting your own instance.
+Everything you need to know about using OpenSession across deployment profiles:
+Docker (team-focused) and Worker (personal-sharing focused).
+
+## Profile Differences (Docker vs Worker)
+
+| Area | Docker (Axum server) | Worker (Wrangler) |
+|------|-----------------------|-------------------|
+| Primary focus | Team collaboration | Personal sharing |
+| Home `/` when signed out | Landing page | Landing page |
+| Home `/` when signed in | Session list | Session list |
+| Team API (`/api/teams*`, `/api/invitations*`, `/api/sync/pull`) | Enabled | Disabled when `ENABLE_TEAM_API=false` |
+| Team UI (`/teams`, `/invitations`) | Enabled | Hidden/disabled |
+| Upload mode | Team-target upload | Personal upload (`team_id=personal`) |
+
+Defaults in this repo:
+- `docker-compose.yml` sets `OPENSESSION_PUBLIC_FEED_ENABLED=false`.
+- `wrangler.toml` sets `ENABLE_TEAM_API=false`.
 
 ## Getting Started
 
@@ -31,11 +47,14 @@ opensession publish upload-all     # discover and upload all local sessions
 
 **Web Upload**
 
-Drag and drop `.jsonl` files onto the [/upload](https://opensession.io/upload) page, or click to select files. You can optionally assign a team before uploading.
+Drag and drop `.jsonl` files onto the [/upload](https://opensession.io/upload) page, or click to select files.
+- Docker profile: upload to a team target.
+- Worker profile: personal upload mode (`team_id=personal`).
 
 ### Viewing Sessions
 
-Your session list at [/](https://opensession.io/) shows all uploaded sessions. Each card displays the session tool, model, timestamp, token count, and a preview of the conversation.
+At [/](https://opensession.io/), signed-out users see the landing page.  
+After signing in, `/` shows your session list with each card displaying tool, model, timestamp, token count, and a preview.
 
 ### Timeline View
 
@@ -100,7 +119,7 @@ Filter stats by time range to see usage trends over the past week, month, or cus
 cargo install opensession
 ```
 
-Running `opensession` without arguments launches the TUI. Subcommands run CLI operations.
+Running `opensession` without arguments prints help. Use explicit subcommands.
 
 ---
 
@@ -135,22 +154,8 @@ Config file: `~/.config/opensession/config.toml`
 
 ### `opensession session discover`
 
-Scan this machine for AI sessions from all supported tools.
-
-**Example:**
-
-```bash
-opensession session discover
-
-# Output:
-# Found 47 sessions:
-#   claude-code  32 sessions  ~/.claude/projects/
-#   cursor        8 sessions  ~/.cursor/
-#   goose         4 sessions  ~/.config/goose/
-#   aider         3 sessions  ~/.aider/
-```
-
-Supported: Claude Code, Cursor, Codex, Goose, Aider, OpenCode, Amp.
+Removed from the current CLI surface.
+Use `opensession publish upload-all` for bulk discovery + upload.
 
 ---
 
@@ -188,84 +193,13 @@ opensession publish upload ./session.jsonl --git
 
 ### `opensession session log`
 
-Show session history in a git-log style format.
-
-**Flags:**
-
-| Flag | Description |
-|------|-------------|
-| `--since <TIME>` | Filter by time (e.g. "3 hours", "2 days", "1 week") |
-| `--before <TIME>` | Show sessions before this time |
-| `--tool <TOOL>` | Filter by tool (e.g. "claude-code", "cursor") |
-| `--model <MODEL>` | Filter by model (supports wildcards: "opus*") |
-| `--grep <QUERY>` | Search in titles and descriptions |
-| `--touches <FILE>` | Show sessions that touched a specific file |
-| `--has-errors` | Show only sessions with errors |
-| `--project <PATH>` | Filter by working directory |
-| `-n, --limit <N>` | Max results (default: 20) |
-| `--format <FMT>` | Output format (text, json, jsonl, markdown) |
-| `--json [FIELDS]` | Select JSON fields (e.g. "id,tool,title") |
-| `--jq <FILTER>` | Apply jq filter to JSON output |
-
-**Available JSON fields:** `id`, `tool`, `model`, `title`, `description`, `created_at`, `duration_seconds`, `message_count`, `event_count`, `total_input_tokens`, `total_output_tokens`, `has_errors`, `files_modified`, `working_directory`, `git_repo_name`, `source_path`, `git_remote`, `git_branch`, `git_commit`, `tags`
-
-**Examples:**
-
-```bash
-# Show recent sessions
-opensession session log
-
-# Sessions from the last 3 hours
-opensession session log --since "3 hours"
-
-# Only Claude Code sessions with errors
-opensession session log --tool claude-code --has-errors
-
-# Search for sessions about authentication
-opensession session log --grep "auth" --limit 5
-
-# Sessions that touched a specific file
-opensession session log --touches src/auth.rs
-
-# Filter by model using wildcards
-opensession session log --model "opus*"
-
-# Export as JSON with specific fields
-opensession session log --json "id,tool,title,created_at"
-
-# Pipe through jq for custom queries
-opensession session log --format json --jq '.[] | select(.has_errors)'
-```
-
-Auto-detection: when no explicit `--project` is specified, filters by the current git repo or working directory.
+Removed from the current CLI surface.
 
 ---
 
 ### `opensession session stats`
 
-Show AI usage statistics — sessions, tokens, costs, and breakdowns by tool.
-
-**Flags:**
-
-| Flag | Description |
-|------|-------------|
-| `--period <PERIOD>` | Time period: day, week (default), month, all |
-| `--format <FMT>` | Output format: text (default), json |
-
-**Examples:**
-
-```bash
-# This week's stats
-opensession session stats
-
-# All-time usage
-opensession session stats --period all
-
-# Today's stats in JSON
-opensession session stats --period day --format json
-```
-
-Shows: total sessions, duration, token counts (input/output), breakdown by tool, top edited files, error rate, and estimated cost.
+Removed from the current CLI surface.
 
 ---
 
@@ -282,8 +216,6 @@ Generate a session summary for handing off context to the next AI agent.
 | `--claude <REF>` | Claude Code session reference (HEAD, HEAD~2) |
 | `--gemini <REF>` | Gemini session reference |
 | `--tool <TOOL_REF>` | Generic tool reference (e.g. "amp HEAD~2"), repeatable |
-| `--summarize` | Generate LLM-powered summary |
-| `--ai <PROVIDER>` | AI provider for summarization: claude, openai, gemini |
 | `-o, --output <PATH>` | Write to file instead of stdout |
 | `--format <FMT>` | Output format (default: markdown) |
 
@@ -293,45 +225,18 @@ Generate a session summary for handing off context to the next AI agent.
 # Handoff from the last Claude Code session
 opensession session handoff --claude HEAD
 
-# Handoff with AI-powered summary
-opensession session handoff --last --summarize
-
 # Merge multiple sessions into one handoff
 opensession session handoff session1.jsonl session2.jsonl
 
 # Save handoff to a file
 opensession session handoff --claude HEAD -o handoff.md
-
-# Cross-tool handoff: Claude to Gemini
-opensession session handoff --claude HEAD~3 --summarize --ai gemini
 ```
 
 ---
 
 ### `opensession session diff`
 
-Compare two sessions side-by-side.
-
-**Flags:**
-
-| Flag | Description |
-|------|-------------|
-| `<session_a>` | First session (ID, file path, or reference) |
-| `<session_b>` | Second session |
-| `--ai` | Use AI to analyze differences |
-
-**Examples:**
-
-```bash
-# Compare two sessions by file path
-opensession session diff ./before.jsonl ./after.jsonl
-
-# Compare using session references
-opensession session diff HEAD^2 HEAD^1
-
-# AI-powered diff analysis
-opensession session diff HEAD^2 HEAD^1 --ai
-```
+Removed from the current CLI surface.
 
 ---
 
@@ -405,22 +310,7 @@ opensession account server verify
 
 ### `opensession ops hooks`
 
-Manage git hooks that link AI sessions to git commits.
-
-| Subcommand | Description |
-|------------|-------------|
-| `install` | Install the prepare-commit-msg hook |
-| `uninstall` | Remove the hook |
-
-```bash
-# Install in current repo
-opensession ops hooks install
-
-# Remove from current repo
-opensession ops hooks uninstall
-```
-
-When installed, the hook appends AI session metadata (tool, model, prompt) to your commit messages automatically.
+Removed from the current CLI surface.
 
 ---
 
@@ -441,12 +331,9 @@ opensession ops stream disable
 
 ---
 
-### `opensession session index` / `docs completion`
+### `opensession docs completion`
 
 ```bash
-# Build/update the local session index
-opensession session index
-
 # Generate shell completions
 opensession docs completion bash >> ~/.bashrc
 opensession docs completion zsh >> ~/.zshrc
@@ -457,7 +344,7 @@ opensession docs completion fish > ~/.config/fish/completions/opensession.fish
 
 ### Session References
 
-The `handoff` and `diff` commands accept flexible session references:
+The `handoff` command accepts flexible session references:
 
 | Reference | Description |
 |-----------|-------------|
@@ -474,9 +361,6 @@ opensession session handoff --claude HEAD
 # Last 3 Claude Code sessions merged
 opensession session handoff --claude HEAD~3
 
-# Compare 2nd-most-recent vs most-recent
-opensession session diff HEAD^1 HEAD^0
-
 # Reference by ID prefix
 opensession session handoff abc12
 ```
@@ -485,16 +369,22 @@ opensession session handoff abc12
 
 ### Output Formats
 
-Available via `--format` across `log`, `handoff`, `stats`, and other commands:
+Available via `opensession session handoff --format ...`:
 
 | Format | Description |
 |--------|-------------|
-| `text` | Human-readable text (default for log, stats) |
+| `text` | Human-readable text |
 | `markdown` | Markdown format (default for handoff) |
 | `json` | JSON format |
 | `jsonl` | JSONL (one JSON object per line) |
 | `hail` | HAIL session format |
 | `stream` | NDJSON stream |
+
+## Deployment Profiles
+
+- Docker (Axum): team-focused deployment.
+- Worker (Wrangler): personal-sharing deployment with team APIs disabled by config.
+- Web profile: set `VITE_APP_PROFILE=docker|worker` during build.
 
 ## Self-Hosting
 
@@ -536,6 +426,7 @@ volumes:
 | `JWT_SECRET` | *(required)* | Secret for JWT token signing |
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite DB and session body storage |
 | `BASE_URL` | `http://localhost:3000` | Public-facing URL (used as OAuth callback base when set) |
+| `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | Set `false` to require auth on `GET /api/sessions` |
 | `PORT` | `3000` | HTTP listen port |
 
 ### Point the CLI to Your Instance

@@ -103,3 +103,108 @@ fn team_to_list_item(team: &TeamResponse) -> ListItem<'static> {
 
     ListItem::new(vec![line1, line2, line3])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+    use crate::app::{App, ConnectionContext};
+    use opensession_api::TeamResponse;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn render_text(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, app, frame.area()))
+            .expect("draw");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn team(name: &str, desc: Option<&str>) -> TeamResponse {
+        TeamResponse {
+            id: format!("team-{name}"),
+            name: name.to_string(),
+            description: desc.map(str::to_string),
+            is_public: true,
+            created_by: "u1".to_string(),
+            created_at: "2026-02-15T12:34:56Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn local_mode_shows_collaboration_unavailable_message() {
+        let mut app = App::new(vec![]);
+        let text = render_text(&mut app, 100, 30);
+        assert!(text.contains("Collaboration is unavailable in local mode"));
+    }
+
+    #[test]
+    fn loading_state_shows_loading_message() {
+        let mut app = App::new(vec![]);
+        app.connection_ctx = ConnectionContext::CloudTeam {
+            team_name: "demo".to_string(),
+        };
+        app.teams_loading = true;
+        let text = render_text(&mut app, 100, 30);
+        assert!(text.contains("Loading teams"));
+    }
+
+    #[test]
+    fn empty_state_shows_create_hint() {
+        let mut app = App::new(vec![]);
+        app.connection_ctx = ConnectionContext::CloudTeam {
+            team_name: "demo".to_string(),
+        };
+        let text = render_text(&mut app, 100, 30);
+        assert!(text.contains("No teams yet"));
+        assert!(text.contains("Press 'n' to create one"));
+    }
+
+    #[test]
+    fn list_state_renders_team_name_visibility_and_date() {
+        let mut app = App::new(vec![]);
+        app.connection_ctx = ConnectionContext::CloudTeam {
+            team_name: "demo".to_string(),
+        };
+        app.teams = vec![team("alpha", Some("Team Alpha description"))];
+        app.teams_list_state.select(Some(0));
+
+        let text = render_text(&mut app, 100, 30);
+        assert!(text.contains("Teams (1)"));
+        assert!(text.contains("alpha"));
+        assert!(text.contains("public"));
+        assert!(text.contains("2026-02-15"));
+        assert!(!text.contains("12:34:56"));
+    }
+
+    #[test]
+    fn list_state_truncates_long_description() {
+        let long_desc =
+            "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZLONG-TAIL-TRUNCATE";
+        let mut app = App::new(vec![]);
+        app.connection_ctx = ConnectionContext::CloudTeam {
+            team_name: "demo".to_string(),
+        };
+        app.teams = vec![team("alpha", Some(long_desc))];
+        app.teams_list_state.select(Some(0));
+
+        let text = render_text(&mut app, 120, 30);
+        let expected = long_desc.chars().take(50).collect::<String>();
+        assert!(text.contains(&expected));
+        assert!(!text.contains(long_desc));
+    }
+}

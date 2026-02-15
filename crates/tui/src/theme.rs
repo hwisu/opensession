@@ -137,3 +137,35 @@ pub fn tool_color(tool: &str) -> Color {
         _ => Color::White,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_color_is_stable_for_same_nickname() {
+        assert_eq!(user_color("alice"), user_color("alice"));
+    }
+
+    #[test]
+    fn user_color_uses_multiple_palette_slots() {
+        let a = user_color("alice");
+        let b = user_color("bob");
+        let c = user_color("carol");
+        assert!(a != b || b != c || a != c);
+    }
+
+    #[test]
+    fn tool_icon_maps_known_and_unknown_tools() {
+        assert_eq!(tool_icon("claude-code"), " CC ");
+        assert_eq!(tool_icon("codex"), " Cx ");
+        assert_eq!(tool_icon("unknown-tool"), " ?? ");
+    }
+
+    #[test]
+    fn tool_color_maps_known_and_unknown_tools() {
+        assert_eq!(tool_color("claude-code"), Color::Rgb(217, 119, 80));
+        assert_eq!(tool_color("codex"), Color::Rgb(16, 185, 129));
+        assert_eq!(tool_color("unknown-tool"), Color::White);
+    }
+}

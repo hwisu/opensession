@@ -42,6 +42,10 @@ crates/
 - **SQL queries**: centralize in `crates/api/src/db/`. No inline SQL in route handlers.
 - **API responses**: always typed structs, never `serde_json::json!()`.
 - **Feature naming**: backend feature is `backend` (not `server`).
+- **Deployment profiles**:
+  - Docker/Axum is team-focused.
+  - Worker/Wrangler is personal-sharing focused (`ENABLE_TEAM_API=false`).
+  - Web UI profile is selected at build-time via `VITE_APP_PROFILE`.
 
 ## Database Migrations
 

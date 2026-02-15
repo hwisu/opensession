@@ -1,5 +1,5 @@
 use opensession_api_client::ApiClient;
-use opensession_local_db::LocalDb;
+use opensession_local_db::{LocalDb, RemoteSessionSummary};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info};
@@ -52,7 +52,38 @@ async fn do_pull(api: &ApiClient, team_id: &str, db: &LocalDb) -> anyhow::Result
     let count = pull.sessions.len();
 
     for session in &pull.sessions {
-        db.upsert_remote_session(session)?;
+        let summary = RemoteSessionSummary {
+            id: session.id.clone(),
+            user_id: session.user_id.clone(),
+            nickname: session.nickname.clone(),
+            team_id: session.team_id.clone(),
+            tool: session.tool.clone(),
+            agent_provider: session.agent_provider.clone(),
+            agent_model: session.agent_model.clone(),
+            title: session.title.clone(),
+            description: session.description.clone(),
+            tags: session.tags.clone(),
+            created_at: session.created_at.clone(),
+            uploaded_at: session.uploaded_at.clone(),
+            message_count: session.message_count,
+            task_count: session.task_count,
+            event_count: session.event_count,
+            duration_seconds: session.duration_seconds,
+            total_input_tokens: session.total_input_tokens,
+            total_output_tokens: session.total_output_tokens,
+            git_remote: session.git_remote.clone(),
+            git_branch: session.git_branch.clone(),
+            git_commit: session.git_commit.clone(),
+            git_repo_name: session.git_repo_name.clone(),
+            pr_number: session.pr_number,
+            pr_url: session.pr_url.clone(),
+            working_directory: session.working_directory.clone(),
+            files_modified: session.files_modified.clone(),
+            files_read: session.files_read.clone(),
+            has_errors: session.has_errors,
+            max_active_agents: session.max_active_agents,
+        };
+        db.upsert_remote_session(&summary)?;
     }
 
     if let Some(ref next) = pull.next_cursor {

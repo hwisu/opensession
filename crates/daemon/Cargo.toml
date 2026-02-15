@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 opensession-core = { workspace = true }
+opensession-runtime-config = { workspace = true }
 opensession-parsers = { workspace = true }
 opensession-api = { workspace = true, default-features = false }
 opensession-api-client = { workspace = true }

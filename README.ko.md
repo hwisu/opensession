@@ -12,15 +12,31 @@
 
 ## 빠른 시작
 
-### CLI / TUI
+### CLI
 
 ```bash
 cargo install opensession
 
-opensession            # TUI 실행 (인자 없이)
-opensession discover   # 로컬 AI 세션 탐색
-opensession upload-all # 발견된 모든 세션 업로드
+opensession session handoff --last
+opensession publish upload-all
+opensession ops stream enable --agent claude-code
 ```
+
+### 배포 프로필
+
+| 항목 | Docker (Axum 서버) | Worker (Wrangler) |
+|------|---------------------|-------------------|
+| 주 목적 | 팀 협업 | 개인 공유 |
+| 비로그인 시 홈(`/`) | 랜딩 페이지 | 랜딩 페이지 |
+| 로그인 시 홈(`/`) | 세션 목록 | 세션 목록 |
+| 팀 API (`/api/teams*`, `/api/invitations*`, `/api/sync/pull`) | 활성화 | `ENABLE_TEAM_API=false`일 때 비활성화 |
+| 팀 UI (`/teams`, `/invitations`) | 활성화 | 숨김/비활성화 |
+| 업로드 모드 | 팀 대상 업로드 | 개인 업로드 (`team_id=personal`) |
+
+- 웹 빌드 프로필: `VITE_APP_PROFILE=docker|worker`
+- 저장소 기본값:
+  - `docker-compose.yml`: `OPENSESSION_PUBLIC_FEED_ENABLED=false` (익명 `GET /api/sessions` 차단)
+  - `wrangler.toml`: `ENABLE_TEAM_API=false`
 
 ### 셀프 호스팅 서버
 
@@ -61,21 +77,15 @@ docker compose up -d
 
 | 명령어 | 설명 |
 |--------|------|
-| `opensession` | TUI 실행 (서브커맨드 없이) |
-| `opensession discover` | 로컬 AI 세션 목록 표시 |
-| `opensession upload <file>` | 세션 파일 업로드 |
-| `opensession upload-all` | 모든 세션 탐색 후 업로드 |
-| `opensession log` | 세션 히스토리 (git-log 스타일) |
-| `opensession stats` | AI 사용 통계 |
-| `opensession handoff` | 다음 에이전트를 위한 핸드오프 요약 생성 |
-| `opensession diff <a> <b>` | 두 세션 비교 |
+| `opensession session handoff` | 다음 에이전트를 위한 핸드오프 요약 생성 |
+| `opensession publish upload <file>` | 세션 파일 업로드 |
+| `opensession publish upload-all` | 모든 세션 탐색 후 업로드 |
+| `opensession ops daemon start\|stop\|status\|health` | 백그라운드 데몬 관리 |
+| `opensession ops stream enable\|disable` | 로컬 스트림 훅 활성화/비활성화 |
+| `opensession ops stream-push --agent <agent>` | 훅에서 호출되는 스트림 인덱싱 명령 |
 | `opensession account config` | 설정 조회/변경 |
-| `opensession daemon start\|stop\|status` | 백그라운드 데몬 관리 |
-| `opensession server status\|verify` | 서버 연결 확인 |
-| `opensession hooks install\|uninstall` | Git 훅 관리 |
-| `opensession stream enable\|disable` | 실시간 세션 스트리밍 |
-| `opensession index` | 로컬 세션 인덱스 빌드 |
-| `opensession completion <shell>` | 쉘 자동완성 생성 |
+| `opensession account server status\|verify` | 서버 연결 확인 |
+| `opensession docs completion <shell>` | 쉘 자동완성 생성 |
 
 ## 설정
 
@@ -125,6 +135,7 @@ method = "native"            # platform_api | native | none
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite DB 및 세션 본문 저장 경로 |
 | `OPENSESSION_WEB_DIR` | `web/build` | 정적 프론트엔드 파일 경로 |
 | `BASE_URL` | `http://localhost:3000` | 외부 공개 URL (설정 시 OAuth 콜백 기준 URL로 사용) |
+| `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | `false`일 때 `GET /api/sessions` 익명 접근 차단 |
 | `JWT_SECRET` | *(필수)* | JWT 토큰 서명 비밀키 |
 | `PORT` | `3000` | HTTP 리슨 포트 |
 | `RUST_LOG` | `opensession_server=info,tower_http=info` | 로그 레벨 |

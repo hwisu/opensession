@@ -78,6 +78,15 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
         .and_then(|v| v.as_str())
         .unwrap_or("personal")
         .to_string();
+    let team_api_enabled = crate::env_flag_bool(
+        &ctx.env,
+        opensession_api::deploy::ENV_TEAM_API_ENABLED,
+        true,
+    );
+    if !team_api_enabled && team_id != "personal" {
+        return ServiceError::Forbidden("team uploads are disabled in this deployment".into())
+            .into_err_response();
+    }
 
     // body_url: external storage link (git repo, etc.)
     let body_url = body
@@ -180,9 +189,9 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
         files_modified: meta.files_modified.as_deref(),
         files_read: meta.files_read.as_deref(),
         has_errors: meta.has_errors,
-        max_active_agents: saturating_i64(
-            opensession_core::agent_metrics::max_active_agents(&session) as u64,
-        ),
+        max_active_agents: saturating_i64(opensession_core::agent_metrics::max_active_agents(
+            &session,
+        ) as u64),
     });
     d1.prepare(&sql).bind(&values_to_js(&values))?.run().await?;
 
@@ -266,20 +275,34 @@ fn public_feed_cache_key(query_pairs: &[(String, String)]) -> String {
 pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let url = req.url()?;
     let query_pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
-    let q = parse_session_list_query(&query_pairs);
-    let has_auth_header = req
-        .headers()
-        .get("Authorization")
-        .ok()
-        .flatten()
-        .is_some();
+    let mut q = parse_session_list_query(&query_pairs);
+    let team_api_enabled = crate::env_flag_bool(
+        &ctx.env,
+        opensession_api::deploy::ENV_TEAM_API_ENABLED,
+        true,
+    );
+    if !team_api_enabled {
+        match q.team_id.as_deref() {
+            Some("personal") | None => {
+                q.team_id = Some("personal".to_string());
+            }
+            Some(_) => {
+                return ServiceError::BadRequest(
+                    "team filters are disabled in this deployment".into(),
+                )
+                .into_err_response();
+            }
+        }
+    }
+    let has_auth_header = req.headers().get("Authorization").ok().flatten().is_some();
     let has_session_cookie = req
         .headers()
         .get("Cookie")
         .ok()
         .flatten()
         .is_some_and(|cookie| cookie.contains("session="));
-    let cacheable = q.is_public_feed_cacheable(has_auth_header, has_session_cookie);
+    let cacheable =
+        team_api_enabled && q.is_public_feed_cacheable(has_auth_header, has_session_cookie);
     let cache_key = cacheable.then(|| public_feed_cache_key(&query_pairs));
 
     if let Some(key) = cache_key.as_deref() {
@@ -293,14 +316,10 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let d1 = storage::get_d1(&ctx.env)?;
 
     let count_params = values_to_js(&built.count_query.1);
-    let count_stmt = d1
-        .prepare(&built.count_query.0)
-        .bind(&count_params)?;
+    let count_stmt = d1.prepare(&built.count_query.0).bind(&count_params)?;
 
     let select_params = values_to_js(&built.select_query.1);
-    let select_stmt = d1
-        .prepare(&built.select_query.0)
-        .bind(&select_params)?;
+    let select_stmt = d1.prepare(&built.select_query.0).bind(&select_params)?;
 
     // Run count + select in one D1 round-trip.
     let batch = d1.batch(vec![count_stmt, select_stmt]).await?;

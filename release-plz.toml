@@ -28,10 +28,6 @@ publish = true
 name = "opensession-git-native"
 publish = true
 
-[[package]]
-name = "opensession-tui"
-publish = true
-
 # --- Main binary (cargo install opensession) ---
 
 [[package]]
@@ -49,6 +45,13 @@ git_tag_enable = false
 
 [[package]]
 name = "opensession-daemon"
+publish = false
+release = false
+git_release_enable = false
+git_tag_enable = false
+
+[[package]]
+name = "opensession-runtime-config"
 publish = false
 release = false
 git_release_enable = false

@@ -4,7 +4,15 @@ import { getSettings, isAuthenticated, listInvitations } from '../api';
 import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
-const { currentPath, children }: { currentPath: string; children: Snippet } = $props();
+const {
+	currentPath,
+	children,
+	appProfile = 'docker',
+}: {
+	currentPath: string;
+	children: Snippet;
+	appProfile?: 'docker' | 'worker';
+} = $props();
 
 let user = $state<UserSettings | null>(null);
 let inboxCount = $state(0);
@@ -13,6 +21,7 @@ let lastInboxFetchAt = $state(0);
 
 const SETTINGS_REFRESH_INTERVAL_MS = 30_000;
 const INBOX_REFRESH_INTERVAL_MS = 30_000;
+const teamFeaturesEnabled = $derived(appProfile === 'docker');
 
 $effect(() => {
 	// Re-check auth/inbox on navigation with a short throttle window.
@@ -39,7 +48,7 @@ $effect(() => {
 	}
 
 	const hasAuthContext = !!user || hasStoredAuth;
-	if (!hasAuthContext) {
+	if (!hasAuthContext || !teamFeaturesEnabled) {
 		inboxCount = 0;
 		return;
 	}
@@ -59,8 +68,10 @@ $effect(() => {
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/', label: 'Sessions' }];
 	if (user) {
-		links.push({ href: '/teams', label: 'Teams' });
-		links.push({ href: '/invitations', label: 'Inbox' });
+		if (teamFeaturesEnabled) {
+			links.push({ href: '/teams', label: 'Teams' });
+			links.push({ href: '/invitations', label: 'Inbox' });
+		}
 		links.push({ href: '/upload', label: 'Upload' });
 	}
 	links.push({ href: '/docs', label: 'Docs' });

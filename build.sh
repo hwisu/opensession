@@ -3,7 +3,7 @@ set -e
 
 # Frontend
 cd packages/ui && npm install && cd ../..
-cd web && npm install && npm run build && cd ..
+cd web && npm install && VITE_APP_PROFILE=worker npm run build && cd ..
 
 # Worker (skip in CI where it's built separately with cache)
 if [ -z "$SKIP_WORKER_BUILD" ]; then

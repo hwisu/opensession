@@ -11,7 +11,6 @@ export { default as ExpandableChip } from './ExpandableChip.svelte';
 export { default as HomePage } from './HomePage.svelte';
 export { default as InvitationsPage } from './InvitationsPage.svelte';
 export { default as LandingPage } from './LandingPage.svelte';
-export { default as LaneGraphColumn } from './LaneGraphColumn.svelte';
 export { default as LoginPage } from './LoginPage.svelte';
 export { default as RegisterPage } from './RegisterPage.svelte';
 export { default as SessionCard } from './SessionCard.svelte';

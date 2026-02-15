@@ -135,3 +135,57 @@ fn on_off(on: bool) -> &'static str {
         "OFF"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{on_off, render};
+    use crate::app::App;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn render_text(app: &App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, app, frame.area()))
+            .expect("draw");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn on_off_formats_boolean_values() {
+        assert_eq!(on_off(true), "ON");
+        assert_eq!(on_off(false), "OFF");
+    }
+
+    #[test]
+    fn render_shows_daemon_on_with_pid() {
+        let mut app = App::new(vec![]);
+        app.startup_status.daemon_pid = Some(4242);
+        let text = render_text(&app, 100, 30);
+        assert!(text.contains("Daemon:"));
+        assert!(text.contains("ON (pid 4242)"));
+    }
+
+    #[test]
+    fn render_shows_daemon_off_when_pid_missing() {
+        let app = App::new(vec![]);
+        let text = render_text(&app, 100, 30);
+        assert!(text.contains("Daemon:"));
+        assert!(text.contains("OFF"));
+        assert!(text.contains("Actions: d=daemon on/off"));
+    }
+}

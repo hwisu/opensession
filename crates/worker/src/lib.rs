@@ -36,6 +36,11 @@ fn with_cors(resp: Response) -> Result<Response> {
     Ok(resp.with_headers(headers))
 }
 
+pub(crate) fn env_flag_bool(env: &Env, name: &str, default: bool) -> bool {
+    let raw = env.var(name).ok().map(|v| v.to_string());
+    opensession_api::deploy::parse_bool_flag(raw.as_deref(), default)
+}
+
 #[event(fetch, respond_with_errors)]
 pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Response> {
     // Handle CORS preflight
@@ -43,9 +48,9 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         return cors_response();
     }
 
-    let router = Router::new();
+    let team_api_enabled = env_flag_bool(&env, opensession_api::deploy::ENV_TEAM_API_ENABLED, true);
 
-    let resp = router
+    let base_router = Router::new()
         // Health
         .get_async("/api/health", routes::health::handle)
         // Auth (legacy)
@@ -73,37 +78,43 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .get_async("/api/sessions/:id", routes::sessions::get)
         .delete_async("/api/sessions/:id", routes::sessions::delete)
         .get_async("/api/sessions/:id/raw", routes::sessions::get_raw)
-        // Teams
-        .post_async("/api/teams", routes::teams::create)
-        .get_async("/api/teams", routes::teams::list)
-        .get_async("/api/teams/:id/stats", routes::teams::stats)
-        .get_async("/api/teams/:id", routes::teams::get)
-        .put_async("/api/teams/:id", routes::teams::update)
-        // Team members
-        .get_async("/api/teams/:id/members", routes::teams::list_members)
-        .post_async("/api/teams/:id/members", routes::teams::add_member)
-        .delete_async(
-            "/api/teams/:team_id/members/:user_id",
-            routes::teams::remove_member,
-        )
-        // Team invitations
-        .post_async("/api/teams/:id/invite", routes::teams::invite_member)
-        .get_async("/api/invitations", routes::teams::list_invitations)
-        .post_async(
-            "/api/invitations/:id/accept",
-            routes::teams::accept_invitation,
-        )
-        .post_async(
-            "/api/invitations/:id/decline",
-            routes::teams::decline_invitation,
-        )
-        // Sync
-        .get_async("/api/sync/pull", routes::sync::pull)
         // Docs (content negotiation: markdown for AI agents, HTML for browsers)
         .get_async("/docs", routes::docs::handle)
-        .get_async("/llms.txt", routes::docs::llms_txt)
-        .run(req, env)
-        .await?;
+        .get_async("/llms.txt", routes::docs::llms_txt);
+
+    let router = if team_api_enabled {
+        base_router
+            // Teams
+            .post_async("/api/teams", routes::teams::create)
+            .get_async("/api/teams", routes::teams::list)
+            .get_async("/api/teams/:id/stats", routes::teams::stats)
+            .get_async("/api/teams/:id", routes::teams::get)
+            .put_async("/api/teams/:id", routes::teams::update)
+            // Team members
+            .get_async("/api/teams/:id/members", routes::teams::list_members)
+            .post_async("/api/teams/:id/members", routes::teams::add_member)
+            .delete_async(
+                "/api/teams/:team_id/members/:user_id",
+                routes::teams::remove_member,
+            )
+            // Team invitations
+            .post_async("/api/teams/:id/invite", routes::teams::invite_member)
+            .get_async("/api/invitations", routes::teams::list_invitations)
+            .post_async(
+                "/api/invitations/:id/accept",
+                routes::teams::accept_invitation,
+            )
+            .post_async(
+                "/api/invitations/:id/decline",
+                routes::teams::decline_invitation,
+            )
+            // Sync
+            .get_async("/api/sync/pull", routes::sync::pull)
+    } else {
+        base_router
+    };
+
+    let resp = router.run(req, env).await?;
 
     with_cors(resp)
 }

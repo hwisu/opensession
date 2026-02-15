@@ -14,6 +14,7 @@ RUN cargo build --release --bin opensession-server && \
 FROM node:22-slim AS frontend
 
 WORKDIR /app
+ARG VITE_APP_PROFILE=docker
 
 COPY packages/ui/ packages/ui/
 RUN cd packages/ui && npm install
@@ -24,7 +25,7 @@ RUN cd web && npm ci
 COPY web/ web/
 RUN mkdir -p web/node_modules/@opensession && \
     ln -sf /app/packages/ui web/node_modules/@opensession/ui && \
-    cd web && npm run build
+    cd web && VITE_APP_PROFILE=${VITE_APP_PROFILE} npm run build
 
 # ── Stage 3: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim

@@ -254,6 +254,22 @@ fn mask_password(s: &str) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::mask_password;
+
+    #[test]
+    fn mask_password_returns_empty_for_empty_input() {
+        assert_eq!(mask_password(""), "");
+    }
+
+    #[test]
+    fn mask_password_keeps_length_and_hides_content() {
+        assert_eq!(mask_password("abc123"), "******");
+        assert_ne!(mask_password("abc123"), "abc123");
+    }
+}
+
 // ── DaemonConfig section (existing settings) ─────────────────────────────
 
 fn render_daemon_config(
@@ -268,7 +284,7 @@ fn render_daemon_config(
     frame.render_widget(body_block, area);
 
     let daemon_running = app.startup_status.daemon_pid.is_some();
-    let fields = config::selectable_fields(section);
+    let section_items = config::section_items(section);
 
     let mut lines = vec![Line::from(Span::styled(
         format!("── {} ──", section_title),
@@ -289,22 +305,66 @@ fn render_daemon_config(
             },
         )));
     }
+    if section == SettingsGroup::TimelineIntelligence {
+        let slot = app.timeline_preset_slot;
+        let slot_state = if app.timeline_preset_slots_filled.contains(&slot) {
+            "saved"
+        } else {
+            "empty"
+        };
+        let filled_slots = if app.timeline_preset_slots_filled.is_empty() {
+            "none".to_string()
+        } else {
+            app.timeline_preset_slots_filled
+                .iter()
+                .map(|slot| slot.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  preset slot #{} ({})  saved: {}",
+                slot, slot_state, filled_slots
+            ),
+            Style::new().fg(Theme::TEXT_MUTED),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  keys: ','/'.' slot  Shift+S save  Shift+L load",
+            Style::new().fg(Theme::TEXT_HINT),
+        )));
+    }
     lines.push(Line::raw(""));
 
     let mut selected_line = 0usize;
+    let mut selectable_idx = 0usize;
+    let mut rendered_headers = 0usize;
 
-    for (selectable_idx, field) in fields.iter().copied().enumerate() {
-        let (label, description, dependency_hint) = match config::field_item(field) {
+    for item in section_items {
+        let (field, label, description, dependency_hint) = match item {
+            SettingItem::Header(title) => {
+                if rendered_headers > 0 {
+                    lines.push(Line::raw(""));
+                }
+                rendered_headers += 1;
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::new()),
+                    Span::styled(
+                        format!("{}:", title),
+                        Style::new().fg(Theme::ACCENT_BLUE).bold(),
+                    ),
+                ]));
+                continue;
+            }
             SettingItem::Field {
+                field,
                 label,
                 description,
                 dependency_hint,
-                ..
-            } => (*label, *description, *dependency_hint),
-            SettingItem::Header(_) => continue,
+            } => (*field, *label, *description, *dependency_hint),
         };
 
         let is_selected = selectable_idx == app.settings_index;
+        selectable_idx += 1;
         if is_selected {
             selected_line = lines.len();
         }

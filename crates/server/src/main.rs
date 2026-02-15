@@ -29,6 +29,7 @@ pub struct AppConfig {
     pub oauth_use_request_host: bool,
     pub jwt_secret: String,
     pub oauth_providers: Vec<OAuthProviderConfig>,
+    pub public_feed_enabled: bool,
 }
 
 impl FromRef<AppState> for Db {
@@ -116,12 +117,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let oauth_providers = load_oauth_providers();
+    let public_feed_enabled_raw =
+        std::env::var(opensession_api::deploy::ENV_PUBLIC_FEED_ENABLED).ok();
+    let public_feed_enabled =
+        opensession_api::deploy::parse_bool_flag(public_feed_enabled_raw.as_deref(), true);
+    if !public_feed_enabled {
+        tracing::info!(
+            "public feed is disabled ({}=false)",
+            opensession_api::deploy::ENV_PUBLIC_FEED_ENABLED
+        );
+    }
 
     let config = AppConfig {
         base_url: base_url.clone(),
         oauth_use_request_host: base_url_env.is_none(),
         jwt_secret,
         oauth_providers,
+        public_feed_enabled,
     };
 
     let state = AppState { db, config };

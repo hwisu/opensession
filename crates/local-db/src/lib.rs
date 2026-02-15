@@ -1,8 +1,6 @@
 pub mod git;
 
 use anyhow::{Context, Result};
-use opensession_api::db::migrations::{LOCAL_MIGRATIONS, MIGRATIONS};
-use opensession_api::{SessionSummary, SortOrder, TimeRange};
 use opensession_core::trace::Session;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -12,6 +10,52 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use git::GitContext;
+
+type Migration = (&'static str, &'static str);
+
+// Keep local cache schema aligned with remote/session schema migrations.
+const REMOTE_MIGRATIONS: &[Migration] = &[
+    ("0001_schema", include_str!("../migrations/0001_schema.sql")),
+    (
+        "0002_team_invite_keys",
+        include_str!("../migrations/0002_team_invite_keys.sql"),
+    ),
+    (
+        "0003_max_active_agents",
+        include_str!("../migrations/0003_max_active_agents.sql"),
+    ),
+    (
+        "0004_oauth_states_provider",
+        include_str!("../migrations/0004_oauth_states_provider.sql"),
+    ),
+    (
+        "0005_sessions_body_url_backfill",
+        include_str!("../migrations/0005_sessions_body_url_backfill.sql"),
+    ),
+    (
+        "0006_sessions_remove_fk_constraints",
+        include_str!("../migrations/0006_sessions_remove_fk_constraints.sql"),
+    ),
+    (
+        "0007_sessions_list_perf_indexes",
+        include_str!("../migrations/0007_sessions_list_perf_indexes.sql"),
+    ),
+    (
+        "0008_teams_force_public",
+        include_str!("../migrations/0008_teams_force_public.sql"),
+    ),
+];
+
+const LOCAL_MIGRATIONS: &[Migration] = &[
+    (
+        "local_0001_schema",
+        include_str!("../migrations/local_0001_schema.sql"),
+    ),
+    (
+        "local_0002_drop_unused_local_sessions",
+        include_str!("../migrations/local_0002_drop_unused_local_sessions.sql"),
+    ),
+];
 
 /// A local session row stored in the local SQLite database.
 #[derive(Debug, Clone)]
@@ -59,16 +103,6 @@ pub struct CommitLink {
     pub repo_path: Option<String>,
     pub branch: Option<String>,
     pub created_at: String,
-}
-
-/// A cached timeline summary row stored in local SQLite.
-#[derive(Debug, Clone)]
-pub struct TimelineSummaryCacheRow {
-    pub lookup_key: String,
-    pub namespace: String,
-    pub compact: String,
-    pub payload: String,
-    pub raw: String,
 }
 
 /// Return true when a cached row corresponds to an OpenCode child session.
@@ -194,8 +228,8 @@ pub struct LocalSessionFilter {
     pub git_repo_name: Option<String>,
     pub search: Option<String>,
     pub tool: Option<String>,
-    pub sort: SortOrder,
-    pub time_range: TimeRange,
+    pub sort: LocalSortOrder,
+    pub time_range: LocalTimeRange,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
@@ -208,12 +242,65 @@ impl Default for LocalSessionFilter {
             git_repo_name: None,
             search: None,
             tool: None,
-            sort: SortOrder::Recent,
-            time_range: TimeRange::All,
+            sort: LocalSortOrder::Recent,
+            time_range: LocalTimeRange::All,
             limit: None,
             offset: None,
         }
     }
+}
+
+/// Sort order for local session listing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LocalSortOrder {
+    #[default]
+    Recent,
+    Popular,
+    Longest,
+}
+
+/// Time range filter for local session listing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LocalTimeRange {
+    Hours24,
+    Days7,
+    Days30,
+    #[default]
+    All,
+}
+
+/// Minimal remote session payload needed for local cache upsert.
+#[derive(Debug, Clone)]
+pub struct RemoteSessionSummary {
+    pub id: String,
+    pub user_id: Option<String>,
+    pub nickname: Option<String>,
+    pub team_id: String,
+    pub tool: String,
+    pub agent_provider: Option<String>,
+    pub agent_model: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<String>,
+    pub created_at: String,
+    pub uploaded_at: String,
+    pub message_count: i64,
+    pub task_count: i64,
+    pub event_count: i64,
+    pub duration_seconds: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub git_remote: Option<String>,
+    pub git_branch: Option<String>,
+    pub git_commit: Option<String>,
+    pub git_repo_name: Option<String>,
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub working_directory: Option<String>,
+    pub files_modified: Option<String>,
+    pub files_read: Option<String>,
+    pub has_errors: bool,
+    pub max_active_agents: i64,
 }
 
 /// Extended filter for the `log` command.
@@ -390,7 +477,7 @@ impl LocalDb {
 
     // ── Upsert remote session (from server sync pull) ──────────────────
 
-    pub fn upsert_remote_session(&self, summary: &SessionSummary) -> Result<()> {
+    pub fn upsert_remote_session(&self, summary: &RemoteSessionSummary) -> Result<()> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO sessions \
@@ -511,10 +598,10 @@ impl LocalDb {
         }
 
         let interval = match filter.time_range {
-            TimeRange::Hours24 => Some("-1 day"),
-            TimeRange::Days7 => Some("-7 days"),
-            TimeRange::Days30 => Some("-30 days"),
-            TimeRange::All => None,
+            LocalTimeRange::Hours24 => Some("-1 day"),
+            LocalTimeRange::Days7 => Some("-7 days"),
+            LocalTimeRange::Days30 => Some("-30 days"),
+            LocalTimeRange::All => None,
         };
         if let Some(interval) = interval {
             where_clauses.push(format!("datetime(s.created_at) >= datetime('now', ?{idx})"));
@@ -527,9 +614,9 @@ impl LocalDb {
     pub fn list_sessions(&self, filter: &LocalSessionFilter) -> Result<Vec<LocalSessionRow>> {
         let (where_str, mut param_values) = Self::build_local_session_where_clause(filter);
         let order_clause = match filter.sort {
-            SortOrder::Popular => "s.message_count DESC, s.created_at DESC",
-            SortOrder::Longest => "s.duration_seconds DESC, s.created_at DESC",
-            SortOrder::Recent => "s.created_at DESC",
+            LocalSortOrder::Popular => "s.message_count DESC, s.created_at DESC",
+            LocalSortOrder::Longest => "s.duration_seconds DESC, s.created_at DESC",
+            LocalSortOrder::Recent => "s.created_at DESC",
         };
 
         let mut sql = format!(
@@ -931,62 +1018,6 @@ impl LocalDb {
         Ok(body)
     }
 
-    // ── Timeline summary cache ───────────────────────────────────────
-
-    pub fn upsert_timeline_summary_cache(
-        &self,
-        lookup_key: &str,
-        namespace: &str,
-        compact: &str,
-        payload: &str,
-        raw: &str,
-    ) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO timeline_summary_cache (lookup_key, namespace, compact, payload, raw, cached_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
-             ON CONFLICT(lookup_key) DO UPDATE SET \
-               namespace=excluded.namespace, \
-               compact=excluded.compact, \
-               payload=excluded.payload, \
-               raw=excluded.raw, \
-               cached_at=datetime('now')",
-            params![lookup_key, namespace, compact, payload, raw],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_timeline_summary_cache_by_namespace(
-        &self,
-        namespace: &str,
-    ) -> Result<Vec<TimelineSummaryCacheRow>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT lookup_key, namespace, compact, payload, raw \
-             FROM timeline_summary_cache \
-             WHERE namespace = ?1",
-        )?;
-        let rows = stmt.query_map(params![namespace], |row| {
-            Ok(TimelineSummaryCacheRow {
-                lookup_key: row.get(0)?,
-                namespace: row.get(1)?,
-                compact: row.get(2)?,
-                payload: row.get(3)?,
-                raw: row.get(4)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    pub fn clear_timeline_summary_cache(&self) -> Result<()> {
-        self.conn()
-            .execute("DELETE FROM timeline_summary_cache", [])?;
-        Ok(())
-    }
-
     // ── Migration helper ───────────────────────────────────────────────
 
     /// Migrate entries from the old state.json UploadState into the local DB.
@@ -1215,7 +1246,7 @@ fn apply_local_migrations(conn: &Connection) -> Result<()> {
     )
     .context("create _migrations table for local db")?;
 
-    for (name, sql) in MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
+    for (name, sql) in REMOTE_MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
         let already_applied: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM _migrations WHERE name = ?1",
@@ -1876,39 +1907,9 @@ mod tests {
     }
 
     #[test]
-    fn test_timeline_summary_cache_roundtrip() {
-        let db = test_db();
-        let namespace = "turn-summary-cache-v3";
-        db.upsert_timeline_summary_cache(
-            "k1",
-            namespace,
-            "compact summary",
-            "{\"kind\":\"turn-summary\"}",
-            "raw summary",
-        )
-        .unwrap();
-
-        let rows = db
-            .list_timeline_summary_cache_by_namespace(namespace)
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].lookup_key, "k1");
-        assert_eq!(rows[0].namespace, namespace);
-        assert_eq!(rows[0].compact, "compact summary");
-        assert_eq!(rows[0].payload, "{\"kind\":\"turn-summary\"}");
-        assert_eq!(rows[0].raw, "raw summary");
-
-        db.clear_timeline_summary_cache().unwrap();
-        let rows = db
-            .list_timeline_summary_cache_by_namespace(namespace)
-            .unwrap();
-        assert!(rows.is_empty());
-    }
-
-    #[test]
     fn test_upsert_remote_session() {
         let db = test_db();
-        let summary = SessionSummary {
+        let summary = RemoteSessionSummary {
             id: "remote-1".to_string(),
             user_id: Some("u1".to_string()),
             nickname: Some("alice".to_string()),
@@ -1952,7 +1953,7 @@ mod tests {
     fn test_list_filter_by_repo() {
         let db = test_db();
         // Insert a remote session with team_id
-        let summary1 = SessionSummary {
+        let summary1 = RemoteSessionSummary {
             id: "s1".to_string(),
             user_id: None,
             nickname: None,
@@ -2001,8 +2002,8 @@ mod tests {
 
     // ── Helpers for inserting test sessions ────────────────────────────
 
-    fn make_summary(id: &str, tool: &str, title: &str, created_at: &str) -> SessionSummary {
-        SessionSummary {
+    fn make_summary(id: &str, tool: &str, title: &str, created_at: &str) -> RemoteSessionSummary {
+        RemoteSessionSummary {
             id: id.to_string(),
             user_id: None,
             nickname: None,

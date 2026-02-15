@@ -208,10 +208,10 @@ $effect(() => {
 		<h2 class="mb-4 text-lg font-bold text-text-primary">Getting Started</h2>
 
 		<div class="space-y-4 text-sm leading-relaxed text-text-secondary">
-			<h3 class="text-sm font-bold text-text-primary">Browse Sessions Without Login</h3>
+			<h3 class="text-sm font-bold text-text-primary">Landing Page (Signed Out)</h3>
 			<p>
-				The <button onclick={() => onNavigate('/')} class="text-accent hover:underline">/</button> Sessions page is public.
-				You can explore local/public sessions immediately without signing in.
+				At <button onclick={() => onNavigate('/')} class="text-accent hover:underline">/</button>,
+				signed-out users see the landing page. After sign-in, the same route shows your session list.
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Create an Account</h3>
@@ -226,6 +226,18 @@ $effect(() => {
 				Password and OAuth methods are both supported. Sign-in is required for teams, inbox, uploads, and account settings.
 			</p>
 
+			<h3 class="text-sm font-bold text-text-primary">Deployment Profiles</h3>
+			<div class="grid gap-px border border-border bg-border sm:grid-cols-2">
+				<div class="bg-bg-primary p-3">
+					<p class="mb-1 text-xs font-bold text-accent">Docker profile</p>
+					<p class="text-xs">Team-focused. Teams/invitations UI and team APIs are enabled.</p>
+				</div>
+				<div class="bg-bg-primary p-3">
+					<p class="mb-1 text-xs font-bold text-accent">Worker profile</p>
+					<p class="text-xs">Personal-sharing focused. Team UI/API is disabled.</p>
+				</div>
+			</div>
+
 			<h3 class="text-sm font-bold text-text-primary">Get Your API Key</h3>
 			<p>
 				Navigate to <button onclick={() => onNavigate('/settings')} class="text-accent hover:underline">/settings</button> to
@@ -235,11 +247,11 @@ $effect(() => {
 			<div class="grid gap-px border border-border bg-border sm:grid-cols-2">
 				<div class="bg-bg-primary p-3">
 					<p class="mb-1 text-xs font-bold text-accent">Guest (not signed in)</p>
-					<p class="text-xs">Browse sessions, open docs, inspect session details.</p>
+					<p class="text-xs">See landing page and docs. Sign in to access account and upload actions.</p>
 				</div>
 				<div class="bg-bg-primary p-3">
 					<p class="mb-1 text-xs font-bold text-accent">Signed in</p>
-					<p class="text-xs">Everything above, plus teams/inbox/upload/settings and private account actions.</p>
+					<p class="text-xs">Session list, uploads, settings, and profile-specific collaboration features.</p>
 				</div>
 			</div>
 		</div>
@@ -265,14 +277,14 @@ $effect(() => {
 				<p class="text-xs">
 					Drag and drop parsed session <code class="text-accent">.json</code> files onto the
 					<button onclick={() => onNavigate('/upload')} class="text-accent hover:underline">/upload</button> page,
-					or click to select files. You can optionally assign a team before uploading.
+					or click to select files. Docker profile supports team-target upload, while Worker profile uses personal mode.
 				</p>
 			</div>
 
 			<h3 class="text-sm font-bold text-text-primary">Viewing Sessions</h3>
 			<p>
 				Your session list at <button onclick={() => onNavigate('/')} class="text-accent hover:underline">/</button> shows
-				public/local sessions without login. Each card displays the session tool, model, timestamp, token count, and a preview of the conversation.
+				your sessions after sign-in. Each card displays the session tool, model, timestamp, token count, and a preview of the conversation.
 			</p>
 
 			<h3 class="text-sm font-bold text-text-primary">Timeline View</h3>

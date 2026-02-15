@@ -1152,3 +1152,180 @@ fn build_server_status_spans(info: &ServerInfo) -> Vec<Span<'_>> {
 
     spans
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_server_status_spans, compact_line, event_first_text, latest_output_preview,
+        latest_prompt_preview,
+    };
+    use crate::app::{App, ServerInfo, ServerStatus};
+    use chrono::Utc;
+    use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
+    use std::collections::HashMap;
+
+    fn make_event(event_type: EventType, text: &str) -> Event {
+        Event {
+            event_id: format!("e-{text}"),
+            timestamp: Utc::now(),
+            event_type,
+            task_id: None,
+            content: Content::text(text),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        }
+    }
+
+    fn make_session(events: Vec<Event>) -> Session {
+        let mut session = Session::new(
+            "s-ui-test".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.events = events;
+        session.recompute_stats();
+        session
+    }
+
+    fn spans_to_text(spans: &[ratatui::text::Span<'_>]) -> String {
+        spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn compact_line_collapses_whitespace() {
+        assert_eq!(
+            compact_line("  hello   world\t\tfrom\nui  ", 100),
+            "hello world from ui"
+        );
+    }
+
+    #[test]
+    fn compact_line_truncates_with_ellipsis() {
+        let out = compact_line("abcdefghijklmnopqrstuvwxyz", 8);
+        assert_eq!(out, "abcdefg…");
+    }
+
+    #[test]
+    fn event_first_text_returns_first_non_empty_line() {
+        let blocks = vec![ContentBlock::Text {
+            text: "\n   \nfirst line\nsecond".to_string(),
+        }];
+        assert_eq!(event_first_text(&blocks), Some("first line".to_string()));
+    }
+
+    #[test]
+    fn event_first_text_returns_none_for_empty_blocks() {
+        let blocks = vec![ContentBlock::Text {
+            text: "   \n\t\n".to_string(),
+        }];
+        assert_eq!(event_first_text(&blocks), None);
+    }
+
+    #[test]
+    fn latest_prompt_preview_ignores_internal_summary_user_events() {
+        let session = make_session(vec![
+            make_event(
+                EventType::UserMessage,
+                "You are generating a turn-summary payload. Return JSON only.",
+            ),
+            make_event(EventType::UserMessage, "real prompt"),
+        ]);
+        assert_eq!(
+            latest_prompt_preview(&session),
+            Some("real prompt".to_string())
+        );
+    }
+
+    #[test]
+    fn latest_output_preview_prefers_agent_message() {
+        let session = make_session(vec![
+            make_event(
+                EventType::TaskEnd {
+                    summary: Some("fallback summary".to_string()),
+                },
+                "",
+            ),
+            make_event(EventType::AgentMessage, "agent output"),
+        ]);
+        assert_eq!(
+            latest_output_preview(&session),
+            Some("agent output".to_string())
+        );
+    }
+
+    #[test]
+    fn latest_output_preview_falls_back_to_task_end_summary() {
+        let session = make_session(vec![make_event(
+            EventType::TaskEnd {
+                summary: Some("task finished cleanly".to_string()),
+            },
+            "",
+        )]);
+        assert_eq!(
+            latest_output_preview(&session),
+            Some("task finished cleanly".to_string())
+        );
+    }
+
+    #[test]
+    fn latest_output_preview_returns_none_without_output() {
+        let session = make_session(vec![make_event(EventType::UserMessage, "only prompt")]);
+        assert_eq!(latest_output_preview(&session), None);
+    }
+
+    #[test]
+    fn build_server_status_spans_formats_online_status() {
+        let info = ServerInfo {
+            url: "https://example.com".to_string(),
+            status: ServerStatus::Online("1.2.3".to_string()),
+            last_upload: None,
+        };
+        let text = spans_to_text(&build_server_status_spans(&info));
+        assert!(text.contains("example.com"));
+        assert!(text.contains("online v1.2.3"));
+    }
+
+    #[test]
+    fn build_server_status_spans_formats_offline_status() {
+        let info = ServerInfo {
+            url: "http://localhost:3000".to_string(),
+            status: ServerStatus::Offline,
+            last_upload: None,
+        };
+        let text = spans_to_text(&build_server_status_spans(&info));
+        assert!(text.contains("localhost:3000"));
+        assert!(text.contains("offline"));
+    }
+
+    #[test]
+    fn build_server_status_spans_formats_unknown_status_with_last_upload_date() {
+        let info = ServerInfo {
+            url: "https://opensession.io".to_string(),
+            status: ServerStatus::Unknown,
+            last_upload: Some("2026-02-15T12:34:56Z".to_string()),
+        };
+        let text = spans_to_text(&build_server_status_spans(&info));
+        assert!(text.contains("last upload: 2026-02-15"));
+        assert!(!text.contains("12:34:56"));
+    }
+
+    #[test]
+    fn latest_prompt_preview_works_with_normal_user_message() {
+        let session = make_session(vec![
+            make_event(EventType::UserMessage, "first prompt"),
+            make_event(EventType::UserMessage, "latest prompt"),
+        ]);
+        assert_eq!(
+            latest_prompt_preview(&session),
+            Some("latest prompt".to_string())
+        );
+    }
+}

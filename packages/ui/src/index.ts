@@ -39,30 +39,6 @@ export {
 // Highlight & Markdown utilities
 export { highlightCode } from './highlight';
 export { isLongContent, lineCount, renderMarkdown } from './markdown';
-export {
-	applyTaskViewMode,
-	collapseConsecutiveEvents,
-	computeLaneEvents,
-	computeMaxLane,
-	computeTaskInfoMap,
-	consecutiveGroupDisplayName,
-	consecutiveGroupKey,
-	consecutiveGroupSummary,
-	elideRedundantFileReads,
-	formatMs,
-	getLaneColor,
-	pairToolCallResults,
-	taskBreakdown,
-} from './timeline-helpers';
-// Timeline types & helpers
-export type {
-	CollapsedTaskItem,
-	ConsecutiveGroupItem,
-	DisplayItem,
-	LaneEvent,
-	PairedToolCallItem,
-	TaskInfo,
-} from './timeline-types';
 // HAIL core types + UI types
 export type {
 	Agent,

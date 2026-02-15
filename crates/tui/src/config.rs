@@ -1,9 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-// Re-export shared config types from core
-pub use opensession_core::config::{
+// Re-export shared runtime config types
+pub use opensession_runtime_config::{
     CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
 };
 
@@ -262,6 +263,165 @@ pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
     Ok(())
 }
 
+pub const TIMELINE_PRESET_SLOT_MIN: u8 = 1;
+pub const TIMELINE_PRESET_SLOT_MAX: u8 = 5;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineIntelPreset {
+    pub detail_realtime_preview_enabled: bool,
+    pub summary_enabled: bool,
+    pub summary_provider: Option<String>,
+    pub summary_model: Option<String>,
+    pub summary_content_mode: String,
+    pub summary_disk_cache_enabled: bool,
+    pub summary_openai_compat_endpoint: Option<String>,
+    pub summary_openai_compat_base: Option<String>,
+    pub summary_openai_compat_path: Option<String>,
+    pub summary_openai_compat_style: Option<String>,
+    pub summary_openai_compat_key: Option<String>,
+    pub summary_openai_compat_key_header: Option<String>,
+    pub summary_event_window: u32,
+    pub summary_debounce_ms: u64,
+    pub summary_max_inflight: u32,
+}
+
+impl Default for TimelineIntelPreset {
+    fn default() -> Self {
+        Self::from_config(&DaemonConfig::default())
+    }
+}
+
+impl TimelineIntelPreset {
+    pub fn from_config(config: &DaemonConfig) -> Self {
+        Self {
+            detail_realtime_preview_enabled: config.daemon.detail_realtime_preview_enabled,
+            summary_enabled: config.daemon.summary_enabled,
+            summary_provider: config.daemon.summary_provider.clone(),
+            summary_model: config.daemon.summary_model.clone(),
+            summary_content_mode: config.daemon.summary_content_mode.clone(),
+            summary_disk_cache_enabled: config.daemon.summary_disk_cache_enabled,
+            summary_openai_compat_endpoint: config.daemon.summary_openai_compat_endpoint.clone(),
+            summary_openai_compat_base: config.daemon.summary_openai_compat_base.clone(),
+            summary_openai_compat_path: config.daemon.summary_openai_compat_path.clone(),
+            summary_openai_compat_style: config.daemon.summary_openai_compat_style.clone(),
+            summary_openai_compat_key: config.daemon.summary_openai_compat_key.clone(),
+            summary_openai_compat_key_header: config
+                .daemon
+                .summary_openai_compat_key_header
+                .clone(),
+            summary_event_window: config.daemon.summary_event_window,
+            summary_debounce_ms: config.daemon.summary_debounce_ms,
+            summary_max_inflight: config.daemon.summary_max_inflight.max(1),
+        }
+    }
+
+    pub fn apply_to_config(&self, config: &mut DaemonConfig) {
+        config.daemon.detail_realtime_preview_enabled = self.detail_realtime_preview_enabled;
+        config.daemon.summary_enabled = self.summary_enabled;
+        config.daemon.summary_provider = self.summary_provider.clone();
+        config.daemon.summary_model = self.summary_model.clone();
+        config.daemon.summary_content_mode = self.summary_content_mode.clone();
+        config.daemon.summary_disk_cache_enabled = self.summary_disk_cache_enabled;
+        config.daemon.summary_openai_compat_endpoint = self.summary_openai_compat_endpoint.clone();
+        config.daemon.summary_openai_compat_base = self.summary_openai_compat_base.clone();
+        config.daemon.summary_openai_compat_path = self.summary_openai_compat_path.clone();
+        config.daemon.summary_openai_compat_style = self.summary_openai_compat_style.clone();
+        config.daemon.summary_openai_compat_key = self.summary_openai_compat_key.clone();
+        config.daemon.summary_openai_compat_key_header =
+            self.summary_openai_compat_key_header.clone();
+        config.daemon.summary_event_window = self.summary_event_window;
+        config.daemon.summary_debounce_ms = self.summary_debounce_ms;
+        config.daemon.summary_max_inflight = self.summary_max_inflight.max(1);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TimelinePresetSlot {
+    pub slot: u8,
+    pub preset: TimelineIntelPreset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct TimelinePresetFile {
+    #[serde(default)]
+    pub slots: Vec<TimelinePresetSlot>,
+}
+
+fn timeline_preset_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("timeline_intel_presets.toml"))
+}
+
+fn validate_timeline_preset_slot(slot: u8) -> Result<()> {
+    if (TIMELINE_PRESET_SLOT_MIN..=TIMELINE_PRESET_SLOT_MAX).contains(&slot) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Invalid timeline preset slot {} (expected {}..={})",
+            slot,
+            TIMELINE_PRESET_SLOT_MIN,
+            TIMELINE_PRESET_SLOT_MAX
+        ))
+    }
+}
+
+fn load_timeline_preset_file() -> Result<TimelinePresetFile> {
+    let path = timeline_preset_path()?;
+    if !path.exists() {
+        return Ok(TimelinePresetFile::default());
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(TimelinePresetFile::default());
+    }
+    let mut file: TimelinePresetFile =
+        toml::from_str(&content).with_context(|| format!("Failed to parse {}", path.display()))?;
+    file.slots.retain(|entry| {
+        (TIMELINE_PRESET_SLOT_MIN..=TIMELINE_PRESET_SLOT_MAX).contains(&entry.slot)
+    });
+    file.slots.sort_by_key(|entry| entry.slot);
+    file.slots.dedup_by_key(|entry| entry.slot);
+    Ok(file)
+}
+
+fn save_timeline_preset_file(file: &TimelinePresetFile) -> Result<()> {
+    let dir = config_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let path = timeline_preset_path()?;
+    let content = toml::to_string_pretty(file).context("Failed to serialize timeline presets")?;
+    std::fs::write(&path, content)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
+}
+
+pub fn list_timeline_preset_slots() -> Result<Vec<u8>> {
+    let file = load_timeline_preset_file()?;
+    Ok(file.slots.iter().map(|entry| entry.slot).collect())
+}
+
+pub fn load_timeline_preset(slot: u8) -> Result<Option<TimelineIntelPreset>> {
+    validate_timeline_preset_slot(slot)?;
+    let file = load_timeline_preset_file()?;
+    Ok(file
+        .slots
+        .into_iter()
+        .find(|entry| entry.slot == slot)
+        .map(|entry| entry.preset))
+}
+
+pub fn save_timeline_preset(slot: u8, config: &DaemonConfig) -> Result<()> {
+    validate_timeline_preset_slot(slot)?;
+    let mut file = load_timeline_preset_file()?;
+    let preset = TimelineIntelPreset::from_config(config);
+    if let Some(entry) = file.slots.iter_mut().find(|entry| entry.slot == slot) {
+        entry.preset = preset;
+    } else {
+        file.slots.push(TimelinePresetSlot { slot, preset });
+        file.slots.sort_by_key(|entry| entry.slot);
+    }
+    save_timeline_preset_file(&file)
+}
+
 /// Get daemon PID from PID file, if it exists.
 pub fn daemon_pid() -> Option<u32> {
     let pid_path = config_dir().ok()?.join("daemon.pid");
@@ -421,12 +581,6 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         dependency_hint: Some("Used by daemon realtime publish and detail auto-refresh"),
     },
     SettingItem::Field {
-        field: SettingField::DetailRealtimePreviewEnabled,
-        label: "Detail Auto-Refresh",
-        description: "Auto-reload Session Detail when selected source file mtime changes",
-        dependency_hint: Some("Global toggle for Session Detail live refresh"),
-    },
-    SettingItem::Field {
         field: SettingField::HealthCheckSecs,
         label: "Health Check (secs)",
         description: "How often the daemon checks server connectivity",
@@ -438,7 +592,14 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Maximum retry attempts for failed uploads",
         dependency_hint: Some("Applies when daemon is running"),
     },
-    SettingItem::Header("LLM Summary (Simple)"),
+    SettingItem::Header("Timeline Detail"),
+    SettingItem::Field {
+        field: SettingField::DetailRealtimePreviewEnabled,
+        label: "Detail Auto-Refresh",
+        description: "Auto-reload Session Detail when selected source file mtime changes",
+        dependency_hint: Some("Global toggle for Session Detail live refresh"),
+    },
+    SettingItem::Header("LLM Summary (Common)"),
     SettingItem::Field {
         field: SettingField::SummaryEnabled,
         label: "LLM Summary Enabled",
@@ -452,12 +613,6 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         dependency_hint: Some("CLI mode requires a configured LLM Summary CLI Agent"),
     },
     SettingItem::Field {
-        field: SettingField::SummaryCliAgent,
-        label: "LLM Summary CLI Agent",
-        description: "Which CLI to call for summary (auto/codex/claude/cursor/gemini)",
-        dependency_hint: Some("Active only when LLM Summary Enabled=ON and LLM Summary Mode=CLI"),
-    },
-    SettingItem::Field {
         field: SettingField::SummaryModel,
         label: "LLM Summary Model",
         description: "Optional model override for API calls and CLI --model",
@@ -469,7 +624,6 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Persist summary results by context hash and reuse across runs",
         dependency_hint: Some("Reduces repeated summary calls for unchanged windows"),
     },
-    SettingItem::Header("LLM Summary (Advanced)"),
     SettingItem::Field {
         field: SettingField::SummaryContentMode,
         label: "LLM Summary Detail Mode",
@@ -477,6 +631,32 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
             "normal: richer action detail · minimal: merge low-signal read/open/list actions",
         dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
     },
+    SettingItem::Field {
+        field: SettingField::SummaryEventWindow,
+        label: "LLM Summary Window",
+        description: "Checkpoint size in events (set 0 or 'auto' for turn+phase auto segmentation)",
+        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryDebounceMs,
+        label: "LLM Summary Debounce (ms)",
+        description: "Minimum time to wait before scheduling next summary request",
+        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
+    },
+    SettingItem::Field {
+        field: SettingField::SummaryMaxInflight,
+        label: "LLM Summary Max Inflight",
+        description: "Maximum concurrent summary requests (separate from debounce)",
+        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
+    },
+    SettingItem::Header("LLM Summary (CLI)"),
+    SettingItem::Field {
+        field: SettingField::SummaryCliAgent,
+        label: "LLM Summary CLI Agent",
+        description: "Which CLI to call for summary (auto/codex/claude/cursor/gemini)",
+        dependency_hint: Some("Active only when LLM Summary Enabled=ON and LLM Summary Mode=CLI"),
+    },
+    SettingItem::Header("LLM Summary (API)"),
     SettingItem::Field {
         field: SettingField::SummaryOpenAiCompatEndpoint,
         label: "Summary API Endpoint",
@@ -512,24 +692,6 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         label: "Summary API Key Header",
         description: "Header name for Summary API Key",
         dependency_hint: Some("Default: Authorization: Bearer"),
-    },
-    SettingItem::Field {
-        field: SettingField::SummaryEventWindow,
-        label: "LLM Summary Window",
-        description: "Checkpoint size in events (set 0 or 'auto' for turn+phase auto segmentation)",
-        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
-    },
-    SettingItem::Field {
-        field: SettingField::SummaryDebounceMs,
-        label: "LLM Summary Debounce (ms)",
-        description: "Minimum time to wait before scheduling next summary request",
-        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
-    },
-    SettingItem::Field {
-        field: SettingField::SummaryMaxInflight,
-        label: "LLM Summary Max Inflight",
-        description: "Maximum concurrent summary requests (separate from debounce)",
-        dependency_hint: Some("Active only when LLM Summary Enabled=ON"),
     },
     SettingItem::Header("Watchers"),
     SettingItem::Field {
@@ -1184,6 +1346,30 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
     }
 }
 
+pub fn section_items(section: SettingsGroup) -> Vec<&'static SettingItem> {
+    let mut items: Vec<&'static SettingItem> = Vec::new();
+    let mut pending_header: Option<&'static SettingItem> = None;
+
+    for item in SETTINGS_LAYOUT {
+        match item {
+            SettingItem::Header(_) => {
+                pending_header = Some(item);
+            }
+            SettingItem::Field { field, .. } => {
+                if group_for_field(*field) != section {
+                    continue;
+                }
+                if let Some(header) = pending_header.take() {
+                    items.push(header);
+                }
+                items.push(item);
+            }
+        }
+    }
+
+    items
+}
+
 pub fn selectable_fields(section: SettingsGroup) -> Vec<SettingField> {
     SETTINGS_LAYOUT
         .iter()
@@ -1198,13 +1384,6 @@ pub fn selectable_field_count(section: SettingsGroup) -> usize {
 
 pub fn nth_selectable_field(section: SettingsGroup, n: usize) -> Option<SettingField> {
     selectable_fields(section).into_iter().nth(n)
-}
-
-pub fn field_item(field: SettingField) -> &'static SettingItem {
-    SETTINGS_LAYOUT
-        .iter()
-        .find(|item| item.field() == Some(field))
-        .unwrap_or_else(|| panic!("missing setting metadata for {:?}", field))
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ const {
 		if (typeof window !== 'undefined') window.location.href = path;
 	},
 }: {
-	teamMode?: 'dropdown' | 'manual';
+	teamMode?: 'dropdown' | 'manual' | 'personal';
 	onSuccess: (id: string) => void;
 	onNavigate?: (path: string) => void;
 } = $props();
@@ -30,7 +30,21 @@ let selectedTeamId = $state('');
 let teamsLoading = $state(false);
 let manualTeamId = $state('');
 
-const effectiveTeamId = $derived(teamMode === 'dropdown' ? selectedTeamId : manualTeamId);
+const effectiveTeamId = $derived.by(() => {
+	if (teamMode === 'dropdown') return selectedTeamId;
+	if (teamMode === 'manual') return manualTeamId;
+	return 'personal';
+});
+const uploadDescription = $derived(
+	teamMode === 'personal'
+		? 'Upload a HAIL session JSON file from your personal workspace'
+		: 'Upload a HAIL session JSON file to share with the community',
+);
+const authDescription = $derived(
+	teamMode === 'personal'
+		? 'Sign in first, then upload your session JSON.'
+		: 'Sign in first, then choose a target team and upload your session JSON.',
+);
 
 function parseJson(text: string) {
 	parseError = null;
@@ -143,55 +157,57 @@ $effect(() => {
 <div class="mx-auto max-w-2xl">
 	<h1 class="mb-2 text-lg font-bold text-text-primary">Upload Session</h1>
 	<p class="mb-4 text-sm text-text-secondary">
-		Upload a HAIL session JSON file to share with the community
+		{uploadDescription}
 	</p>
 
 	{#if unauthorized}
 		<div class="mb-4">
-			<AuthGuideCard
-				title="Upload requires sign in"
-				description="Sign in first, then choose a target team and upload your session JSON."
-				{onNavigate}
-			/>
-		</div>
-	{/if}
-
-	<!-- Team selection (branching) -->
-	<div class="mb-3" class:opacity-50={unauthorized}>
-		<label class="mb-1 block text-xs text-text-secondary" for="team-select">
-			Team
-		</label>
-		{#if teamMode === 'dropdown'}
-			{#if teamsLoading}
-				<p class="text-xs text-text-muted">Loading teams...</p>
-			{:else if teams.length === 0}
-				<div class="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-					You need to be a member of a team to upload sessions.
-					<a href="/teams" class="underline">Create or join a team</a> first.
-				</div>
-			{:else}
-				<select
-					id="team-select"
-					bind:value={selectedTeamId}
-					disabled={unauthorized}
-					class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary outline-none focus:border-accent"
-				>
-					{#each teams as team}
-						<option value={team.id}>{team.name}</option>
-					{/each}
-				</select>
-			{/if}
-		{:else}
-			<input
-				id="team-select"
-				type="text"
-				bind:value={manualTeamId}
-				disabled={unauthorized}
-				placeholder="Enter team ID"
-				class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-			/>
+				<AuthGuideCard
+					title="Upload requires sign in"
+					description={authDescription}
+					{onNavigate}
+				/>
+			</div>
 		{/if}
-	</div>
+
+		{#if teamMode !== 'personal'}
+			<!-- Team selection (branching) -->
+			<div class="mb-3" class:opacity-50={unauthorized}>
+				<label class="mb-1 block text-xs text-text-secondary" for="team-select">
+					Team
+				</label>
+				{#if teamMode === 'dropdown'}
+					{#if teamsLoading}
+						<p class="text-xs text-text-muted">Loading teams...</p>
+					{:else if teams.length === 0}
+						<div class="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+							You need to be a member of a team to upload sessions.
+							<a href="/teams" class="underline">Create or join a team</a> first.
+						</div>
+					{:else}
+						<select
+							id="team-select"
+							bind:value={selectedTeamId}
+							disabled={unauthorized}
+							class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary outline-none focus:border-accent"
+						>
+							{#each teams as team}
+								<option value={team.id}>{team.name}</option>
+							{/each}
+						</select>
+					{/if}
+				{:else}
+					<input
+						id="team-select"
+						type="text"
+						bind:value={manualTeamId}
+						disabled={unauthorized}
+						placeholder="Enter team ID"
+						class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+					/>
+				{/if}
+			</div>
+		{/if}
 
 	<!-- Drop zone -->
 	<div

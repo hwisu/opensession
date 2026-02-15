@@ -1,4 +1,4 @@
-//! `opensession stream-push --agent <agent>` — incremental local session indexing.
+//! `opensession ops stream-push --agent <agent>` — incremental local session indexing.
 //!
 //! Called by the agent's PostToolUse hook on every tool use. Must be fast
 //! (< 2s). Parses the full session file and upserts it into the local DB.
@@ -194,7 +194,7 @@ fn claude_settings_path() -> Result<PathBuf> {
 }
 
 const HOOK_MATCHER: &str = "Edit|Write|Bash|NotebookEdit";
-const HOOK_COMMAND: &str = "opensession stream-push --agent claude-code";
+const HOOK_COMMAND: &str = "opensession ops stream-push --agent claude-code";
 
 fn enable_claude_code_hook() -> Result<()> {
     let settings_path = claude_settings_path()?;

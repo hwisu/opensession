@@ -5,7 +5,9 @@ use opensession_api::{
     UserSettingsResponse,
 };
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
-use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
+use opensession_local_db::{
+    LocalDb, LocalSessionFilter, LocalSessionRow, LocalSortOrder, LocalTimeRange,
+};
 use ratatui::widgets::ListState;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -886,7 +888,7 @@ mod turn_extract_tests {
     }
 
     #[test]
-    fn get_base_visible_events_hides_claude_merged_subagent_events() {
+    fn get_base_visible_events_keeps_claude_merged_subagent_events() {
         let mut session = Session::new(
             "s-hidden".to_string(),
             Agent {
@@ -930,11 +932,11 @@ mod turn_extract_tests {
         let app = App::new(vec![session]);
         let visible = app.get_base_visible_events(&app.sessions[0]);
 
-        assert_eq!(visible.len(), 2);
+        assert_eq!(visible.len(), 5);
         assert!(visible
             .iter()
-            .all(|row| row.event().task_id.as_deref() != Some("agent-123")));
-        assert_eq!(app.session_max_active_agents.get("s-hidden"), Some(&1usize));
+            .any(|row| row.event().task_id.as_deref() == Some("agent-123")));
+        assert_eq!(app.session_max_active_agents.get("s-hidden"), Some(&2usize));
     }
 
     #[test]
@@ -1056,6 +1058,24 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn list_right_key_does_not_open_session_detail() {
+        let mut app = App::new(vec![Session::new(
+            "s1".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        )]);
+        assert_eq!(app.view, View::SessionList);
+
+        app.handle_list_key(KeyCode::Right);
+
+        assert_eq!(app.view, View::SessionList);
+    }
+
+    #[test]
     fn live_detail_enters_at_tail_in_linear_and_turn_modes() {
         let session = make_live_session("live-tail", 4);
 
@@ -1137,6 +1157,34 @@ mod turn_extract_tests {
 
         app.handle_detail_key(KeyCode::Char('v'));
         assert_eq!(app.detail_view_mode, DetailViewMode::Turn);
+    }
+
+    #[test]
+    fn turn_mode_esc_leaves_detail_view_instead_of_switching_to_linear() {
+        let session = make_live_session("turn-esc-back", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_view_mode = DetailViewMode::Turn;
+        assert_eq!(app.view, View::SessionDetail);
+
+        let should_quit = app.handle_detail_key(KeyCode::Esc);
+
+        assert!(!should_quit);
+        assert_eq!(app.view, View::SessionList);
+    }
+
+    #[test]
+    fn turn_mode_left_scrolls_without_switching_to_linear() {
+        let session = make_live_session("turn-left-stays-turn", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_view_mode = DetailViewMode::Turn;
+        app.turn_h_scroll = 8;
+
+        app.handle_detail_key(KeyCode::Left);
+
+        assert_eq!(app.detail_view_mode, DetailViewMode::Turn);
+        assert_eq!(app.turn_h_scroll, 4);
     }
 
     #[test]
@@ -1521,6 +1569,10 @@ pub struct App {
     pub config_dirty: bool,
     /// Transient message shown after save, etc.
     pub flash_message: Option<(String, FlashLevel)>,
+    /// Active timeline preset slot for save/load shortcuts (1..=5).
+    pub timeline_preset_slot: u8,
+    /// Timeline preset slots that currently have saved values.
+    pub timeline_preset_slots_filled: Vec<u8>,
 
     // ── Setup login ──────────────────────────────────────────────
     pub setup_step: SetupStep,
@@ -1859,6 +1911,8 @@ impl App {
             edit_buffer: String::new(),
             config_dirty: false,
             flash_message: None,
+            timeline_preset_slot: config::TIMELINE_PRESET_SLOT_MIN,
+            timeline_preset_slots_filled: Vec::new(),
             setup_step: SetupStep::Scenario,
             setup_scenario_index: 0,
             setup_scenario: None,
@@ -1917,52 +1971,6 @@ impl App {
                 .description
                 .as_deref()
                 .is_some_and(Self::is_internal_summary_title)
-    }
-
-    fn hidden_claude_subagent_task_ids(session: &Session) -> HashSet<String> {
-        if !session.agent.tool.eq_ignore_ascii_case("claude-code") {
-            return HashSet::new();
-        }
-
-        let mut hidden = HashSet::new();
-        for event in &session.events {
-            let subagent_id = event
-                .attributes
-                .get("subagent_id")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            let is_marked_subagent = event
-                .attributes
-                .get("merged_subagent")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-                || subagent_id.is_some();
-            if !is_marked_subagent {
-                continue;
-            }
-
-            if let Some(task_id) = event
-                .task_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                hidden.insert(task_id.to_string());
-            } else if let Some(task_id) = subagent_id {
-                hidden.insert(task_id.to_string());
-            }
-        }
-        hidden
-    }
-
-    fn hide_claude_subagent_event(event: &Event, hidden_task_ids: &HashSet<String>) -> bool {
-        event
-            .task_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|task_id| !task_id.is_empty())
-            .is_some_and(|task_id| hidden_task_ids.contains(task_id))
     }
 
     /// Returns true if the app should quit.
@@ -2268,7 +2276,7 @@ impl App {
             KeyCode::PageUp => self.list_page_up(),
             KeyCode::Char('G') | KeyCode::End => self.list_end(),
             KeyCode::Char('g') | KeyCode::Home => self.list_start(),
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.enter_detail(),
+            KeyCode::Enter => self.enter_detail(),
             KeyCode::Char('/') => {
                 self.searching = true;
             }
@@ -2802,6 +2810,80 @@ impl App {
             .and_then(|section| config::nth_selectable_field(section, index))
     }
 
+    pub fn refresh_timeline_preset_slots(&mut self) {
+        self.timeline_preset_slots_filled =
+            config::list_timeline_preset_slots().unwrap_or_default();
+        self.timeline_preset_slots_filled.sort_unstable();
+        self.timeline_preset_slots_filled.dedup();
+        if !(config::TIMELINE_PRESET_SLOT_MIN..=config::TIMELINE_PRESET_SLOT_MAX)
+            .contains(&self.timeline_preset_slot)
+        {
+            self.timeline_preset_slot = config::TIMELINE_PRESET_SLOT_MIN;
+        }
+    }
+
+    fn cycle_timeline_preset_slot(&mut self, forward: bool) {
+        let min = config::TIMELINE_PRESET_SLOT_MIN;
+        let max = config::TIMELINE_PRESET_SLOT_MAX;
+        self.timeline_preset_slot = if forward {
+            if self.timeline_preset_slot >= max {
+                min
+            } else {
+                self.timeline_preset_slot + 1
+            }
+        } else if self.timeline_preset_slot <= min {
+            max
+        } else {
+            self.timeline_preset_slot - 1
+        };
+        let slot = self.timeline_preset_slot;
+        let state = if self.timeline_preset_slots_filled.contains(&slot) {
+            "saved"
+        } else {
+            "empty"
+        };
+        self.flash_info(format!("Timeline preset slot #{} ({})", slot, state));
+    }
+
+    fn save_timeline_preset_slot(&mut self) {
+        let slot = self.timeline_preset_slot;
+        match config::save_timeline_preset(slot, &self.daemon_config) {
+            Ok(()) => {
+                if !self.timeline_preset_slots_filled.contains(&slot) {
+                    self.timeline_preset_slots_filled.push(slot);
+                    self.timeline_preset_slots_filled.sort_unstable();
+                }
+                self.flash_success(format!("Timeline preset slot #{} saved", slot));
+            }
+            Err(err) => {
+                self.flash_error(format!("Timeline preset save failed: {}", err));
+            }
+        }
+    }
+
+    fn load_timeline_preset_slot(&mut self) {
+        let slot = self.timeline_preset_slot;
+        match config::load_timeline_preset(slot) {
+            Ok(Some(preset)) => {
+                preset.apply_to_config(&mut self.daemon_config);
+                self.config_dirty = true;
+                self.timeline_summary_cache.clear();
+                self.timeline_summary_lookup_keys.clear();
+                self.cancel_timeline_summary_jobs();
+                self.flash_success(format!("Timeline preset slot #{} loaded", slot));
+            }
+            Ok(None) => {
+                self.flash_info(format!(
+                    "Timeline preset slot #{} is empty (save with Shift+S)",
+                    slot
+                ));
+            }
+            Err(err) => {
+                self.flash_error(format!("Timeline preset load failed: {}", err));
+            }
+        }
+    }
+
     fn handle_settings_key(&mut self, key: KeyCode) -> bool {
         // Password form editing
         if self.password_form.editing {
@@ -2874,11 +2956,17 @@ impl App {
                 // Next settings section
                 self.settings_section = self.settings_section.next();
                 self.settings_index = 0;
+                if self.settings_section == SettingsSection::TimelineIntelligence {
+                    self.refresh_timeline_preset_slots();
+                }
             }
             KeyCode::Char('[') => {
                 // Previous settings section
                 self.settings_section = self.settings_section.prev();
                 self.settings_index = 0;
+                if self.settings_section == SettingsSection::TimelineIntelligence {
+                    self.refresh_timeline_preset_slots();
+                }
             }
             _ => {
                 // Delegate to section-specific handling
@@ -2989,6 +3077,26 @@ impl App {
                         self.editing_field = true;
                     }
                 }
+            }
+            KeyCode::Char(',')
+                if self.settings_section == SettingsSection::TimelineIntelligence =>
+            {
+                self.cycle_timeline_preset_slot(false);
+            }
+            KeyCode::Char('.')
+                if self.settings_section == SettingsSection::TimelineIntelligence =>
+            {
+                self.cycle_timeline_preset_slot(true);
+            }
+            KeyCode::Char('S')
+                if self.settings_section == SettingsSection::TimelineIntelligence =>
+            {
+                self.save_timeline_preset_slot();
+            }
+            KeyCode::Char('L')
+                if self.settings_section == SettingsSection::TimelineIntelligence =>
+            {
+                self.load_timeline_preset_slot();
             }
             KeyCode::Char('s') => {
                 self.save_config();
@@ -4053,16 +4161,16 @@ impl App {
                 team_id: Some(tid.clone()),
                 tool: self.tool_filter.clone(),
                 search: search.clone(),
-                sort: SortOrder::Recent,
-                time_range: self.session_time_range.clone(),
+                sort: LocalSortOrder::Recent,
+                time_range: self.local_session_time_range(),
                 ..Default::default()
             },
             ViewMode::Repo(repo) => LocalSessionFilter {
                 git_repo_name: Some(repo.clone()),
                 tool: self.tool_filter.clone(),
                 search,
-                sort: SortOrder::Recent,
-                time_range: self.session_time_range.clone(),
+                sort: LocalSortOrder::Recent,
+                time_range: self.local_session_time_range(),
                 ..Default::default()
             },
         };
@@ -4200,8 +4308,8 @@ impl App {
                     team_id: Some(tid),
                     tool: None,
                     search,
-                    sort: SortOrder::Recent,
-                    time_range: self.session_time_range.clone(),
+                    sort: LocalSortOrder::Recent,
+                    time_range: self.local_session_time_range(),
                     ..Default::default()
                 };
                 if let Some(db) = self.db.as_ref() {
@@ -4216,8 +4324,8 @@ impl App {
                     git_repo_name: Some(repo),
                     tool: None,
                     search,
-                    sort: SortOrder::Recent,
-                    time_range: self.session_time_range.clone(),
+                    sort: LocalSortOrder::Recent,
+                    time_range: self.local_session_time_range(),
                     ..Default::default()
                 };
                 if let Some(db) = self.db.as_ref() {
@@ -4295,6 +4403,15 @@ impl App {
             TimeRange::Hours24 => Some(Utc::now() - ChronoDuration::hours(24)),
             TimeRange::Days7 => Some(Utc::now() - ChronoDuration::days(7)),
             TimeRange::Days30 => Some(Utc::now() - ChronoDuration::days(30)),
+        }
+    }
+
+    fn local_session_time_range(&self) -> LocalTimeRange {
+        match self.session_time_range {
+            TimeRange::All => LocalTimeRange::All,
+            TimeRange::Hours24 => LocalTimeRange::Hours24,
+            TimeRange::Days7 => LocalTimeRange::Days7,
+            TimeRange::Days30 => LocalTimeRange::Days30,
         }
     }
 
@@ -4599,9 +4716,7 @@ impl App {
                 if self.focus_detail_view {
                     return true;
                 }
-                self.detail_view_mode = DetailViewMode::Linear;
-                self.sync_turn_to_linear();
-                self.update_detail_selection_anchor();
+                self.leave_detail_view();
             }
             KeyCode::Char('v') => {
                 self.detail_view_mode = DetailViewMode::Linear;
@@ -4609,13 +4724,7 @@ impl App {
                 self.update_detail_selection_anchor();
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                if self.focus_detail_view {
-                    self.turn_h_scroll = self.turn_h_scroll.saturating_sub(4);
-                } else {
-                    self.detail_view_mode = DetailViewMode::Linear;
-                    self.sync_turn_to_linear();
-                    self.update_detail_selection_anchor();
-                }
+                self.turn_h_scroll = self.turn_h_scroll.saturating_sub(4);
             }
             KeyCode::Char('l') | KeyCode::Right => {
                 self.turn_h_scroll = self.turn_h_scroll.saturating_add(4);
@@ -5034,10 +5143,9 @@ impl App {
     }
 
     pub fn get_base_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
-        let hidden_task_ids = Self::hidden_claude_subagent_task_ids(session);
         let after_task: Vec<DisplayEvent<'a>> = build_lane_events_with_filter(
             session,
-            |event| !Self::hide_claude_subagent_event(event, &hidden_task_ids),
+            |_| true,
             |event_type| self.matches_event_filter(event_type),
         )
         .into_iter()

@@ -48,3 +48,62 @@ pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mo
     let paragraph = Paragraph::new(line);
     frame.render_widget(paragraph, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+    use crate::app::{Tab, View};
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn render_tab_text(active: Tab, view: View, local_mode: bool) -> String {
+        let backend = TestBackend::new(120, 3);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, &active, &view, area, local_mode);
+            })
+            .expect("draw");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn session_list_view_shows_numbered_tabs() {
+        let text = render_tab_text(Tab::Sessions, View::SessionList, false);
+        assert!(text.contains("1:Sessions"));
+        assert!(text.contains("2:Collaboration"));
+        assert!(text.contains("3:Operations"));
+        assert!(text.contains("4:Settings"));
+    }
+
+    #[test]
+    fn session_detail_view_hides_number_prefixes() {
+        let text = render_tab_text(Tab::Sessions, View::SessionDetail, false);
+        assert!(text.contains("Sessions"));
+        assert!(text.contains("Collaboration"));
+        assert!(!text.contains("1:Sessions"));
+        assert!(!text.contains("2:Collaboration"));
+    }
+
+    #[test]
+    fn team_detail_view_hides_number_prefixes() {
+        let text = render_tab_text(Tab::Collaboration, View::TeamDetail, false);
+        assert!(text.contains("Sessions"));
+        assert!(text.contains("Operations"));
+        assert!(!text.contains("3:Operations"));
+    }
+}

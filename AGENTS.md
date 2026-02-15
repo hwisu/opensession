@@ -16,3 +16,11 @@
 ## Summary-Off Detail Contract
 - When LLM summary is unavailable/off, detail view MUST still render task-level execution visibility.
 - Fallback rendering uses task buckets (`main` + `task_id` buckets) with status, counters, and last output.
+
+## Deployment Profile Contract
+- Runtime stays Rust-first in this repository (no TS/Go runtime replacement in this phase).
+- Docker/Axum profile is team-focused and may disable anonymous session feed via `OPENSESSION_PUBLIC_FEED_ENABLED=false`.
+- Worker/Wrangler profile is personal-sharing focused with team APIs disabled via `ENABLE_TEAM_API=false`.
+- Web UI behavior must follow `VITE_APP_PROFILE=docker|worker`:
+  - `docker`: Teams/Inbox surface enabled.
+  - `worker`: Teams/Inbox surface hidden/blocked.

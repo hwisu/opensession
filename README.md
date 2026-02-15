@@ -13,16 +13,31 @@ from Claude Code, Cursor, Codex, Goose, Aider, and other AI tools.
 
 ## Quick Start
 
-### CLI / TUI
+### CLI
 
 ```bash
 cargo install opensession
 
-opensession ui                    # Launch TUI
-opensession view claude           # Open live detail view for active Claude session
-opensession session discover      # Find AI sessions on this machine
-opensession publish upload-all    # Upload all discovered sessions
+opensession session handoff --last
+opensession publish upload-all
+opensession ops stream enable --agent claude-code
 ```
+
+### Deployment Profiles
+
+| Area | Docker (Axum server) | Worker (Wrangler) |
+|------|-----------------------|-------------------|
+| Primary focus | Team collaboration | Personal sharing |
+| Home `/` when signed out | Landing page | Landing page |
+| Home `/` when signed in | Session list | Session list |
+| Team API (`/api/teams*`, `/api/invitations*`, `/api/sync/pull`) | Enabled | Disabled when `ENABLE_TEAM_API=false` |
+| Team UI (`/teams`, `/invitations`) | Enabled | Hidden/disabled |
+| Upload mode | Team-target upload | Personal upload (`team_id=personal`) |
+
+- `Web build profile`: `VITE_APP_PROFILE=docker|worker` controls UI surface.
+- Repository defaults:
+  - `docker-compose.yml` sets `OPENSESSION_PUBLIC_FEED_ENABLED=false` (anonymous `GET /api/sessions` blocked).
+  - `wrangler.toml` sets `ENABLE_TEAM_API=false`.
 
 ### Self-Hosted Server
 
@@ -77,20 +92,12 @@ Single Cargo workspace with 12 crates:
 
 | Command | Description |
 |---------|-------------|
-| `opensession ui` | Launch TUI |
-| `opensession view <agent>` | Open real-time summary detail view for an active agent session |
-| `opensession session discover` | List all local AI sessions |
-| `opensession session index` | Build local session index |
-| `opensession session log` | Show session history (git-log style) |
-| `opensession session stats` | Show AI usage statistics |
 | `opensession session handoff` | Generate handoff summary for next agent |
-| `opensession session diff <a> <b>` | Compare two sessions |
-| `opensession session timeline` | Export timeline strings (pipe-friendly) |
 | `opensession publish upload <file>` | Upload a session file |
 | `opensession publish upload-all` | Discover and upload all sessions |
-| `opensession ops daemon start\|stop\|status` | Manage background daemon |
-| `opensession ops stream enable\|disable` | Real-time session streaming |
-| `opensession ops hooks install\|uninstall` | Manage git hooks |
+| `opensession ops daemon start\|stop\|status\|health` | Manage background daemon |
+| `opensession ops stream enable\|disable` | Enable/disable local streaming hook |
+| `opensession ops stream-push --agent <agent>` | Hook target command for incremental stream indexing |
 | `opensession account config` | Show or set configuration |
 | `opensession account server status\|verify` | Check server connection |
 | `opensession docs completion <shell>` | Generate shell completions |
@@ -143,6 +150,7 @@ method = "native"            # platform_api | native | none
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite DB and session body storage |
 | `OPENSESSION_WEB_DIR` | `web/build` | Static frontend files |
 | `BASE_URL` | `http://localhost:3000` | Public-facing URL (used as OAuth callback base when set) |
+| `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | Set `false` to require auth for `GET /api/sessions` |
 | `JWT_SECRET` | *(required)* | Secret for JWT token signing |
 | `PORT` | `3000` | HTTP listen port |
 | `RUST_LOG` | `opensession_server=info,tower_http=info` | Log level |

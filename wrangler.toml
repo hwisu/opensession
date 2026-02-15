@@ -27,3 +27,4 @@ invocation_logs = true
 
 [vars]
 BASE_URL = "https://opensession.io"
+ENABLE_TEAM_API = "false"

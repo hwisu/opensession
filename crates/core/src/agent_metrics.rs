@@ -9,40 +9,6 @@ fn normalize_task_id(event: &Event) -> Option<&str> {
         .filter(|task_id| !task_id.is_empty())
 }
 
-/// Returns task IDs that belong to merged/embedded Claude sub-agents.
-pub fn hidden_claude_subagent_task_ids(session: &Session) -> HashSet<String> {
-    if !session.agent.tool.eq_ignore_ascii_case("claude-code") {
-        return HashSet::new();
-    }
-
-    let mut hidden = HashSet::new();
-    for event in &session.events {
-        let subagent_id = event
-            .attributes
-            .get("subagent_id")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let is_marked_subagent = event
-            .attributes
-            .get("merged_subagent")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-            || subagent_id.is_some();
-        if !is_marked_subagent {
-            continue;
-        }
-
-        if let Some(task_id) = normalize_task_id(event) {
-            hidden.insert(task_id.to_string());
-        } else if let Some(task_id) = subagent_id {
-            hidden.insert(task_id.to_string());
-        }
-    }
-
-    hidden
-}
-
 /// Max number of concurrently active agents (main lane included).
 ///
 /// Always returns `>= 1` (main lane baseline).
@@ -51,15 +17,11 @@ pub fn max_active_agents(session: &Session) -> usize {
         return 1;
     }
 
-    let hidden_task_ids = hidden_claude_subagent_task_ids(session);
     let mut active_task_ids: HashSet<&str> = HashSet::new();
     let mut max_subagents = 0usize;
 
     for event in &session.events {
         let task_id = normalize_task_id(event);
-        if task_id.is_some_and(|task_id| hidden_task_ids.contains(task_id)) {
-            continue;
-        }
 
         if matches!(event.event_type, EventType::TaskStart { .. }) {
             if let Some(task_id) = task_id {
@@ -84,7 +46,6 @@ mod tests {
     use super::max_active_agents;
     use crate::trace::{Agent, Content, Event, EventType, Session};
     use chrono::Utc;
-    use serde_json::Value;
     use std::collections::HashMap;
 
     fn event(id: &str, event_type: EventType, task_id: Option<&str>) -> Event {
@@ -144,10 +105,8 @@ mod tests {
     }
 
     #[test]
-    fn ignores_merged_claude_subagents() {
-        let mut sub = event("1", EventType::TaskStart { title: None }, Some("sub-1"));
-        sub.attributes
-            .insert("merged_subagent".to_string(), Value::Bool(true));
+    fn counts_merged_claude_subagents_for_agent_concurrency() {
+        let sub = event("1", EventType::TaskStart { title: None }, Some("sub-1"));
         let s = session(
             "claude-code",
             vec![
@@ -155,6 +114,6 @@ mod tests {
                 event("2", EventType::TaskEnd { summary: None }, Some("sub-1")),
             ],
         );
-        assert_eq!(max_active_agents(&s), 1);
+        assert_eq!(max_active_agents(&s), 2);
     }
 }

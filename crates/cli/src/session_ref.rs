@@ -67,7 +67,7 @@ impl SessionRef {
                 };
                 if rows.is_empty() {
                     let tool_msg = tool.map(|t| format!(" for tool '{t}'")).unwrap_or_default();
-                    bail!("No sessions found{tool_msg}. Run `opensession index` first.");
+                    bail!("No sessions found{tool_msg} in local cache.");
                 }
                 Ok(rows)
             }
@@ -81,7 +81,7 @@ impl SessionRef {
                     Some(r) => Ok(vec![r]),
                     None => {
                         let tool_msg = tool.map(|t| format!(" for tool '{t}'")).unwrap_or_default();
-                        bail!("No session found at HEAD^{offset}{tool_msg}. Run `opensession index` first.")
+                        bail!("No session found at HEAD^{offset}{tool_msg} in local cache.")
                     }
                 }
             }
@@ -103,15 +103,6 @@ impl SessionRef {
                 bail!("File-based SessionRef should be resolved by parsing the file, not via DB")
             }
         }
-    }
-
-    /// Resolve to exactly one session (for backwards compat where single is expected).
-    pub fn resolve_one(&self, db: &LocalDb, tool: Option<&str>) -> Result<LocalSessionRow> {
-        let rows = self.resolve(db, tool)?;
-        Ok(rows
-            .into_iter()
-            .next()
-            .expect("resolve guarantees non-empty"))
     }
 }
 
@@ -308,19 +299,12 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_one_returns_first() {
+    fn test_resolve_latest_first_row_is_most_recent() {
         let (_dir, db) = make_test_db();
         seed_db(&db);
         let r = SessionRef::Latest { count: 3 };
-        let row = r.resolve_one(&db, None).unwrap();
-        assert_eq!(row.id, "s5"); // First = most recent
-    }
-
-    #[test]
-    fn test_resolve_one_error_on_empty() {
-        let (_dir, db) = make_test_db();
-        let r = SessionRef::Latest { count: 1 };
-        assert!(r.resolve_one(&db, None).is_err());
+        let rows = r.resolve(&db, None).unwrap();
+        assert_eq!(rows[0].id, "s5"); // First = most recent
     }
 
     #[test]

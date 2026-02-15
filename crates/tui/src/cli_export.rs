@@ -1,6 +1,7 @@
 use anyhow::Result;
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
 use serde::Serialize;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
 use tokio::task::block_in_place;
@@ -56,7 +57,108 @@ pub struct CliTimelineExport {
     pub max_active_agents: usize,
     pub max_lane_index: usize,
     pub generated_summaries: usize,
+    pub rows: Vec<CliTimelineRow>,
     pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CliTimelineRow {
+    pub index: usize,
+    pub view: String,
+    pub row_type: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_timestamp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_timestamp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_clock: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_clock: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_lanes: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_message_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_event_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_result_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_ops_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_ops_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_lane_index_in_turn: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_agent_count_in_turn: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_summary: Option<String>,
+}
+
+impl CliTimelineRow {
+    fn new(index: usize, view: &str, row_type: &str, text: String) -> Self {
+        Self {
+            index,
+            view: view.to_string(),
+            row_type: row_type.to_string(),
+            text,
+            turn_index: None,
+            source_index: None,
+            timestamp: None,
+            clock: None,
+            start_timestamp: None,
+            end_timestamp: None,
+            start_clock: None,
+            end_clock: None,
+            duration_ms: None,
+            lane: None,
+            active_lanes: Vec::new(),
+            marker: None,
+            event_kind: None,
+            summary: None,
+            task_id: None,
+            task_count: None,
+            user_message_count: None,
+            agent_event_count: None,
+            tool_call_count: None,
+            tool_result_count: None,
+            file_ops_count: None,
+            shell_ops_count: None,
+            error_count: None,
+            max_lane_index_in_turn: None,
+            active_agent_count_in_turn: None,
+            user_preview: None,
+            llm_summary: None,
+        }
+    }
 }
 
 pub fn export_session_timeline(
@@ -173,19 +275,26 @@ pub fn export_session_timeline(
         .max()
         .unwrap_or(0);
 
-    let mut lines = match options.view {
+    let (mut rows, mut lines) = match options.view {
         CliTimelineView::Linear => {
             let visible = if options.include_summaries {
                 app.get_visible_events(&selected)
             } else {
                 base.clone()
             };
-            render_linear_lines(&visible)
+            let rows = build_linear_rows(&visible, &base);
+            let lines: Vec<String> = rows.iter().map(|row| row.text.clone()).collect();
+            (rows, lines)
         }
-        CliTimelineView::Turn => render_turn_lines(&app, &selected.session_id, &base),
+        CliTimelineView::Turn => {
+            let rows = build_turn_rows(&app, &selected.session_id, &base);
+            let lines: Vec<String> = rows.iter().map(|row| row.text.clone()).collect();
+            (rows, lines)
+        }
     };
 
     if let Some(max_rows) = options.max_rows {
+        rows.truncate(max_rows);
         lines.truncate(max_rows);
     }
 
@@ -198,11 +307,15 @@ pub fn export_session_timeline(
         max_active_agents,
         max_lane_index,
         generated_summaries,
+        rows,
         lines,
     })
 }
 
-fn render_linear_lines(events: &[DisplayEvent<'_>]) -> Vec<String> {
+fn build_linear_rows(
+    events: &[DisplayEvent<'_>],
+    base_events: &[DisplayEvent<'_>],
+) -> Vec<CliTimelineRow> {
     let max_lane = events
         .iter()
         .flat_map(|de| {
@@ -214,17 +327,38 @@ fn render_linear_lines(events: &[DisplayEvent<'_>]) -> Vec<String> {
         .max()
         .unwrap_or(0);
     let lane_count = max_lane + 1;
+    let source_turn_map = source_index_turn_map(base_events);
 
-    let mut out = Vec::with_capacity(events.len());
+    let mut rows = Vec::with_capacity(events.len());
     for (idx, display_event) in events.iter().enumerate() {
         let event = display_event.event();
         let ts = event.timestamp.format("%H:%M:%S").to_string();
         let lane_text = lane_cells(display_event, lane_count);
-        let body = match display_event {
+        let mut row = match display_event {
             DisplayEvent::SummaryRow {
                 summary, window_id, ..
-            } => format!("[llm #{window_id}] {summary}"),
-            DisplayEvent::Collapsed { count, kind, .. } => format!("{kind} x{count}"),
+            } => {
+                let mut row = CliTimelineRow::new(
+                    idx,
+                    "linear",
+                    "llm_summary",
+                    format!("{idx:>4} {ts}  {lane_text} [llm #{window_id}] {summary}"),
+                );
+                row.event_kind = Some("llm_summary".to_string());
+                row.summary = Some(summary.clone());
+                row
+            }
+            DisplayEvent::Collapsed { count, kind, .. } => {
+                let mut row = CliTimelineRow::new(
+                    idx,
+                    "linear",
+                    "collapsed",
+                    format!("{idx:>4} {ts}  {lane_text} {kind} x{count}"),
+                );
+                row.event_kind = Some(kind.to_ascii_lowercase());
+                row.summary = Some(format!("{kind} x{count}"));
+                row
+            }
             DisplayEvent::Single {
                 event,
                 lane,
@@ -237,18 +371,41 @@ fn render_linear_lines(events: &[DisplayEvent<'_>]) -> Vec<String> {
                     body.push(' ');
                     body.push_str(&badge);
                 }
-                body
+                let mut row = CliTimelineRow::new(
+                    idx,
+                    "linear",
+                    "event",
+                    format!("{idx:>4} {ts}  {lane_text} {body}"),
+                );
+                row.event_kind = Some(kind.to_string());
+                row.summary = Some(summary);
+                row
             }
         };
 
-        out.push(format!("{idx:>4} {ts}  {lane_text} {body}"));
+        row.turn_index = source_turn_map
+            .get(&display_event.source_index())
+            .copied()
+            .map(|value| value + 1);
+        row.source_index = Some(display_event.source_index());
+        row.timestamp = Some(event.timestamp.to_rfc3339());
+        row.clock = Some(ts);
+        row.lane = Some(display_event.lane());
+        row.active_lanes = display_event.active_lanes().to_vec();
+        row.marker = lane_marker_name(display_event.marker()).map(ToString::to_string);
+        row.task_id = event_task_id(event);
+        rows.push(row);
     }
-    out
+    rows
 }
 
-fn render_turn_lines(app: &App, session_id: &str, events: &[DisplayEvent<'_>]) -> Vec<String> {
+fn build_turn_rows(
+    app: &App,
+    session_id: &str,
+    events: &[DisplayEvent<'_>],
+) -> Vec<CliTimelineRow> {
     let turns = extract_turns(events);
-    let mut out = Vec::with_capacity(turns.len());
+    let mut rows = Vec::with_capacity(turns.len());
     for turn in turns {
         let turn_key = App::turn_summary_key(session_id, turn.turn_index, turn.anchor_source_index);
         let llm_summary = app
@@ -272,15 +429,151 @@ fn render_turn_lines(app: &App, session_id: &str, events: &[DisplayEvent<'_>]) -
             .filter(|line| !line.is_empty())
             .unwrap_or_else(|| "(no user message)".to_string());
 
-        out.push(format!(
-            "Turn {:>3} | {} agent events | user: {} | llm: {}",
-            turn.turn_index + 1,
-            turn.agent_events.len(),
-            truncate(&user_preview, 80),
-            truncate(&llm_summary, 120),
-        ));
+        let mut task_ids: HashSet<String> = HashSet::new();
+        let mut tool_call_count = 0usize;
+        let mut tool_result_count = 0usize;
+        let mut file_ops_count = 0usize;
+        let mut shell_ops_count = 0usize;
+        let mut error_count = 0usize;
+        for event in &turn.agent_events {
+            if let Some(task_id) = event_task_id(event) {
+                task_ids.insert(task_id);
+            }
+            match &event.event_type {
+                EventType::ToolCall { .. } => tool_call_count += 1,
+                EventType::ToolResult { is_error, .. } => {
+                    tool_result_count += 1;
+                    if *is_error {
+                        error_count += 1;
+                    }
+                }
+                EventType::FileRead { .. }
+                | EventType::FileEdit { .. }
+                | EventType::FileCreate { .. }
+                | EventType::FileDelete { .. } => file_ops_count += 1,
+                EventType::ShellCommand { .. } => shell_ops_count += 1,
+                EventType::Custom { kind } => {
+                    let lower = kind.to_ascii_lowercase();
+                    if lower.contains("error") || lower.contains("fail") {
+                        error_count += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut min_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+        let mut max_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+        for event in turn.user_events.iter().chain(turn.agent_events.iter()) {
+            min_ts = Some(min_ts.map_or(event.timestamp, |current| current.min(event.timestamp)));
+            max_ts = Some(max_ts.map_or(event.timestamp, |current| current.max(event.timestamp)));
+        }
+        let duration_ms = min_ts
+            .zip(max_ts)
+            .map(|(start, end)| end.signed_duration_since(start).num_milliseconds());
+
+        let mut lanes: BTreeSet<usize> = BTreeSet::new();
+        let mut max_active_agents = 0usize;
+        for display_idx in turn.start_display_index..=turn.end_display_index {
+            if let Some(display_event) = events.get(display_idx) {
+                lanes.insert(display_event.lane());
+                for lane in display_event.active_lanes() {
+                    lanes.insert(*lane);
+                }
+                let active_agents = display_event
+                    .active_lanes()
+                    .iter()
+                    .filter(|lane| **lane > 0)
+                    .count()
+                    .max(usize::from(display_event.lane() > 0));
+                max_active_agents = max_active_agents.max(active_agents);
+            }
+        }
+
+        let start_clock = min_ts.map(|value| value.format("%H:%M:%S").to_string());
+        let end_clock = max_ts.map(|value| value.format("%H:%M:%S").to_string());
+        let active_agent_count = lanes
+            .iter()
+            .filter(|lane| **lane > 0)
+            .count()
+            .max(max_active_agents);
+        let max_lane_index = lanes.iter().copied().max().unwrap_or(0);
+
+        let mut row = CliTimelineRow::new(
+            turn.turn_index,
+            "turn",
+            "turn",
+            format!(
+                "Turn {:>3} | {} agent events | user: {} | llm: {}",
+                turn.turn_index + 1,
+                turn.agent_events.len(),
+                truncate(&user_preview, 80),
+                truncate(&llm_summary, 120),
+            ),
+        );
+        row.turn_index = Some(turn.turn_index + 1);
+        row.source_index = Some(turn.anchor_source_index);
+        row.start_timestamp = min_ts.map(|value| value.to_rfc3339());
+        row.end_timestamp = max_ts.map(|value| value.to_rfc3339());
+        row.start_clock = start_clock;
+        row.end_clock = end_clock;
+        row.duration_ms = duration_ms;
+        row.task_count = Some(task_ids.len());
+        row.user_message_count = Some(turn.user_events.len());
+        row.agent_event_count = Some(turn.agent_events.len());
+        row.tool_call_count = Some(tool_call_count);
+        row.tool_result_count = Some(tool_result_count);
+        row.file_ops_count = Some(file_ops_count);
+        row.shell_ops_count = Some(shell_ops_count);
+        row.error_count = Some(error_count);
+        row.max_lane_index_in_turn = Some(max_lane_index);
+        row.active_agent_count_in_turn = Some(active_agent_count);
+        row.user_preview = Some(truncate(&user_preview, 180));
+        row.llm_summary = Some(truncate(&llm_summary, 220));
+        row.summary = Some(truncate(&llm_summary, 220));
+        rows.push(row);
     }
-    out
+    rows
+}
+
+fn source_index_turn_map(events: &[DisplayEvent<'_>]) -> HashMap<usize, usize> {
+    let turns = extract_turns(events);
+    let mut map = HashMap::new();
+    for turn in turns {
+        for display_idx in turn.start_display_index..=turn.end_display_index {
+            if let Some(display_event) = events.get(display_idx) {
+                map.entry(display_event.source_index())
+                    .or_insert(turn.turn_index);
+            }
+        }
+    }
+    map
+}
+
+fn lane_marker_name(marker: LaneMarker) -> Option<&'static str> {
+    match marker {
+        LaneMarker::Fork => Some("fork"),
+        LaneMarker::Merge => Some("merge"),
+        LaneMarker::None => None,
+    }
+}
+
+fn event_task_id(event: &Event) -> Option<String> {
+    event
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            event
+                .attributes
+                .get("subagent_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
 }
 
 fn lane_cells(event: &DisplayEvent<'_>, lane_count: usize) -> String {
@@ -376,8 +669,22 @@ fn event_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
         EventType::ImageGenerate { prompt }
         | EventType::VideoGenerate { prompt }
         | EventType::AudioGenerate { prompt } => truncate(prompt, 80),
-        EventType::TaskStart { title } => format!("start {}", title.clone().unwrap_or_default()),
-        EventType::TaskEnd { summary } => format!("end {}", summary.clone().unwrap_or_default()),
+        EventType::TaskStart { title } => {
+            let title = title.as_deref().unwrap_or_default().trim();
+            if title.is_empty() {
+                "start".to_string()
+            } else {
+                format!("start {}", truncate(title, 140))
+            }
+        }
+        EventType::TaskEnd { summary } => {
+            let summary = summary.as_deref().unwrap_or_default().trim();
+            if summary.is_empty() {
+                "end".to_string()
+            } else {
+                format!("end {}", truncate(summary, 180))
+            }
+        }
         EventType::Custom { kind } => kind.clone(),
         _ => String::new(),
     }

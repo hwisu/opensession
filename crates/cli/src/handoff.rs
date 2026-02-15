@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use dialoguer::Select;
-use opensession_core::handoff::HandoffSummary;
 use opensession_core::Session;
 use opensession_parsers::discover::discover_sessions;
 use opensession_parsers::{all_parsers, SessionParser};
@@ -14,11 +13,9 @@ pub async fn run_handoff(
     last: bool,
     output: Option<&Path>,
     format: crate::output::OutputFormat,
-    summarize: bool,
     claude: Option<&str>,
     gemini: Option<&str>,
     tool_refs: &[String],
-    _ai_provider: Option<&str>,
 ) -> Result<()> {
     let sessions = resolve_sessions(files, last, claude, gemini, tool_refs)?;
 
@@ -33,45 +30,7 @@ pub async fn run_handoff(
     crate::output::render_output(&sessions, &output_format, &mut result)?;
     let result_str = String::from_utf8(result)?;
 
-    // Append LLM summary if requested (only for markdown output)
-    let mut final_result = result_str;
-    if summarize && output_format == crate::output::OutputFormat::Markdown {
-        match crate::summarize::llm_summarize(&sessions).await {
-            Ok(llm_summary) => {
-                final_result.push_str("---\n\n## AI Summary\n\n");
-                if !llm_summary.key_decisions.is_empty() {
-                    final_result.push_str("### Key Decisions\n");
-                    for d in &llm_summary.key_decisions {
-                        final_result.push_str(&format!("- {d}\n"));
-                    }
-                    final_result.push('\n');
-                }
-                if !llm_summary.patterns_discovered.is_empty() {
-                    final_result.push_str("### Patterns Discovered\n");
-                    for p in &llm_summary.patterns_discovered {
-                        final_result.push_str(&format!("- {p}\n"));
-                    }
-                    final_result.push('\n');
-                }
-                if !llm_summary.architecture_notes.is_empty() {
-                    final_result.push_str("### Architecture Notes\n");
-                    final_result.push_str(&llm_summary.architecture_notes);
-                    final_result.push_str("\n\n");
-                }
-                if !llm_summary.next_steps.is_empty() {
-                    final_result.push_str("### Suggested Next Steps\n");
-                    for s in &llm_summary.next_steps {
-                        final_result.push_str(&format!("- {s}\n"));
-                    }
-                    final_result.push('\n');
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: LLM summarize failed: {e}");
-                final_result.push_str(&format!("\n---\n\n_LLM summary unavailable: {e}_\n"));
-            }
-        }
-    }
+    let final_result = result_str;
 
     if let Some(out) = output {
         std::fs::write(out, &final_result)
@@ -82,190 +41,6 @@ pub async fn run_handoff(
     }
 
     Ok(())
-}
-
-/// Compare two sessions side-by-side.
-pub async fn run_diff(session_a: &str, session_b: &str, _ai: bool) -> Result<()> {
-    let parsers = all_parsers();
-
-    let sa = resolve_single_session(session_a, &parsers)?;
-    let sb = resolve_single_session(session_b, &parsers)?;
-
-    let sum_a = HandoffSummary::from_session(&sa);
-    let sum_b = HandoffSummary::from_session(&sb);
-
-    println!(
-        "Session A ({})     vs     Session B ({})",
-        sum_a.tool, sum_b.tool
-    );
-    println!("{}", "─".repeat(60));
-    println!(
-        "Objective: {:40} {:40}",
-        truncate(&sum_a.objective, 40),
-        truncate(&sum_b.objective, 40),
-    );
-    println!("Model:     {:40} {:40}", sum_a.model, sum_b.model,);
-    println!(
-        "Duration:  {:40} {:40}",
-        opensession_core::handoff::format_duration(sum_a.duration_seconds),
-        opensession_core::handoff::format_duration(sum_b.duration_seconds),
-    );
-    println!(
-        "Messages:  {:40} {:40}",
-        format!("{}", sum_a.stats.message_count),
-        format!("{}", sum_b.stats.message_count),
-    );
-    println!(
-        "Tokens:    {:40} {:40}",
-        format!(
-            "{}in / {}out",
-            sum_a.stats.total_input_tokens, sum_a.stats.total_output_tokens
-        ),
-        format!(
-            "{}in / {}out",
-            sum_b.stats.total_input_tokens, sum_b.stats.total_output_tokens
-        ),
-    );
-    println!(
-        "Errors:    {:40} {:40}",
-        format!("{}", sum_a.errors.len()),
-        format!("{}", sum_b.errors.len()),
-    );
-
-    // Files comparison
-    println!("\nFiles Modified:");
-    let files_a: std::collections::HashSet<&str> = sum_a
-        .files_modified
-        .iter()
-        .map(|f| f.path.as_str())
-        .collect();
-    let files_b: std::collections::HashSet<&str> = sum_b
-        .files_modified
-        .iter()
-        .map(|f| f.path.as_str())
-        .collect();
-
-    for f in &files_a {
-        if files_b.contains(f) {
-            println!("  {f} (both)");
-        } else {
-            println!("  {f} (A only)");
-        }
-    }
-    for f in &files_b {
-        if !files_a.contains(f) {
-            println!("  {f} (B only)");
-        }
-    }
-
-    Ok(())
-}
-
-/// Install the prepare-commit-msg git hook.
-pub fn run_hooks_install() -> Result<()> {
-    let git_dir = find_git_dir()?;
-    let hooks_dir = git_dir.join("hooks");
-    std::fs::create_dir_all(&hooks_dir)?;
-
-    let hook_path = hooks_dir.join("prepare-commit-msg");
-    let hook_script = r#"#!/bin/sh
-# opensession prepare-commit-msg hook
-# Appends AI session info to commit messages
-
-COMMIT_MSG_FILE="$1"
-COMMIT_SOURCE="$2"
-
-# Only run for regular commits (not merges, amends, etc.)
-if [ -n "$COMMIT_SOURCE" ]; then
-    exit 0
-fi
-
-# Try to find a matching session for staged files
-SESSION_INFO=$(opensession log --limit 1 --format json 2>/dev/null | head -1)
-if [ -z "$SESSION_INFO" ]; then
-    exit 0
-fi
-
-# Use jq for safe JSON parsing (no shell injection)
-if ! command -v jq &>/dev/null; then
-    # Without jq, skip session info to avoid shell injection via grep/cut
-    exit 0
-fi
-
-TOOL=$(printf '%s' "$SESSION_INFO" | jq -r '.[0].tool // empty' 2>/dev/null)
-MODEL=$(printf '%s' "$SESSION_INFO" | jq -r '.[0].model // empty' 2>/dev/null)
-TITLE=$(printf '%s' "$SESSION_INFO" | jq -r '.[0].title // empty' 2>/dev/null | head -c 80)
-
-if [ -n "$TOOL" ]; then
-    printf '\nSession: %s (%s)\n' "$TOOL" "$MODEL" >> "$COMMIT_MSG_FILE"
-    if [ -n "$TITLE" ]; then
-        printf 'Prompt: "%s"\n' "$TITLE" >> "$COMMIT_MSG_FILE"
-    fi
-fi
-"#;
-
-    std::fs::write(&hook_path, hook_script)?;
-
-    // Make executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))?;
-    }
-
-    println!("Hook installed: {}", hook_path.display());
-    Ok(())
-}
-
-/// Remove the prepare-commit-msg git hook.
-pub fn run_hooks_uninstall() -> Result<()> {
-    let git_dir = find_git_dir()?;
-    let hook_path = git_dir.join("hooks").join("prepare-commit-msg");
-    if hook_path.exists() {
-        std::fs::remove_file(&hook_path)?;
-        println!("Hook removed: {}", hook_path.display());
-    } else {
-        println!("No hook found to remove.");
-    }
-    Ok(())
-}
-
-fn find_git_dir() -> Result<PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--git-dir"])
-        .output()?;
-    if !output.status.success() {
-        bail!("Not inside a git repository.");
-    }
-    let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(PathBuf::from(dir))
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
-    }
-}
-
-/// Resolve a single session from a string (ID, file path, or HEAD~N reference).
-fn resolve_single_session(s: &str, parsers: &[Box<dyn SessionParser>]) -> Result<Session> {
-    use crate::session_ref::SessionRef;
-
-    let sref = SessionRef::parse(s);
-    match sref {
-        SessionRef::File(path) => parse_file(parsers, &path),
-        SessionRef::Latest { .. } | SessionRef::Single { .. } | SessionRef::Id(_) => {
-            let db = opensession_local_db::LocalDb::open()?;
-            let row = sref.resolve_one(&db, None)?;
-            let source = row
-                .source_path
-                .as_deref()
-                .with_context(|| format!("Session {} has no source_path", row.id))?;
-            parse_file(parsers, &PathBuf::from(source))
-        }
-    }
 }
 
 /// Resolve session files: explicit paths, --last, tool refs, or interactive selection.

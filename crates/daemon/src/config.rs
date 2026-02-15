@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-// Re-export shared config types from core
-pub use opensession_core::config::{DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode};
+// Re-export shared runtime config types
+pub use opensession_runtime_config::{DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode};
 
 /// Get the config directory path
 pub fn config_dir() -> Result<PathBuf> {
@@ -331,7 +331,7 @@ pub fn generate_default_project_config() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opensession_core::config::PrivacySettings;
+    use opensession_runtime_config::PrivacySettings;
 
     #[test]
     fn test_default_config_serializes() {

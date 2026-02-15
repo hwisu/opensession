@@ -21,6 +21,23 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
+  release-surface:
+    name: Release Surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release-plz package names map to workspace crates
+        run: |
+          set -euo pipefail
+          workspace_names="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[].name' | sort -u)"
+          release_names="$(grep '^name = "' release-plz.toml | sed -E 's/name = "([^"]+)"/\1/' | sort -u)"
+          bad="$(comm -23 <(printf '%s\n' "$release_names") <(printf '%s\n' "$workspace_names"))"
+          if [ -n "$bad" ]; then
+            echo "release-plz.toml contains non-workspace package(s):"
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+
   migration-parity:
     name: Migration Parity
     runs-on: ubuntu-latest

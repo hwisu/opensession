@@ -147,7 +147,7 @@ fn resolve_session_file(last: bool) -> Result<PathBuf> {
 
     if last {
         let (path, tool) = &all[0];
-        eprintln!("Using most recent session: [{}] {}", tool, path.display());
+        eprintln!("Using most recent session [{}]", tool);
         return Ok(path.clone());
     }
 

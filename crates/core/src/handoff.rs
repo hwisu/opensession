@@ -45,6 +45,7 @@ pub struct HandoffSummary {
     pub files_read: Vec<String>,
     pub shell_commands: Vec<ShellCmd>,
     pub errors: Vec<String>,
+    pub task_summaries: Vec<String>,
     pub key_conversations: Vec<Conversation>,
     pub user_messages: Vec<String>,
 }
@@ -67,9 +68,7 @@ pub struct MergedHandoff {
 impl HandoffSummary {
     /// Extract a structured summary from a parsed session.
     pub fn from_session(session: &Session) -> Self {
-        let objective = extract_first_user_text(session)
-            .map(|t| truncate_str(&t, 200))
-            .unwrap_or_else(|| "(no user message found)".to_string());
+        let objective = extract_objective(session);
 
         let files_modified = collect_file_changes(&session.events);
         let modified_paths: HashSet<&str> =
@@ -77,6 +76,7 @@ impl HandoffSummary {
         let files_read = collect_files_read(&session.events, &modified_paths);
         let shell_commands = collect_shell_commands(&session.events);
         let errors = collect_errors(&session.events);
+        let task_summaries = collect_task_summaries(&session.events);
         let user_messages = collect_user_messages(&session.events);
         let key_conversations = collect_conversation_pairs(&session.events);
 
@@ -91,6 +91,7 @@ impl HandoffSummary {
             files_read,
             shell_commands,
             errors,
+            task_summaries,
             key_conversations,
             user_messages,
         }
@@ -182,6 +183,35 @@ fn collect_errors(events: &[Event]) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+fn collect_task_summaries(events: &[Event]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut summaries = Vec::new();
+
+    for event in events {
+        let EventType::TaskEnd {
+            summary: Some(summary),
+        } = &event.event_type
+        else {
+            continue;
+        };
+
+        let summary = summary.trim();
+        if summary.is_empty() {
+            continue;
+        }
+
+        let normalized = collapse_whitespace(summary);
+        if normalized.eq_ignore_ascii_case("synthetic end (missing task_complete)") {
+            continue;
+        }
+        if seen.insert(normalized.clone()) {
+            summaries.push(truncate_str(&normalized, 180));
+        }
+    }
+
+    summaries
 }
 
 fn collect_user_messages(events: &[Event]) -> Vec<String> {
@@ -280,6 +310,7 @@ pub fn merge_summaries(summaries: &[HandoffSummary]) -> MergedHandoff {
 
 /// Generate a Markdown handoff document from a single session summary.
 pub fn generate_handoff_markdown(summary: &HandoffSummary) -> String {
+    const MAX_TASK_SUMMARIES_DISPLAY: usize = 5;
     let mut md = String::new();
 
     md.push_str("# Session Handoff\n\n");
@@ -304,6 +335,25 @@ pub fn generate_handoff_markdown(summary: &HandoffSummary) -> String {
         summary.stats.message_count, summary.stats.tool_call_count, summary.stats.event_count
     ));
     md.push('\n');
+
+    if !summary.task_summaries.is_empty() {
+        md.push_str("## Task Summaries\n");
+        for (idx, task_summary) in summary
+            .task_summaries
+            .iter()
+            .take(MAX_TASK_SUMMARIES_DISPLAY)
+            .enumerate()
+        {
+            md.push_str(&format!("{}. {}\n", idx + 1, task_summary));
+        }
+        if summary.task_summaries.len() > MAX_TASK_SUMMARIES_DISPLAY {
+            md.push_str(&format!(
+                "- ... and {} more\n",
+                summary.task_summaries.len() - MAX_TASK_SUMMARIES_DISPLAY
+            ));
+        }
+        md.push('\n');
+    }
 
     // Files Modified
     if !summary.files_modified.is_empty() {
@@ -377,6 +427,7 @@ pub fn generate_handoff_markdown(summary: &HandoffSummary) -> String {
 
 /// Generate a Markdown handoff document from a merged multi-session handoff.
 pub fn generate_merged_handoff_markdown(merged: &MergedHandoff) -> String {
+    const MAX_TASK_SUMMARIES_DISPLAY: usize = 3;
     let mut md = String::new();
 
     md.push_str("# Merged Session Handoff\n\n");
@@ -404,6 +455,25 @@ pub fn generate_merged_handoff_markdown(merged: &MergedHandoff) -> String {
             "- **Messages:** {} | Tool calls: {} | Events: {}\n\n",
             s.stats.message_count, s.stats.tool_call_count, s.stats.event_count
         ));
+
+        if !s.task_summaries.is_empty() {
+            md.push_str("### Task Summaries\n");
+            for (j, task_summary) in s
+                .task_summaries
+                .iter()
+                .take(MAX_TASK_SUMMARIES_DISPLAY)
+                .enumerate()
+            {
+                md.push_str(&format!("{}. {}\n", j + 1, task_summary));
+            }
+            if s.task_summaries.len() > MAX_TASK_SUMMARIES_DISPLAY {
+                md.push_str(&format!(
+                    "- ... and {} more\n",
+                    s.task_summaries.len() - MAX_TASK_SUMMARIES_DISPLAY
+                ));
+            }
+            md.push('\n');
+        }
 
         // Key Conversations for this session
         if !s.key_conversations.is_empty() {
@@ -546,6 +616,58 @@ fn extract_first_user_text(session: &Session) -> Option<String> {
     crate::extract::extract_first_user_text(session)
 }
 
+fn extract_objective(session: &Session) -> String {
+    if let Some(user_text) = extract_first_user_text(session).filter(|t| !t.trim().is_empty()) {
+        return truncate_str(&collapse_whitespace(&user_text), 200);
+    }
+
+    if let Some(task_title) = session
+        .events
+        .iter()
+        .find_map(|event| match &event.event_type {
+            EventType::TaskStart { title: Some(title) } => {
+                let title = title.trim();
+                if title.is_empty() {
+                    None
+                } else {
+                    Some(title.to_string())
+                }
+            }
+            _ => None,
+        })
+    {
+        return truncate_str(&collapse_whitespace(&task_title), 200);
+    }
+
+    if let Some(task_summary) = session
+        .events
+        .iter()
+        .find_map(|event| match &event.event_type {
+            EventType::TaskEnd {
+                summary: Some(summary),
+            } => {
+                let summary = summary.trim();
+                if summary.is_empty() {
+                    None
+                } else {
+                    Some(summary.to_string())
+                }
+            }
+            _ => None,
+        })
+    {
+        return truncate_str(&collapse_whitespace(&task_summary), 200);
+    }
+
+    if let Some(title) = session.context.title.as_deref().map(str::trim) {
+        if !title.is_empty() {
+            return truncate_str(&collapse_whitespace(title), 200);
+        }
+    }
+
+    "(objective unavailable)".to_string()
+}
+
 fn extract_text_from_event(event: &Event) -> Option<String> {
     for block in &event.content.blocks {
         if let ContentBlock::Text { text } = block {
@@ -556,6 +678,10 @@ fn extract_text_from_event(event: &Event) -> Option<String> {
         }
     }
     None
+}
+
+fn collapse_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Format seconds into a human-readable duration string.
@@ -634,6 +760,12 @@ mod tests {
             },
             "",
         ));
+        session.events.push(make_event(
+            EventType::TaskEnd {
+                summary: Some("Build now passes in local env".to_string()),
+            },
+            "",
+        ));
 
         let summary = HandoffSummary::from_session(&session);
 
@@ -644,9 +776,69 @@ mod tests {
         assert_eq!(summary.files_modified[0].action, "edited");
         assert_eq!(summary.files_read, vec!["Cargo.toml"]);
         assert_eq!(summary.shell_commands.len(), 1);
+        assert_eq!(
+            summary.task_summaries,
+            vec!["Build now passes in local env".to_string()]
+        );
         assert_eq!(summary.key_conversations.len(), 1);
         assert_eq!(summary.key_conversations[0].user, "Fix the build error");
         assert_eq!(summary.key_conversations[0].agent, "I'll fix it now");
+    }
+
+    #[test]
+    fn test_handoff_objective_falls_back_to_task_title() {
+        let mut session = Session::new("task-title-fallback".to_string(), make_agent());
+        session.context.title = Some("session-019c-example.jsonl".to_string());
+        session.events.push(make_event(
+            EventType::TaskStart {
+                title: Some("Refactor auth middleware for oauth callback".to_string()),
+            },
+            "",
+        ));
+
+        let summary = HandoffSummary::from_session(&session);
+        assert_eq!(
+            summary.objective,
+            "Refactor auth middleware for oauth callback"
+        );
+    }
+
+    #[test]
+    fn test_handoff_task_summaries_are_deduplicated() {
+        let mut session = Session::new("task-summary-dedupe".to_string(), make_agent());
+        session.events.push(make_event(
+            EventType::TaskEnd {
+                summary: Some("Add worker profile guard".to_string()),
+            },
+            "",
+        ));
+        session.events.push(make_event(
+            EventType::TaskEnd {
+                summary: Some(" ".to_string()),
+            },
+            "",
+        ));
+        session.events.push(make_event(
+            EventType::TaskEnd {
+                summary: Some("Add worker profile guard".to_string()),
+            },
+            "",
+        ));
+        session.events.push(make_event(
+            EventType::TaskEnd {
+                summary: Some("Hide teams nav for worker profile".to_string()),
+            },
+            "",
+        ));
+
+        let summary = HandoffSummary::from_session(&session);
+        assert_eq!(
+            summary.task_summaries,
+            vec![
+                "Add worker profile guard".to_string(),
+                "Hide teams nav for worker profile".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -753,6 +945,12 @@ mod tests {
             },
             "",
         ));
+        session.events.push(make_event(
+            EventType::TaskEnd {
+                summary: Some("Compile error fixed by updating trait bounds".to_string()),
+            },
+            "",
+        ));
 
         let summary = HandoffSummary::from_session(&session);
         let md = generate_handoff_markdown(&summary);
@@ -761,6 +959,8 @@ mod tests {
         assert!(md.contains("Fix the build error"));
         assert!(md.contains("claude-code (claude-opus-4-6)"));
         assert!(md.contains("12m 30s"));
+        assert!(md.contains("## Task Summaries"));
+        assert!(md.contains("Compile error fixed by updating trait bounds"));
         assert!(md.contains("`src/main.rs` (edited)"));
         assert!(md.contains("`cargo build` → 0"));
         assert!(md.contains("## Key Conversations"));

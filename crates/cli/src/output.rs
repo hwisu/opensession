@@ -176,6 +176,7 @@ fn summary_to_json(s: &HandoffSummary) -> serde_json::Value {
         }).collect::<Vec<_>>(),
         "files_read": s.files_read,
         "errors": s.errors,
+        "task_summaries": s.task_summaries,
         "user_messages": s.user_messages,
     })
 }

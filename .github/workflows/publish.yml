@@ -23,12 +23,10 @@ jobs:
           fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      - name: Run release-plz
-        uses: release-plz/action@v0.5
-        with:
-          command: update
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install release-plz CLI
+        run: cargo install --locked release-plz --version 0.3.155
+      - name: Run release-plz update
+        run: release-plz update --config release-plz.toml
       - name: Detect update changes
         id: changes
         run: |

@@ -3,7 +3,7 @@
 1. If a problem occurs, it must be resolved.
 2. After resolving a problem, add test cases to prevent regression.
 3. Everything is testable. If testing is not possible in the current setup, add tools to make it possible.
-If there are additional suggestions, just continue and execute them.
+4. Prefer execution over suggestions: if an additional actionable fix is found in the same scope, continue and implement it immediately instead of proposing it first.
 
 ## Auto-Continue Policy
 After completing the requested change, immediately continue fixing any build/test/runtime errors discovered during verification in the same scope.

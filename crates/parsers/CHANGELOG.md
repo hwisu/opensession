@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.0...opensession-parsers-v0.3.0) - 2026-02-16
+
+### Added
+
+- improve live/session UX, parity updates, and infra fixes
+
+### Fixed
+
+- *(cli)* make default scope mode compile-clean and clippy-clean
+
+### Other
+
+- fix claude subagent message_count expectation
+
 ## [0.2.0](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.1.4...opensession-parsers-v0.2.0) - 2026-02-15
 
 ### Added

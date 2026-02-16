@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/hwisu/opensession/compare/opensession-runtime-config-v0.2.1...opensession-runtime-config-v0.2.2) - 2026-02-16
+
+### Other
+
+- apply staged docs and runtime updates
+
 ## [0.2.1](https://github.com/hwisu/opensession/compare/opensession-runtime-config-v0.2.0...opensession-runtime-config-v0.2.1) - 2026-02-16
 
 ### Added

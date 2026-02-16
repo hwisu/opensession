@@ -17,7 +17,7 @@ OpenSession usage guide for the current runtime split:
 
 Repository defaults:
 - `docker-compose.yml`: `OPENSESSION_PUBLIC_FEED_ENABLED=true`
-- `wrangler.toml`: `ENABLE_TEAM_API=false`
+- `wrangler.toml`: `ENABLE_TEAM_API=false`, `OPENSESSION_PUBLIC_FEED_ENABLED=true`
 - Web build profile: `VITE_APP_PROFILE=docker|worker`
 
 ## Quick Start
@@ -201,6 +201,7 @@ Important environment variables:
 
 `wrangler.toml` defaults for personal-sharing profile:
 - `ENABLE_TEAM_API=false`
+- `OPENSESSION_PUBLIC_FEED_ENABLED=true`
 - `BASE_URL=https://opensession.io` (example)
 
 Build profile should match deployment target:

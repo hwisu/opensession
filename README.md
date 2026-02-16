@@ -45,7 +45,7 @@ opensession .    # current git repo scope
 - `Web build profile`: `VITE_APP_PROFILE=docker|worker` controls UI surface.
 - Repository defaults:
 - `docker-compose.yml` sets `OPENSESSION_PUBLIC_FEED_ENABLED=true` (anonymous `GET /api/sessions` allowed).
-  - `wrangler.toml` sets `ENABLE_TEAM_API=false`.
+  - `wrangler.toml` sets `ENABLE_TEAM_API=false` and `OPENSESSION_PUBLIC_FEED_ENABLED=true`.
 
 ### Self-Hosted Server
 

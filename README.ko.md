@@ -44,7 +44,7 @@ opensession .    # 현재 git 레포 범위
 - 웹 빌드 프로필: `VITE_APP_PROFILE=docker|worker`
 - 저장소 기본값:
   - `docker-compose.yml`: `OPENSESSION_PUBLIC_FEED_ENABLED=true` (익명 `GET /api/sessions` 허용)
-  - `wrangler.toml`: `ENABLE_TEAM_API=false`
+  - `wrangler.toml`: `ENABLE_TEAM_API=false`, `OPENSESSION_PUBLIC_FEED_ENABLED=true`
 
 ### 셀프 호스팅 서버
 

@@ -468,7 +468,7 @@ $effect(() => {
 						<p class="text-text-muted"># Open TUI</p>
 						<p>opensession</p>
 						<p class="mt-2 text-text-muted"># Start/stop daemon</p>
-						<p>opensession daemon start --agent claude-code --repo .</p>
+						<p>opensession daemon start --repo .</p>
 						<p>opensession daemon stop</p>
 						<p class="mt-2 text-text-muted"># Configure account key</p>
 						<p>opensession account connect --api-key {showKey ? settings.api_key : '<your-api-key>'}</p>

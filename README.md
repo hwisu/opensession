@@ -21,7 +21,7 @@ cargo install opensession
 opensession --help
 opensession session handoff --last
 opensession publish upload-all
-opensession daemon start --agent claude-code --repo .
+opensession daemon start --repo .
 ```
 
 Manual local browsing mode (TUI):
@@ -105,7 +105,7 @@ Single Cargo workspace with 12 crates:
 | `opensession publish upload <file>` | Upload a session file |
 | `opensession publish upload-all` | Discover and upload all sessions |
 | `opensession daemon start\|stop\|status\|health` | Manage daemon lifecycle |
-| `opensession daemon select --agent ... --repo ...` | Select watcher agents/repos |
+| `opensession daemon select --repo ...` | Select watcher paths/repos (`--agent` is deprecated but accepted) |
 | `opensession daemon show` | Show daemon watcher targets |
 | `opensession daemon stream-push --agent <agent>` | Internal hook target command |
 | `opensession account connect --server --api-key [--team-id]` | Connect account/server quickly |
@@ -132,7 +132,7 @@ Configurable via TUI settings or direct file editing:
 ```toml
 [daemon]
 auto_publish = false         # managed by TUI "Daemon Capture" toggle
-publish_on = "manual"        # ON => session_end, OFF => manual
+publish_on = "manual"        # session_end | realtime | manual
 debounce_secs = 5
 
 [server]
@@ -160,7 +160,7 @@ strip_paths = true
 strip_env_vars = true
 
 [git_storage]
-method = "native"            # platform_api | native | none
+method = "native"            # session storage backend: native | sqlite
 ```
 
 Legacy per-agent watcher toggles are still parsed for backward compatibility,

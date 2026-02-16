@@ -20,7 +20,7 @@ cargo install opensession
 opensession --help
 opensession session handoff --last
 opensession publish upload-all
-opensession daemon start --agent claude-code --repo .
+opensession daemon start --repo .
 ```
 
 수동 로컬 탐색 모드(TUI):
@@ -90,7 +90,7 @@ docker compose up -d
 | `opensession publish upload <file>` | 세션 파일 업로드 |
 | `opensession publish upload-all` | 모든 세션 탐색 후 업로드 |
 | `opensession daemon start\|stop\|status\|health` | 데몬 실행/중지/상태 관리 |
-| `opensession daemon select --agent ... --repo ...` | 감시 에이전트/레포 선택 |
+| `opensession daemon select --repo ...` | 감시 경로/레포 선택 (`--agent`는 deprecated이며 하위 호환용으로 허용) |
 | `opensession daemon show` | 현재 데몬 대상 확인 |
 | `opensession daemon stream-push --agent <agent>` | 내부 훅 대상 명령 |
 | `opensession account connect --server --api-key [--team-id]` | 서버/계정 빠른 연결 |
@@ -117,7 +117,7 @@ TUI 설정 화면이나 파일 직접 편집으로 설정:
 ```toml
 [daemon]
 auto_publish = false         # TUI "Daemon Capture" 토글이 관리
-publish_on = "manual"        # ON => session_end, OFF => manual
+publish_on = "manual"        # session_end | realtime | manual
 debounce_secs = 5
 
 [server]
@@ -145,7 +145,7 @@ strip_paths = true
 strip_env_vars = true
 
 [git_storage]
-method = "native"            # platform_api | native | none
+method = "native"            # 세션 저장 백엔드: native | sqlite
 ```
 
 에이전트별 watcher 토글은 하위 호환을 위해 읽기만 지원하며,

@@ -544,7 +544,7 @@ $ opensession session handoff --claude HEAD -o handoff.md</pre>
 						<code>health</code> <span>Check daemon and server health</span>
 					</div>
 					<div class="cli-flags">
-						<code>select --agent ... --repo ...</code> <span>Update watcher targets without starting daemon</span>
+						<code>select --repo ...</code> <span>Update watcher targets without starting daemon</span>
 					</div>
 					<div class="cli-flags">
 						<code>show</code> <span>Show current watcher targets</span>
@@ -565,8 +565,8 @@ $ opensession daemon health
 <span class="text-text-muted"># Stop the daemon</span>
 $ opensession daemon stop
 
-<span class="text-text-muted"># Select agents/repos to watch</span>
-$ opensession daemon select --agent claude-code --repo .</pre>
+<span class="text-text-muted"># Select paths/repos to watch</span>
+$ opensession daemon select --repo .</pre>
 				</div>
 
 				<p class="mt-3 text-xs text-text-muted">
@@ -578,7 +578,7 @@ $ opensession daemon select --agent claude-code --repo .</pre>
 					<div class="mb-2 text-[10px] uppercase tracking-wider text-text-muted">opensession.toml</div>
 					<pre class="text-xs text-accent leading-relaxed"><span class="text-text-muted">[daemon]</span>
 auto_publish = false         <span class="text-text-muted"># managed by TUI "Daemon Capture" toggle</span>
-publish_on = "manual"        <span class="text-text-muted"># ON =&gt; session_end, OFF =&gt; manual</span>
+publish_on = "manual"        <span class="text-text-muted"># session_end | realtime | manual</span>
 debounce_secs = 5
 
 <span class="text-text-muted">[watchers]</span>

@@ -3,7 +3,6 @@ mod async_ops;
 mod cli_export;
 mod config;
 mod live;
-mod platform_api_storage;
 mod session_timeline;
 mod theme;
 mod timeline_summary;
@@ -629,27 +628,17 @@ fn env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Try to store a session via platform API and return the body_url.
-///
-/// NOTE: This uses `reqwest::blocking` which must NOT be called inside
-/// `tokio::Runtime::block_on()`. Currently safe because `try_git_store`
-/// is called before the `rt.block_on(upload_session(...))` call.
+/// Try to store a session in git-native branch storage and return the body_url.
+/// SQLite mode skips branch storage and falls back to server-side body storage.
 fn try_git_store(
     session: &opensession_core::trace::Session,
     config: &config::DaemonConfig,
 ) -> Option<String> {
-    if !matches!(
-        config.git_storage.method,
-        config::GitStorageMethod::PlatformApi
-    ) {
+    if matches!(config.git_storage.method, config::GitStorageMethod::Sqlite) {
         return None;
     }
 
-    if config.git_storage.token.is_empty() {
-        return None;
-    }
-
-    // Get working directory from session context
+    // Get working directory from session context.
     let cwd = session
         .context
         .attributes
@@ -657,17 +646,19 @@ fn try_git_store(
         .or_else(|| session.context.attributes.get("working_directory"))
         .and_then(|v| v.as_str())?;
 
-    // Extract remote URL via git CLI
+    let repo_root = opensession_git_native::ops::find_repo_root(Path::new(cwd))?;
     let git_ctx = opensession_local_db::git::extract_git_context(cwd);
     let remote_url = git_ctx.remote?;
 
     let jsonl = session.to_jsonl().ok()?;
-
-    let storage = platform_api_storage::PlatformApiStorage::new(config.git_storage.token.clone());
-    match storage.store(&remote_url, &session.session_id, jsonl.as_bytes()) {
-        Ok(url) => Some(url),
+    let storage = opensession_git_native::NativeGitStorage;
+    match storage.store(&repo_root, &session.session_id, jsonl.as_bytes(), b"{}") {
+        Ok(rel_path) => Some(opensession_git_native::generate_raw_url(
+            &remote_url,
+            &rel_path,
+        )),
         Err(e) => {
-            eprintln!("git storage: {e}");
+            eprintln!("git-native storage: {e}");
             None
         }
     }

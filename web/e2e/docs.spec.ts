@@ -8,6 +8,7 @@ test.describe('Docs', () => {
 		).toBeVisible();
 		await expect(page.locator('main').getByText('auto_publish = false')).toBeVisible();
 		await expect(page.locator('main').getByText('Daemon Capture')).toBeVisible();
+		await expect(page.locator('main').getByText('session_end | realtime | manual')).toBeVisible();
 		await expect(page.locator('main').getByText('custom_paths = [')).toBeVisible();
 	});
 
@@ -16,5 +17,7 @@ test.describe('Docs', () => {
 		await expect(page.locator('main').getByText('claude_code = true')).toHaveCount(0);
 		await expect(page.locator('main').getByText('opencode = true')).toHaveCount(0);
 		await expect(page.locator('main').getByText('cursor = false')).toHaveCount(0);
+		await expect(page.locator('main').getByText('daemon select --agent')).toHaveCount(0);
+		await expect(page.locator('main').getByText('daemon select --repo .')).toBeVisible();
 	});
 });

@@ -38,7 +38,7 @@ opensession session handoff --last
 opensession publish upload-all
 
 # Start daemon (watch + upload targets)
-opensession daemon start --agent claude-code --repo .
+opensession daemon start --repo .
 ```
 
 ### Local interactive mode (TUI)
@@ -103,11 +103,11 @@ opensession publish upload-all
 ### `opensession daemon`
 
 ```bash
-opensession daemon start --agent claude-code --repo .
+opensession daemon start --repo .
 opensession daemon status
 opensession daemon health
 opensession daemon show
-opensession daemon select --agent claude-code --repo .
+opensession daemon select --repo .
 opensession daemon stop
 ```
 
@@ -152,7 +152,7 @@ Example:
 ```toml
 [daemon]
 auto_publish = false         # managed by TUI "Daemon Capture" toggle
-publish_on = "manual"        # ON => session_end, OFF => manual
+publish_on = "manual"        # session_end | realtime | manual
 debounce_secs = 5
 
 [server]

@@ -264,12 +264,16 @@ impl Default for GitStorageSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GitStorageMethod {
-    PlatformApi,
-    /// Store sessions as git objects on an orphan branch (no external API needed).
-    Native,
+    /// Store sessions as git objects on an orphan branch (branch-based git-native).
     #[default]
+    #[serde(alias = "platform_api", alias = "platform-api", alias = "api")]
+    Native,
+    /// Store session bodies in SQLite-backed storage.
+    #[serde(alias = "none", alias = "sqlite_local", alias = "sqlite-local")]
+    Sqlite,
+    /// Unknown/invalid values are normalized by compatibility fallbacks.
     #[serde(other)]
-    None,
+    Unknown,
 }
 
 // ── Serde default functions ─────────────────────────────────────────────
@@ -350,9 +354,7 @@ pub fn default_watch_paths() -> Vec<String> {
 pub fn apply_compat_fallbacks(config: &mut DaemonConfig, root: Option<&toml::Value>) -> bool {
     let mut changed = false;
 
-    if config_file_missing_git_storage_method(root)
-        && config.git_storage.method == GitStorageMethod::None
-    {
+    if config.git_storage.method == GitStorageMethod::Unknown {
         config.git_storage.method = GitStorageMethod::Native;
         changed = true;
     }
@@ -381,6 +383,9 @@ pub fn apply_compat_fallbacks(config: &mut DaemonConfig, root: Option<&toml::Val
 }
 
 /// True when `[git_storage].method` is absent/invalid in the source TOML.
+///
+/// Retained as a compatibility helper for callers that still inspect legacy
+/// config layouts directly.
 pub fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
     let Some(root) = root else {
         return false;
@@ -404,7 +409,7 @@ mod tests {
     #[test]
     fn apply_compat_fallbacks_populates_legacy_fields() {
         let mut cfg = DaemonConfig::default();
-        cfg.git_storage.method = GitStorageMethod::None;
+        cfg.git_storage.method = GitStorageMethod::Unknown;
         cfg.identity.team_id.clear();
         cfg.watchers.custom_paths.clear();
 
@@ -423,6 +428,30 @@ team_id = "team-legacy"
         assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
         assert_eq!(cfg.identity.team_id, "team-legacy");
         assert!(!cfg.watchers.custom_paths.is_empty());
+    }
+
+    #[test]
+    fn git_storage_method_legacy_aliases_are_accepted() {
+        let legacy_none: DaemonConfig = toml::from_str(
+            r#"
+[git_storage]
+method = "none"
+"#,
+        )
+        .expect("parse toml");
+        assert_eq!(legacy_none.git_storage.method, GitStorageMethod::Sqlite);
+
+        let legacy_platform_api: DaemonConfig = toml::from_str(
+            r#"
+[git_storage]
+method = "platform_api"
+"#,
+        )
+        .expect("parse toml");
+        assert_eq!(
+            legacy_platform_api.git_storage.method,
+            GitStorageMethod::Native
+        );
     }
 
     #[test]

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/hwisu/opensession/compare/opensession-v0.2.4...opensession-v0.2.5) - 2026-02-16
+
+### Added
+
+- unify parser/ui behavior and fix oauth/public-feed flow
+
 ## [0.2.4](https://github.com/hwisu/opensession/compare/opensession-v0.2.3...opensession-v0.2.4) - 2026-02-16
 
 ### Other

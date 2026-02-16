@@ -2291,11 +2291,15 @@ fn render_turn_fallback_panel(
     content_width: u16,
     live_mode: bool,
 ) -> Vec<Line<'static>> {
-    let _ = summary_status;
     let (status_text, status_color) = if live_mode {
         (
-            "Live mode: rendering task-level execution board.",
+            "Summary is off in live mode: rendering task-level execution board.",
             Theme::ACCENT_YELLOW,
+        )
+    } else if summary_status != "on" {
+        (
+            "Summary is off. Rendering task-level execution board.",
+            Theme::TEXT_SECONDARY,
         )
     } else {
         (

@@ -815,7 +815,7 @@ mod tests {
         build_server_status_spans, compact_line, event_first_text, latest_output_preview,
         latest_prompt_preview,
     };
-    use crate::app::{App, ServerInfo, ServerStatus};
+    use crate::app::{ServerInfo, ServerStatus};
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
     use std::collections::HashMap;

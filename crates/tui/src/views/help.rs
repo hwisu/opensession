@@ -21,8 +21,12 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let key_style = Style::new().fg(Theme::ACCENT_YELLOW).bold();
     let desc_style = Style::new().fg(Theme::TEXT_CONTENT);
     let header_style = Style::new().fg(Theme::ACCENT_BLUE).bold();
+    let close_hint_line = Line::from(Span::styled(
+        "Press any key to close",
+        Style::new().fg(Color::DarkGray),
+    ));
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled("── Global ──", header_style)),
         Line::from(vec![
             Span::styled("  1/2/3     ", key_style),
@@ -152,11 +156,20 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Regenerate API key (Account)", desc_style),
         ]),
         Line::raw(""),
-        Line::from(Span::styled(
-            "Press any key to close",
-            Style::new().fg(Color::DarkGray),
-        )),
+        close_hint_line.clone(),
     ];
+
+    // Keep close hint visible even when the help body exceeds the popup height.
+    let max_lines = inner.height as usize;
+    if max_lines == 0 {
+        return;
+    }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            *last = close_hint_line;
+        }
+    }
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);

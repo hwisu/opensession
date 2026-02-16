@@ -21,6 +21,10 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { HIGHLIGHT_AUTO_MAX_CHARS } from './constants';
 
+const HIGHLIGHT_CACHE_MAX_ENTRIES = 256;
+const HIGHLIGHT_CACHE_MAX_CODE_CHARS = 150_000;
+const highlightCache = new Map<string, string>();
+
 const LANGUAGES: [string[], LanguageFn][] = [
 	[['javascript', 'js'], javascript],
 	[['typescript', 'ts'], typescript],
@@ -54,10 +58,27 @@ export function highlightCode(code: string, language?: string | null): string {
 	if (!code) return '';
 
 	const lang = language?.toLowerCase();
+	const cacheable = code.length <= HIGHLIGHT_CACHE_MAX_CODE_CHARS;
+	const cacheKey = cacheable ? `${lang ?? ''}\u0000${code}` : null;
+	if (cacheable && cacheKey) {
+		const cached = highlightCache.get(cacheKey);
+		if (cached !== undefined) {
+			// Refresh insertion order to approximate LRU.
+			highlightCache.delete(cacheKey);
+			highlightCache.set(cacheKey, cached);
+			return cached;
+		}
+	}
+
+	let highlighted: string;
 
 	if (lang && hljs.getLanguage(lang)) {
 		try {
-			return hljs.highlight(code, { language: lang }).value;
+			highlighted = hljs.highlight(code, { language: lang }).value;
+			if (cacheable && cacheKey) {
+				putHighlightCache(cacheKey, highlighted);
+			}
+			return highlighted;
 		} catch {
 			// fallthrough to auto-detect
 		}
@@ -66,15 +87,35 @@ export function highlightCode(code: string, language?: string | null): string {
 	// Auto-detect for short code snippets, plain text for long ones
 	if (code.length < HIGHLIGHT_AUTO_MAX_CHARS) {
 		try {
-			return hljs.highlightAuto(code).value;
+			highlighted = hljs.highlightAuto(code).value;
+			if (cacheable && cacheKey) {
+				putHighlightCache(cacheKey, highlighted);
+			}
+			return highlighted;
 		} catch {
-			return escapeHtml(code);
+			highlighted = escapeHtml(code);
+			if (cacheable && cacheKey) {
+				putHighlightCache(cacheKey, highlighted);
+			}
+			return highlighted;
 		}
 	}
 
-	return escapeHtml(code);
+	highlighted = escapeHtml(code);
+	if (cacheable && cacheKey) {
+		putHighlightCache(cacheKey, highlighted);
+	}
+	return highlighted;
 }
 
 function escapeHtml(text: string): string {
 	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function putHighlightCache(key: string, value: string): void {
+	if (highlightCache.size >= HIGHLIGHT_CACHE_MAX_ENTRIES) {
+		const firstKey = highlightCache.keys().next().value;
+		if (firstKey !== undefined) highlightCache.delete(firstKey);
+	}
+	highlightCache.set(key, value);
 }

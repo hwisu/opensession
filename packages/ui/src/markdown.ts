@@ -2,6 +2,10 @@ import { Marked, type Tokens } from 'marked';
 import { LONG_CONTENT_CHAR_THRESHOLD, LONG_TEXT_LINE_THRESHOLD } from './constants';
 import { highlightCode } from './highlight';
 
+const MARKDOWN_CACHE_MAX_ENTRIES = 256;
+const MARKDOWN_CACHE_MAX_CHARS = 150_000;
+const markdownCache = new Map<string, string>();
+
 const marked = new Marked({
 	gfm: true,
 	breaks: true,
@@ -60,11 +64,32 @@ const marked = new Marked({
  */
 export function renderMarkdown(text: string): string {
 	if (!text) return '';
-	try {
-		return marked.parse(text) as string;
-	} catch {
-		return escapeHtml(text);
+	const cacheable = text.length <= MARKDOWN_CACHE_MAX_CHARS;
+	if (cacheable) {
+		const cached = markdownCache.get(text);
+		if (cached !== undefined) {
+			// Refresh insertion order to keep a tiny LRU behavior.
+			markdownCache.delete(text);
+			markdownCache.set(text, cached);
+			return cached;
+		}
 	}
+
+	let rendered: string;
+	try {
+		rendered = marked.parse(text) as string;
+	} catch {
+		rendered = escapeHtml(text);
+	}
+
+	if (cacheable) {
+		if (markdownCache.size >= MARKDOWN_CACHE_MAX_ENTRIES) {
+			const firstKey = markdownCache.keys().next().value;
+			if (firstKey !== undefined) markdownCache.delete(firstKey);
+		}
+		markdownCache.set(text, rendered);
+	}
+	return rendered;
 }
 
 /**

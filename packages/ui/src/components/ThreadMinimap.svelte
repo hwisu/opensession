@@ -6,6 +6,8 @@ const { events }: { events: Event[] } = $props();
 
 let activeIdx = $state(0);
 let observer: IntersectionObserver | null = null;
+let activeUpdateRaf: number | null = null;
+let queuedActiveIdx: number | null = null;
 
 const userMessageIndices = $derived.by(() => {
 	const indices: number[] = [];
@@ -13,6 +15,14 @@ const userMessageIndices = $derived.by(() => {
 		if (e.event_type.type === 'UserMessage') indices.push(i);
 	});
 	return indices;
+});
+
+const messageIndexByTimeline = $derived.by(() => {
+	const indexByTimeline = new Map<number, number>();
+	userMessageIndices.forEach((timelineIdx, msgIdx) => {
+		indexByTimeline.set(timelineIdx, msgIdx);
+	});
+	return indexByTimeline;
 });
 
 function scrollToMessage(msgNum: number) {
@@ -24,16 +34,34 @@ function scrollToMessage(msgNum: number) {
 	}
 }
 
+function scheduleActiveIndex(nextIdx: number) {
+	queuedActiveIdx = nextIdx;
+	if (activeUpdateRaf !== null) return;
+	activeUpdateRaf = requestAnimationFrame(() => {
+		activeUpdateRaf = null;
+		if (queuedActiveIdx != null && queuedActiveIdx !== activeIdx) {
+			activeIdx = queuedActiveIdx;
+		}
+	});
+}
+
 onMount(() => {
 	observer = new IntersectionObserver(
 		(entries) => {
+			let closestMsgIdx: number | null = null;
+			let closestDistance = Number.POSITIVE_INFINITY;
 			for (const entry of entries) {
-				if (entry.isIntersecting) {
-					const idx = Number((entry.target as HTMLElement).dataset.timelineIdx);
-					const msgNum = userMessageIndices.indexOf(idx);
-					if (msgNum >= 0) activeIdx = msgNum;
+				if (!entry.isIntersecting) continue;
+				const idx = Number((entry.target as HTMLElement).dataset.timelineIdx);
+				const msgNum = messageIndexByTimeline.get(idx);
+				if (msgNum == null) continue;
+				const distance = Math.abs(entry.boundingClientRect.top);
+				if (distance < closestDistance) {
+					closestDistance = distance;
+					closestMsgIdx = msgNum;
 				}
 			}
+			if (closestMsgIdx != null) scheduleActiveIndex(closestMsgIdx);
 		},
 		{ rootMargin: '-20% 0px -60% 0px', threshold: 0 },
 	);
@@ -47,6 +75,10 @@ onMount(() => {
 
 onDestroy(() => {
 	observer?.disconnect();
+	if (activeUpdateRaf !== null) {
+		cancelAnimationFrame(activeUpdateRaf);
+		activeUpdateRaf = null;
+	}
 });
 </script>
 

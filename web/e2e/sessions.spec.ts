@@ -109,4 +109,31 @@ test.describe('Sessions', () => {
 		// Should be on the session list page (no landing hero)
 		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).not.toBeVisible();
 	});
+
+	test('upload drop zone keeps active drag state through nested drag events', async ({
+		page,
+		request,
+	}) => {
+		const admin = await getAdmin(request);
+		await injectAuth(page, admin);
+		await page.goto('/upload');
+
+		const dropZone = page
+			.locator('div[role="button"]')
+			.filter({ hasText: 'Drag and drop a session JSON file here' })
+			.first();
+		await expect(dropZone).toBeVisible({ timeout: 10000 });
+
+		const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+		await dropZone.dispatchEvent('dragenter', { dataTransfer });
+		await expect(dropZone).toHaveClass(/border-accent/);
+
+		const browseLabel = dropZone.getByText('Browse files');
+		await browseLabel.dispatchEvent('dragenter', { dataTransfer });
+		await browseLabel.dispatchEvent('dragleave', { dataTransfer });
+		await expect(dropZone).toHaveClass(/border-accent/);
+
+		await dropZone.dispatchEvent('dragleave', { dataTransfer });
+		await expect(dropZone).not.toHaveClass(/border-accent/);
+	});
 });

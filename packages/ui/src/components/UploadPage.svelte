@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onDestroy } from 'svelte';
 import { ApiError, isAuthenticated, listTeams, uploadSession } from '../api';
 import type { Session, TeamResponse } from '../types';
 import { formatDuration, getToolConfig } from '../types';
@@ -23,6 +24,10 @@ let uploadError = $state<string | null>(null);
 let unauthorized = $state(false);
 let rawJson = $state('');
 let dragover = $state(false);
+let dragDepth = $state(0);
+let parseTimer: ReturnType<typeof setTimeout> | null = null;
+
+const PASTE_PARSE_DEBOUNCE_MS = 180;
 
 // Team selection state
 let teams = $state<TeamResponse[]>([]);
@@ -70,6 +75,10 @@ function handleFileInput(e: globalThis.Event) {
 	const reader = new FileReader();
 	reader.onload = () => {
 		rawJson = reader.result as string;
+		if (parseTimer !== null) {
+			clearTimeout(parseTimer);
+			parseTimer = null;
+		}
 		parseJson(rawJson);
 	};
 	reader.readAsText(file);
@@ -77,32 +86,59 @@ function handleFileInput(e: globalThis.Event) {
 
 function handleDrop(e: DragEvent) {
 	e.preventDefault();
-	dragover = false;
+	if (dragover) dragover = false;
+	dragDepth = 0;
 	if (unauthorized) return;
 	const file = e.dataTransfer?.files[0];
 	if (!file) return;
 	const reader = new FileReader();
 	reader.onload = () => {
 		rawJson = reader.result as string;
+		if (parseTimer !== null) {
+			clearTimeout(parseTimer);
+			parseTimer = null;
+		}
 		parseJson(rawJson);
 	};
 	reader.readAsText(file);
 }
 
+function handleDragEnter(e: DragEvent) {
+	e.preventDefault();
+	if (unauthorized) return;
+	dragDepth += 1;
+	if (!dragover) dragover = true;
+}
+
 function handleDragOver(e: DragEvent) {
 	e.preventDefault();
 	if (unauthorized) return;
-	dragover = true;
+	if (!dragover) dragover = true;
 }
 
-function handleDragLeave() {
-	dragover = false;
+function handleDragLeave(e: DragEvent) {
+	e.preventDefault();
+	if (unauthorized) return;
+	dragDepth = Math.max(0, dragDepth - 1);
+	if (dragDepth === 0 && dragover) {
+		dragover = false;
+	}
+}
+
+function scheduleParseFromTextarea() {
+	if (parseTimer !== null) {
+		clearTimeout(parseTimer);
+	}
+	parseTimer = setTimeout(() => {
+		parseTimer = null;
+		parseJson(rawJson);
+	}, PASTE_PARSE_DEBOUNCE_MS);
 }
 
 function handlePasteInput() {
 	if (unauthorized) return;
 	if (rawJson.trim()) {
-		parseJson(rawJson);
+		scheduleParseFromTextarea();
 	}
 }
 
@@ -146,6 +182,13 @@ $effect(() => {
 			.finally(() => {
 				teamsLoading = false;
 			});
+	}
+});
+
+onDestroy(() => {
+	if (parseTimer !== null) {
+		clearTimeout(parseTimer);
+		parseTimer = null;
 	}
 });
 </script>
@@ -214,6 +257,7 @@ $effect(() => {
 		role="button"
 		tabindex="0"
 		ondrop={handleDrop}
+		ondragenter={handleDragEnter}
 		ondragover={handleDragOver}
 		ondragleave={handleDragLeave}
 		onkeydown={(e) => e.key === 'Enter' && document.getElementById('file-input')?.click()}

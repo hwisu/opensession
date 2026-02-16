@@ -733,7 +733,7 @@ $ opensession session handoff abc12</pre>
     environment:
       - JWT_SECRET=your-secret-here
       - BASE_URL=https://your-domain.com
-      - OPENSESSION_PUBLIC_FEED_ENABLED=false
+      - OPENSESSION_PUBLIC_FEED_ENABLED=true
     restart: unless-stopped
 
 volumes:

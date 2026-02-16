@@ -1,10 +1,17 @@
-import { Marked, type Tokens } from 'marked';
+import { Marked, type RendererThis, type Token, type Tokens } from 'marked';
 import { LONG_CONTENT_CHAR_THRESHOLD, LONG_TEXT_LINE_THRESHOLD } from './constants';
 import { highlightCode } from './highlight';
 
 const MARKDOWN_CACHE_MAX_ENTRIES = 256;
 const MARKDOWN_CACHE_MAX_CHARS = 150_000;
 const markdownCache = new Map<string, string>();
+
+function parseInlineText(ctx: RendererThis, token: { text: string; tokens?: Token[] }): string {
+	if (token.tokens && ctx.parser?.parseInline) {
+		return ctx.parser.parseInline(token.tokens);
+	}
+	return token.text;
+}
 
 const marked = new Marked({
 	gfm: true,
@@ -20,31 +27,37 @@ const marked = new Marked({
 		codespan({ text }: Tokens.Codespan) {
 			return `<code class="md-inline-code">${text}</code>`;
 		},
-		heading({ text, depth }: Tokens.Heading) {
-			return `<h${depth} class="md-heading md-h${depth}">${text}</h${depth}>`;
+		heading(this: RendererThis, token: Tokens.Heading) {
+			const text = parseInlineText(this, token);
+			return `<h${token.depth} class="md-heading md-h${token.depth}">${text}</h${token.depth}>`;
 		},
-		paragraph({ text }: Tokens.Paragraph) {
+		paragraph(this: RendererThis, token: Tokens.Paragraph) {
+			const text = parseInlineText(this, token);
 			return `<p class="md-p">${text}</p>`;
 		},
-		list(token: Tokens.List) {
+		list(this: RendererThis, token: Tokens.List) {
 			const tag = token.ordered ? 'ol' : 'ul';
-			const items = token.items.map((item: Tokens.ListItem) => `<li>${item.text}</li>`).join('');
+			const items = token.items
+				.map((item: Tokens.ListItem) => `<li>${parseInlineText(this, item)}</li>`)
+				.join('');
 			return `<${tag} class="md-list">${items}</${tag}>`;
 		},
-		blockquote({ text }: Tokens.Blockquote) {
+		blockquote(this: RendererThis, token: Tokens.Blockquote) {
+			const text =
+				token.tokens && this.parser?.parse ? this.parser.parse(token.tokens) : token.text;
 			return `<blockquote class="md-blockquote">${text}</blockquote>`;
 		},
 		link({ href, text }: Tokens.Link) {
 			return `<a href="${href}" class="md-link" target="_blank" rel="noopener">${text}</a>`;
 		},
-		table(token: Tokens.Table) {
+		table(this: RendererThis, token: Tokens.Table) {
 			const headerCells = token.header
-				.map((cell: Tokens.TableCell) => `<th>${cell.text}</th>`)
+				.map((cell: Tokens.TableCell) => `<th>${parseInlineText(this, cell)}</th>`)
 				.join('');
 			const rows = token.rows
 				.map(
 					(row: Tokens.TableCell[]) =>
-						`<tr>${row.map((cell: Tokens.TableCell) => `<td>${cell.text}</td>`).join('')}</tr>`,
+						`<tr>${row.map((cell: Tokens.TableCell) => `<td>${parseInlineText(this, cell)}</td>`).join('')}</tr>`,
 				)
 				.join('');
 			return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${headerCells}</tr></thead><tbody>${rows}</tbody></table></div>`;

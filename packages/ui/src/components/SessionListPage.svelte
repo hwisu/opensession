@@ -210,6 +210,16 @@ function cycleFilterValue<T extends string>(current: T, options: readonly T[]): 
 	return options[(idx + 1) % options.length] ?? options[0];
 }
 
+function isSearchFocusShortcut(e: KeyboardEvent): boolean {
+	if (e.key.toLowerCase() === 'f' && (e.metaKey || e.ctrlKey)) return true;
+	return e.code === 'Slash' || e.key === '/' || e.key === '?';
+}
+
+function focusSearchInput() {
+	searchInput?.focus();
+	searchInput?.select();
+}
+
 $effect(() => {
 	syncLayoutPreference();
 	authed = isAuthenticated();
@@ -247,9 +257,9 @@ function handleKeydown(e: KeyboardEvent) {
 		if (selected) {
 			onNavigate(`/session/${selected.id}`);
 		}
-	} else if (e.key === '/') {
+	} else if (isSearchFocusShortcut(e)) {
 		e.preventDefault();
-		searchInput?.focus();
+		focusSearchInput();
 	} else if (e.key === 't') {
 		e.preventDefault();
 		const toolValues = tools.map((t) => t.value);
@@ -269,10 +279,39 @@ function handleKeydown(e: KeyboardEvent) {
 	}
 }
 
+function handleSearchInputKeydown(e: KeyboardEvent) {
+	if (e.key === 'Enter') {
+		e.preventDefault();
+		handleSearch();
+		return;
+	}
+
+	if (e.key === 'Escape') {
+		e.preventDefault();
+		if (searchQuery.trim().length > 0) {
+			searchQuery = '';
+			handleSearch();
+			return;
+		}
+		searchInput?.blur();
+	}
+}
+
 function scrollSelectedIntoView() {
 	const el = document.querySelector(`[data-session-idx="${selectedIndex}"]`);
 	el?.scrollIntoView({ block: 'nearest' });
 }
+
+$effect(() => {
+	if (typeof window === 'undefined') return;
+	const handler = () => {
+		focusSearchInput();
+	};
+	window.addEventListener('opensession:focus-search', handler);
+	return () => {
+		window.removeEventListener('opensession:focus-search', handler);
+	};
+});
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -307,7 +346,7 @@ function scrollSelectedIntoView() {
 				placeholder="search..."
 				bind:this={searchInput}
 				bind:value={searchQuery}
-				onkeydown={(e) => e.key === 'Enter' && handleSearch()}
+				onkeydown={handleSearchInputKeydown}
 				class="w-full min-w-0 border-none bg-transparent px-1 py-0.5 text-xs text-text-primary placeholder-text-muted outline-none"
 			/>
 		</div>

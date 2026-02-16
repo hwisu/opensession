@@ -16,6 +16,19 @@ test.describe('Sessions', () => {
 		await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
 	});
 
+	test('session list search filters correctly', async ({ page, request }) => {
+		const admin = await getAdmin(request);
+		const title = `PW Shortcut Search ${crypto.randomUUID().slice(0, 8)}`;
+		await uploadSession(request, admin.access_token, { title });
+
+		await injectAuth(page, admin);
+		await page.goto('/');
+		const listSearchInput = page.locator('#session-search');
+		await listSearchInput.fill(title);
+		await page.keyboard.press('Enter');
+		await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
+	});
+
 	test('navigate to session detail', async ({ page, request }) => {
 		const admin = await getAdmin(request);
 		const sessionId = await uploadSession(request, admin.access_token, {
@@ -40,6 +53,49 @@ test.describe('Sessions', () => {
 		await expect(page.getByText('Claude Code').first()).toBeVisible({ timeout: 10000 });
 	});
 
+	test('session detail in-session search shortcuts work', async ({ page, request }) => {
+		const admin = await getAdmin(request);
+		const now = Date.now();
+		const sessionId = await uploadSession(request, admin.access_token, {
+			title: 'PW In-Session Search',
+			events: [
+				{
+					event_id: crypto.randomUUID(),
+					timestamp: new Date(now).toISOString(),
+					event_type: { type: 'UserMessage' },
+					task_id: crypto.randomUUID(),
+					content: { blocks: [{ type: 'Text', text: 'Find the session needle here' }] },
+					duration_ms: null,
+					attributes: {},
+				},
+				{
+					event_id: crypto.randomUUID(),
+					timestamp: new Date(now + 1000).toISOString(),
+					event_type: { type: 'AgentMessage' },
+					task_id: null,
+					content: { blocks: [{ type: 'Text', text: 'Second event for baseline visibility' }] },
+					duration_ms: null,
+					attributes: {},
+				},
+			],
+		});
+
+		await injectAuth(page, admin);
+		await page.goto(`/session/${sessionId}`);
+
+		const detailSearchInput = page.locator('#session-event-search');
+		await detailSearchInput.fill('needle');
+		await page.keyboard.press('Enter');
+
+		await expect(page.getByText('Find the session needle here')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText('1 matches')).toBeVisible({ timeout: 10000 });
+		await expect(page.locator('[data-timeline-idx]')).toHaveCount(1);
+
+		await page.keyboard.press('Escape');
+		await expect(detailSearchInput).toHaveValue('');
+		await expect(page.locator('[data-timeline-idx]')).toHaveCount(2);
+	});
+
 	test('session detail renders markdown and standalone fenced code for messages', async ({
 		page,
 		request,
@@ -58,7 +114,7 @@ test.describe('Sessions', () => {
 						blocks: [
 							{
 								type: 'Text',
-								text: '# Plan\n\n- Parse logs\n- Improve rendering',
+								text: '# Plan\n\nRead the [guide](https://example.com) first.\n\n- Parse logs\n- Improve rendering',
 							},
 						],
 					},
@@ -93,12 +149,29 @@ test.describe('Sessions', () => {
 		await expect(page.locator('.md-content li').filter({ hasText: 'Parse logs' })).toBeVisible({
 			timeout: 10000,
 		});
+		await expect(page.locator('.md-content .md-link').filter({ hasText: 'guide' })).toBeVisible({
+			timeout: 10000,
+		});
 		await expect(
 			page.locator('.code-with-lines code').filter({ hasText: 'const answer = 42;' }).first(),
 		).toBeVisible({ timeout: 10000 });
 		await expect(page.locator('.code-header span').filter({ hasText: 'ts' }).first()).toBeVisible({
 			timeout: 10000,
 		});
+
+		const proseStyles = await page.locator('.md-content .md-p').first().evaluate((el) => {
+			const p = getComputedStyle(el);
+			const linkEl = el.querySelector('.md-link') as HTMLElement | null;
+			const link = linkEl ? getComputedStyle(linkEl) : null;
+			return {
+				fontSize: Number.parseFloat(p.fontSize),
+				lineHeight: Number.parseFloat(p.lineHeight),
+				paragraphColor: p.color,
+				linkColor: link?.color ?? '',
+			};
+		});
+		expect(proseStyles.lineHeight / proseStyles.fontSize).toBeGreaterThan(1.6);
+		expect(proseStyles.linkColor).not.toBe(proseStyles.paragraphColor);
 	});
 
 	test('empty session list shows appropriate state', async ({ page, request }) => {

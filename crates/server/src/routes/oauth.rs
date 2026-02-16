@@ -175,28 +175,35 @@ pub async fn callback(
 
     // Exchange code for access token
     let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
-    let token_body = oauth::build_token_request_body(provider, code, &redirect_uri);
+    let token_form = oauth::build_token_request_form(provider, code, &redirect_uri);
 
     let client = reqwest::Client::new();
     let token_resp = client
         .post(&provider.token_url)
         .header("Accept", "application/json")
-        .json(&token_body)
+        .form(&token_form)
         .send()
         .await
-        .map_err(|e| ApiErr::internal(format!("token exchange failed: {e}")))?
-        .json::<serde_json::Value>()
+        .map_err(|e| ApiErr::internal(format!("token exchange failed: {e}")))?;
+    let token_status = token_resp.status();
+    let token_raw = token_resp
+        .text()
         .await
-        .map_err(|e| ApiErr::internal(format!("token response parse failed: {e}")))?;
+        .map_err(|e| ApiErr::internal(format!("token response read failed: {e}")))?;
 
-    let access_token = token_resp["access_token"]
-        .as_str()
-        .ok_or_else(|| ApiErr::internal("OAuth token exchange failed: no access_token"))?;
+    let access_token = oauth::parse_access_token_response(&token_raw).map_err(|e| {
+        let base = e.message();
+        if token_status.is_success() {
+            ApiErr::internal(base)
+        } else {
+            ApiErr::internal(format!("{base} (status {token_status})"))
+        }
+    })?;
 
     // Fetch userinfo
     let userinfo: serde_json::Value = client
         .get(&provider.userinfo_url)
-        .bearer_auth(access_token)
+        .bearer_auth(&access_token)
         .header("User-Agent", "opensession-server")
         .header("Accept", "application/json")
         .send()
@@ -210,7 +217,7 @@ pub async fn callback(
     let emails: Option<Vec<serde_json::Value>> = match provider.email_url {
         Some(ref email_url) => match client
             .get(email_url)
-            .bearer_auth(access_token)
+            .bearer_auth(&access_token)
             .header("User-Agent", "opensession-server")
             .header("Accept", "application/json")
             .send()

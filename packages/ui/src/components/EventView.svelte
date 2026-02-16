@@ -271,7 +271,7 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}</span>
 				{/if}
 				<div class="min-w-0 flex-1">
-					<div class="border-l-2 border-l-green-400/30 pl-2 sm:pl-3 text-sm">
+					<div class="border-l-2 border-l-green-400/30 pl-2 sm:pl-3 text-sm leading-relaxed">
 						<ContentBlockList blocks={event.content.blocks} bind:showFull />
 					</div>
 				</div>
@@ -282,7 +282,7 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 				{#if event.timestamp}
 					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}</span>
 				{/if}
-				<div class="min-w-0 flex-1 text-sm">
+				<div class="min-w-0 flex-1 text-sm leading-relaxed">
 					<ContentBlockList blocks={event.content.blocks} bind:showFull showJson={true} />
 				</div>
 			</div>
@@ -292,7 +292,7 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 				{#if event.timestamp}
 					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}</span>
 				{/if}
-				<div class="min-w-0 flex-1 text-sm">
+				<div class="min-w-0 flex-1 text-sm leading-relaxed">
 					<ContentBlockList blocks={event.content.blocks} bind:showFull showJson={true} />
 				</div>
 			</div>

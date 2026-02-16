@@ -106,6 +106,108 @@ pub fn build_token_request_body(
     })
 }
 
+/// Build OAuth2 token request as application/x-www-form-urlencoded pairs.
+///
+/// OAuth2 token exchange endpoints are required to support urlencoded form input.
+pub fn build_token_request_form(
+    config: &OAuthProviderConfig,
+    code: &str,
+    redirect_uri: &str,
+) -> Vec<(String, String)> {
+    vec![
+        ("client_id".into(), config.client_id.clone()),
+        ("client_secret".into(), config.client_secret.clone()),
+        ("code".into(), code.to_string()),
+        ("grant_type".into(), "authorization_code".into()),
+        ("redirect_uri".into(), redirect_uri.to_string()),
+    ]
+}
+
+/// Build OAuth2 token request as x-www-form-urlencoded string.
+pub fn build_token_request_form_encoded(
+    config: &OAuthProviderConfig,
+    code: &str,
+    redirect_uri: &str,
+) -> String {
+    build_token_request_form(config, code, redirect_uri)
+        .into_iter()
+        .map(|(k, v)| format!("{}={}", urlencoding(&k), urlencoding(&v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Parse access_token from OAuth token response.
+///
+/// Supports both JSON (`{\"access_token\":\"...\"}`) and query-string style
+/// (`access_token=...&scope=...`) payloads.
+pub fn parse_access_token_response(raw: &str) -> Result<String, ServiceError> {
+    let body = raw.trim();
+    if body.is_empty() {
+        return Err(ServiceError::Internal(
+            "OAuth token exchange failed: empty response body".into(),
+        ));
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(token) = json
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(token.to_string());
+        }
+
+        let err = json.get("error").and_then(|v| v.as_str());
+        let err_desc = json
+            .get("error_description")
+            .and_then(|v| v.as_str())
+            .or_else(|| json.get("error_message").and_then(|v| v.as_str()));
+
+        let detail = match (err, err_desc) {
+            (Some(e), Some(d)) if !d.is_empty() => format!("{e}: {d}"),
+            (Some(e), _) => e.to_string(),
+            (_, Some(d)) if !d.is_empty() => d.to_string(),
+            _ => "no access_token field in JSON response".to_string(),
+        };
+
+        return Err(ServiceError::Internal(format!(
+            "OAuth token exchange failed: {detail}"
+        )));
+    }
+
+    let mut access_token: Option<String> = None;
+    let mut error: Option<String> = None;
+    let mut error_description: Option<String> = None;
+
+    for pair in body.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = decode_form_component(k);
+        let value = decode_form_component(v);
+        match key.as_str() {
+            "access_token" if !value.trim().is_empty() => access_token = Some(value),
+            "error" if !value.trim().is_empty() => error = Some(value),
+            "error_description" if !value.trim().is_empty() => error_description = Some(value),
+            _ => {}
+        }
+    }
+
+    if let Some(token) = access_token {
+        return Ok(token);
+    }
+
+    let detail = match (error, error_description) {
+        (Some(e), Some(d)) => format!("{e}: {d}"),
+        (Some(e), None) => e,
+        (None, Some(d)) => d,
+        (None, None) => "no access_token field in response".to_string(),
+    };
+
+    Err(ServiceError::Internal(format!(
+        "OAuth token exchange failed: {detail}"
+    )))
+}
+
 /// Extract normalized user info from a provider's userinfo JSON response.
 ///
 /// `email_json` is an optional array of email objects (GitHub `/user/emails` format)
@@ -269,4 +371,80 @@ fn urlencoding(s: &str) -> String {
         }
     }
     out
+}
+
+fn decode_form_component(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = hex_value(bytes[i + 1]);
+                let lo = hex_value(bytes[i + 2]);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h << 4) | l);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(10 + b - b'a'),
+        b'A'..=b'F' => Some(10 + b - b'A'),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{github_preset, parse_access_token_response};
+
+    #[test]
+    fn parse_access_token_json_ok() {
+        let raw = r#"{"access_token":"gho_123","scope":"read:user","token_type":"bearer"}"#;
+        let token = parse_access_token_response(raw).expect("token parse");
+        assert_eq!(token, "gho_123");
+    }
+
+    #[test]
+    fn parse_access_token_form_ok() {
+        let raw = "access_token=gho_abc&scope=read%3Auser&token_type=bearer";
+        let token = parse_access_token_response(raw).expect("token parse");
+        assert_eq!(token, "gho_abc");
+    }
+
+    #[test]
+    fn parse_access_token_json_error_has_reason() {
+        let raw = r#"{"error":"bad_verification_code","error_description":"The code passed is incorrect or expired."}"#;
+        let err = parse_access_token_response(raw).expect_err("must fail");
+        assert!(err.message().contains("bad_verification_code"));
+    }
+
+    #[test]
+    fn build_form_encoded_contains_required_fields() {
+        let provider = github_preset("cid".into(), "secret".into());
+        let encoded =
+            super::build_token_request_form_encoded(&provider, "code-1", "https://app/callback");
+        assert!(encoded.contains("client_id=cid"));
+        assert!(encoded.contains("client_secret=secret"));
+        assert!(encoded.contains("grant_type=authorization_code"));
+        assert!(encoded.contains("code=code-1"));
+    }
 }

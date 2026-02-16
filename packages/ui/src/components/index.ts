@@ -6,6 +6,7 @@ export { default as CodeBlockView } from './CodeBlockView.svelte';
 export { default as ContentBlockList } from './ContentBlockList.svelte';
 export { default as DiffView } from './DiffView.svelte';
 export { default as DocsPage } from './DocsPage.svelte';
+export { default as DxLabPage } from './DxLabPage.svelte';
 export { default as EventView } from './EventView.svelte';
 export { default as ExpandableChip } from './ExpandableChip.svelte';
 export { default as HomePage } from './HomePage.svelte';

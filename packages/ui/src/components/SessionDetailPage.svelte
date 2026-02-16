@@ -1,7 +1,7 @@
 <script lang="ts">
 import { getSession } from '../api';
 import { SCROLL_STEP_PX } from '../constants';
-import type { Session, SessionDetail } from '../types';
+import type { ContentBlock, Event, Session, SessionDetail } from '../types';
 import { formatDuration, formatTimestamp, getToolConfig } from '../types';
 import { computeFileStats, getDisplayTitle } from '../utils';
 import SessionSidebar from './SessionSidebar.svelte';
@@ -13,17 +13,56 @@ let session = $state<Session | null>(null);
 let detail = $state<SessionDetail | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
+let searchQuery = $state('');
+let searchInput: HTMLInputElement | undefined = $state();
+let searchCursor = $state(-1);
 
 const tool = $derived(session ? getToolConfig(session.agent.tool) : null);
 const displayTitle = $derived(session ? getDisplayTitle(session) : 'Session');
 const fileStats = $derived(
 	session ? computeFileStats(session.events) : { filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
 );
+const normalizedSearchQuery = $derived(searchQuery.trim().toLowerCase());
+const searchableEvents = $derived.by(() => {
+	if (!session) return [] as Array<{ event: Event; searchText: string }>;
+	return session.events.map((event) => ({
+		event,
+		searchText: eventToSearchText(event),
+	}));
+});
+const filteredEvents = $derived.by(() => {
+	if (!session) return [] as Event[];
+	if (!normalizedSearchQuery) return session.events;
+	return searchableEvents
+		.filter((entry) => entry.searchText.includes(normalizedSearchQuery))
+		.map((entry) => entry.event);
+});
+const searchMatchCount = $derived(normalizedSearchQuery ? filteredEvents.length : 0);
 
 let timelineEl: HTMLDivElement | undefined = $state();
 
+function isSearchFocusShortcut(e: KeyboardEvent): boolean {
+	if (e.key.toLowerCase() === 'f' && (e.metaKey || e.ctrlKey)) return true;
+	return e.code === 'Slash' || e.key === '/' || e.key === '?';
+}
+
 function handleKeydown(e: KeyboardEvent) {
 	if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+	if (isSearchFocusShortcut(e)) {
+		e.preventDefault();
+		focusSearchInput();
+		return;
+	}
+	if (normalizedSearchQuery && e.key.toLowerCase() === 'n') {
+		e.preventDefault();
+		focusSearchMatch(1);
+		return;
+	}
+	if (normalizedSearchQuery && e.key.toLowerCase() === 'p') {
+		e.preventDefault();
+		focusSearchMatch(-1);
+		return;
+	}
 	if (!timelineEl) return;
 	if (e.key === 'j') {
 		e.preventDefault();
@@ -31,6 +70,85 @@ function handleKeydown(e: KeyboardEvent) {
 	} else if (e.key === 'k') {
 		e.preventDefault();
 		timelineEl.scrollBy({ top: -SCROLL_STEP_PX, behavior: 'smooth' });
+	}
+}
+
+function normalizeForSearch(value: unknown): string {
+	if (value == null) return '';
+	if (typeof value === 'string') return value.toLowerCase();
+	if (typeof value === 'number' || typeof value === 'boolean') return String(value).toLowerCase();
+	try {
+		return JSON.stringify(value).toLowerCase();
+	} catch {
+		return '';
+	}
+}
+
+function blockToSearchText(block: ContentBlock): string {
+	switch (block.type) {
+		case 'Text':
+			return normalizeForSearch(block.text);
+		case 'Code':
+			return `${normalizeForSearch(block.language)}\n${normalizeForSearch(block.code)}`;
+		case 'Json':
+			return normalizeForSearch(block.data);
+		case 'File':
+			return `${normalizeForSearch(block.path)}\n${normalizeForSearch(block.content)}`;
+		case 'Image':
+		case 'Audio':
+		case 'Video':
+			return `${normalizeForSearch(block.url)}\n${normalizeForSearch('alt' in block ? block.alt : '')}`;
+		case 'Reference':
+			return `${normalizeForSearch(block.uri)}\n${normalizeForSearch(block.media_type)}`;
+		default:
+			return '';
+	}
+}
+
+function eventToSearchText(event: Event): string {
+	const typeData = 'data' in event.event_type ? normalizeForSearch(event.event_type.data) : '';
+	const contentText = event.content.blocks.map((block) => blockToSearchText(block)).join('\n');
+	return [
+		event.event_type.type,
+		typeData,
+		contentText,
+		normalizeForSearch(event.attributes),
+		normalizeForSearch(event.task_id),
+	].join('\n');
+}
+
+function focusSearchInput() {
+	searchInput?.focus();
+	searchInput?.select();
+}
+
+function focusSearchMatch(direction: 1 | -1 = 1) {
+	if (!timelineEl) return;
+	const items = Array.from(timelineEl.querySelectorAll<HTMLElement>('[data-timeline-idx]'));
+	if (items.length === 0) return;
+	if (searchCursor < 0 || searchCursor >= items.length) {
+		searchCursor = direction === 1 ? 0 : items.length - 1;
+	} else {
+		searchCursor = (searchCursor + direction + items.length) % items.length;
+	}
+	const target = items[searchCursor];
+	target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function handleSearchInputKeydown(e: KeyboardEvent) {
+	if (e.key === 'Enter') {
+		e.preventDefault();
+		focusSearchMatch(e.shiftKey ? -1 : 1);
+		return;
+	}
+	if (e.key === 'Escape') {
+		e.preventDefault();
+		if (searchQuery.trim().length > 0) {
+			searchQuery = '';
+			searchCursor = -1;
+			return;
+		}
+		searchInput?.blur();
 	}
 }
 
@@ -55,6 +173,22 @@ $effect(() => {
 		.finally(() => {
 			loading = false;
 		});
+});
+
+$effect(() => {
+	void normalizedSearchQuery;
+	searchCursor = -1;
+});
+
+$effect(() => {
+	if (typeof window === 'undefined') return;
+	const handler = () => {
+		focusSearchInput();
+	};
+	window.addEventListener('opensession:focus-search', handler);
+	return () => {
+		window.removeEventListener('opensession:focus-search', handler);
+	};
 });
 </script>
 
@@ -96,11 +230,37 @@ $effect(() => {
 				<span>&middot;</span>
 				<span>{formatTimestamp(session.context.created_at)}</span>
 			</div>
+			<div class="mt-2 flex flex-wrap items-center gap-2">
+				<label for="session-event-search" class="text-xs text-text-muted">/</label>
+				<input
+					id="session-event-search"
+					type="text"
+					bind:this={searchInput}
+					bind:value={searchQuery}
+					onkeydown={handleSearchInputKeydown}
+					placeholder="search in this session..."
+					class="min-w-[220px] flex-1 border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+				/>
+				{#if normalizedSearchQuery}
+					<span
+						class="text-xs"
+						class:text-warning={searchMatchCount === 0}
+						class:text-text-muted={searchMatchCount > 0}
+					>
+						{searchMatchCount} matches
+					</span>
+				{/if}
+			</div>
 		</div>
 
 		<div class="flex min-h-0 flex-1 overflow-hidden">
 			<div bind:this={timelineEl} class="flex-1 overflow-y-auto px-3 py-2">
-				<TimelineView events={session.events} />
+				{#if normalizedSearchQuery && searchMatchCount === 0}
+					<div class="mb-2 border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+						No matching events for "{searchQuery}".
+					</div>
+				{/if}
+				<TimelineView events={filteredEvents} />
 			</div>
 			<SessionSidebar {session} {detail} {fileStats} />
 		</div>

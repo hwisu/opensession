@@ -404,7 +404,7 @@ async fn oauth_callback_inner(req: Request, env: &Env, provider_id: &str) -> Res
 
     // Exchange code for access token
     let redirect_uri = format!("{base_url}/api/auth/oauth/{provider_id}/callback");
-    let token_body = oauth::build_token_request_body(&provider, code, &redirect_uri);
+    let token_body = oauth::build_token_request_form_encoded(&provider, code, &redirect_uri);
 
     let mut token_resp = Fetch::Request(Request::new_with_init(
         &provider.token_url,
@@ -413,18 +413,27 @@ async fn oauth_callback_inner(req: Request, env: &Env, provider_id: &str) -> Res
             .with_headers({
                 let h = Headers::new();
                 let _ = h.set("Accept", "application/json");
-                let _ = h.set("Content-Type", "application/json");
+                let _ = h.set("Content-Type", "application/x-www-form-urlencoded");
                 h
             })
-            .with_body(Some(token_body.to_string().into())),
+            .with_body(Some(token_body.into())),
     )?)
     .send()
     .await?;
 
-    let token_json: serde_json::Value = token_resp.json().await?;
-    let access_token = token_json["access_token"]
-        .as_str()
-        .ok_or_else(|| Error::from("OAuth token exchange failed: no access_token"))?;
+    let token_status = token_resp.status_code();
+    let token_raw = token_resp.text().await?;
+    let access_token = match oauth::parse_access_token_response(&token_raw) {
+        Ok(token) => token,
+        Err(e) => {
+            let msg = if (200..300).contains(&token_status) {
+                e.message().to_string()
+            } else {
+                format!("{} (status {token_status})", e.message())
+            };
+            return ServiceError::Internal(msg).into_err_response();
+        }
+    };
 
     // Fetch userinfo
     let mut userinfo_resp = Fetch::Request(Request::new_with_init(

@@ -36,9 +36,19 @@ export {
 	isToolError,
 	truncate,
 } from './event-helpers';
+// HAIL parser helpers
+export { parseHailInput, parseHailJsonl } from './hail-parse';
 // Highlight & Markdown utilities
 export { highlightCode } from './highlight';
 export { isLongContent, lineCount, renderMarkdown } from './markdown';
+// Parser conformance constants
+export {
+	conformanceCoverageScore,
+	PARSER_CONFORMANCE_ROWS,
+	type ParserConformanceReference,
+	type ParserConformanceRow,
+	type SourceStatus,
+} from './parser-conformance';
 // HAIL core types + UI types
 export type {
 	Agent,

@@ -16,6 +16,7 @@ import type {
 	TeamStatsResponse,
 	UserSettings,
 } from './types';
+import { parseHailJsonl } from './hail-parse';
 
 // ── Token storage ───────────────────────────────────────────────────────────
 
@@ -226,47 +227,6 @@ async function requestRaw(path: string): Promise<string> {
 	}
 
 	return res.text();
-}
-
-/** Parse HAIL JSONL text into a Session object */
-function parseHailJsonl(text: string): Session {
-	const lines = text.split('\n').filter((l) => l.trim().length > 0);
-	if (lines.length === 0) throw new Error('Empty JSONL');
-
-	const header = JSON.parse(lines[0]);
-	if (header.type !== 'header') throw new Error('First line must be header');
-
-	const events: Session['events'] = [];
-	let stats: Session['stats'] | null = null;
-
-	for (let i = 1; i < lines.length; i++) {
-		const line = JSON.parse(lines[i]);
-		if (line.type === 'event') {
-			// Remove the wrapping "type":"event" tag, keep the event fields
-			const { type: _, ...event } = line;
-			events.push(event);
-		} else if (line.type === 'stats') {
-			const { type: _, ...s } = line;
-			stats = s;
-		}
-	}
-
-	return {
-		version: header.version,
-		session_id: header.session_id,
-		agent: header.agent,
-		context: header.context,
-		events,
-		stats: stats ?? {
-			event_count: events.length,
-			message_count: 0,
-			tool_call_count: 0,
-			task_count: 0,
-			duration_seconds: 0,
-			total_input_tokens: 0,
-			total_output_tokens: 0,
-		},
-	};
 }
 
 export async function uploadSession(

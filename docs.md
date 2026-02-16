@@ -9,14 +9,14 @@ OpenSession usage guide for the current runtime split:
 | Area | Docker (Axum server) | Worker (Wrangler) |
 |------|-----------------------|-------------------|
 | Primary focus | Team collaboration | Personal sharing |
-| Home `/` when signed out | Landing page | Landing page |
+| Home `/` when signed out | Session list (public feed) | Session list (public feed) |
 | Home `/` when signed in | Session list | Session list |
 | Team API (`/api/teams*`, `/api/invitations*`, `/api/sync/pull`) | Enabled | Disabled when `ENABLE_TEAM_API=false` |
 | Team UI (`/teams`, `/invitations`) | Enabled | Hidden/blocked |
 | Upload mode | Team-target upload | Personal upload (`team_id=personal`) |
 
 Repository defaults:
-- `docker-compose.yml`: `OPENSESSION_PUBLIC_FEED_ENABLED=false`
+- `docker-compose.yml`: `OPENSESSION_PUBLIC_FEED_ENABLED=true`
 - `wrangler.toml`: `ENABLE_TEAM_API=false`
 - Web build profile: `VITE_APP_PROFILE=docker|worker`
 

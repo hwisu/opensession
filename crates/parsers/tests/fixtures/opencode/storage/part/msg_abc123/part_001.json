@@ -1,0 +1,10 @@
+{
+  "id": "part_001",
+  "messageID": "abc123",
+  "type": "text",
+  "text": "assistant response from fixture",
+  "time": {
+    "start": 1753359831000,
+    "end": 1753359831200
+  }
+}

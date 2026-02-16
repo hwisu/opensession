@@ -1,0 +1,28 @@
+{
+  "sessionId": "gemini-fixture-1",
+  "startTime": "2026-02-16T09:20:00.000Z",
+  "lastUpdated": "2026-02-16T09:20:05.000Z",
+  "messages": [
+    {
+      "id": "u1",
+      "timestamp": "2026-02-16T09:20:01.000Z",
+      "type": "user",
+      "content": [
+        {
+          "text": "review parser"
+        }
+      ]
+    },
+    {
+      "id": "g1",
+      "timestamp": "2026-02-16T09:20:03.000Z",
+      "type": "gemini",
+      "model": "gemini-2.5-pro",
+      "content": [
+        {
+          "text": "analysis complete"
+        }
+      ]
+    }
+  ]
+}

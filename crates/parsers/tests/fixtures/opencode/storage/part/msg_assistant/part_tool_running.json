@@ -1,0 +1,16 @@
+{
+  "id": "part_tool_running",
+  "messageID": "msg_assistant",
+  "type": "tool",
+  "callID": "  functions.edit:27 ",
+  "tool": "edit",
+  "state": {
+    "status": "running",
+    "input": {
+      "filePath": "/tmp/opencode-company/main.rs"
+    },
+    "time": {
+      "start": 1753359832500
+    }
+  }
+}

@@ -5,6 +5,8 @@
 
 use opensession_core::trace::{Content, ContentBlock};
 use regex::Regex;
+use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 // ── First-wins metadata helper ──────────────────────────────────────────────
@@ -16,6 +18,125 @@ use std::sync::LazyLock;
 pub fn set_first<T>(target: &mut Option<T>, source: Option<T>) {
     if target.is_none() {
         *target = source;
+    }
+}
+
+// ── Shared semantic metadata helpers ────────────────────────────────────────
+
+/// Normalize cross-tool role labels into a canonical role string.
+///
+/// Output values are intentionally stringly-typed for lightweight reuse
+/// across parser modules without introducing new enums to public APIs.
+pub fn normalize_role_label(role: &str) -> Option<&'static str> {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "user" | "human" => Some("user"),
+        "assistant" | "agent" | "model" | "gemini" => Some("assistant"),
+        "system" => Some("system"),
+        "thinking" | "reasoning" | "thought" => Some("thinking"),
+        _ => None,
+    }
+}
+
+/// Infer a semantic tool kind from a raw tool name.
+pub fn infer_tool_kind(name: &str) -> &'static str {
+    let lower = name.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return "other";
+    }
+    if matches!(
+        lower.as_str(),
+        "read"
+            | "read_file"
+            | "view"
+            | "cat"
+            | "open"
+            | "fileread"
+            | "readfile"
+            | "list_dir"
+            | "ls"
+    ) {
+        return "file_read";
+    }
+    if matches!(
+        lower.as_str(),
+        "edit"
+            | "write"
+            | "create"
+            | "delete"
+            | "apply_patch"
+            | "str_replace_editor"
+            | "edit_file"
+            | "reapply"
+            | "write_file"
+            | "fileedit"
+    ) {
+        return "file_write";
+    }
+    if matches!(
+        lower.as_str(),
+        "bash" | "shell" | "exec_command" | "run_terminal_cmd" | "execute_command"
+    ) {
+        return "shell";
+    }
+    if matches!(
+        lower.as_str(),
+        "grep" | "search" | "code_search" | "grep_search" | "file_search" | "glob" | "find"
+    ) {
+        return "search";
+    }
+    if lower.starts_with("web") || matches!(lower.as_str(), "fetch" | "browser") {
+        return "web";
+    }
+    if lower.contains("task") || lower.contains("subagent") {
+        return "task";
+    }
+    "other"
+}
+
+/// Add non-breaking source metadata attributes to an event.
+pub fn attach_source_attrs(
+    attrs: &mut HashMap<String, Value>,
+    schema_version: Option<&str>,
+    raw_type: Option<&str>,
+) {
+    if let Some(version) = schema_version.map(str::trim).filter(|v| !v.is_empty()) {
+        attrs.insert(
+            "source.schema_version".to_string(),
+            Value::String(version.to_string()),
+        );
+    }
+    if let Some(raw) = raw_type.map(str::trim).filter(|v| !v.is_empty()) {
+        attrs.insert(
+            "source.raw_type".to_string(),
+            Value::String(raw.to_string()),
+        );
+    }
+}
+
+/// Add non-breaking semantic metadata attributes to an event.
+pub fn attach_semantic_attrs(
+    attrs: &mut HashMap<String, Value>,
+    group_id: Option<&str>,
+    call_id: Option<&str>,
+    tool_kind: Option<&str>,
+) {
+    if let Some(group_id) = group_id.map(str::trim).filter(|v| !v.is_empty()) {
+        attrs.insert(
+            "semantic.group_id".to_string(),
+            Value::String(group_id.to_string()),
+        );
+    }
+    if let Some(call_id) = call_id.map(str::trim).filter(|v| !v.is_empty()) {
+        attrs.insert(
+            "semantic.call_id".to_string(),
+            Value::String(call_id.to_string()),
+        );
+    }
+    if let Some(tool_kind) = tool_kind.map(str::trim).filter(|v| !v.is_empty()) {
+        attrs.insert(
+            "semantic.tool_kind".to_string(),
+            Value::String(tool_kind.to_string()),
+        );
     }
 }
 
@@ -183,6 +304,7 @@ pub fn build_tool_result_content(raw_text: &str, tool_info: &ToolUseInfo) -> Con
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_strip_system_reminders() {
@@ -355,5 +477,53 @@ mod tests {
             }
             _ => panic!("Expected Text block"),
         }
+    }
+
+    #[test]
+    fn test_normalize_role_label() {
+        assert_eq!(normalize_role_label("user"), Some("user"));
+        assert_eq!(normalize_role_label("assistant"), Some("assistant"));
+        assert_eq!(normalize_role_label("gemini"), Some("assistant"));
+        assert_eq!(normalize_role_label("system"), Some("system"));
+        assert_eq!(normalize_role_label("reasoning"), Some("thinking"));
+        assert_eq!(normalize_role_label("unknown"), None);
+    }
+
+    #[test]
+    fn test_infer_tool_kind() {
+        assert_eq!(infer_tool_kind("Read"), "file_read");
+        assert_eq!(infer_tool_kind("edit_file"), "file_write");
+        assert_eq!(infer_tool_kind("exec_command"), "shell");
+        assert_eq!(infer_tool_kind("WebSearch"), "web");
+        assert_eq!(infer_tool_kind("Task"), "task");
+        assert_eq!(infer_tool_kind("custom_tool"), "other");
+    }
+
+    #[test]
+    fn test_attach_source_and_semantic_attrs() {
+        let mut attrs = HashMap::new();
+        attach_source_attrs(&mut attrs, Some("v3"), Some("bubble"));
+        attach_semantic_attrs(&mut attrs, Some("turn-1"), Some("call-1"), Some("shell"));
+
+        assert_eq!(
+            attrs.get("source.schema_version").and_then(|v| v.as_str()),
+            Some("v3")
+        );
+        assert_eq!(
+            attrs.get("source.raw_type").and_then(|v| v.as_str()),
+            Some("bubble")
+        );
+        assert_eq!(
+            attrs.get("semantic.group_id").and_then(|v| v.as_str()),
+            Some("turn-1")
+        );
+        assert_eq!(
+            attrs.get("semantic.call_id").and_then(|v| v.as_str()),
+            Some("call-1")
+        );
+        assert_eq!(
+            attrs.get("semantic.tool_kind").and_then(|v| v.as_str()),
+            Some("shell")
+        );
     }
 }

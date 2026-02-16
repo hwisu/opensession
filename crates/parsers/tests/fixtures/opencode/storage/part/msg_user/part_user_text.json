@@ -1,0 +1,10 @@
+{
+  "id": "part_user_text",
+  "messageID": "msg_user",
+  "type": "text",
+  "text": "run diagnostics",
+  "time": {
+    "start": 1753359831000,
+    "end": 1753359831100
+  }
+}

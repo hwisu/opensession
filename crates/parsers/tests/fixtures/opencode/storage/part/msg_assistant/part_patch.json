@@ -1,0 +1,14 @@
+{
+  "id": "part_patch",
+  "messageID": "msg_assistant",
+  "type": "patch",
+  "hash": "abc123",
+  "files": [
+    "/tmp/opencode-company/main.rs",
+    "/tmp/opencode-company/lib.rs"
+  ],
+  "time": {
+    "start": 1753359832450,
+    "end": 1753359832450
+  }
+}

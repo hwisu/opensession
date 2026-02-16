@@ -144,6 +144,87 @@ where
     out
 }
 
+/// Pair ToolCall events with ToolResult events using the same heuristic as Web UI:
+/// 1) exact call_id/semantic.call_id match, then
+/// 2) nearby same-name ToolResult fallback.
+#[allow(dead_code)]
+pub fn pair_tool_call_results(events: &[Event]) -> HashMap<usize, usize> {
+    let mut pairs = HashMap::new();
+    let mut result_by_call_id: HashMap<String, usize> = HashMap::new();
+
+    for (idx, event) in events.iter().enumerate() {
+        if !matches!(event.event_type, EventType::ToolResult { .. }) {
+            continue;
+        }
+        if let Some(call_id) = semantic_call_id(event) {
+            result_by_call_id.insert(call_id, idx);
+        }
+    }
+
+    for (idx, event) in events.iter().enumerate() {
+        let EventType::ToolCall { name } = &event.event_type else {
+            continue;
+        };
+        let call_id = semantic_call_id(event).unwrap_or_else(|| event.event_id.clone());
+        if let Some(result_idx) = result_by_call_id.get(&call_id).copied() {
+            pairs.insert(idx, result_idx);
+            continue;
+        }
+
+        for (j, candidate) in events
+            .iter()
+            .enumerate()
+            .take(std::cmp::min(events.len(), idx + 8))
+            .skip(idx + 1)
+        {
+            match &candidate.event_type {
+                EventType::ToolCall { .. } => break,
+                EventType::ToolResult {
+                    name: result_name, ..
+                } if result_name == name => {
+                    pairs.insert(idx, j);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pairs
+}
+
+#[allow(dead_code)]
+fn semantic_call_id(event: &Event) -> Option<String> {
+    if let Some(call_id) = event
+        .attributes
+        .get("semantic.call_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return Some(call_id.to_string());
+    }
+
+    if let EventType::ToolResult {
+        call_id: Some(call_id),
+        ..
+    } = &event.event_type
+    {
+        let trimmed = call_id.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    event
+        .attributes
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
 fn allocate_lane_for_task(
     task_lane: &mut HashMap<String, usize>,
     reusable_lanes: &mut BTreeSet<usize>,
@@ -307,5 +388,59 @@ mod tests {
         assert_eq!(lanes[0].marker, LaneMarker::Fork);
         assert_eq!(lanes[1].marker, LaneMarker::None);
         assert_eq!(lanes[2].marker, LaneMarker::Merge);
+    }
+
+    #[test]
+    fn pair_tool_call_results_matches_by_semantic_call_id() {
+        let mut call = mk_event(
+            "call-1",
+            EventType::ToolCall {
+                name: "Read".to_string(),
+            },
+            None,
+        );
+        call.attributes.insert(
+            "semantic.call_id".to_string(),
+            serde_json::Value::String("cid-1".to_string()),
+        );
+
+        let result = mk_event(
+            "result-1",
+            EventType::ToolResult {
+                name: "Read".to_string(),
+                is_error: false,
+                call_id: Some("cid-1".to_string()),
+            },
+            None,
+        );
+
+        let events = vec![call, result];
+        let pairs = pair_tool_call_results(&events);
+        assert_eq!(pairs.get(&0), Some(&1));
+    }
+
+    #[test]
+    fn pair_tool_call_results_falls_back_to_nearby_same_tool_name() {
+        let call = mk_event(
+            "call-2",
+            EventType::ToolCall {
+                name: "WebSearch".to_string(),
+            },
+            None,
+        );
+        let middle = mk_event("a1", EventType::AgentMessage, None);
+        let result = mk_event(
+            "result-2",
+            EventType::ToolResult {
+                name: "WebSearch".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            None,
+        );
+
+        let events = vec![call, middle, result];
+        let pairs = pair_tool_call_results(&events);
+        assert_eq!(pairs.get(&0), Some(&2));
     }
 }

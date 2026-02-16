@@ -1,0 +1,20 @@
+{
+  "id": "part_tool_done",
+  "messageID": "msg_assistant",
+  "type": "tool",
+  "callID": "call_abc",
+  "tool": "grep",
+  "state": {
+    "status": "Completed",
+    "input": {
+      "pattern": "todo",
+      "path": "/tmp/opencode-company"
+    },
+    "output": "Found 1 match",
+    "title": "todo",
+    "time": {
+      "start": 1753359832300,
+      "end": 1753359832400
+    }
+  }
+}

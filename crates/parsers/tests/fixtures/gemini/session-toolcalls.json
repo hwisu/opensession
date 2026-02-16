@@ -1,0 +1,50 @@
+{
+  "sessionId": "gemini-fixture-toolcalls",
+  "projectHash": "fixture-hash",
+  "startTime": "2026-02-16T09:10:00.000Z",
+  "lastUpdated": "2026-02-16T09:10:10.000Z",
+  "messages": [
+    {
+      "id": "u1",
+      "timestamp": "2026-02-16T09:10:01.000Z",
+      "type": "user",
+      "content": [{ "text": "version" }]
+    },
+    {
+      "id": "g1",
+      "timestamp": "2026-02-16T09:10:03.000Z",
+      "type": "gemini",
+      "content": "running tool",
+      "model": "gemini-2.5-flash",
+      "toolCalls": [
+        {
+          "id": "call-1",
+          "name": "run_shell_command",
+          "args": {
+            "command": "git status"
+          },
+          "result": [
+            {
+              "functionResponse": {
+                "id": "call-1",
+                "name": "run_shell_command",
+                "response": {
+                  "output": "clean"
+                }
+              }
+            }
+          ],
+          "status": "success",
+          "displayName": "run_shell_command",
+          "description": "Execute shell command",
+          "renderOutputAsMarkdown": false
+        }
+      ],
+      "tokens": {
+        "input": 11,
+        "output": 7,
+        "total": 18
+      }
+    }
+  ]
+}

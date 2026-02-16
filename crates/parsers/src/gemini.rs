@@ -1,4 +1,6 @@
-use crate::common::set_first;
+use crate::common::{
+    attach_semantic_attrs, attach_source_attrs, infer_tool_kind, normalize_role_label, set_first,
+};
 use crate::SessionParser;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -55,7 +57,7 @@ struct GeminiMessage {
     #[serde(rename = "type")]
     msg_type: String,
     #[serde(default)]
-    content: Option<String>,
+    content: Option<GeminiMessageContent>,
     #[serde(default)]
     thoughts: Option<Vec<GeminiThought>>,
     #[allow(dead_code)]
@@ -63,6 +65,52 @@ struct GeminiMessage {
     tokens: Option<GeminiTokens>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default, rename = "toolCalls")]
+    tool_calls: Vec<GeminiToolCall>,
+}
+
+/// Older Gemini JSON sessions may store `message.content` either as plain text
+/// or as structured part objects.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum GeminiMessageContent {
+    Text(String),
+    Parts(Vec<serde_json::Value>),
+    Part(serde_json::Value),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiToolCall {
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    #[serde(default)]
+    args: Option<serde_json::Value>,
+    #[serde(default)]
+    result: Option<GeminiPartListUnion>,
+    #[serde(default)]
+    status: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    display_name: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    description: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    render_output_as_markdown: Option<bool>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    result_display: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum GeminiPartListUnion {
+    Text(String),
+    Parts(Vec<serde_json::Value>),
+    Part(serde_json::Value),
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +141,193 @@ struct GeminiTokens {
     total: Option<u64>,
 }
 
+#[derive(Debug, Default)]
+struct ParsedLegacyContent {
+    texts: Vec<String>,
+    thinkings: Vec<String>,
+    tool_calls: Vec<(String, Option<serde_json::Value>)>,
+    tool_results: Vec<(String, Option<serde_json::Value>)>,
+    schema_variant: &'static str,
+}
+
+fn parse_legacy_part(parsed: &mut ParsedLegacyContent, part: &serde_json::Value) {
+    let Some(obj) = part.as_object() else {
+        if let Some(text) = part.as_str() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                parsed.texts.push(trimmed.to_string());
+            }
+        }
+        return;
+    };
+
+    if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            parsed.texts.push(trimmed.to_string());
+        }
+    }
+
+    if let Some(thinking) = obj.get("thinking").and_then(|v| v.as_str()) {
+        let trimmed = thinking.trim();
+        if !trimmed.is_empty() {
+            parsed.thinkings.push(trimmed.to_string());
+        }
+    }
+
+    if let Some(call) = obj.get("functionCall").or_else(|| obj.get("function_call")) {
+        if let Some(call_obj) = call.as_object() {
+            let name = call_obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let args = call_obj
+                .get("args")
+                .cloned()
+                .or_else(|| call_obj.get("arguments").cloned());
+            parsed.tool_calls.push((name, args));
+        }
+    }
+
+    if let Some(resp) = obj
+        .get("functionResponse")
+        .or_else(|| obj.get("function_response"))
+    {
+        if let Some(resp_obj) = resp.as_object() {
+            let name = resp_obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let response = resp_obj
+                .get("response")
+                .cloned()
+                .or_else(|| resp_obj.get("result").cloned());
+            parsed.tool_results.push((name, response));
+        }
+    }
+}
+
+fn parse_legacy_content(content: Option<&GeminiMessageContent>) -> ParsedLegacyContent {
+    let Some(content) = content else {
+        return ParsedLegacyContent::default();
+    };
+
+    match content {
+        GeminiMessageContent::Text(text) => ParsedLegacyContent {
+            texts: vec![text.clone()],
+            schema_variant: "text",
+            ..ParsedLegacyContent::default()
+        },
+        GeminiMessageContent::Part(part) => {
+            let mut parsed = ParsedLegacyContent {
+                schema_variant: "part",
+                ..ParsedLegacyContent::default()
+            };
+            parse_legacy_part(&mut parsed, part);
+            parsed
+        }
+        GeminiMessageContent::Parts(parts) => {
+            let mut parsed = ParsedLegacyContent {
+                schema_variant: "parts",
+                ..ParsedLegacyContent::default()
+            };
+            for part in parts {
+                parse_legacy_part(&mut parsed, part);
+            }
+            parsed
+        }
+    }
+}
+
+fn content_from_part_values(parts: &[serde_json::Value]) -> Content {
+    if parts.is_empty() {
+        return Content::empty();
+    }
+
+    let mut text_chunks: Vec<String> = Vec::new();
+    let mut response_payloads: Vec<serde_json::Value> = Vec::new();
+
+    for part in parts {
+        if let Some(text) = part.as_str() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                text_chunks.push(trimmed.to_string());
+            }
+            continue;
+        }
+
+        if let Some(obj) = part.as_object() {
+            if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    text_chunks.push(trimmed.to_string());
+                }
+            }
+
+            if let Some(resp) = obj
+                .get("functionResponse")
+                .or_else(|| obj.get("function_response"))
+            {
+                if let Some(resp_obj) = resp.as_object() {
+                    let payload = resp_obj
+                        .get("response")
+                        .cloned()
+                        .or_else(|| resp_obj.get("result").cloned())
+                        .unwrap_or_else(|| resp.clone());
+                    response_payloads.push(payload);
+                } else {
+                    response_payloads.push(resp.clone());
+                }
+                continue;
+            }
+        }
+    }
+
+    if !response_payloads.is_empty() {
+        let data = if response_payloads.len() == 1 {
+            response_payloads.into_iter().next().unwrap_or_default()
+        } else {
+            serde_json::Value::Array(response_payloads)
+        };
+        return Content {
+            blocks: vec![ContentBlock::Json { data }],
+        };
+    }
+
+    if !text_chunks.is_empty() {
+        return Content::text(text_chunks.join("\n"));
+    }
+
+    let fallback = if parts.len() == 1 {
+        parts[0].clone()
+    } else {
+        serde_json::Value::Array(parts.to_vec())
+    };
+    Content {
+        blocks: vec![ContentBlock::Json { data: fallback }],
+    }
+}
+
+fn content_from_part_list_union(result: Option<&GeminiPartListUnion>) -> Content {
+    match result {
+        None => Content::empty(),
+        Some(GeminiPartListUnion::Text(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Content::empty()
+            } else {
+                Content::text(trimmed)
+            }
+        }
+        Some(GeminiPartListUnion::Part(part)) => {
+            content_from_part_values(std::slice::from_ref(part))
+        }
+        Some(GeminiPartListUnion::Parts(parts)) => content_from_part_values(parts),
+    }
+}
+
 // ── Parsing logic ───────────────────────────────────────────────────────────
 //
 // Gemini CLI session format:
@@ -120,30 +355,87 @@ fn parse_json(path: &Path) -> Result<Session> {
             .and_then(|s| parse_timestamp(s).ok())
             .unwrap_or_else(Utc::now);
 
-        let content_text = msg.content.as_deref().unwrap_or("");
+        let parsed = parse_legacy_content(msg.content.as_ref());
+        let content_text = parsed
+            .texts
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let schema_version = if !msg.tool_calls.is_empty() {
+            "gemini-json-v3-toolcalls"
+        } else if matches!(parsed.schema_variant, "parts" | "part") {
+            "gemini-json-v2-parts"
+        } else {
+            "gemini-json-v1"
+        };
+
+        let mut base_attrs = HashMap::new();
+        attach_source_attrs(&mut base_attrs, Some(schema_version), Some(&msg.msg_type));
+        if let Some(role) = normalize_role_label(&msg.msg_type) {
+            base_attrs.insert(
+                "semantic.role".to_string(),
+                serde_json::Value::String(role.to_string()),
+            );
+        }
+        if let Some(group_id) = msg.id.as_deref() {
+            attach_semantic_attrs(&mut base_attrs, Some(group_id), None, None);
+        }
 
         match msg.msg_type.as_str() {
             "user" => {
-                if content_text.is_empty() {
-                    continue;
+                if !content_text.is_empty() {
+                    set_first(&mut first_user_text, Some(content_text.clone()));
+                    event_counter += 1;
+                    events.push(Event {
+                        event_id: msg
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("gemini-{}", event_counter)),
+                        timestamp: ts,
+                        event_type: EventType::UserMessage,
+                        task_id: None,
+                        content: Content::text(content_text),
+                        duration_ms: None,
+                        attributes: base_attrs.clone(),
+                    });
                 }
-                set_first(&mut first_user_text, Some(content_text.to_string()));
-                event_counter += 1;
-                events.push(Event {
-                    event_id: format!("gemini-{}", event_counter),
-                    timestamp: ts,
-                    event_type: EventType::UserMessage,
-                    task_id: None,
-                    content: Content::text(content_text),
-                    duration_ms: None,
-                    attributes: HashMap::new(),
-                });
+
+                for (idx, (name, response)) in parsed.tool_results.iter().enumerate() {
+                    event_counter += 1;
+                    let call_id = msg.id.as_deref().map(|id| format!("{id}-call-{}", idx + 1));
+                    let mut attrs = base_attrs.clone();
+                    attach_semantic_attrs(
+                        &mut attrs,
+                        msg.id.as_deref(),
+                        call_id.as_deref(),
+                        Some(infer_tool_kind(name)),
+                    );
+                    let result_content = match response {
+                        Some(v) => Content {
+                            blocks: vec![ContentBlock::Json { data: v.clone() }],
+                        },
+                        None => Content::empty(),
+                    };
+                    events.push(Event {
+                        event_id: format!("gemini-{}", event_counter),
+                        timestamp: ts,
+                        event_type: EventType::ToolResult {
+                            name: name.clone(),
+                            is_error: false,
+                            call_id,
+                        },
+                        task_id: None,
+                        content: result_content,
+                        duration_ms: None,
+                        attributes: attrs,
+                    });
+                }
             }
             "gemini" => {
-                // Extract model
                 set_first(&mut model_name, msg.model.clone());
 
-                // Build token attributes from usage data
                 let mut token_attrs = HashMap::new();
                 if let Some(ref tokens) = msg.tokens {
                     if let Some(input) = tokens.input {
@@ -160,7 +452,6 @@ fn parse_json(path: &Path) -> Result<Session> {
                     }
                 }
 
-                // Emit thinking events from thoughts
                 if let Some(thoughts) = &msg.thoughts {
                     for thought in thoughts {
                         let text = match (&thought.subject, &thought.description) {
@@ -175,16 +466,150 @@ fn parse_json(path: &Path) -> Result<Session> {
                             timestamp: ts,
                             event_type: EventType::Thinking,
                             task_id: None,
-                            content: Content::text(&text),
+                            content: Content::text(text),
                             duration_ms: None,
-                            attributes: HashMap::new(),
+                            attributes: base_attrs.clone(),
                         });
                     }
                 }
 
-                // Emit agent message
+                for thinking in &parsed.thinkings {
+                    event_counter += 1;
+                    events.push(Event {
+                        event_id: format!("gemini-{}", event_counter),
+                        timestamp: ts,
+                        event_type: EventType::Thinking,
+                        task_id: None,
+                        content: Content::text(thinking),
+                        duration_ms: None,
+                        attributes: base_attrs.clone(),
+                    });
+                }
+
+                if !msg.tool_calls.is_empty() {
+                    for (idx, tool_call) in msg.tool_calls.iter().enumerate() {
+                        let call_id = tool_call.id.clone().or_else(|| {
+                            msg.id.as_deref().map(|id| format!("{id}-call-{}", idx + 1))
+                        });
+
+                        event_counter += 1;
+                        let mut call_attrs = base_attrs.clone();
+                        attach_semantic_attrs(
+                            &mut call_attrs,
+                            msg.id.as_deref(),
+                            call_id.as_deref(),
+                            Some(infer_tool_kind(&tool_call.name)),
+                        );
+                        let call_content = match &tool_call.args {
+                            Some(v) => Content {
+                                blocks: vec![ContentBlock::Json { data: v.clone() }],
+                            },
+                            None => Content::empty(),
+                        };
+                        events.push(Event {
+                            event_id: format!("gemini-{}", event_counter),
+                            timestamp: ts,
+                            event_type: EventType::ToolCall {
+                                name: tool_call.name.clone(),
+                            },
+                            task_id: None,
+                            content: call_content,
+                            duration_ms: None,
+                            attributes: call_attrs,
+                        });
+
+                        event_counter += 1;
+                        let mut result_attrs = base_attrs.clone();
+                        attach_semantic_attrs(
+                            &mut result_attrs,
+                            msg.id.as_deref(),
+                            call_id.as_deref(),
+                            Some(infer_tool_kind(&tool_call.name)),
+                        );
+                        let result_content =
+                            content_from_part_list_union(tool_call.result.as_ref());
+                        let is_error = tool_call
+                            .status
+                            .as_deref()
+                            .is_some_and(|status| status != "success");
+                        events.push(Event {
+                            event_id: format!("gemini-{}", event_counter),
+                            timestamp: ts,
+                            event_type: EventType::ToolResult {
+                                name: tool_call.name.clone(),
+                                is_error,
+                                call_id,
+                            },
+                            task_id: None,
+                            content: result_content,
+                            duration_ms: None,
+                            attributes: result_attrs,
+                        });
+                    }
+                } else {
+                    for (idx, (name, args)) in parsed.tool_calls.iter().enumerate() {
+                        event_counter += 1;
+                        let call_id = msg.id.as_deref().map(|id| format!("{id}-call-{}", idx + 1));
+                        let mut attrs = base_attrs.clone();
+                        attach_semantic_attrs(
+                            &mut attrs,
+                            msg.id.as_deref(),
+                            call_id.as_deref(),
+                            Some(infer_tool_kind(name)),
+                        );
+                        let call_content = match args {
+                            Some(v) => Content {
+                                blocks: vec![ContentBlock::Json { data: v.clone() }],
+                            },
+                            None => Content::empty(),
+                        };
+                        events.push(Event {
+                            event_id: format!("gemini-{}", event_counter),
+                            timestamp: ts,
+                            event_type: EventType::ToolCall { name: name.clone() },
+                            task_id: None,
+                            content: call_content,
+                            duration_ms: None,
+                            attributes: attrs,
+                        });
+                    }
+
+                    for (idx, (name, response)) in parsed.tool_results.iter().enumerate() {
+                        event_counter += 1;
+                        let call_id = msg.id.as_deref().map(|id| format!("{id}-call-{}", idx + 1));
+                        let mut attrs = base_attrs.clone();
+                        attach_semantic_attrs(
+                            &mut attrs,
+                            msg.id.as_deref(),
+                            call_id.as_deref(),
+                            Some(infer_tool_kind(name)),
+                        );
+                        let result_content = match response {
+                            Some(v) => Content {
+                                blocks: vec![ContentBlock::Json { data: v.clone() }],
+                            },
+                            None => Content::empty(),
+                        };
+                        events.push(Event {
+                            event_id: format!("gemini-{}", event_counter),
+                            timestamp: ts,
+                            event_type: EventType::ToolResult {
+                                name: name.clone(),
+                                is_error: false,
+                                call_id,
+                            },
+                            task_id: None,
+                            content: result_content,
+                            duration_ms: None,
+                            attributes: attrs,
+                        });
+                    }
+                }
+
                 if !content_text.is_empty() {
                     event_counter += 1;
+                    let mut attrs = base_attrs.clone();
+                    attrs.extend(token_attrs);
                     events.push(Event {
                         event_id: format!("gemini-{}", event_counter),
                         timestamp: ts,
@@ -192,14 +617,14 @@ fn parse_json(path: &Path) -> Result<Session> {
                         task_id: None,
                         content: Content::text(content_text),
                         duration_ms: None,
-                        attributes: token_attrs,
+                        attributes: attrs,
                     });
                 }
             }
             "error" => {
                 if !content_text.is_empty() {
                     event_counter += 1;
-                    let mut attrs = HashMap::new();
+                    let mut attrs = base_attrs.clone();
                     attrs.insert("error".to_string(), serde_json::Value::Bool(true));
                     events.push(Event {
                         event_id: format!("gemini-{}", event_counter),
@@ -212,7 +637,6 @@ fn parse_json(path: &Path) -> Result<Session> {
                     });
                 }
             }
-            // Skip "info" messages (auth, system notifications)
             _ => {}
         }
     }
@@ -378,6 +802,11 @@ fn parse_jsonl(path: &Path) -> Result<Session> {
                     .as_deref()
                     .and_then(|s| parse_timestamp(s).ok())
                     .unwrap_or_else(Utc::now);
+                let mut base_attrs = HashMap::new();
+                attach_source_attrs(&mut base_attrs, Some("gemini-jsonl-v1"), Some("user"));
+                if let Some(group_id) = id.as_deref() {
+                    attach_semantic_attrs(&mut base_attrs, Some(group_id), None, None);
+                }
 
                 // Collect text content from blocks
                 let texts: Vec<&str> = content
@@ -401,14 +830,26 @@ fn parse_jsonl(path: &Path) -> Result<Session> {
                         task_id: None,
                         content: Content::text(&text_content),
                         duration_ms: None,
-                        attributes: HashMap::new(),
+                        attributes: base_attrs.clone(),
                     });
                 }
 
                 // Handle functionResponse blocks in user messages (tool results)
+                let mut response_idx = 0usize;
                 for block in &content {
                     if let GeminiContentBlock::FunctionResponse { name, response } = block {
+                        response_idx += 1;
                         event_counter += 1;
+                        let call_id = id
+                            .as_deref()
+                            .map(|gid| format!("{gid}-call-{response_idx}"));
+                        let mut attrs = base_attrs.clone();
+                        attach_semantic_attrs(
+                            &mut attrs,
+                            id.as_deref(),
+                            call_id.as_deref(),
+                            Some(infer_tool_kind(name)),
+                        );
                         let result_content = match response {
                             Some(v) => Content {
                                 blocks: vec![ContentBlock::Json { data: v.clone() }],
@@ -421,12 +862,12 @@ fn parse_jsonl(path: &Path) -> Result<Session> {
                             event_type: EventType::ToolResult {
                                 name: name.clone(),
                                 is_error: false,
-                                call_id: None,
+                                call_id,
                             },
                             task_id: None,
                             content: result_content,
                             duration_ms: None,
-                            attributes: HashMap::new(),
+                            attributes: attrs,
                         });
                     }
                 }
@@ -443,10 +884,16 @@ fn parse_jsonl(path: &Path) -> Result<Session> {
                     .unwrap_or_else(Utc::now);
 
                 set_first(&mut model_name, model);
+                let mut base_attrs = HashMap::new();
+                attach_source_attrs(&mut base_attrs, Some("gemini-jsonl-v1"), Some("gemini"));
+                if let Some(group_id) = id.as_deref() {
+                    attach_semantic_attrs(&mut base_attrs, Some(group_id), None, None);
+                }
 
                 let event_base_id =
                     id.unwrap_or_else(|| format!("gemini-auto-{}", event_counter + 1));
 
+                let mut call_idx = 0usize;
                 for block in &content {
                     match block {
                         GeminiContentBlock::Thinking { text } => {
@@ -459,7 +906,7 @@ fn parse_jsonl(path: &Path) -> Result<Session> {
                                     task_id: None,
                                     content: Content::text(text),
                                     duration_ms: None,
-                                    attributes: HashMap::new(),
+                                    attributes: base_attrs.clone(),
                                 });
                             }
                         }
@@ -473,12 +920,21 @@ fn parse_jsonl(path: &Path) -> Result<Session> {
                                     task_id: None,
                                     content: Content::text(text),
                                     duration_ms: None,
-                                    attributes: HashMap::new(),
+                                    attributes: base_attrs.clone(),
                                 });
                             }
                         }
                         GeminiContentBlock::FunctionCall { name, args } => {
                             event_counter += 1;
+                            call_idx += 1;
+                            let call_id = Some(format!("{event_base_id}-call-{call_idx}"));
+                            let mut attrs = base_attrs.clone();
+                            attach_semantic_attrs(
+                                &mut attrs,
+                                Some(&event_base_id),
+                                call_id.as_deref(),
+                                Some(infer_tool_kind(name)),
+                            );
                             let call_content = match args {
                                 Some(v) => Content {
                                     blocks: vec![ContentBlock::Json { data: v.clone() }],
@@ -492,7 +948,7 @@ fn parse_jsonl(path: &Path) -> Result<Session> {
                                 task_id: None,
                                 content: call_content,
                                 duration_ms: None,
-                                attributes: HashMap::new(),
+                                attributes: attrs,
                             });
                         }
                         _ => {}
@@ -584,6 +1040,7 @@ fn parse_timestamp(ts: &str) -> Result<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::write;
 
     #[test]
     fn test_can_parse() {
@@ -780,5 +1237,157 @@ mod tests {
         let session: GeminiSession = serde_json::from_str(json).unwrap();
         assert_eq!(session.messages.len(), 1);
         assert_eq!(session.messages[0].msg_type, "info");
+    }
+
+    #[test]
+    fn test_parse_legacy_content_parts_variant() {
+        let content = GeminiMessageContent::Parts(vec![serde_json::json!({
+            "text": "hello from parts"
+        })]);
+        let parsed = parse_legacy_content(Some(&content));
+        assert_eq!(parsed.schema_variant, "parts");
+        assert_eq!(parsed.texts, vec!["hello from parts".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_legacy_content_single_part_variant() {
+        let content = GeminiMessageContent::Part(serde_json::json!({
+            "functionCall": {
+                "name": "read_file",
+                "args": {"path": "/tmp/a.txt"}
+            }
+        }));
+        let parsed = parse_legacy_content(Some(&content));
+        assert_eq!(parsed.schema_variant, "part");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].0, "read_file");
+    }
+
+    #[test]
+    fn test_parse_json_tool_calls_field() {
+        let dir = std::env::temp_dir().join(format!(
+            "opensession-gemini-toolcalls-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-2026-02-16T09-10-toolcalls.json");
+        let json = r#"{
+            "sessionId": "toolcalls-123",
+            "projectHash": "abc",
+            "startTime": "2026-02-16T09:10:00.000Z",
+            "lastUpdated": "2026-02-16T09:10:10.000Z",
+            "messages": [
+                {
+                    "id": "u1",
+                    "timestamp": "2026-02-16T09:10:01.000Z",
+                    "type": "user",
+                    "content": [{"text":"version"}]
+                },
+                {
+                    "id": "g1",
+                    "timestamp": "2026-02-16T09:10:03.000Z",
+                    "type": "gemini",
+                    "content": "running tool",
+                    "model": "gemini-2.5-flash",
+                    "toolCalls": [
+                        {
+                            "id": "call-1",
+                            "name": "run_shell_command",
+                            "args": {"command":"git status"},
+                            "result": [
+                                {
+                                    "functionResponse": {
+                                        "id": "call-1",
+                                        "name": "run_shell_command",
+                                        "response": {"output":"clean"}
+                                    }
+                                }
+                            ],
+                            "status": "success"
+                        }
+                    ],
+                    "tokens": {"input": 11, "output": 7, "total": 18}
+                }
+            ]
+        }"#;
+        write(&path, json).unwrap();
+
+        let parsed = parse_json(&path).expect("parse gemini json with toolCalls");
+        assert!(parsed.events.iter().any(|event| {
+            matches!(
+                &event.event_type,
+                EventType::ToolCall { name } if name == "run_shell_command"
+            )
+        }));
+        assert!(parsed.events.iter().any(|event| {
+            matches!(
+                &event.event_type,
+                EventType::ToolResult { name, call_id, is_error }
+                    if name == "run_shell_command"
+                        && call_id.as_deref() == Some("call-1")
+                        && !is_error
+            )
+        }));
+        assert!(parsed.events.iter().any(|event| {
+            event
+                .attributes
+                .get("source.schema_version")
+                .and_then(|v| v.as_str())
+                == Some("gemini-json-v3-toolcalls")
+        }));
+    }
+
+    #[test]
+    fn test_parse_json_parts_content_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "opensession-gemini-parts-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-2026-02-14T09-36-test.json");
+        let json = r#"{
+            "sessionId": "parts-123",
+            "startTime": "2026-02-14T09:36:00.000Z",
+            "lastUpdated": "2026-02-14T09:36:05.000Z",
+            "messages": [
+                {
+                    "id": "u1",
+                    "timestamp": "2026-02-14T09:36:01.000Z",
+                    "type": "user",
+                    "content": [{"text":"inspect this repo"}]
+                },
+                {
+                    "id": "g1",
+                    "timestamp": "2026-02-14T09:36:03.000Z",
+                    "type": "gemini",
+                    "content": [{"text":"done"}],
+                    "model": "gemini-2.5-pro"
+                }
+            ]
+        }"#;
+        write(&path, json).unwrap();
+
+        let parsed = parse_json(&path).expect("parse gemini json");
+        assert_eq!(parsed.session_id, "parts-123");
+        assert!(parsed
+            .events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::UserMessage)));
+        assert!(parsed
+            .events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::AgentMessage)));
+        assert!(parsed.events.iter().all(|e| {
+            e.attributes
+                .get("source.schema_version")
+                .and_then(|v| v.as_str())
+                .is_some()
+        }));
     }
 }

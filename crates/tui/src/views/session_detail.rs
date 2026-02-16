@@ -8,6 +8,7 @@ use opensession_core::trace::{ContentBlock, Event, EventType};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use std::collections::BTreeSet;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let session = match app.selected_session() {
@@ -249,8 +250,11 @@ fn render_lane_timeline(
     if inner.width < 12 || inner.height < 3 {
         return;
     }
-    let [header_area, body_area] =
+    let [header_band_area, body_band_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let stream_width = preferred_stream_width(body_band_area.width);
+    let header_area = centered_rect(header_band_area, stream_width);
+    let body_area = centered_rect(body_band_area, stream_width);
     let layout = stream_layout_spec(body_area.width as usize);
     frame.render_widget(Paragraph::new(stream_header_line(&layout)), header_area);
 
@@ -355,58 +359,73 @@ fn render_lane_timeline(
             }
         }
         let (center, center_style, summary_text) = match display_event {
-            DisplayEvent::Collapsed { count, kind, .. } => (
-                format!("{kind} x{count}"),
-                Style::new().fg(Theme::ROLE_AGENT).bold(),
-                format!("{kind} x{count}"),
-            ),
+            DisplayEvent::Collapsed { count, kind, .. } => {
+                let icon = collapsed_group_icon(kind);
+                (
+                    format!("[{icon}] {kind} x{count}"),
+                    Style::new().fg(Theme::ROLE_AGENT).bold(),
+                    format!("{kind} x{count}"),
+                )
+            }
             DisplayEvent::Single { event, .. } => {
-                let (kind, kind_color) = event_type_display(&event.event_type);
+                let (_, kind_color) = event_type_display(&event.event_type);
+                let icon = event_type_icon(&event.event_type);
                 let summary = event_compact_summary(&event.event_type, &event.content.blocks);
                 (
-                    format!("{kind:>9} {summary}"),
+                    format!("[{icon}] {summary}"),
                     Style::new().fg(kind_color),
                     summary,
                 )
             }
         };
-        lines.push(stream_row_line(
-            &layout,
-            &left,
-            &center,
-            &right,
-            (
-                Style::new().fg(if selected {
-                    Theme::ACCENT_BLUE
-                } else {
-                    Theme::TEXT_MUTED
-                }),
-                center_style,
-                if active_agents > 1 {
-                    Style::new().fg(Theme::ACCENT_CYAN).bold()
-                } else {
-                    Style::new().fg(Theme::TEXT_MUTED)
-                },
-                if selected {
-                    Style::new().bg(Theme::BG_SURFACE)
-                } else {
-                    Style::new()
-                },
-            ),
-        ));
-
-        let expanded = !app.expanded_events.contains(&i);
-        if expanded {
-            let show_diff = app.expanded_diff_events.contains(&i);
-            append_event_detail_rows(
-                &mut lines,
+        let left_style = Style::new().fg(if selected {
+            Theme::ACCENT_BLUE
+        } else {
+            Theme::TEXT_MUTED
+        });
+        let right_style = if active_agents > 1 {
+            Style::new().fg(Theme::ACCENT_CYAN).bold()
+        } else {
+            Style::new().fg(Theme::TEXT_MUTED)
+        };
+        let row_style = if selected {
+            Style::new().bg(Theme::BG_SURFACE)
+        } else {
+            Style::new()
+        };
+        let wrapped_center_rows = wrap_display_width(&center, layout.center.max(1));
+        for (row_idx, center_row) in wrapped_center_rows.iter().enumerate() {
+            let row_left = if row_idx == 0 { left.as_str() } else { "" };
+            let row_right = if row_idx == 0 { right.as_str() } else { "" };
+            lines.push(stream_row_line(
                 &layout,
-                display_event,
-                &summary_text,
-                3,
-                show_diff,
-            );
+                row_left,
+                center_row,
+                row_right,
+                (left_style, center_style, right_style, row_style),
+            ));
         }
+
+        let show_diff = app.expanded_diff_events.contains(&i);
+        let max_preview_lines = match display_event {
+            DisplayEvent::Single { event, .. }
+                if matches!(
+                    event.event_type,
+                    EventType::UserMessage | EventType::AgentMessage | EventType::SystemMessage
+                ) =>
+            {
+                256
+            }
+            _ => 6,
+        };
+        append_event_detail_rows(
+            &mut lines,
+            &layout,
+            display_event,
+            &summary_text,
+            max_preview_lines,
+            show_diff,
+        );
     }
 
     let visible_height = body_area.height as usize;
@@ -539,58 +558,55 @@ struct StreamLayoutSpec {
     right: usize,
 }
 
-fn stream_layout_spec(total: usize) -> StreamLayoutSpec {
-    let mut left = 18usize;
-    let mut center = 88usize;
-    let mut right = 20usize;
-    let sep = 6usize; // " │ " * 2
-
-    if total < 64 {
-        right = 0;
-        left = 12.min(total.saturating_sub(12));
-        center = total.saturating_sub(left + 3);
-        return StreamLayoutSpec {
-            left,
-            center,
-            right,
-        };
-    }
-
-    let overflow = left + center + right + sep;
-    if overflow > total {
-        let mut remaining = overflow - total;
-        let right_shrink = right.saturating_sub(12).min(remaining);
-        right -= right_shrink;
-        remaining -= right_shrink;
-
-        let left_shrink = left.saturating_sub(12).min(remaining);
-        left -= left_shrink;
-        remaining -= left_shrink;
-
-        let center_shrink = center.saturating_sub(64).min(remaining);
-        center -= center_shrink;
-        remaining -= center_shrink;
-
-        if remaining > 0 {
-            let right_shrink_to_zero = right.min(remaining);
-            right -= right_shrink_to_zero;
-            remaining -= right_shrink_to_zero;
-        }
-        if remaining > 0 {
-            let left_shrink_more = left.saturating_sub(8).min(remaining);
-            left -= left_shrink_more;
-            remaining -= left_shrink_more;
-        }
-        if remaining > 0 {
-            center = center.saturating_sub(remaining);
-        }
+fn preferred_stream_width(available: u16) -> u16 {
+    if available >= 120 {
+        120
+    } else if available >= 80 {
+        80
     } else {
-        let mut extra = total - overflow;
-        let center_grow = (96usize.saturating_sub(center)).min(extra);
-        center += center_grow;
-        extra -= center_grow;
-        right += extra;
+        available
     }
+}
+
+fn centered_rect(area: Rect, width: u16) -> Rect {
+    let clamped_width = width.min(area.width);
+    let offset = area.width.saturating_sub(clamped_width) / 2;
+    Rect {
+        x: area.x + offset,
+        y: area.y,
+        width: clamped_width,
+        height: area.height,
+    }
+}
+
+fn stream_layout_spec(total: usize) -> StreamLayoutSpec {
+    let min_center = 24usize;
+    let (mut left, mut right) = if total >= 120 {
+        (12usize, 22usize)
+    } else if total >= 80 {
+        (12usize, 18usize)
+    } else if total >= 64 {
+        (10usize, 12usize)
+    } else {
+        (8usize, 0usize)
+    };
+
+    if right > 0 && (left + right + 6 + min_center) > total {
+        right = 0;
+    }
+    let mut sep = if right > 0 { 6usize } else { 3usize };
+    if left + sep + min_center > total {
+        left = left.min(total.saturating_sub(sep + min_center));
+    }
+
+    let mut center = total.saturating_sub(left + sep + right);
+    if center < 12 && right > 0 {
+        right = 0;
+        sep = 3;
+        left = left.min(total.saturating_sub(sep + 12));
+        center = total.saturating_sub(left + sep + right);
+    }
+
     StreamLayoutSpec {
         left,
         center,
@@ -652,13 +668,44 @@ fn fit_cell(value: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    let clipped = truncate(value, width);
-    let pad = width.saturating_sub(clipped.chars().count());
+    let clipped = truncate_display_width(value, width);
+    let pad = width.saturating_sub(UnicodeWidthStr::width(clipped.as_str()));
     if pad == 0 {
         clipped
     } else {
         format!("{clipped}{}", " ".repeat(pad))
     }
+}
+
+fn truncate_display_width(value: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(value) <= max_width {
+        return value.to_string();
+    }
+
+    let ellipsis = '…';
+    let ellipsis_width = UnicodeWidthChar::width(ellipsis).unwrap_or(1).max(1);
+    if max_width <= ellipsis_width {
+        return ellipsis.to_string();
+    }
+
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in value.chars() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width == 0 {
+            continue;
+        }
+        if used + width + ellipsis_width > max_width {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push(ellipsis);
+    out
 }
 
 fn timeline_turn_group_text(group: &LinearTurnGroupMeta) -> String {
@@ -893,26 +940,80 @@ fn append_event_detail_rows<'a>(
                 if matches!(event.event_type, EventType::FileEdit { diff: Some(_), .. })
                     && !show_diff
                 {
-                    lines.push(stream_center_line(
+                    push_wrapped_center_rows(
+                        lines,
                         layout,
                         "diff hidden · press d to expand",
                         Style::new().fg(Theme::TEXT_MUTED),
-                    ));
+                    );
                 }
                 return;
             }
             for (text, style) in preview_rows {
-                lines.push(stream_center_line(layout, &text, style));
+                push_wrapped_center_rows(lines, layout, &text, style);
             }
         }
         DisplayEvent::Collapsed { first, .. } => {
             for (text, style) in
-                collect_content_preview_rows(first, max_preview_lines.min(2), None, false)
+                collect_content_preview_rows(first, max_preview_lines.min(3), None, false)
             {
-                lines.push(stream_center_line(layout, &text, style));
+                push_wrapped_center_rows(lines, layout, &text, style);
             }
         }
     }
+}
+
+fn push_wrapped_center_rows<'a>(
+    lines: &mut Vec<Line<'a>>,
+    layout: &StreamLayoutSpec,
+    text: &str,
+    style: Style,
+) {
+    for row in wrap_display_width(text, layout.center.max(1)) {
+        lines.push(stream_center_line(layout, &row, style));
+    }
+}
+
+fn wrap_display_width(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![String::new()];
+    }
+
+    let mut rows = Vec::new();
+    for segment in text.split('\n') {
+        let mut current = String::new();
+        let mut current_width = 0usize;
+        for ch in segment.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if ch_width == 0 {
+                continue;
+            }
+
+            if current_width + ch_width > max_width {
+                if !current.is_empty() {
+                    rows.push(std::mem::take(&mut current));
+                    current_width = 0;
+                }
+                if ch.is_whitespace() {
+                    continue;
+                }
+            }
+
+            if ch_width <= max_width {
+                current.push(ch);
+                current_width += ch_width;
+            }
+        }
+
+        if !current.is_empty() {
+            rows.push(current);
+        }
+    }
+
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
 }
 
 fn collect_content_preview_rows(
@@ -922,6 +1023,7 @@ fn collect_content_preview_rows(
     show_diff: bool,
 ) -> Vec<(String, Style)> {
     let mut rows = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     if let EventType::FileEdit {
         diff: Some(diff), ..
     } = &event.event_type
@@ -937,7 +1039,13 @@ fn collect_content_preview_rows(
             } else {
                 Style::new().fg(Theme::TEXT_MUTED)
             };
-            rows.push((truncate(line, 120), style));
+            let compact = compact_text_snippet(line, 4000);
+            if compact.is_empty() {
+                continue;
+            }
+            if seen.insert(normalize_preview_line(&compact)) {
+                rows.push((compact, style));
+            }
         }
         return rows;
     }
@@ -955,8 +1063,15 @@ fn collect_content_preview_rows(
                     {
                         continue;
                     }
+                    let compact = compact_text_snippet(trimmed, 4000);
+                    if compact.is_empty() {
+                        continue;
+                    }
+                    if !seen.insert(normalize_preview_line(&compact)) {
+                        continue;
+                    }
                     rows.push((
-                        format!("· {}", truncate(trimmed, 120)),
+                        format!("· {compact}"),
                         Style::new().fg(Theme::TEXT_SECONDARY),
                     ));
                     if rows.len() >= max_lines {
@@ -975,8 +1090,15 @@ fn collect_content_preview_rows(
                     {
                         continue;
                     }
+                    let compact = compact_text_snippet(trimmed, 4000);
+                    if compact.is_empty() {
+                        continue;
+                    }
+                    if !seen.insert(normalize_preview_line(&compact)) {
+                        continue;
+                    }
                     rows.push((
-                        format!("· {}", truncate(trimmed, 120)),
+                        format!("· {compact}"),
                         Style::new().fg(Theme::TEXT_SECONDARY),
                     ));
                     if rows.len() >= max_lines {
@@ -985,12 +1107,19 @@ fn collect_content_preview_rows(
                 }
             }
             ContentBlock::Json { data } => {
-                if let Some(hint) = json_value_hint(data, 100) {
+                if let Some(hint) = json_value_hint(data, 600) {
                     if !summary_hint
                         .is_some_and(|summary| detail_line_matches_summary(&hint, summary))
                     {
+                        let compact = compact_text_snippet(&hint, 4000);
+                        if compact.is_empty() {
+                            continue;
+                        }
+                        if !seen.insert(normalize_preview_line(&compact)) {
+                            continue;
+                        }
                         rows.push((
-                            format!("· {}", truncate(&hint, 120)),
+                            format!("· {compact}"),
                             Style::new().fg(Theme::TEXT_SECONDARY),
                         ));
                         if rows.len() >= max_lines {
@@ -1005,23 +1134,87 @@ fn collect_content_preview_rows(
     rows
 }
 
+fn normalize_preview_line(text: &str) -> String {
+    text.replace('…', " ")
+        .replace("...", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase()
+}
+
 fn detail_line_matches_summary(line: &str, summary: &str) -> bool {
-    let normalized_line = line
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
-    let normalized_summary = summary
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
+    let normalized_line = normalize_preview_line(line);
+    let normalized_summary = normalize_preview_line(summary);
     if normalized_line.is_empty() || normalized_summary.is_empty() {
         return false;
     }
     normalized_line == normalized_summary
         || normalized_line.contains(&normalized_summary)
         || normalized_summary.contains(&normalized_line)
+        || normalized_line.starts_with(&normalized_summary)
+        || normalized_summary.starts_with(&normalized_line)
+}
+
+fn collapsed_group_icon(kind: &str) -> &'static str {
+    match kind.to_ascii_lowercase().as_str() {
+        "fileresult" | "toolresult" => "TOOL",
+        "codesearch" | "filesearch" | "websearch" | "webfetch" => "SEARCH",
+        "fileread" => "READ",
+        _ => "GROUP",
+    }
+}
+
+fn event_type_icon(event_type: &EventType) -> &'static str {
+    match event_type {
+        EventType::UserMessage => "USER",
+        EventType::AgentMessage => "AGENT",
+        EventType::SystemMessage => "SYSTEM",
+        EventType::Thinking => "THINK",
+        EventType::ToolCall { name } => tool_name_icon(name),
+        EventType::ToolResult { name, is_error, .. } => {
+            if *is_error {
+                "ERROR"
+            } else if name.eq_ignore_ascii_case("write_stdin") {
+                ">_"
+            } else {
+                tool_name_icon(name)
+            }
+        }
+        EventType::FileRead { .. } => "READ",
+        EventType::CodeSearch { .. } | EventType::FileSearch { .. } => "SEARCH",
+        EventType::FileEdit { .. } => "EDIT",
+        EventType::FileCreate { .. } => "CREATE",
+        EventType::FileDelete { .. } => "DELETE",
+        EventType::ShellCommand { .. } => ">_",
+        EventType::WebSearch { .. } | EventType::WebFetch { .. } => "WEB",
+        EventType::ImageGenerate { .. } => "IMAGE",
+        EventType::VideoGenerate { .. } => "VIDEO",
+        EventType::AudioGenerate { .. } => "AUDIO",
+        EventType::TaskStart { .. } => "START",
+        EventType::TaskEnd { .. } => "END",
+        EventType::Custom { .. } => "EVENT",
+        _ => "EVENT",
+    }
+}
+
+fn tool_name_icon(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "exec_command" | "shell" | "bash" | "execute_command" | "spawn_process" => ">_",
+        "write_stdin" => ">_",
+        "apply_patch" | "apply_diff" | "replace_in_file" | "search_and_replace"
+        | "insert_content" => "EDIT",
+        "read_file" | "read" | "view" => "READ",
+        "write_file" | "write_to_file" | "create_file" | "create" => "WRITE",
+        "grep" | "search_files" | "find_references" | "find" => "SEARCH",
+        "search_query" | "websearch" | "web_search" => "WEB",
+        "image_query" => "IMAGE",
+        "request_user_input" => "INPUT",
+        "update_plan" => "PLAN",
+        "parallel" => "TOOLS",
+        _ => "TOOL",
+    }
 }
 
 fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
@@ -1053,10 +1246,11 @@ fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
 }
 
 fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
+    const MESSAGE_SUMMARY_MAX_CHARS: usize = 4000;
     match event_type {
         EventType::UserMessage => {
-            let text = first_meaningful_text_line_opt(blocks, 56)
-                .or_else(|| first_text_line_opt(blocks, 56))
+            let text = first_meaningful_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS)
+                .or_else(|| first_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS))
                 .unwrap_or_default();
             if text.is_empty() {
                 "(user prompt)".to_string()
@@ -1065,8 +1259,8 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
             }
         }
         EventType::AgentMessage => {
-            let text = first_meaningful_text_line_opt(blocks, 56)
-                .or_else(|| first_text_line_opt(blocks, 56))
+            let text = first_meaningful_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS)
+                .or_else(|| first_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS))
                 .unwrap_or_default();
             if text.is_empty() {
                 "(agent reply)".to_string()
@@ -1082,17 +1276,30 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
             .unwrap_or_else(|| "thinking".to_string()),
         EventType::ToolCall { name } => tool_call_compact_summary(name, blocks),
         EventType::ToolResult { name, is_error, .. } => {
-            let hint = tool_result_hint(name, blocks, 52);
-            if *is_error {
-                if let Some(hint) = hint {
-                    format!("{name} error: {hint}")
-                } else {
-                    format!("{name} error")
-                }
-            } else if let Some(hint) = hint {
-                format!("{name}: {hint}")
+            let lowered = name.to_ascii_lowercase();
+            let hint_name = if lowered == "write_stdin" {
+                "exec_command"
             } else {
-                format!("{name} ok")
+                name.as_str()
+            };
+            let hint = tool_result_hint(hint_name, blocks, 52);
+            if let Some(hint) = hint {
+                if *is_error {
+                    format!("error: {hint}")
+                } else {
+                    hint
+                }
+            } else if *is_error {
+                "error".to_string()
+            } else if lowered == "write_stdin" {
+                "command update".to_string()
+            } else if matches!(
+                lowered.as_str(),
+                "exec_command" | "shell" | "bash" | "execute_command" | "spawn_process"
+            ) {
+                "command result".to_string()
+            } else {
+                "result".to_string()
             }
         }
         EventType::FileRead { path } => display_path_label(path),
@@ -1566,6 +1773,14 @@ fn is_low_signal_text_line(line: &str) -> bool {
     ) {
         return true;
     }
+    if lower.starts_with("interactive response")
+        || lower.starts_with("interactive prompt")
+        || lower.contains("process running with session id")
+        || lower.starts_with("max_output_tokens=")
+        || lower.starts_with("stdin update")
+    {
+        return true;
+    }
     if lower.starts_with("meta #")
         || lower.starts_with("action ")
         || lower.starts_with("status ")
@@ -1585,6 +1800,18 @@ fn is_low_signal_text_line(line: &str) -> bool {
         return true;
     }
     if lower.contains("[task:call_") || (lower.contains("[l") && lower.contains(" call_")) {
+        return true;
+    }
+    if lower.starts_with("=== running ")
+        || lower.starts_with("finished `")
+        || lower.starts_with("added ") && lower.contains(" packages in ")
+        || lower.contains("packages are looking for funding")
+        || lower.starts_with("run `npm fund`")
+        || lower.starts_with("npm warn deprecated")
+        || lower.starts_with("container ")
+        || lower.starts_with("image ")
+        || lower.starts_with("#")
+    {
         return true;
     }
     if trimmed
@@ -1907,6 +2134,57 @@ mod tests {
     }
 
     #[test]
+    fn preferred_stream_width_uses_120_then_80_then_available() {
+        assert_eq!(preferred_stream_width(160), 120);
+        assert_eq!(preferred_stream_width(100), 80);
+        assert_eq!(preferred_stream_width(72), 72);
+    }
+
+    #[test]
+    fn centered_rect_places_stream_in_middle() {
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 160,
+            height: 20,
+        };
+        let centered = centered_rect(area, 120);
+        assert_eq!(centered.x, 30);
+        assert_eq!(centered.width, 120);
+        assert_eq!(centered.y, 5);
+        assert_eq!(centered.height, 20);
+    }
+
+    #[test]
+    fn fit_cell_respects_unicode_display_width() {
+        let cell = fit_cell("한글", 6);
+        assert_eq!(unicode_width::UnicodeWidthStr::width(cell.as_str()), 6);
+    }
+
+    #[test]
+    fn truncate_display_width_handles_wide_characters() {
+        let clipped = truncate_display_width("한글abc", 5);
+        assert_eq!(clipped, "한글…");
+        assert_eq!(unicode_width::UnicodeWidthStr::width(clipped.as_str()), 5);
+    }
+
+    #[test]
+    fn wrap_display_width_preserves_full_text_without_ellipsis() {
+        let rows = wrap_display_width("abcdefghij", 4);
+        assert_eq!(rows, vec!["abcd", "efgh", "ij"]);
+        assert!(rows.iter().all(|row| !row.contains('…')));
+    }
+
+    #[test]
+    fn low_signal_filter_skips_common_runtime_boilerplate() {
+        assert!(is_low_signal_text_line(
+            "Process running with session ID 1915"
+        ));
+        assert!(is_low_signal_text_line("added 65 packages in 1s"));
+        assert!(is_low_signal_text_line("=== Running frontend checks ==="));
+    }
+
+    #[test]
     fn display_event_agent_count_uses_active_lanes() {
         let event = make_event(EventType::AgentMessage, "agent output");
         let display = DisplayEvent::Single {
@@ -2027,6 +2305,48 @@ mod tests {
     }
 
     #[test]
+    fn event_summary_tool_result_uses_result_text_without_tool_name_prefix() {
+        let event = make_event(
+            EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            "total 368\ndrwxr-xr-x  31 user  staff  992 Feb 15 18:39 .",
+        );
+
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(summary.starts_with("total 368"));
+        assert!(!summary.contains("exec_command"));
+    }
+
+    #[test]
+    fn event_summary_tool_result_error_uses_generic_error_prefix() {
+        let event = make_event(
+            EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: true,
+                call_id: None,
+            },
+            "permission denied",
+        );
+
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(summary.starts_with("error:"));
+        assert!(summary.contains("permission denied"));
+        assert!(!summary.contains("exec_command"));
+    }
+
+    #[test]
+    fn event_summary_agent_message_long_line_keeps_full_text() {
+        let long_text = "에이전트가 긴 요약을 출력합니다 그리고 마지막 토큰 KEEP_THIS_SUFFIX";
+        let event = make_event(EventType::AgentMessage, long_text);
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(summary.contains("KEEP_THIS_SUFFIX"));
+        assert!(!summary.contains('…'));
+    }
+
+    #[test]
     fn event_summary_tool_call_uses_tool_specific_fields() {
         let event = Event {
             event_id: "tool-call-json".to_string(),
@@ -2047,6 +2367,47 @@ mod tests {
         assert!(
             event_compact_summary(&event.event_type, &event.content.blocks)
                 .contains("run cargo test")
+        );
+    }
+
+    #[test]
+    fn event_summary_write_stdin_prefers_command_output_hint() {
+        let event = make_event(
+            EventType::ToolResult {
+                name: "write_stdin".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            "test register_email ... ok",
+        );
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(summary.contains("test register_email"));
+        assert!(!summary.contains("write_stdin"));
+    }
+
+    #[test]
+    fn detail_line_matches_summary_accepts_truncated_ellipsis_variants() {
+        assert!(detail_line_matches_summary(
+            "락파일 동기화 커밋을 만들었습니다. 마지막으로 다시 푸시해서 원격까지 반영하고...",
+            "락파일 동기화 커밋을 만들었습니다..."
+        ));
+    }
+
+    #[test]
+    fn event_type_icon_assigns_semantic_badges() {
+        assert_eq!(event_type_icon(&EventType::UserMessage), "USER");
+        assert_eq!(event_type_icon(&EventType::AgentMessage), "AGENT");
+        assert_eq!(
+            event_type_icon(&EventType::ToolCall {
+                name: "exec_command".to_string()
+            }),
+            ">_"
+        );
+        assert_eq!(
+            event_type_icon(&EventType::FileCreate {
+                path: "x.rs".to_string()
+            }),
+            "CREATE"
         );
     }
 

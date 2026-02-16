@@ -1,6 +1,5 @@
 mod app;
 mod async_ops;
-mod cli_export;
 mod config;
 mod live;
 mod session_timeline;
@@ -26,10 +25,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
-
-pub use cli_export::{
-    export_session_timeline, CliTimelineExport, CliTimelineExportOptions, CliTimelineView,
-};
 
 enum BgEvent {
     SessionsLoaded(Vec<opensession_core::trace::Session>),

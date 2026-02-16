@@ -2,6 +2,7 @@ use super::transform::{
     classify_cursor_tool, extract_model_from_signature, infer_provider, parse_tool_result,
     resolve_tool_name, tool_call_content,
 };
+use crate::common::{attach_semantic_attrs, attach_source_attrs, infer_tool_kind};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use opensession_core::trace::{Agent, Content, Event, EventType, Session, SessionContext};
@@ -522,7 +523,12 @@ fn convert_conversation_to_session(data: &RawComposerData, source_path: &Path) -
         attributes,
     };
 
-    let events = convert_bubbles_to_events(&data.conversation, created_at);
+    let schema_version = if data.version.unwrap_or(0) >= 3 {
+        "cursor-v3"
+    } else {
+        "cursor-v2"
+    };
+    let events = convert_bubbles_to_events(&data.conversation, created_at, schema_version);
 
     let mut session = Session::new(session_id, agent);
     session.context = context;
@@ -532,7 +538,11 @@ fn convert_conversation_to_session(data: &RawComposerData, source_path: &Path) -
     Ok(session)
 }
 
-fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> Vec<Event> {
+fn convert_bubbles_to_events(
+    bubbles: &[RawBubble],
+    base_ts: DateTime<Utc>,
+    schema_version: &str,
+) -> Vec<Event> {
     let mut events = Vec::new();
     let mut event_counter: u32 = 0;
 
@@ -573,6 +583,13 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                 if let Some(text) = &bubble.text {
                     let cleaned = text.trim();
                     if !cleaned.is_empty() {
+                        let mut attrs = HashMap::new();
+                        attach_source_attrs(
+                            &mut attrs,
+                            Some(schema_version),
+                            Some("bubble:user_message"),
+                        );
+                        attach_semantic_attrs(&mut attrs, Some(&bubble_id), None, None);
                         events.push(Event {
                             event_id: format!("{}-user", bubble_id),
                             timestamp: ts,
@@ -580,7 +597,7 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                             task_id: None,
                             content: Content::text(cleaned),
                             duration_ms: None,
-                            attributes: HashMap::new(),
+                            attributes: attrs,
                         });
                     }
                 }
@@ -595,6 +612,12 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                         let cleaned = text.trim();
                         if !cleaned.is_empty() {
                             let mut attrs = HashMap::new();
+                            attach_source_attrs(
+                                &mut attrs,
+                                Some(schema_version),
+                                Some("bubble:thinking"),
+                            );
+                            attach_semantic_attrs(&mut attrs, Some(&bubble_id), None, None);
                             if let Some(sig) = &thinking.signature {
                                 attrs.insert(
                                     "signature".to_string(),
@@ -617,6 +640,7 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                 // Handle tool call (toolFormerData)
                 if let Some(tool_data) = &bubble.tool_former_data {
                     let tool_name = resolve_tool_name(tool_data.tool, tool_data.name.as_deref());
+                    let tool_kind = infer_tool_kind(&tool_name);
                     let task_id = format!("cursor-task-{}", bubble_id);
                     let task_title = tool_data
                         .name
@@ -629,13 +653,27 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                     let args: serde_json::Value = tool_data
                         .raw_args
                         .as_deref()
-                        .and_then(|s| serde_json::from_str(s).ok())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .and_then(|raw| {
+                            serde_json::from_str(raw)
+                                .ok()
+                                .or_else(|| Some(serde_json::json!({ "raw": raw })))
+                        })
                         .unwrap_or(serde_json::Value::Null);
 
                     let event_type = classify_cursor_tool(&tool_name, &args);
                     let content = tool_call_content(&tool_name, &args);
 
                     let mut attrs = HashMap::new();
+                    attach_source_attrs(&mut attrs, Some(schema_version), Some("bubble:tool"));
+                    let call_event_id = format!("{}-call", bubble_id);
+                    attach_semantic_attrs(
+                        &mut attrs,
+                        Some(&bubble_id),
+                        Some(&call_event_id),
+                        Some(tool_kind),
+                    );
                     if let Some(status) = &tool_data.status {
                         attrs.insert(
                             "status".to_string(),
@@ -656,12 +694,20 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                         task_id: Some(task_id.clone()),
                         content: Content::empty(),
                         duration_ms: None,
-                        attributes: HashMap::new(),
+                        attributes: {
+                            let mut task_attrs = attrs.clone();
+                            attach_source_attrs(
+                                &mut task_attrs,
+                                Some(schema_version),
+                                Some("bubble:tool-task-start"),
+                            );
+                            task_attrs
+                        },
                     });
 
                     // Emit ToolCall event
                     events.push(Event {
-                        event_id: format!("{}-call", bubble_id),
+                        event_id: call_event_id.clone(),
                         timestamp: ts,
                         event_type,
                         task_id: Some(task_id.clone()),
@@ -670,26 +716,47 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                         attributes: attrs.clone(),
                     });
 
-                    // Emit ToolResult event if there is a result
-                    if let Some(result_str) = &tool_data.result {
-                        let result_content = parse_tool_result(&tool_name, result_str);
+                    let is_terminal_status = tool_data
+                        .status
+                        .as_deref()
+                        .is_some_and(|s| matches!(s, "completed" | "error" | "failed" | "done"));
+                    let result_source = tool_data
+                        .result
+                        .as_deref()
+                        .or(bubble.text.as_deref())
+                        .filter(|text| !text.trim().is_empty());
+                    if result_source.is_some() || is_terminal_status {
+                        let result_content = result_source
+                            .map(|text| parse_tool_result(&tool_name, text))
+                            .unwrap_or_else(Content::empty);
                         let is_error = tool_data
                             .status
                             .as_deref()
                             .is_some_and(|s| s == "error" || s == "failed");
-
+                        let mut result_attrs = attrs.clone();
+                        attach_source_attrs(
+                            &mut result_attrs,
+                            Some(schema_version),
+                            Some("bubble:tool-result"),
+                        );
+                        attach_semantic_attrs(
+                            &mut result_attrs,
+                            Some(&bubble_id),
+                            Some(&call_event_id),
+                            Some(tool_kind),
+                        );
                         events.push(Event {
                             event_id: format!("{}-result", bubble_id),
                             timestamp: ts,
                             event_type: EventType::ToolResult {
                                 name: tool_name.clone(),
                                 is_error,
-                                call_id: Some(format!("{}-call", bubble_id)),
+                                call_id: Some(call_event_id.clone()),
                             },
                             task_id: Some(task_id.clone()),
                             content: result_content,
                             duration_ms: None,
-                            attributes: attrs,
+                            attributes: result_attrs,
                         });
                     }
 
@@ -708,7 +775,15 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                         task_id: Some(task_id),
                         content: Content::empty(),
                         duration_ms: None,
-                        attributes: HashMap::new(),
+                        attributes: {
+                            let mut task_end_attrs = attrs.clone();
+                            attach_source_attrs(
+                                &mut task_end_attrs,
+                                Some(schema_version),
+                                Some("bubble:tool-task-end"),
+                            );
+                            task_end_attrs
+                        },
                     });
 
                     event_counter += 1;
@@ -720,6 +795,12 @@ fn convert_bubbles_to_events(bubbles: &[RawBubble], base_ts: DateTime<Utc>) -> V
                     let cleaned = text.trim();
                     if !cleaned.is_empty() {
                         let mut attrs = HashMap::new();
+                        attach_source_attrs(
+                            &mut attrs,
+                            Some(schema_version),
+                            Some("bubble:assistant_message"),
+                        );
+                        attach_semantic_attrs(&mut attrs, Some(&bubble_id), None, None);
                         if let Some(model) = &bubble.model_type {
                             attrs.insert(
                                 "model".to_string(),
@@ -813,7 +894,7 @@ mod tests {
             model_type: None,
             checkpoint: None,
         }];
-        let events = convert_bubbles_to_events(&bubbles, Utc::now());
+        let events = convert_bubbles_to_events(&bubbles, Utc::now(), "cursor-test-v2");
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event_type, EventType::UserMessage));
     }
@@ -830,7 +911,7 @@ mod tests {
             model_type: Some("claude-3.5-sonnet".to_string()),
             checkpoint: None,
         }];
-        let events = convert_bubbles_to_events(&bubbles, Utc::now());
+        let events = convert_bubbles_to_events(&bubbles, Utc::now(), "cursor-test-v2");
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event_type, EventType::AgentMessage));
     }
@@ -850,7 +931,7 @@ mod tests {
             model_type: None,
             checkpoint: None,
         }];
-        let events = convert_bubbles_to_events(&bubbles, Utc::now());
+        let events = convert_bubbles_to_events(&bubbles, Utc::now(), "cursor-test-v2");
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event_type, EventType::Thinking));
     }
@@ -876,12 +957,41 @@ mod tests {
             model_type: None,
             checkpoint: None,
         }];
-        let events = convert_bubbles_to_events(&bubbles, Utc::now());
+        let events = convert_bubbles_to_events(&bubbles, Utc::now(), "cursor-test-v2");
         assert_eq!(events.len(), 4); // TaskStart + ToolCall + ToolResult + TaskEnd
         assert!(matches!(events[0].event_type, EventType::TaskStart { .. }));
         assert!(matches!(events[1].event_type, EventType::FileEdit { .. }));
         assert!(matches!(events[2].event_type, EventType::ToolResult { .. }));
         assert!(matches!(events[3].event_type, EventType::TaskEnd { .. }));
+    }
+
+    #[test]
+    fn test_convert_bubbles_tool_call_terminal_without_result_still_emits_tool_result() {
+        let bubbles = vec![RawBubble {
+            bubble_type: 2,
+            bubble_id: Some("b4b".to_string()),
+            text: Some("fallback output".to_string()),
+            thinking: None,
+            tool_former_data: Some(RawToolFormerData {
+                tool: Some(15),
+                name: Some("run_terminal_cmd".to_string()),
+                status: Some("completed".to_string()),
+                raw_args: Some(r#"{"command":"echo hi"}"#.to_string()),
+                result: None,
+                user_decision: None,
+            }),
+            timing_info: None,
+            model_type: None,
+            checkpoint: None,
+        }];
+        let events = convert_bubbles_to_events(&bubbles, Utc::now(), "cursor-test-v3");
+        assert!(events.iter().any(|event| matches!(
+            event.event_type,
+            EventType::ToolCall { .. } | EventType::ShellCommand { .. }
+        )));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.event_type, EventType::ToolResult { .. })));
     }
 
     #[test]
@@ -989,7 +1099,7 @@ mod tests {
             model_type: None,
             checkpoint: None,
         }];
-        let events = convert_bubbles_to_events(&bubbles, Utc::now());
+        let events = convert_bubbles_to_events(&bubbles, Utc::now(), "cursor-test-v2");
         assert_eq!(events.len(), 2); // Thinking + AgentMessage
         assert!(matches!(events[0].event_type, EventType::Thinking));
         assert!(matches!(events[1].event_type, EventType::AgentMessage));

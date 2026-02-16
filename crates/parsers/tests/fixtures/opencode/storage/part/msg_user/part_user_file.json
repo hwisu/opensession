@@ -1,0 +1,11 @@
+{
+  "id": "part_user_file",
+  "messageID": "msg_user",
+  "type": "file",
+  "filename": "notes.md",
+  "url": "file:///tmp/opencode-company/notes.md",
+  "time": {
+    "start": 1753359831050,
+    "end": 1753359831050
+  }
+}

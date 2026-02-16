@@ -1,0 +1,10 @@
+{
+  "id": "ses_fixture",
+  "version": "1.1.30",
+  "title": "OpenCode Fixture Session",
+  "directory": "/tmp/fixture-opencode",
+  "time": {
+    "created": 1753359830903,
+    "updated": 1753360246507
+  }
+}

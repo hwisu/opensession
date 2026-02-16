@@ -117,10 +117,6 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Next/prev same-type event", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  Enter/Spc ", key_style),
-            Span::styled("Expand/collapse selected event details", desc_style),
-        ]),
-        Line::from(vec![
             Span::styled("  d         ", key_style),
             Span::styled("Toggle file diff preview for selected event", desc_style),
         ]),
@@ -129,8 +125,8 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Filter: All/Msgs/Tools/Think/Files/Shell", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  c         ", key_style),
-            Span::styled("Toggle consecutive event collapse", desc_style),
+            Span::styled("  view      ", key_style),
+            Span::styled("Event detail rows are always expanded", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  Esc/q     ", key_style),

@@ -1218,15 +1218,124 @@ mod turn_extract_tests {
         app.detail_event_index = 2;
 
         assert!(!app.expanded_diff_events.contains(&2));
-        assert!(!app.expanded_events.contains(&2));
 
         app.handle_detail_key(KeyCode::Char('d'));
         assert!(app.expanded_diff_events.contains(&2));
-        assert!(!app.expanded_events.contains(&2));
 
         app.handle_detail_key(KeyCode::Char('d'));
         assert!(!app.expanded_diff_events.contains(&2));
-        assert!(!app.expanded_events.contains(&2));
+    }
+
+    #[test]
+    fn get_base_visible_events_hides_write_stdin_polling_noise() {
+        let mut session = Session::new(
+            "stdin-noise".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.events = vec![
+            make_event("u1", EventType::UserMessage, "run command"),
+            make_event(
+                "c1",
+                EventType::ToolCall {
+                    name: "write_stdin".to_string(),
+                },
+                "",
+            ),
+            make_event(
+                "r1",
+                EventType::ToolResult {
+                    name: "write_stdin".to_string(),
+                    is_error: false,
+                    call_id: None,
+                },
+                "Process running with session ID 1915",
+            ),
+            make_event("a1", EventType::AgentMessage, "done"),
+        ];
+        session.recompute_stats();
+
+        let app = App::new(vec![session]);
+        let visible = app.get_base_visible_events(&app.sessions[0]);
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().all(|event| {
+            !matches!(
+                event.event().event_type,
+                EventType::ToolCall { ref name } if name == "write_stdin"
+            )
+        }));
+    }
+
+    #[test]
+    fn get_base_visible_events_hides_markdown_progress_thinking_noise() {
+        let mut session = Session::new(
+            "thinking-noise".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.events = vec![
+            make_event("u1", EventType::UserMessage, "prompt"),
+            make_event(
+                "t1",
+                EventType::Thinking,
+                "**Adjusting command to capture all results**",
+            ),
+            make_event("a1", EventType::AgentMessage, "done"),
+        ];
+        session.recompute_stats();
+
+        let app = App::new(vec![session]);
+        let visible = app.get_base_visible_events(&app.sessions[0]);
+        assert_eq!(visible.len(), 2);
+        assert!(visible
+            .iter()
+            .all(|event| !matches!(event.event().event_type, EventType::Thinking)));
+    }
+
+    #[test]
+    fn get_base_visible_events_never_drops_user_or_agent_messages() {
+        let mut session = Session::new(
+            "message-preserve".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.events = vec![
+            make_event(
+                "u1",
+                EventType::UserMessage,
+                "**Adjusting command to capture all results**",
+            ),
+            make_event(
+                "a1",
+                EventType::AgentMessage,
+                "**Summarizing final commit details**",
+            ),
+        ];
+        session.recompute_stats();
+
+        let app = App::new(vec![session]);
+        let visible = app.get_base_visible_events(&app.sessions[0]);
+        assert_eq!(visible.len(), 2);
+        assert!(matches!(
+            visible[0].event().event_type,
+            EventType::UserMessage
+        ));
+        assert!(matches!(
+            visible[1].event().event_type,
+            EventType::AgentMessage
+        ));
     }
 
     #[test]
@@ -1489,8 +1598,6 @@ pub struct App {
     pub detail_scroll: u16,
     pub detail_event_index: usize,
     pub event_filters: HashSet<EventFilter>,
-    pub collapse_consecutive: bool,
-    pub expanded_events: HashSet<usize>,
     pub expanded_diff_events: HashSet<usize>,
     pub detail_view_mode: DetailViewMode,
     pub focus_detail_view: bool,
@@ -1855,8 +1962,6 @@ impl App {
             detail_scroll: 0,
             detail_event_index: 0,
             event_filters: HashSet::from([EventFilter::All]),
-            collapse_consecutive: false,
-            expanded_events: HashSet::new(),
             expanded_diff_events: HashSet::new(),
             detail_view_mode: DetailViewMode::Linear,
             focus_detail_view: false,
@@ -2444,7 +2549,6 @@ impl App {
             }
             KeyCode::PageDown => self.detail_page_down(),
             KeyCode::PageUp => self.detail_page_up(),
-            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_expanded(),
             KeyCode::Char('d') => self.toggle_diff_expanded(),
             KeyCode::Char('u') => self.jump_to_next_user_message(),
             KeyCode::Char('U') => self.jump_to_prev_user_message(),
@@ -2456,10 +2560,6 @@ impl App {
             KeyCode::Char('4') => self.toggle_event_filter(EventFilter::Thinking),
             KeyCode::Char('5') => self.toggle_event_filter(EventFilter::FileOps),
             KeyCode::Char('6') => self.toggle_event_filter(EventFilter::Shell),
-            KeyCode::Char('c') => {
-                self.collapse_consecutive = !self.collapse_consecutive;
-                self.detail_event_index = 0;
-            }
             _ => {}
         }
         self.update_detail_selection_anchor();
@@ -4421,7 +4521,6 @@ impl App {
                 self.detail_event_index = 0;
                 self.detail_h_scroll = 0;
                 self.event_filters = HashSet::from([EventFilter::All]);
-                self.expanded_events.clear();
                 self.expanded_diff_events.clear();
                 self.turn_raw_overrides.clear();
                 self.turn_prompt_expanded.clear();
@@ -4517,15 +4616,6 @@ impl App {
         self.detail_event_index = self.detail_event_index.saturating_sub(10);
         self.detach_live_follow_linear();
         self.update_detail_selection_anchor();
-    }
-
-    fn toggle_expanded(&mut self) {
-        let idx = self.detail_event_index;
-        if self.expanded_events.contains(&idx) {
-            self.expanded_events.remove(&idx);
-        } else {
-            self.expanded_events.insert(idx);
-        }
     }
 
     fn toggle_diff_expanded(&mut self) {
@@ -4930,7 +5020,7 @@ impl App {
     }
 
     pub fn get_base_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
-        let after_task: Vec<DisplayEvent<'a>> = build_lane_events_with_filter(
+        let mut after_task: Vec<DisplayEvent<'a>> = build_lane_events_with_filter(
             session,
             |_| true,
             |event_type| self.matches_event_filter(event_type),
@@ -4944,11 +5034,72 @@ impl App {
             active_lanes: lane_event.active_lanes,
         })
         .collect();
-        if self.collapse_consecutive {
-            Self::collapse_consecutive_events(after_task)
-        } else {
-            after_task
+        after_task.retain(|event| !Self::is_boilerplate_detail_event(event.event()));
+        after_task
+    }
+
+    fn is_boilerplate_detail_event(event: &Event) -> bool {
+        match &event.event_type {
+            EventType::ToolCall { name } => name.eq_ignore_ascii_case("write_stdin"),
+            EventType::ToolResult { name, .. } => {
+                if name.eq_ignore_ascii_case("write_stdin") {
+                    return Self::is_running_session_status_line(
+                        Self::first_event_text_line(event).as_deref(),
+                    );
+                }
+                if matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "exec_command" | "shell" | "bash" | "execute_command" | "spawn_process"
+                ) {
+                    return Self::is_running_session_status_line(
+                        Self::first_event_text_line(event).as_deref(),
+                    );
+                }
+                false
+            }
+            EventType::Thinking => Self::first_event_text_line(event)
+                .as_deref()
+                .is_some_and(Self::is_markdown_progress_line),
+            _ => false,
         }
+    }
+
+    fn first_event_text_line(event: &Event) -> Option<String> {
+        for block in &event.content.blocks {
+            for fragment in Self::block_text_fragments(block) {
+                for line in fragment.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn is_running_session_status_line(line: Option<&str>) -> bool {
+        let Some(line) = line else {
+            return true;
+        };
+        let lowered = line.trim().to_ascii_lowercase();
+        lowered.is_empty()
+            || lowered.contains("process running with session id")
+            || lowered == "ok"
+            || lowered == "output:"
+    }
+
+    fn is_markdown_progress_line(line: &str) -> bool {
+        let trimmed = line.trim();
+        if !(trimmed.starts_with("**") && trimmed.ends_with("**") && trimmed.len() > 4) {
+            return false;
+        }
+        let lowered = trimmed.to_ascii_lowercase();
+        lowered.contains("evaluating")
+            || lowered.contains("planning")
+            || lowered.contains("adjusting")
+            || lowered.contains("confirming")
+            || lowered.contains("summarizing")
     }
 
     fn collapse_consecutive_events<'a>(events: Vec<DisplayEvent<'a>>) -> Vec<DisplayEvent<'a>> {

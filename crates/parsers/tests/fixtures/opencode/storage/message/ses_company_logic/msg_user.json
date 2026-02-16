@@ -1,0 +1,12 @@
+{
+  "id": "msg_user",
+  "sessionID": "ses_company_logic",
+  "role": "user",
+  "time": {
+    "created": 1753359831000
+  },
+  "model": {
+    "providerID": "openai",
+    "modelID": "gpt-5.2-codex"
+  }
+}

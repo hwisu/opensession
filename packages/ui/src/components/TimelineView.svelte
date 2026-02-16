@@ -1,11 +1,12 @@
 <script lang="ts">
 	import type { Event } from '../types';
+	import { isBoilerplateEvent, isToolError, pairToolCallResults } from '../event-helpers';
 	import EventView from './EventView.svelte';
 	import ThreadMinimap from './ThreadMinimap.svelte';
 
 	const { events }: { events: Event[] } = $props();
 
-	type TimelineItem = { event: Event };
+	type TimelineItem = { event: Event; pairedResult?: Event; resultOk?: boolean };
 
 	let viewMode = $state<'timeline' | 'messages'>('timeline');
 
@@ -50,7 +51,18 @@
 				.filter((event) => ['UserMessage', 'AgentMessage'].includes(event.event_type.type))
 				.map((event) => ({ event }));
 		}
-		return events.filter((event) => matchesFilter(event.event_type.type)).map((event) => ({ event }));
+		const filtered = events.filter(
+			(event) => matchesFilter(event.event_type.type) && !isBoilerplateEvent(event),
+		);
+		const pairs = pairToolCallResults(filtered);
+		return filtered.map((event, idx) => {
+			const paired = pairs.get(idx);
+			return {
+				event,
+				pairedResult: paired,
+				resultOk: paired ? !isToolError(paired.event_type) : false,
+			};
+		});
 	});
 
 	const userMessageCount = $derived(events.filter((e) => e.event_type.type === 'UserMessage').length);
@@ -134,7 +146,7 @@
 					{@render roleSeparator(currentRole)}
 				{/if}
 				<div data-timeline-idx={idx} class="transition-all">
-					<EventView event={item.event} />
+					<EventView event={item.event} pairedResult={item.pairedResult} resultOk={item.resultOk} />
 				</div>
 			{/each}
 		</div>

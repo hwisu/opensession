@@ -1,0 +1,7 @@
+{"timestamp":"2026-02-16T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-web-actions","timestamp":"2026-02-16T10:00:00.000Z","cwd":"/tmp/fixture","originator":"Codex Desktop","cli_version":"0.101.0"}}
+{"timestamp":"2026-02-16T10:00:01.000Z","type":"response_item","payload":{"type":"web_search_call","status":"completed","id":"ws_fixture_1","action":{"type":"search","query":"rust serde flatten","queries":["rust serde flatten","serde flatten json"]}}}
+{"timestamp":"2026-02-16T10:00:02.000Z","type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://serde.rs/attr-flatten.html"}}}
+{"timestamp":"2026-02-16T10:00:03.000Z","type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"find_in_page","url":"https://serde.rs/attr-flatten.html","pattern":"flatten"}}}
+{"timestamp":"2026-02-16T10:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":19,"output_tokens":7}}}}
+{"timestamp":"2026-02-16T10:00:05.000Z","type":"event_msg","payload":{"type":"context_compacted","turn_id":"turn_fixture_1"}}
+{"timestamp":"2026-02-16T10:00:06.000Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn_fixture_1","item":{"type":"Plan","id":"plan_fixture_1","text":"Codex fixture plan line"}}}

@@ -1,0 +1,10 @@
+{
+  "id": "abc123",
+  "sessionID": "ses_fixture",
+  "role": "assistant",
+  "providerID": "openai",
+  "modelID": "gpt-5.2-codex",
+  "time": {
+    "created": 1753359831000
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "bubbleId:comp-fixture:b1": {
+    "type": 1,
+    "bubbleId": "b1",
+    "text": "list files"
+  },
+  "bubbleId:comp-fixture:b2": {
+    "type": 2,
+    "bubbleId": "b2",
+    "toolFormerData": {
+      "tool": 15,
+      "name": "run_terminal_cmd",
+      "status": "completed",
+      "rawArgs": "{\"command\":\"echo hi\"}",
+      "result": "{\"output\":\"hi\"}"
+    }
+  },
+  "bubbleId:comp-fixture:b3": {
+    "type": 2,
+    "bubbleId": "b3",
+    "text": "all done",
+    "modelType": "claude-3.5-sonnet"
+  }
+}

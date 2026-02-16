@@ -1,0 +1,15 @@
+{
+  "id": "part_reasoning",
+  "messageID": "msg_assistant",
+  "type": "reasoning",
+  "text": "",
+  "metadata": {
+    "openai": {
+      "reasoningEncryptedContent": "encrypted-payload"
+    }
+  },
+  "time": {
+    "start": 1753359832100,
+    "end": 1753359832200
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "ses_company_logic",
+  "version": "1.2.0",
+  "title": "OpenCode company logic fixture",
+  "directory": "/tmp/opencode-company",
+  "time": {
+    "created": 1753359830903,
+    "updated": 1753360246507
+  }
+}

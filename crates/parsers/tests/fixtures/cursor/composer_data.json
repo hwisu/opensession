@@ -1,0 +1,12 @@
+{
+  "composerId": "comp-fixture",
+  "name": "Cursor Fixture Session",
+  "createdAt": "2026-02-16T09:30:00.000Z",
+  "lastUpdatedAt": "2026-02-16T09:30:10.000Z",
+  "_v": 3,
+  "fullConversationHeadersOnly": [
+    { "bubbleId": "b1", "type": 1 },
+    { "bubbleId": "b2", "type": 2 },
+    { "bubbleId": "b3", "type": 2 }
+  ]
+}

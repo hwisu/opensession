@@ -24,8 +24,8 @@ echo "=== Running workspace clippy ==="
 run_cargo clippy --workspace --exclude opensession-worker -- -D warnings
 
 echo "=== Running Worker (wasm) checks ==="
-run_cargo check --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown
-run_cargo clippy --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+run_cargo check --locked --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown
+run_cargo clippy --locked --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
 
 if command -v npm >/dev/null 2>&1; then
     echo "=== Running frontend checks ==="

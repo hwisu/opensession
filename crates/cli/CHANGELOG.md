@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/hwisu/opensession/compare/opensession-v0.2.5...opensession-v0.2.6) - 2026-02-16
+
+### Fixed
+
+- *(worker)* honor public feed flag for session listing
+
 ## [0.2.5](https://github.com/hwisu/opensession/compare/opensession-v0.2.4...opensession-v0.2.5) - 2026-02-16
 
 ### Added

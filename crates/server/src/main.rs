@@ -52,28 +52,24 @@ fn load_oauth_providers() -> Vec<OAuthProviderConfig> {
         .collect()
 }
 
+fn env_trimmed(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| oauth::normalize_oauth_config_value(&v))
+}
+
 fn try_load_github() -> Option<OAuthProviderConfig> {
-    let id = std::env::var("GITHUB_CLIENT_ID")
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    let secret = std::env::var("GITHUB_CLIENT_SECRET")
-        .ok()
-        .filter(|s| !s.is_empty())?;
+    let id = env_trimmed("GITHUB_CLIENT_ID")?;
+    let secret = env_trimmed("GITHUB_CLIENT_SECRET")?;
     tracing::info!("OAuth provider enabled: GitHub");
     Some(oauth::github_preset(id, secret))
 }
 
 fn try_load_gitlab() -> Option<OAuthProviderConfig> {
-    let url = std::env::var("GITLAB_URL").ok().filter(|s| !s.is_empty())?;
-    let id = std::env::var("GITLAB_CLIENT_ID")
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    let secret = std::env::var("GITLAB_CLIENT_SECRET")
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    let ext_url = std::env::var("GITLAB_EXTERNAL_URL")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let url = env_trimmed("GITLAB_URL")?;
+    let id = env_trimmed("GITLAB_CLIENT_ID")?;
+    let secret = env_trimmed("GITLAB_CLIENT_SECRET")?;
+    let ext_url = env_trimmed("GITLAB_EXTERNAL_URL");
     tracing::info!("OAuth provider enabled: GitLab ({})", url);
     Some(oauth::gitlab_preset(url, ext_url, id, secret))
 }
@@ -99,19 +95,12 @@ async fn main() -> anyhow::Result<()> {
     let db = storage::init_db(&data_dir)?;
     tracing::info!("database initialized");
 
-    let base_url_env = std::env::var("BASE_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("OPENSESSION_BASE_URL")
-                .ok()
-                .filter(|s| !s.is_empty())
-        });
+    let base_url_env = env_trimmed("BASE_URL").or_else(|| env_trimmed("OPENSESSION_BASE_URL"));
     let base_url = base_url_env
         .clone()
         .unwrap_or_else(|| "http://localhost:3000".into());
 
-    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
+    let jwt_secret = env_trimmed("JWT_SECRET").unwrap_or_default();
     if jwt_secret.is_empty() {
         tracing::warn!("JWT_SECRET not set — JWT auth and OAuth will be disabled");
     }

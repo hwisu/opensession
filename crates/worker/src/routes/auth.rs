@@ -38,23 +38,33 @@ async fn issue_tokens(env: &Env, user_id: &str, nickname: &str) -> Result<AuthTo
     Ok(bundle.response)
 }
 
+fn required_secret(env: &Env, name: &str) -> Result<String> {
+    let raw = env.secret(name)?.to_string();
+    oauth::normalize_oauth_config_value(&raw)
+        .ok_or_else(|| Error::from(format!("{name} is empty after trimming")))
+}
+
+fn optional_var(env: &Env, name: &str) -> Option<String> {
+    env.var(name)
+        .ok()
+        .map(|v| v.to_string())
+        .and_then(|v| oauth::normalize_oauth_config_value(&v))
+}
+
 /// Load a specific OAuth provider config from environment.
 fn load_provider_config(env: &Env, provider_id: &str) -> Result<oauth::OAuthProviderConfig> {
     match provider_id {
         "github" => {
-            let client_id = env.secret("GITHUB_CLIENT_ID")?.to_string();
-            let client_secret = env.secret("GITHUB_CLIENT_SECRET")?.to_string();
+            let client_id = required_secret(env, "GITHUB_CLIENT_ID")?;
+            let client_secret = required_secret(env, "GITHUB_CLIENT_SECRET")?;
             Ok(oauth::github_preset(client_id, client_secret))
         }
         "gitlab" => {
-            let url = env.var("GITLAB_URL")?.to_string();
-            let client_id = env.secret("GITLAB_CLIENT_ID")?.to_string();
-            let client_secret = env.secret("GITLAB_CLIENT_SECRET")?.to_string();
-            let ext_url = env
-                .var("GITLAB_EXTERNAL_URL")
-                .ok()
-                .map(|v| v.to_string())
-                .filter(|s| !s.is_empty());
+            let url = optional_var(env, "GITLAB_URL")
+                .ok_or_else(|| Error::from("GITLAB_URL is missing or empty"))?;
+            let client_id = required_secret(env, "GITLAB_CLIENT_ID")?;
+            let client_secret = required_secret(env, "GITLAB_CLIENT_SECRET")?;
+            let ext_url = optional_var(env, "GITLAB_EXTERNAL_URL");
             Ok(oauth::gitlab_preset(url, ext_url, client_id, client_secret))
         }
         _ => Err(Error::from(format!(
@@ -72,6 +82,9 @@ fn load_all_providers(env: &Env) -> Vec<oauth::OAuthProviderConfig> {
 }
 
 fn resolve_base_url(req: Option<&Request>, env: &Env) -> String {
+    if let Some(base_url) = optional_var(env, "BASE_URL") {
+        return base_url;
+    }
     if let Some(request) = req {
         if let Ok(url) = request.url() {
             let origin = url.origin().ascii_serialization();
@@ -80,9 +93,7 @@ fn resolve_base_url(req: Option<&Request>, env: &Env) -> String {
             }
         }
     }
-    env.var("BASE_URL")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| "https://opensession.io".to_string())
+    "https://opensession.io".to_string()
 }
 
 // ── Legacy register (nickname only, for CLI) ────────────────────────────────

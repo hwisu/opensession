@@ -68,6 +68,20 @@ pub struct OAuthUserInfo {
     pub avatar_url: Option<String>,
 }
 
+/// Normalize OAuth config values loaded from env/secrets.
+///
+/// Some secret managers preserve trailing newlines/spaces when values are set via
+/// shell pipes. We trim and reject empty results so providers don't get enabled
+/// with unusable credentials.
+pub fn normalize_oauth_config_value(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 // ── URL Builders (pure functions, no HTTP) ──────────────────────────────────
 
 /// Build the OAuth authorize URL that the user's browser should be redirected to.
@@ -414,7 +428,7 @@ fn hex_value(b: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{github_preset, parse_access_token_response};
+    use super::{github_preset, normalize_oauth_config_value, parse_access_token_response};
 
     #[test]
     fn parse_access_token_json_ok() {
@@ -446,5 +460,14 @@ mod tests {
         assert!(encoded.contains("client_secret=secret"));
         assert!(encoded.contains("grant_type=authorization_code"));
         assert!(encoded.contains("code=code-1"));
+    }
+
+    #[test]
+    fn normalize_oauth_config_value_trims_and_rejects_empty() {
+        assert_eq!(
+            normalize_oauth_config_value("  value-with-spaces\t\n"),
+            Some("value-with-spaces".to_string())
+        );
+        assert_eq!(normalize_oauth_config_value("   \n\t  "), None);
     }
 }

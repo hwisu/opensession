@@ -7,7 +7,7 @@
 use anyhow::{bail, Context, Result};
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::LocalDb;
-use opensession_parsers::all_parsers;
+use opensession_parsers::{all_parsers, is_auxiliary_session_path};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -102,7 +102,7 @@ fn resolve_claude_code_session() -> Result<PathBuf> {
             continue;
         }
         // Skip subagent files
-        if opensession_parsers::claude_code::is_claude_subagent_path(&path) {
+        if is_auxiliary_session_path(&path) {
             continue;
         }
         if let Ok(meta) = path.metadata() {

@@ -778,7 +778,7 @@ fn is_hidden_claude_code_child_session(session: &opensession_core::trace::Sessio
         return false;
     };
 
-    opensession_parsers::claude_code::is_claude_subagent_path(std::path::Path::new(path))
+    opensession_parsers::is_auxiliary_session_path(std::path::Path::new(path))
 }
 
 fn filter_visible_discovered_sessions(
@@ -802,7 +802,7 @@ fn load_sessions() -> Vec<LoadedSession> {
     for location in &locations {
         for path in &location.paths {
             // Skip subagent session files
-            if opensession_parsers::claude_code::is_claude_subagent_path(path) {
+            if opensession_parsers::is_auxiliary_session_path(path) {
                 continue;
             }
 

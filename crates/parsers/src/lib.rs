@@ -13,6 +13,7 @@ mod opencode;
 
 use anyhow::Result;
 use opensession_core::trace::Session;
+use std::path::Path;
 
 /// Trait for parsing AI tool session data into HAIL format
 pub trait SessionParser: Send + Sync {
@@ -37,4 +38,27 @@ pub fn all_parsers() -> Vec<Box<dyn SessionParser>> {
         Box::new(gemini::GeminiParser),
         Box::new(claude_code::ClaudeCodeParser),
     ]
+}
+
+/// Returns true when the path points to an auxiliary child/sub-agent session log.
+///
+/// This keeps caller crates (`cli`, `tui`) decoupled from parser-specific modules.
+pub fn is_auxiliary_session_path(path: &Path) -> bool {
+    claude_code::is_claude_subagent_path(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn auxiliary_path_detects_claude_subagent_logs() {
+        assert!(is_auxiliary_session_path(Path::new(
+            "/Users/test/.claude/projects/foo/subagents/agent-123.jsonl"
+        )));
+        assert!(!is_auxiliary_session_path(Path::new(
+            "/Users/test/.claude/projects/foo/session.jsonl"
+        )));
+    }
 }

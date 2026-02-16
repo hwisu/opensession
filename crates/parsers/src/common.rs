@@ -3,7 +3,10 @@
 //! These handle the "heavy lifting" of transforming raw tool output
 //! into clean, typed ContentBlocks so the frontend can be a dumb renderer.
 
-use opensession_core::trace::{Content, ContentBlock};
+use opensession_core::trace::{
+    Content, ContentBlock, ATTR_SEMANTIC_CALL_ID, ATTR_SEMANTIC_GROUP_ID, ATTR_SEMANTIC_TOOL_KIND,
+    ATTR_SOURCE_RAW_TYPE, ATTR_SOURCE_SCHEMA_VERSION,
+};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -101,13 +104,13 @@ pub fn attach_source_attrs(
 ) {
     if let Some(version) = schema_version.map(str::trim).filter(|v| !v.is_empty()) {
         attrs.insert(
-            "source.schema_version".to_string(),
+            ATTR_SOURCE_SCHEMA_VERSION.to_string(),
             Value::String(version.to_string()),
         );
     }
     if let Some(raw) = raw_type.map(str::trim).filter(|v| !v.is_empty()) {
         attrs.insert(
-            "source.raw_type".to_string(),
+            ATTR_SOURCE_RAW_TYPE.to_string(),
             Value::String(raw.to_string()),
         );
     }
@@ -122,19 +125,19 @@ pub fn attach_semantic_attrs(
 ) {
     if let Some(group_id) = group_id.map(str::trim).filter(|v| !v.is_empty()) {
         attrs.insert(
-            "semantic.group_id".to_string(),
+            ATTR_SEMANTIC_GROUP_ID.to_string(),
             Value::String(group_id.to_string()),
         );
     }
     if let Some(call_id) = call_id.map(str::trim).filter(|v| !v.is_empty()) {
         attrs.insert(
-            "semantic.call_id".to_string(),
+            ATTR_SEMANTIC_CALL_ID.to_string(),
             Value::String(call_id.to_string()),
         );
     }
     if let Some(tool_kind) = tool_kind.map(str::trim).filter(|v| !v.is_empty()) {
         attrs.insert(
-            "semantic.tool_kind".to_string(),
+            ATTR_SEMANTIC_TOOL_KIND.to_string(),
             Value::String(tool_kind.to_string()),
         );
     }
@@ -506,23 +509,25 @@ mod tests {
         attach_semantic_attrs(&mut attrs, Some("turn-1"), Some("call-1"), Some("shell"));
 
         assert_eq!(
-            attrs.get("source.schema_version").and_then(|v| v.as_str()),
+            attrs
+                .get(ATTR_SOURCE_SCHEMA_VERSION)
+                .and_then(|v| v.as_str()),
             Some("v3")
         );
         assert_eq!(
-            attrs.get("source.raw_type").and_then(|v| v.as_str()),
+            attrs.get(ATTR_SOURCE_RAW_TYPE).and_then(|v| v.as_str()),
             Some("bubble")
         );
         assert_eq!(
-            attrs.get("semantic.group_id").and_then(|v| v.as_str()),
+            attrs.get(ATTR_SEMANTIC_GROUP_ID).and_then(|v| v.as_str()),
             Some("turn-1")
         );
         assert_eq!(
-            attrs.get("semantic.call_id").and_then(|v| v.as_str()),
+            attrs.get(ATTR_SEMANTIC_CALL_ID).and_then(|v| v.as_str()),
             Some("call-1")
         );
         assert_eq!(
-            attrs.get("semantic.tool_kind").and_then(|v| v.as_str()),
+            attrs.get(ATTR_SEMANTIC_TOOL_KIND).and_then(|v| v.as_str()),
             Some("shell")
         );
     }

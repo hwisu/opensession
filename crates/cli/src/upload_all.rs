@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::config::load_config;
 use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_parsers::discover::discover_sessions;
-use opensession_parsers::{all_parsers, SessionParser};
+use opensession_parsers::{all_parsers, is_auxiliary_session_path, SessionParser};
 
 /// Discover all local sessions and upload them to the server.
 pub async fn run_upload_all() -> Result<()> {
@@ -41,7 +41,7 @@ pub async fn run_upload_all() -> Result<()> {
             total += 1;
 
             // Skip subagent files
-            if opensession_parsers::claude_code::is_claude_subagent_path(path) {
+            if is_auxiliary_session_path(path) {
                 skipped += 1;
                 continue;
             }

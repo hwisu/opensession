@@ -2,6 +2,19 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Canonical event attribute key for source schema version.
+pub const ATTR_SOURCE_SCHEMA_VERSION: &str = "source.schema_version";
+/// Canonical event attribute key for source raw record type.
+pub const ATTR_SOURCE_RAW_TYPE: &str = "source.raw_type";
+/// Canonical event attribute key for semantic group/turn identifier.
+pub const ATTR_SEMANTIC_GROUP_ID: &str = "semantic.group_id";
+/// Canonical event attribute key for semantic tool call identifier.
+pub const ATTR_SEMANTIC_CALL_ID: &str = "semantic.call_id";
+/// Canonical event attribute key for semantic tool kind classification.
+pub const ATTR_SEMANTIC_TOOL_KIND: &str = "semantic.tool_kind";
+/// Legacy attribute key historically used for tool call correlation.
+pub const ATTR_LEGACY_CALL_ID: &str = "call_id";
+
 /// Top-level session - the root of a HAIL (Human AI Interaction Log) trace
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -205,6 +218,62 @@ pub struct Event {
     /// Arbitrary metadata
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub attributes: HashMap<String, serde_json::Value>,
+}
+
+impl Event {
+    /// Return an attribute as trimmed string, ignoring empty values.
+    pub fn attr_str(&self, key: &str) -> Option<&str> {
+        self.attributes
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Return canonical source schema version (`source.schema_version`) if present.
+    pub fn source_schema_version(&self) -> Option<&str> {
+        self.attr_str(ATTR_SOURCE_SCHEMA_VERSION)
+    }
+
+    /// Return canonical source raw type (`source.raw_type`) if present.
+    pub fn source_raw_type(&self) -> Option<&str> {
+        self.attr_str(ATTR_SOURCE_RAW_TYPE)
+    }
+
+    /// Return canonical semantic group id (`semantic.group_id`) if present.
+    pub fn semantic_group_id(&self) -> Option<&str> {
+        self.attr_str(ATTR_SEMANTIC_GROUP_ID)
+    }
+
+    /// Return canonical semantic tool kind (`semantic.tool_kind`) if present.
+    pub fn semantic_tool_kind(&self) -> Option<&str> {
+        self.attr_str(ATTR_SEMANTIC_TOOL_KIND)
+    }
+
+    /// Resolve a stable tool call id for correlation.
+    ///
+    /// Resolution order:
+    /// 1) `semantic.call_id`
+    /// 2) `ToolResult.call_id`
+    /// 3) legacy `call_id` attribute
+    pub fn semantic_call_id(&self) -> Option<&str> {
+        if let Some(call_id) = self.attr_str(ATTR_SEMANTIC_CALL_ID) {
+            return Some(call_id);
+        }
+
+        if let EventType::ToolResult {
+            call_id: Some(call_id),
+            ..
+        } = &self.event_type
+        {
+            let trimmed = call_id.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+
+        self.attr_str(ATTR_LEGACY_CALL_ID)
+    }
 }
 
 /// Event type - the core abstraction
@@ -680,5 +749,87 @@ mod tests {
 
         session.recompute_stats();
         assert_eq!(session.stats.tool_call_count, 4);
+    }
+
+    #[test]
+    fn test_event_attr_helpers_normalize_empty_strings() {
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            ATTR_SOURCE_SCHEMA_VERSION.to_string(),
+            serde_json::Value::String("  ".to_string()),
+        );
+        attrs.insert(
+            ATTR_SOURCE_RAW_TYPE.to_string(),
+            serde_json::Value::String("event_msg".to_string()),
+        );
+        let event = Event {
+            event_id: "e1".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::SystemMessage,
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: attrs,
+        };
+        assert_eq!(event.source_schema_version(), None);
+        assert_eq!(event.source_raw_type(), Some("event_msg"));
+    }
+
+    #[test]
+    fn test_semantic_call_id_prefers_canonical_then_fallbacks() {
+        let mut canonical_attrs = HashMap::new();
+        canonical_attrs.insert(
+            ATTR_SEMANTIC_CALL_ID.to_string(),
+            serde_json::Value::String("cid-1".to_string()),
+        );
+        canonical_attrs.insert(
+            ATTR_LEGACY_CALL_ID.to_string(),
+            serde_json::Value::String("legacy-1".to_string()),
+        );
+        let canonical = Event {
+            event_id: "e-canonical".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolCall {
+                name: "shell".to_string(),
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: canonical_attrs,
+        };
+        assert_eq!(canonical.semantic_call_id(), Some("cid-1"));
+
+        let tool_result = Event {
+            event_id: "e-result".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolResult {
+                name: "shell".to_string(),
+                is_error: false,
+                call_id: Some("  cid-2  ".to_string()),
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        };
+        assert_eq!(tool_result.semantic_call_id(), Some("cid-2"));
+
+        let mut legacy_attrs = HashMap::new();
+        legacy_attrs.insert(
+            ATTR_LEGACY_CALL_ID.to_string(),
+            serde_json::Value::String(" legacy-2 ".to_string()),
+        );
+        let legacy = Event {
+            event_id: "e-legacy".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolCall {
+                name: "shell".to_string(),
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: legacy_attrs,
+        };
+        assert_eq!(legacy.semantic_call_id(), Some("legacy-2"));
     }
 }

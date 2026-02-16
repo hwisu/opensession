@@ -1,4 +1,6 @@
-use opensession_core::trace::EventType;
+use opensession_core::trace::{
+    EventType, ATTR_SEMANTIC_CALL_ID, ATTR_SOURCE_RAW_TYPE, ATTR_SOURCE_SCHEMA_VERSION,
+};
 use opensession_parsers::{all_parsers, SessionParser};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -83,12 +85,12 @@ fn parser_conformance_fixtures_cover_five_tools() {
             EventType::WebSearch { query } if query == "rust serde flatten"
         ) && event
             .attributes
-            .get("source.raw_type")
+            .get(ATTR_SOURCE_RAW_TYPE)
             .and_then(|value| value.as_str())
             == Some("web_search_call:search")
             && event
                 .attributes
-                .get("semantic.call_id")
+                .get(ATTR_SEMANTIC_CALL_ID)
                 .and_then(|value| value.as_str())
                 == Some("ws_fixture_1")
     }));
@@ -98,14 +100,14 @@ fn parser_conformance_fixtures_cover_five_tools() {
             EventType::WebFetch { url } if url == "https://serde.rs/attr-flatten.html"
         ) && event
             .attributes
-            .get("source.raw_type")
+            .get(ATTR_SOURCE_RAW_TYPE)
             .and_then(|value| value.as_str())
             == Some("web_search_call:open_page")
     }));
     assert!(codex_web_session.events.iter().any(|event| {
         event
             .attributes
-            .get("source.raw_type")
+            .get(ATTR_SOURCE_RAW_TYPE)
             .and_then(|value| value.as_str())
             == Some("web_search_call:find_in_page")
             && event
@@ -172,7 +174,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
     assert!(gemini_session.events.iter().all(|event| {
         event
             .attributes
-            .get("source.schema_version")
+            .get(ATTR_SOURCE_SCHEMA_VERSION)
             .and_then(|value| value.as_str())
             .is_some()
     }));
@@ -195,7 +197,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
     assert!(gemini_tool_session.events.iter().any(|event| {
         event
             .attributes
-            .get("source.schema_version")
+            .get(ATTR_SOURCE_SCHEMA_VERSION)
             .and_then(|value| value.as_str())
             == Some("gemini-json-v3-toolcalls")
     }));
@@ -210,7 +212,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
         matches!(event.event_type, EventType::AgentMessage)
             && event
                 .attributes
-                .get("source.raw_type")
+                .get(ATTR_SOURCE_RAW_TYPE)
                 .and_then(|v| v.as_str())
                 == Some("part:text")
     }));
@@ -221,7 +223,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
         matches!(event.event_type, EventType::Thinking)
             && event
                 .attributes
-                .get("source.raw_type")
+                .get(ATTR_SOURCE_RAW_TYPE)
                 .and_then(|v| v.as_str())
                 == Some("part:reasoning")
     }));
@@ -229,7 +231,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
         matches!(event.event_type, EventType::UserMessage)
             && event
                 .attributes
-                .get("source.raw_type")
+                .get(ATTR_SOURCE_RAW_TYPE)
                 .and_then(|v| v.as_str())
                 == Some("part:file")
     }));
@@ -244,7 +246,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
         matches!(&event.event_type, EventType::FileEdit { .. })
             && event
                 .attributes
-                .get("semantic.call_id")
+                .get(ATTR_SEMANTIC_CALL_ID)
                 .and_then(|v| v.as_str())
                 == Some("functions.edit:27")
     }));
@@ -254,7 +256,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
             EventType::FileEdit { path, .. } if path == "/tmp/opencode-company/lib.rs"
         ) && event
             .attributes
-            .get("source.raw_type")
+            .get(ATTR_SOURCE_RAW_TYPE)
             .and_then(|v| v.as_str())
             == Some("part:patch:file")
     }));
@@ -263,7 +265,7 @@ fn parser_conformance_fixtures_cover_five_tools() {
             && event.task_id.as_deref() == Some("functions.edit:27")
             && event
                 .attributes
-                .get("source.raw_type")
+                .get(ATTR_SOURCE_RAW_TYPE)
                 .and_then(|v| v.as_str())
                 == Some("synthetic:task-end")
     }));

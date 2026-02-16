@@ -156,8 +156,8 @@ pub fn pair_tool_call_results(events: &[Event]) -> HashMap<usize, usize> {
         if !matches!(event.event_type, EventType::ToolResult { .. }) {
             continue;
         }
-        if let Some(call_id) = semantic_call_id(event) {
-            result_by_call_id.insert(call_id, idx);
+        if let Some(call_id) = event.semantic_call_id() {
+            result_by_call_id.insert(call_id.to_string(), idx);
         }
     }
 
@@ -165,7 +165,10 @@ pub fn pair_tool_call_results(events: &[Event]) -> HashMap<usize, usize> {
         let EventType::ToolCall { name } = &event.event_type else {
             continue;
         };
-        let call_id = semantic_call_id(event).unwrap_or_else(|| event.event_id.clone());
+        let call_id = event
+            .semantic_call_id()
+            .map(str::to_string)
+            .unwrap_or_else(|| event.event_id.clone());
         if let Some(result_idx) = result_by_call_id.get(&call_id).copied() {
             pairs.insert(idx, result_idx);
             continue;
@@ -193,38 +196,6 @@ pub fn pair_tool_call_results(events: &[Event]) -> HashMap<usize, usize> {
     pairs
 }
 
-#[allow(dead_code)]
-fn semantic_call_id(event: &Event) -> Option<String> {
-    if let Some(call_id) = event
-        .attributes
-        .get("semantic.call_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return Some(call_id.to_string());
-    }
-
-    if let EventType::ToolResult {
-        call_id: Some(call_id),
-        ..
-    } = &event.event_type
-    {
-        let trimmed = call_id.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    event
-        .attributes
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-}
-
 fn allocate_lane_for_task(
     task_lane: &mut HashMap<String, usize>,
     reusable_lanes: &mut BTreeSet<usize>,
@@ -247,7 +218,7 @@ fn allocate_lane_for_task(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use opensession_core::trace::{Agent, Content, Event, Session};
+    use opensession_core::trace::{Agent, Content, Event, Session, ATTR_SEMANTIC_CALL_ID};
     use std::collections::HashMap;
 
     fn mk_event(id: &str, event_type: EventType, task_id: Option<&str>) -> Event {
@@ -400,7 +371,7 @@ mod tests {
             None,
         );
         call.attributes.insert(
-            "semantic.call_id".to_string(),
+            ATTR_SEMANTIC_CALL_ID.to_string(),
             serde_json::Value::String("cid-1".to_string()),
         );
 

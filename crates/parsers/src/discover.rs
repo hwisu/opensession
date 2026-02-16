@@ -29,7 +29,7 @@ pub fn discover_for_tool(tool: &str) -> Vec<PathBuf> {
     match tool {
         "claude-code" => find_files_with_ext(&home.join(".claude").join("projects"), "jsonl")
             .into_iter()
-            .filter(|p| !crate::claude_code::is_claude_subagent_path(p))
+            .filter(|p| !crate::is_auxiliary_session_path(p))
             .collect(),
         "codex" => find_codex_sessions(&home),
         "opencode" => find_opencode_sessions(&home),
@@ -50,7 +50,7 @@ fn discover_claude_code(home: &std::path::Path, locations: &mut Vec<SessionLocat
     }
     let paths: Vec<_> = find_files_with_ext(&claude_path, "jsonl")
         .into_iter()
-        .filter(|p| !crate::claude_code::is_claude_subagent_path(p))
+        .filter(|p| !crate::is_auxiliary_session_path(p))
         .collect();
     if !paths.is_empty() {
         locations.push(SessionLocation {

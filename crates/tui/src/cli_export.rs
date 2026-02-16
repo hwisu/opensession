@@ -1,33 +1,21 @@
 use anyhow::Result;
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::time::{Duration, Instant};
-use tokio::runtime::{Handle, Runtime};
-use tokio::task::block_in_place;
+use std::collections::HashMap;
 
-use crate::app::{extract_turns, App, DetailViewMode, DisplayEvent, View};
-use crate::async_ops::{self, CommandResult};
+use crate::app::{extract_turns, App, DisplayEvent, View};
 use crate::session_timeline::LaneMarker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliTimelineView {
     Linear,
-    Turn,
 }
 
 #[derive(Debug, Clone)]
 pub struct CliTimelineExportOptions {
     pub view: CliTimelineView,
     pub collapse_consecutive: bool,
-    pub include_summaries: bool,
-    pub generate_summaries: bool,
-    pub summary_provider_override: Option<String>,
-    pub summary_content_mode_override: Option<String>,
-    pub summary_disk_cache_override: Option<bool>,
     pub max_rows: Option<usize>,
-    pub summary_budget: Option<usize>,
-    pub summary_timeout_ms: Option<u64>,
 }
 
 impl Default for CliTimelineExportOptions {
@@ -35,14 +23,7 @@ impl Default for CliTimelineExportOptions {
         Self {
             view: CliTimelineView::Linear,
             collapse_consecutive: false,
-            include_summaries: true,
-            generate_summaries: false,
-            summary_provider_override: None,
-            summary_content_mode_override: None,
-            summary_disk_cache_override: None,
             max_rows: None,
-            summary_budget: None,
-            summary_timeout_ms: None,
         }
     }
 }
@@ -56,7 +37,6 @@ pub struct CliTimelineExport {
     pub rendered_rows: usize,
     pub max_active_agents: usize,
     pub max_lane_index: usize,
-    pub generated_summaries: usize,
     pub rows: Vec<CliTimelineRow>,
     pub lines: Vec<String>,
 }
@@ -119,8 +99,6 @@ pub struct CliTimelineRow {
     pub active_agent_count_in_turn: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_preview: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_summary: Option<String>,
 }
 
 impl CliTimelineRow {
@@ -156,7 +134,6 @@ impl CliTimelineRow {
             max_lane_index_in_turn: None,
             active_agent_count_in_turn: None,
             user_preview: None,
-            llm_summary: None,
         }
     }
 }
@@ -173,85 +150,9 @@ pub fn export_session_timeline(
     app.list_state.select(Some(0));
     app.daemon_config = crate::config::load_daemon_config();
     app.collapse_consecutive = options.collapse_consecutive;
-    app.detail_view_mode = match options.view {
-        CliTimelineView::Linear => DetailViewMode::Linear,
-        CliTimelineView::Turn => DetailViewMode::Turn,
-    };
     app.detail_viewport_height = u16::MAX;
     app.detail_event_index = 0;
     app.realtime_preview_enabled = app.daemon_config.daemon.detail_realtime_preview_enabled;
-    // CLI export is non-interactive; skip detail warmup gating so summary jobs can run immediately.
-    app.detail_entered_at = Instant::now() - Duration::from_secs(1);
-
-    if !options.include_summaries {
-        app.daemon_config.daemon.summary_enabled = false;
-    }
-    if let Some(provider) = options.summary_provider_override {
-        app.daemon_config.daemon.summary_provider = Some(provider);
-    }
-    if let Some(mode) = options.summary_content_mode_override {
-        app.daemon_config.daemon.summary_content_mode = mode;
-    }
-    if let Some(enabled) = options.summary_disk_cache_override {
-        app.daemon_config.daemon.summary_disk_cache_enabled = enabled;
-    }
-
-    let mut generated_summaries = 0usize;
-    if options.include_summaries
-        && options.generate_summaries
-        && app.daemon_config.daemon.summary_enabled
-    {
-        // Keep CLI export responsive on large sessions by default.
-        let summary_budget = options.summary_budget.unwrap_or(96).max(1);
-        let summary_timeout = match options.summary_timeout_ms {
-            Some(0) => None,
-            Some(ms) => Some(Duration::from_millis(ms.max(200))),
-            None => Some(Duration::from_millis(12_000)),
-        };
-        let loop_started = Instant::now();
-        let mut owned_runtime = if Handle::try_current().is_err() {
-            Some(Runtime::new()?)
-        } else {
-            None
-        };
-        // Drive the same scheduler used by TUI until queue drains (or guard trips).
-        let mut idle_ticks = 0u32;
-        for _ in 0..4096 {
-            if generated_summaries >= summary_budget {
-                break;
-            }
-            if let Some(timeout) = summary_timeout {
-                if loop_started.elapsed() >= timeout {
-                    break;
-                }
-            }
-            if let Some(cmd) = app.schedule_detail_summary_jobs() {
-                let result = if let Some(rt) = owned_runtime.as_mut() {
-                    rt.block_on(async_ops::execute(cmd, &app.daemon_config))
-                } else {
-                    let handle = Handle::current();
-                    block_in_place(|| handle.block_on(async_ops::execute(cmd, &app.daemon_config)))
-                };
-                if matches!(result, CommandResult::SummaryDone { .. }) {
-                    generated_summaries += 1;
-                }
-                app.apply_command_result(result);
-                idle_ticks = 0;
-                continue;
-            }
-
-            if app.timeline_summary_pending.is_empty() && app.timeline_summary_inflight.is_empty() {
-                break;
-            }
-
-            // Scheduler can defer background anchors; give it short ticks.
-            std::thread::sleep(Duration::from_millis(50));
-            idle_ticks += 1;
-            if idle_ticks > 80 {
-                break;
-            }
-        }
-    }
 
     let selected = app
         .selected_session()
@@ -275,23 +176,8 @@ pub fn export_session_timeline(
         .max()
         .unwrap_or(0);
 
-    let (mut rows, mut lines) = match options.view {
-        CliTimelineView::Linear => {
-            let visible = if options.include_summaries {
-                app.get_visible_events(&selected)
-            } else {
-                base.clone()
-            };
-            let rows = build_linear_rows(&visible, &base);
-            let lines: Vec<String> = rows.iter().map(|row| row.text.clone()).collect();
-            (rows, lines)
-        }
-        CliTimelineView::Turn => {
-            let rows = build_turn_rows(&app, &selected.session_id, &base);
-            let lines: Vec<String> = rows.iter().map(|row| row.text.clone()).collect();
-            (rows, lines)
-        }
-    };
+    let mut rows = build_linear_rows(&base, &base);
+    let mut lines: Vec<String> = rows.iter().map(|row| row.text.clone()).collect();
 
     if let Some(max_rows) = options.max_rows {
         rows.truncate(max_rows);
@@ -306,7 +192,6 @@ pub fn export_session_timeline(
         rendered_rows: lines.len(),
         max_active_agents,
         max_lane_index,
-        generated_summaries,
         rows,
         lines,
     })
@@ -335,19 +220,6 @@ fn build_linear_rows(
         let ts = event.timestamp.format("%H:%M:%S").to_string();
         let lane_text = lane_cells(display_event, lane_count);
         let mut row = match display_event {
-            DisplayEvent::SummaryRow {
-                summary, window_id, ..
-            } => {
-                let mut row = CliTimelineRow::new(
-                    idx,
-                    "linear",
-                    "llm_summary",
-                    format!("{idx:>4} {ts}  {lane_text} [llm #{window_id}] {summary}"),
-                );
-                row.event_kind = Some("llm_summary".to_string());
-                row.summary = Some(summary.clone());
-                row
-            }
             DisplayEvent::Collapsed { count, kind, .. } => {
                 let mut row = CliTimelineRow::new(
                     idx,
@@ -399,143 +271,6 @@ fn build_linear_rows(
     rows
 }
 
-fn build_turn_rows(
-    app: &App,
-    session_id: &str,
-    events: &[DisplayEvent<'_>],
-) -> Vec<CliTimelineRow> {
-    let turns = extract_turns(events);
-    let mut rows = Vec::with_capacity(turns.len());
-    for turn in turns {
-        let turn_key = App::turn_summary_key(session_id, turn.turn_index, turn.anchor_source_index);
-        let llm_summary = app
-            .timeline_summary_cache
-            .get(&turn_key)
-            .map(|entry| entry.compact.clone())
-            .unwrap_or_else(|| {
-                if !app.daemon_config.daemon.summary_enabled {
-                    "(LLM summary off)".to_string()
-                } else if app.should_skip_realtime_for_selected() {
-                    "(LLM summary waiting for live refresh)".to_string()
-                } else {
-                    "(LLM summary pending)".to_string()
-                }
-            });
-
-        let user_preview = turn
-            .user_events
-            .first()
-            .map(|event| event_summary(&event.event_type, &event.content.blocks))
-            .filter(|line| !line.is_empty())
-            .unwrap_or_else(|| "(no user message)".to_string());
-
-        let mut task_ids: HashSet<String> = HashSet::new();
-        let mut tool_call_count = 0usize;
-        let mut tool_result_count = 0usize;
-        let mut file_ops_count = 0usize;
-        let mut shell_ops_count = 0usize;
-        let mut error_count = 0usize;
-        for event in &turn.agent_events {
-            if let Some(task_id) = event_task_id(event) {
-                task_ids.insert(task_id);
-            }
-            match &event.event_type {
-                EventType::ToolCall { .. } => tool_call_count += 1,
-                EventType::ToolResult { is_error, .. } => {
-                    tool_result_count += 1;
-                    if *is_error {
-                        error_count += 1;
-                    }
-                }
-                EventType::FileRead { .. }
-                | EventType::FileEdit { .. }
-                | EventType::FileCreate { .. }
-                | EventType::FileDelete { .. } => file_ops_count += 1,
-                EventType::ShellCommand { .. } => shell_ops_count += 1,
-                EventType::Custom { kind } => {
-                    let lower = kind.to_ascii_lowercase();
-                    if lower.contains("error") || lower.contains("fail") {
-                        error_count += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let mut min_ts: Option<chrono::DateTime<chrono::Utc>> = None;
-        let mut max_ts: Option<chrono::DateTime<chrono::Utc>> = None;
-        for event in turn.user_events.iter().chain(turn.agent_events.iter()) {
-            min_ts = Some(min_ts.map_or(event.timestamp, |current| current.min(event.timestamp)));
-            max_ts = Some(max_ts.map_or(event.timestamp, |current| current.max(event.timestamp)));
-        }
-        let duration_ms = min_ts
-            .zip(max_ts)
-            .map(|(start, end)| end.signed_duration_since(start).num_milliseconds());
-
-        let mut lanes: BTreeSet<usize> = BTreeSet::new();
-        let mut max_active_agents = 0usize;
-        for display_idx in turn.start_display_index..=turn.end_display_index {
-            if let Some(display_event) = events.get(display_idx) {
-                lanes.insert(display_event.lane());
-                for lane in display_event.active_lanes() {
-                    lanes.insert(*lane);
-                }
-                let active_agents = display_event
-                    .active_lanes()
-                    .iter()
-                    .filter(|lane| **lane > 0)
-                    .count()
-                    .max(usize::from(display_event.lane() > 0));
-                max_active_agents = max_active_agents.max(active_agents);
-            }
-        }
-
-        let start_clock = min_ts.map(|value| value.format("%H:%M:%S").to_string());
-        let end_clock = max_ts.map(|value| value.format("%H:%M:%S").to_string());
-        let active_agent_count = lanes
-            .iter()
-            .filter(|lane| **lane > 0)
-            .count()
-            .max(max_active_agents);
-        let max_lane_index = lanes.iter().copied().max().unwrap_or(0);
-
-        let mut row = CliTimelineRow::new(
-            turn.turn_index,
-            "turn",
-            "turn",
-            format!(
-                "Turn {:>3} | {} agent events | user: {} | llm: {}",
-                turn.turn_index + 1,
-                turn.agent_events.len(),
-                truncate(&user_preview, 80),
-                truncate(&llm_summary, 120),
-            ),
-        );
-        row.turn_index = Some(turn.turn_index + 1);
-        row.source_index = Some(turn.anchor_source_index);
-        row.start_timestamp = min_ts.map(|value| value.to_rfc3339());
-        row.end_timestamp = max_ts.map(|value| value.to_rfc3339());
-        row.start_clock = start_clock;
-        row.end_clock = end_clock;
-        row.duration_ms = duration_ms;
-        row.task_count = Some(task_ids.len());
-        row.user_message_count = Some(turn.user_events.len());
-        row.agent_event_count = Some(turn.agent_events.len());
-        row.tool_call_count = Some(tool_call_count);
-        row.tool_result_count = Some(tool_result_count);
-        row.file_ops_count = Some(file_ops_count);
-        row.shell_ops_count = Some(shell_ops_count);
-        row.error_count = Some(error_count);
-        row.max_lane_index_in_turn = Some(max_lane_index);
-        row.active_agent_count_in_turn = Some(active_agent_count);
-        row.user_preview = Some(truncate(&user_preview, 180));
-        row.llm_summary = Some(truncate(&llm_summary, 220));
-        row.summary = Some(truncate(&llm_summary, 220));
-        rows.push(row);
-    }
-    rows
-}
-
 fn source_index_turn_map(events: &[DisplayEvent<'_>]) -> HashMap<usize, usize> {
     let turns = extract_turns(events);
     let mut map = HashMap::new();
@@ -581,13 +316,10 @@ fn lane_cells(event: &DisplayEvent<'_>, lane_count: usize) -> String {
     for lane in 0..lane_count {
         let active = event.active_lanes().contains(&lane);
         let ch = if lane == event.lane() {
-            match event {
-                DisplayEvent::SummaryRow { .. } => 'S',
-                _ => match event.marker() {
-                    LaneMarker::Fork => '+',
-                    LaneMarker::Merge => '-',
-                    LaneMarker::None => '*',
-                },
+            match event.marker() {
+                LaneMarker::Fork => '+',
+                LaneMarker::Merge => '-',
+                LaneMarker::None => '*',
             }
         } else if active {
             '|'

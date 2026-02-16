@@ -44,39 +44,9 @@ struct LoadedSession {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SummaryLaunchOverride {
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub content_mode: Option<String>,
-    pub disk_cache_enabled: Option<bool>,
-    pub openai_compat_endpoint: Option<String>,
-    pub openai_compat_base: Option<String>,
-    pub openai_compat_path: Option<String>,
-    pub openai_compat_style: Option<String>,
-    pub openai_compat_api_key: Option<String>,
-    pub openai_compat_api_key_header: Option<String>,
-}
-
-impl SummaryLaunchOverride {
-    pub fn has_any_override(&self) -> bool {
-        self.provider.is_some()
-            || self.model.is_some()
-            || self.content_mode.is_some()
-            || self.disk_cache_enabled.is_some()
-            || self.openai_compat_endpoint.is_some()
-            || self.openai_compat_base.is_some()
-            || self.openai_compat_path.is_some()
-            || self.openai_compat_style.is_some()
-            || self.openai_compat_api_key.is_some()
-            || self.openai_compat_api_key_header.is_some()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     pub paths: Option<Vec<String>>,
     pub auto_enter_detail: bool,
-    pub summary_override: Option<SummaryLaunchOverride>,
     pub focus_detail_view: bool,
 }
 
@@ -100,10 +70,7 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
     app.loading_sessions = true;
 
     // ── Load full daemon config ──────────────────────────────────────
-    let mut daemon_config = config::load_daemon_config();
-    if let Some(summary_override) = options.summary_override.as_ref() {
-        apply_summary_launch_override(&mut daemon_config, summary_override);
-    }
+    let daemon_config = config::load_daemon_config();
     let config_exists = config::config_dir()
         .map(|d| d.join("opensession.toml").exists())
         .unwrap_or(false);
@@ -222,42 +189,6 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
     stdout().execute(LeaveAlternateScreen)?;
 
     result
-}
-
-fn apply_summary_launch_override(
-    daemon_config: &mut config::DaemonConfig,
-    summary_override: &SummaryLaunchOverride,
-) {
-    if let Some(provider) = summary_override.provider.clone() {
-        daemon_config.daemon.summary_provider = Some(provider);
-    }
-    if let Some(model) = summary_override.model.clone() {
-        daemon_config.daemon.summary_model = Some(model);
-    }
-    if let Some(mode) = summary_override.content_mode.clone() {
-        daemon_config.daemon.summary_content_mode = mode;
-    }
-    if let Some(enabled) = summary_override.disk_cache_enabled {
-        daemon_config.daemon.summary_disk_cache_enabled = enabled;
-    }
-    if let Some(endpoint) = summary_override.openai_compat_endpoint.clone() {
-        daemon_config.daemon.summary_openai_compat_endpoint = Some(endpoint);
-    }
-    if let Some(base) = summary_override.openai_compat_base.clone() {
-        daemon_config.daemon.summary_openai_compat_base = Some(base);
-    }
-    if let Some(path) = summary_override.openai_compat_path.clone() {
-        daemon_config.daemon.summary_openai_compat_path = Some(path);
-    }
-    if let Some(style) = summary_override.openai_compat_style.clone() {
-        daemon_config.daemon.summary_openai_compat_style = Some(style);
-    }
-    if let Some(key) = summary_override.openai_compat_api_key.clone() {
-        daemon_config.daemon.summary_openai_compat_key = Some(key);
-    }
-    if let Some(key_header) = summary_override.openai_compat_api_key_header.clone() {
-        daemon_config.daemon.summary_openai_compat_key_header = Some(key_header);
-    }
 }
 
 fn is_local_url(url: &str) -> bool {
@@ -510,7 +441,6 @@ fn event_loop(
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let mut auto_enter_detail_pending = auto_enter_detail;
-    let (summary_tx, summary_rx) = mpsc::channel::<async_ops::CommandResult>();
 
     loop {
         // ── Poll background session loading ──────────────────────────
@@ -540,10 +470,6 @@ fn event_loop(
         if auto_enter_detail_pending && !app.loading_sessions && !app.sessions.is_empty() {
             app.enter_detail_for_startup();
             auto_enter_detail_pending = false;
-        }
-
-        while let Ok(result) = summary_rx.try_recv() {
-            app.apply_command_result(result);
         }
 
         if app.focus_detail_view
@@ -655,10 +581,6 @@ fn event_loop(
             app.apply_live_update_batch(batch);
         }
 
-        if let Some(cmd) = app.schedule_detail_summary_jobs() {
-            spawn_summary_worker(cmd, app.daemon_config.clone(), summary_tx.clone());
-        }
-
         terminal.draw(|frame| ui::render(frame, app))?;
 
         // ── Deferred health check (runs once, after first render) ────
@@ -705,47 +627,6 @@ fn env_flag_enabled(name: &str) -> bool {
             matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(false)
-}
-
-fn spawn_summary_worker(
-    cmd: async_ops::AsyncCommand,
-    config: config::DaemonConfig,
-    tx: mpsc::Sender<async_ops::CommandResult>,
-) {
-    std::thread::spawn(move || {
-        let result = match cmd {
-            async_ops::AsyncCommand::GenerateTimelineSummary {
-                key,
-                epoch,
-                provider,
-                context,
-                agent_tool,
-            } => {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build();
-                match runtime {
-                    Ok(rt) => rt.block_on(async_ops::execute(
-                        async_ops::AsyncCommand::GenerateTimelineSummary {
-                            key,
-                            epoch,
-                            provider,
-                            context,
-                            agent_tool,
-                        },
-                        &config,
-                    )),
-                    Err(err) => async_ops::CommandResult::SummaryDone {
-                        key,
-                        epoch,
-                        result: Box::new(Err(format!("failed to start summary runtime: {err}"))),
-                    },
-                }
-            }
-            _ => return,
-        };
-        let _ = tx.send(result);
-    });
 }
 
 /// Try to store a session via platform API and return the body_url.
@@ -986,60 +867,12 @@ fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session,
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_summary_launch_override, env_flag_enabled, filter_visible_discovered_sessions,
-        is_hidden_opencode_child_session, refresh_discovery_on_start, SummaryLaunchOverride,
+        env_flag_enabled, filter_visible_discovered_sessions, is_hidden_opencode_child_session,
+        refresh_discovery_on_start,
     };
     use chrono::Utc;
     use opensession_core::trace::{Agent, Session, SessionContext};
     use serde_json::json;
-
-    #[test]
-    fn summary_override_updates_runtime_config_only() {
-        let mut cfg = crate::config::DaemonConfig::default();
-        let override_cfg = SummaryLaunchOverride {
-            provider: Some("cli:codex".to_string()),
-            model: Some("gpt-4o-mini".to_string()),
-            content_mode: Some("minimal".to_string()),
-            disk_cache_enabled: Some(false),
-            openai_compat_endpoint: Some("https://example.com/v1/chat/completions".to_string()),
-            openai_compat_base: Some("https://example.com/v1".to_string()),
-            openai_compat_path: Some("/chat/completions".to_string()),
-            openai_compat_style: Some("chat".to_string()),
-            openai_compat_api_key: Some("test-key".to_string()),
-            openai_compat_api_key_header: Some("Authorization".to_string()),
-        };
-
-        apply_summary_launch_override(&mut cfg, &override_cfg);
-
-        assert_eq!(cfg.daemon.summary_provider.as_deref(), Some("cli:codex"));
-        assert_eq!(cfg.daemon.summary_model.as_deref(), Some("gpt-4o-mini"));
-        assert_eq!(cfg.daemon.summary_content_mode, "minimal");
-        assert!(!cfg.daemon.summary_disk_cache_enabled);
-        assert_eq!(
-            cfg.daemon.summary_openai_compat_endpoint.as_deref(),
-            Some("https://example.com/v1/chat/completions")
-        );
-        assert_eq!(
-            cfg.daemon.summary_openai_compat_base.as_deref(),
-            Some("https://example.com/v1")
-        );
-        assert_eq!(
-            cfg.daemon.summary_openai_compat_path.as_deref(),
-            Some("/chat/completions")
-        );
-        assert_eq!(
-            cfg.daemon.summary_openai_compat_style.as_deref(),
-            Some("chat")
-        );
-        assert_eq!(
-            cfg.daemon.summary_openai_compat_key.as_deref(),
-            Some("test-key")
-        );
-        assert_eq!(
-            cfg.daemon.summary_openai_compat_key_header.as_deref(),
-            Some("Authorization")
-        );
-    }
 
     fn make_opencode_session(session_id: &str, related_session_ids: Vec<&str>) -> Session {
         let mut session = Session::new(

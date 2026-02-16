@@ -4,6 +4,12 @@ use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
+const SESSION_STORAGE_METHOD_DETAILS: [&str; 3] = [
+    "· Platform API — Store session JSONL via provider REST API (requires token)",
+    "· Native       — Store session snapshots as local git objects (no provider API)",
+    "· None         — Disable session snapshot storage",
+];
+
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(group) = app.settings_section.group() {
         render_daemon_config(frame, app, area, group, app.settings_section.panel_title());
@@ -256,7 +262,7 @@ fn mask_password(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::mask_password;
+    use super::{mask_password, SESSION_STORAGE_METHOD_DETAILS};
 
     #[test]
     fn mask_password_returns_empty_for_empty_input() {
@@ -267,6 +273,19 @@ mod tests {
     fn mask_password_keeps_length_and_hides_content() {
         assert_eq!(mask_password("abc123"), "******");
         assert_ne!(mask_password("abc123"), "abc123");
+    }
+
+    #[test]
+    fn session_storage_details_are_aligned_with_supported_modes() {
+        let details = SESSION_STORAGE_METHOD_DETAILS
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+
+        assert!(details.iter().any(|line| line.contains("platform api")));
+        assert!(details.iter().any(|line| line.contains("native")));
+        assert!(details.iter().any(|line| line.contains("none")));
+        assert!(details.iter().all(|line| !line.contains("sqlite")));
     }
 }
 
@@ -457,12 +476,7 @@ fn render_daemon_config(
 
             if is_selected && field == SettingField::GitStorageMethod {
                 let detail_style = Style::new().fg(Theme::TEXT_MUTED);
-                for detail in [
-                    "\u{00b7} Platform API \u{2014} Push via GitHub/GitLab REST API (needs token)",
-                    "\u{00b7} Native       \u{2014} Write git objects directly (local git required)",
-                    "\u{00b7} SQLite Local \u{2014} Persist git snapshot metadata in local SQLite",
-                    "\u{00b7} None         \u{2014} Server-only, no git backup",
-                ] {
+                for detail in SESSION_STORAGE_METHOD_DETAILS {
                     lines.push(Line::from(vec![
                         Span::raw("     "),
                         Span::styled(detail, detail_style),
@@ -603,6 +617,16 @@ fn render_daemon_config(
                     Span::raw("     "),
                     Span::styled(
                         "Scope: Session auto-refresh only (separate from Realtime Publish)",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ),
+                ]));
+            }
+
+            if is_selected && field == SettingField::DetailAutoExpandSelectedEvent {
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "ON: selected event always shows preview lines. OFF: Enter/Space to expand manually.",
                         Style::new().fg(Theme::TEXT_MUTED),
                     ),
                 ]));

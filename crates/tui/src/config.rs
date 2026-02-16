@@ -268,9 +268,15 @@ pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
 pub const TIMELINE_PRESET_SLOT_MIN: u8 = 1;
 pub const TIMELINE_PRESET_SLOT_MAX: u8 = 5;
 
+fn default_timeline_detail_auto_expand_selected_event() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineIntelPreset {
     pub detail_realtime_preview_enabled: bool,
+    #[serde(default = "default_timeline_detail_auto_expand_selected_event")]
+    pub detail_auto_expand_selected_event: bool,
     pub summary_enabled: bool,
     pub summary_provider: Option<String>,
     pub summary_model: Option<String>,
@@ -297,6 +303,7 @@ impl TimelineIntelPreset {
     pub fn from_config(config: &DaemonConfig) -> Self {
         Self {
             detail_realtime_preview_enabled: config.daemon.detail_realtime_preview_enabled,
+            detail_auto_expand_selected_event: config.daemon.detail_auto_expand_selected_event,
             summary_enabled: config.daemon.summary_enabled,
             summary_provider: config.daemon.summary_provider.clone(),
             summary_model: config.daemon.summary_model.clone(),
@@ -319,6 +326,7 @@ impl TimelineIntelPreset {
 
     pub fn apply_to_config(&self, config: &mut DaemonConfig) {
         config.daemon.detail_realtime_preview_enabled = self.detail_realtime_preview_enabled;
+        config.daemon.detail_auto_expand_selected_event = self.detail_auto_expand_selected_event;
         config.daemon.summary_enabled = self.summary_enabled;
         config.daemon.summary_provider = self.summary_provider.clone();
         config.daemon.summary_model = self.summary_model.clone();
@@ -462,6 +470,7 @@ pub enum SettingField {
     DebounceSecs,
     RealtimeDebounceMs,
     DetailRealtimePreviewEnabled,
+    DetailAutoExpandSelectedEvent,
     CalendarDisplayMode,
     HealthCheckSecs,
     MaxRetries,
@@ -592,6 +601,12 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Auto-reload Session Detail when selected source file mtime changes",
         dependency_hint: Some("Global toggle for Session Detail live refresh"),
     },
+    SettingItem::Field {
+        field: SettingField::DetailAutoExpandSelectedEvent,
+        label: "Detail Auto-Expand",
+        description: "Auto-expand content preview for the currently selected timeline event",
+        dependency_hint: Some("ON by default; turn OFF for compact one-line timeline"),
+    },
     SettingItem::Header("LLM Summary (Common)"),
     SettingItem::Field {
         field: SettingField::SummaryEnabled,
@@ -693,18 +708,19 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Folders watched for all supported agents (comma-separated)",
         dependency_hint: Some("Applies when daemon is running"),
     },
-    SettingItem::Header("Git Storage"),
+    SettingItem::Header("Session Storage"),
     SettingItem::Field {
         field: SettingField::GitStorageMethod,
-        label: "Method",
-        description: "native: git objects (default) · platform_api: provider API · none: disabled",
+        label: "Storage Method",
+        description:
+            "Session snapshot backend: native(local git objects) · platform_api(provider API) · none(disabled)",
         dependency_hint: None,
     },
     SettingItem::Field {
         field: SettingField::GitStorageToken,
-        label: "Token",
-        description: "GitHub PAT with 'repo' scope — github.com/settings/tokens",
-        dependency_hint: Some("Set method to Platform API or Native first"),
+        label: "Platform API Token",
+        description: "Token used by platform_api backend (GitHub/GitLab PAT)",
+        dependency_hint: Some("Used when Storage Method is Platform API"),
     },
     SettingItem::Header("Privacy"),
     SettingItem::Field {
@@ -728,6 +744,7 @@ impl SettingField {
             self,
             Self::AutoPublish
                 | Self::DetailRealtimePreviewEnabled
+                | Self::DetailAutoExpandSelectedEvent
                 | Self::SummaryEnabled
                 | Self::SummaryDiskCacheEnabled
                 | Self::StripPaths
@@ -774,6 +791,9 @@ impl SettingField {
             Self::RealtimeDebounceMs => config.daemon.realtime_debounce_ms.to_string(),
             Self::DetailRealtimePreviewEnabled => {
                 on_off(config.daemon.detail_realtime_preview_enabled)
+            }
+            Self::DetailAutoExpandSelectedEvent => {
+                on_off(config.daemon.detail_auto_expand_selected_event)
             }
             Self::CalendarDisplayMode => match calendar_display_mode() {
                 CalendarDisplayMode::Smart => "smart".to_string(),
@@ -942,6 +962,10 @@ impl SettingField {
             Self::DetailRealtimePreviewEnabled => {
                 config.daemon.detail_realtime_preview_enabled =
                     !config.daemon.detail_realtime_preview_enabled;
+            }
+            Self::DetailAutoExpandSelectedEvent => {
+                config.daemon.detail_auto_expand_selected_event =
+                    !config.daemon.detail_auto_expand_selected_event;
             }
             Self::SummaryEnabled => config.daemon.summary_enabled = !config.daemon.summary_enabled,
             Self::SummaryDiskCacheEnabled => {
@@ -1130,6 +1154,11 @@ impl SettingField {
                 config.daemon.detail_realtime_preview_enabled =
                     matches!(lowered.as_str(), "on" | "1" | "true" | "yes");
             }
+            Self::DetailAutoExpandSelectedEvent => {
+                let lowered = value.to_lowercase();
+                config.daemon.detail_auto_expand_selected_event =
+                    matches!(lowered.as_str(), "on" | "1" | "true" | "yes");
+            }
             Self::CalendarDisplayMode => {
                 let mode = match value.trim().to_ascii_lowercase().as_str() {
                     "relative" | "rel" => CalendarDisplayMode::Relative,
@@ -1312,10 +1341,11 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         | SettingField::RealtimeDebounceMs
         | SettingField::HealthCheckSecs
         | SettingField::MaxRetries
-        | SettingField::WatchPaths => SettingsGroup::CaptureSync,
+        | SettingField::WatchPaths
+        | SettingField::DetailRealtimePreviewEnabled
+        | SettingField::DetailAutoExpandSelectedEvent => SettingsGroup::CaptureSync,
 
-        SettingField::DetailRealtimePreviewEnabled
-        | SettingField::SummaryEnabled
+        SettingField::SummaryEnabled
         | SettingField::SummaryProvider
         | SettingField::SummaryCliAgent
         | SettingField::SummaryModel
@@ -1406,5 +1436,47 @@ mod tests {
         assert!(migrate_summary_window_v2(&mut cfg));
         assert_eq!(cfg.daemon.summary_event_window, 5);
         assert!(cfg.daemon.summary_window_migrated_v2);
+    }
+
+    #[test]
+    fn timeline_preset_roundtrip_keeps_detail_auto_expand_flag() {
+        let mut cfg = DaemonConfig::default();
+        cfg.daemon.detail_auto_expand_selected_event = false;
+
+        let preset = TimelineIntelPreset::from_config(&cfg);
+        assert!(!preset.detail_auto_expand_selected_event);
+
+        let mut out = DaemonConfig::default();
+        preset.apply_to_config(&mut out);
+        assert!(!out.daemon.detail_auto_expand_selected_event);
+    }
+
+    #[test]
+    fn detail_auto_expand_setting_is_visible_in_capture_sync_section() {
+        let capture_fields = selectable_fields(SettingsGroup::CaptureSync);
+        assert!(capture_fields.contains(&SettingField::DetailAutoExpandSelectedEvent));
+    }
+
+    #[test]
+    fn storage_privacy_section_uses_session_storage_wording() {
+        let items = section_items(SettingsGroup::StoragePrivacy);
+
+        assert!(items
+            .iter()
+            .any(|item| matches!(item, SettingItem::Header("Session Storage"))));
+
+        let method_description = items.iter().find_map(|item| match item {
+            SettingItem::Field {
+                field: SettingField::GitStorageMethod,
+                description,
+                ..
+            } => Some(*description),
+            _ => None,
+        });
+        let method_description =
+            method_description.expect("GitStorageMethod field should exist in StoragePrivacy");
+
+        assert!(method_description.contains("Session snapshot backend"));
+        assert!(!method_description.to_ascii_lowercase().contains("sqlite"));
     }
 }

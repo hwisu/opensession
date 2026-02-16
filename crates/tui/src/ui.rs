@@ -25,7 +25,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // `opensession view` focus mode: hide global tab chrome,
     // but keep compact session summary.
     if app.focus_detail_view {
-        let show_footer = app.flash_message.is_some();
+        let show_footer = should_show_footer(app);
         let (summary_area, body_area, footer_area) = if show_footer {
             let [summary, body, footer] = Layout::vertical([
                 Constraint::Length(2),
@@ -60,7 +60,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let show_footer = app.flash_message.is_some();
+    let show_footer = should_show_footer(app);
     let (tab_area, header_area, body_area, footer_area) = if show_footer {
         let [tab, header, body, footer] = Layout::vertical([
             Constraint::Length(1),
@@ -126,6 +126,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if let Some(ref m) = app.modal {
         modal::render(frame, m, &app.edit_buffer);
     }
+}
+
+fn should_show_footer(app: &App) -> bool {
+    app.flash_message.is_some() || matches!(app.view, View::Settings)
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -363,6 +367,42 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         };
         let line = Line::from(vec![Span::styled(msg.as_str(), Style::new().fg(color))]);
         frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
+    if matches!(app.view, View::Settings) {
+        frame.render_widget(Paragraph::new(settings_footer_line(app)), area);
+    }
+}
+
+fn settings_footer_line(app: &App) -> Line<'static> {
+    let key_style = Style::new().fg(Theme::TEXT_KEY).bold();
+    let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
+
+    if app.editing_field || app.password_form.editing {
+        Line::from(vec![
+            Span::styled(" Enter ", key_style),
+            Span::styled("apply", desc_style),
+            Span::styled("  Esc ", key_style),
+            Span::styled("cancel", desc_style),
+            Span::styled("  ? ", key_style),
+            Span::styled("help", desc_style),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" j/k ", key_style),
+            Span::styled("move", desc_style),
+            Span::styled("  Enter ", key_style),
+            Span::styled("edit/cycle", desc_style),
+            Span::styled("  [/] ", key_style),
+            Span::styled("section", desc_style),
+            Span::styled("  s ", key_style),
+            Span::styled("save", desc_style),
+            Span::styled("  q/Esc ", key_style),
+            Span::styled("back", desc_style),
+            Span::styled("  ? ", key_style),
+            Span::styled("help", desc_style),
+        ])
     }
 }
 
@@ -813,9 +853,9 @@ fn build_server_status_spans(info: &ServerInfo) -> Vec<Span<'_>> {
 mod tests {
     use super::{
         build_server_status_spans, compact_line, event_first_text, latest_output_preview,
-        latest_prompt_preview,
+        latest_prompt_preview, settings_footer_line, should_show_footer,
     };
-    use crate::app::{ServerInfo, ServerStatus};
+    use crate::app::{App, ServerInfo, ServerStatus, View};
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
     use std::collections::HashMap;
@@ -983,5 +1023,40 @@ mod tests {
             latest_prompt_preview(&session),
             Some("latest prompt".to_string())
         );
+    }
+
+    #[test]
+    fn settings_view_shows_footer_without_flash_message() {
+        let mut app = App::new(Vec::new());
+        assert!(!should_show_footer(&app));
+
+        app.view = View::Settings;
+        assert!(should_show_footer(&app));
+    }
+
+    #[test]
+    fn settings_footer_line_shows_navigation_shortcuts() {
+        let app = App::new(Vec::new());
+        let text = spans_to_text(&settings_footer_line(&app).spans);
+
+        assert!(text.contains("j/k"));
+        assert!(text.contains("Enter"));
+        assert!(text.contains("[/]"));
+        assert!(text.contains("q/Esc"));
+        assert!(text.contains("help"));
+    }
+
+    #[test]
+    fn settings_footer_line_shows_edit_shortcuts_while_editing() {
+        let mut app = App::new(Vec::new());
+        app.editing_field = true;
+
+        let text = spans_to_text(&settings_footer_line(&app).spans);
+
+        assert!(text.contains("Enter"));
+        assert!(text.contains("apply"));
+        assert!(text.contains("Esc"));
+        assert!(text.contains("cancel"));
+        assert!(!text.contains("[/]"));
     }
 }

@@ -55,15 +55,6 @@ pub enum DisplayEvent<'a> {
         marker: LaneMarker,
         active_lanes: Vec<usize>,
     },
-    /// A semantic summary row inserted after key task/checkpoint events.
-    SummaryRow {
-        event: &'a Event,
-        source_index: usize,
-        window_id: u64,
-        summary: String,
-        lane: usize,
-        active_lanes: Vec<usize>,
-    },
 }
 
 impl<'a> DisplayEvent<'a> {
@@ -71,38 +62,32 @@ impl<'a> DisplayEvent<'a> {
         match self {
             DisplayEvent::Single { event, .. } => event,
             DisplayEvent::Collapsed { first, .. } => first,
-            DisplayEvent::SummaryRow { event, .. } => event,
         }
     }
 
     pub fn source_index(&self) -> usize {
         match self {
             DisplayEvent::Single { source_index, .. }
-            | DisplayEvent::Collapsed { source_index, .. }
-            | DisplayEvent::SummaryRow { source_index, .. } => *source_index,
+            | DisplayEvent::Collapsed { source_index, .. } => *source_index,
         }
     }
 
     pub fn lane(&self) -> usize {
         match self {
-            DisplayEvent::Single { lane, .. }
-            | DisplayEvent::Collapsed { lane, .. }
-            | DisplayEvent::SummaryRow { lane, .. } => *lane,
+            DisplayEvent::Single { lane, .. } | DisplayEvent::Collapsed { lane, .. } => *lane,
         }
     }
 
     pub fn marker(&self) -> LaneMarker {
         match self {
             DisplayEvent::Single { marker, .. } | DisplayEvent::Collapsed { marker, .. } => *marker,
-            DisplayEvent::SummaryRow { .. } => LaneMarker::None,
         }
     }
 
     pub fn active_lanes(&self) -> &[usize] {
         match self {
             DisplayEvent::Single { active_lanes, .. }
-            | DisplayEvent::Collapsed { active_lanes, .. }
-            | DisplayEvent::SummaryRow { active_lanes, .. } => active_lanes,
+            | DisplayEvent::Collapsed { active_lanes, .. } => active_lanes,
         }
     }
 }
@@ -2717,7 +2702,7 @@ impl App {
                         .is_some_and(|t| t.is_personal);
                     if is_personal && !popup.git_storage_ready {
                         popup.status = Some(
-                            "Git storage required for personal upload (Settings > Git Storage)"
+                            "Session storage required for personal upload (Settings > Storage & Privacy > Session Storage)"
                                 .into(),
                         );
                     } else if let Some(c) = popup.checked.get_mut(popup.selected) {
@@ -3072,7 +3057,7 @@ impl App {
             SettingField::GitStorageToken
                 if self.daemon_config.git_storage.method == GitStorageMethod::None =>
             {
-                Some("Set Git Storage Method to Platform API, Native, or SQLite Local first")
+                Some("Set Session Storage Method to Platform API or Native first")
             }
             SettingField::SummaryCliAgent if !self.daemon_config.daemon.summary_enabled => {
                 Some("Turn ON LLM Summary Enabled first")
@@ -3487,27 +3472,6 @@ impl App {
                             self.view = View::SessionList;
                             self.active_tab = Tab::Sessions;
                         }
-                        ConfirmAction::ConfigureSummaryCli { provider } => {
-                            self.daemon_config.daemon.summary_enabled = true;
-                            self.daemon_config.daemon.summary_provider = Some(provider.clone());
-                            self.config_dirty = true;
-                            self.timeline_summary_cache.clear();
-                            self.timeline_summary_lookup_keys.clear();
-                            self.cancel_timeline_summary_jobs();
-                            self.save_config();
-                            self.flash_success(format!("LLM summary provider set to {provider}"));
-                        }
-                        ConfirmAction::ProbeSummaryCli { session_id } => {
-                            let agent_tool = self
-                                .session_tool_for_summary(&session_id)
-                                .map(|tool| tool.to_string())
-                                .unwrap_or_default();
-                            self.flash_info("Running LLM summary CLI hello probe...");
-                            self.pending_command = Some(AsyncCommand::ProbeSummaryCli {
-                                session_id,
-                                agent_tool,
-                            });
-                        }
                     }
                     // modal already taken
                 }
@@ -3742,116 +3706,6 @@ impl App {
             CommandResult::ServerSessions(Err(e)) => {
                 self.flash_error(format!("Error: {e}"));
             }
-
-            CommandResult::SummaryDone { key, epoch, result } => {
-                if epoch != self.timeline_summary_epoch {
-                    self.timeline_summary_lookup_keys.remove(&key);
-                    return;
-                }
-                self.timeline_summary_inflight.remove(&key);
-                self.timeline_summary_inflight_started.remove(&key);
-                match *result {
-                    Ok(summary) => {
-                        if !summary.compact.trim().is_empty() {
-                            self.timeline_summary_cache
-                                .insert(key.clone(), summary.clone());
-                            if let Some(lookup_key) = self.timeline_summary_lookup_keys.remove(&key)
-                            {
-                                self.persist_summary_disk_cache(lookup_key, &summary);
-                            }
-                        } else {
-                            self.timeline_summary_cache.insert(
-                                key.clone(),
-                                parse_timeline_summary_output(
-                                    "summary unavailable for this window",
-                                ),
-                            );
-                            self.timeline_summary_lookup_keys.remove(&key);
-                        }
-                    }
-                    Err(err) => {
-                        let fallback = format!("summary unavailable ({err})");
-                        self.timeline_summary_cache
-                            .insert(key.clone(), parse_timeline_summary_output(&fallback));
-                        self.timeline_summary_lookup_keys.remove(&key);
-                        if (Self::is_summary_setup_missing(&err)
-                            || Self::is_summary_cli_runtime_failure(&err))
-                            && self.daemon_config.daemon.summary_enabled
-                        {
-                            self.daemon_config.daemon.summary_enabled = false;
-                            self.cancel_timeline_summary_jobs();
-                            self.flash_info(
-                                "LLM summary auto-disabled after summary backend failure",
-                            );
-                        }
-                        self.maybe_prompt_summary_cli_setup(&key, &err);
-                    }
-                }
-                self.remap_detail_selection_by_event_id();
-            }
-
-            CommandResult::SummaryCliProbeDone { session_id, result } => match result {
-                Ok(report) => {
-                    let tested = report.attempted_providers.join(", ");
-                    if let Some(provider) = report.recommended_provider.clone() {
-                        let responsive = report.responsive_providers.join(", ");
-                        self.flash_info(format!(
-                            "Summary CLI probe complete. responsive: {}",
-                            if responsive.is_empty() {
-                                "none".to_string()
-                            } else {
-                                responsive
-                            }
-                        ));
-                        self.modal = Some(Modal::Confirm {
-                            title: "Configure Timeline Analysis".to_string(),
-                            message: format!(
-                                "Responsive CLI: {}. Set provider to {} now?",
-                                report.responsive_providers.join(", "),
-                                provider
-                            ),
-                            action: ConfirmAction::ConfigureSummaryCli { provider },
-                        });
-                    } else {
-                        let detail = if report.errors.is_empty() {
-                            String::new()
-                        } else {
-                            format!(
-                                " ({})",
-                                report
-                                    .errors
-                                    .iter()
-                                    .map(|(provider, err)| format!("{provider}: {err}"))
-                                    .collect::<Vec<_>>()
-                                    .join("; ")
-                            )
-                        };
-                        self.flash_error(format!(
-                            "No responsive summary CLI found. tested: {}{}",
-                            if tested.is_empty() {
-                                "none".to_string()
-                            } else {
-                                tested
-                            },
-                            detail
-                        ));
-
-                        if let Some(provider) = self.recommended_summary_cli_provider(&session_id) {
-                            self.modal = Some(Modal::Confirm {
-                                title: "Configure Timeline Analysis".to_string(),
-                                message: format!(
-                                    "Probe found no responder. Set detected provider {} anyway?",
-                                    provider
-                                ),
-                                action: ConfirmAction::ConfigureSummaryCli { provider },
-                            });
-                        }
-                    }
-                }
-                Err(err) => {
-                    self.flash_error(format!("Summary CLI probe failed: {err}"));
-                }
-            },
 
             CommandResult::DeleteSession(Ok(session_id)) => {
                 if let Some(ref db) = self.db {
@@ -4722,21 +4576,12 @@ impl App {
         if let Some(session) = self.selected_session().cloned() {
             let visible = self.get_visible_events(&session);
             let turns = extract_visible_turns(&visible);
-            if let Some(turn) = turns.get(self.turn_index) {
-                let has_summary = self
-                    .turn_summary_payload(
-                        &session.session_id,
-                        turn.turn_index,
-                        turn.anchor_source_index,
-                    )
-                    .is_some();
-                if has_summary {
-                    let idx = self.turn_index;
-                    if self.turn_raw_overrides.contains(&idx) {
-                        self.turn_raw_overrides.remove(&idx);
-                    } else {
-                        self.turn_raw_overrides.insert(idx);
-                    }
+            if turns.get(self.turn_index).is_some() {
+                let idx = self.turn_index;
+                if self.turn_raw_overrides.contains(&idx) {
+                    self.turn_raw_overrides.remove(&idx);
+                } else {
+                    self.turn_raw_overrides.insert(idx);
                 }
             }
         }
@@ -5051,44 +4896,7 @@ impl App {
     }
 
     pub fn get_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
-        let base = self.get_base_visible_events(session);
-        if base.is_empty() || !self.summary_allowed_for_session(session) {
-            return base;
-        }
-
-        let anchors = self.build_summary_anchors(session, &base);
-        if anchors.is_empty() {
-            return base;
-        }
-
-        let mut by_source: HashMap<usize, Vec<SummaryAnchor<'a>>> = HashMap::new();
-        for anchor in anchors {
-            by_source
-                .entry(anchor.anchor_source_index)
-                .or_default()
-                .push(anchor);
-        }
-
-        let mut out = Vec::with_capacity(base.len() + by_source.len());
-        for event in base {
-            let source_index = event.source_index();
-            out.push(event.clone());
-            if let Some(rows) = by_source.get(&source_index) {
-                for row in rows {
-                    if let Some(summary) = self.timeline_summary_cache.get(&row.key) {
-                        out.push(DisplayEvent::SummaryRow {
-                            event: row.anchor_event,
-                            source_index: row.anchor_source_index,
-                            window_id: row.key.window_id,
-                            summary: summary.compact.clone(),
-                            lane: row.lane,
-                            active_lanes: row.active_lanes.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        out
+        self.get_base_visible_events(session)
     }
 
     pub fn get_base_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
@@ -6593,47 +6401,7 @@ impl App {
         self.timeline_summary_pending.iter().any(|r| &r.key == key)
     }
 
-    fn maybe_prompt_summary_cli_setup(&mut self, key: &TimelineSummaryWindowKey, err: &str) {
-        if self.summary_cli_prompted || self.modal.is_some() {
-            return;
-        }
-        let missing_setup = Self::is_summary_setup_missing(err);
-        let runtime_failure = Self::is_summary_cli_runtime_failure(err);
-        if !missing_setup && !runtime_failure {
-            return;
-        }
-
-        self.summary_cli_prompted = true;
-        let available = self.available_summary_cli_providers(&key.session_id);
-        if !available.is_empty() {
-            let message = if missing_setup {
-                format!(
-                    "Summary is not configured. Run hello probe on installed CLIs ({})?",
-                    available.join(", ")
-                )
-            } else {
-                format!(
-                    "Summary CLI failed. Run hello probe to pick a responsive CLI ({})?",
-                    available.join(", ")
-                )
-            };
-            self.modal = Some(Modal::Confirm {
-                title: "Configure Timeline Analysis".to_string(),
-                message,
-                action: ConfirmAction::ProbeSummaryCli {
-                    session_id: key.session_id.clone(),
-                },
-            });
-        } else if missing_setup {
-            self.flash_info(
-                "Summary is not configured. Install one CLI (codex/claude/cursor/gemini) or add an API key.",
-            );
-        } else {
-            self.flash_info(
-                "Summary CLI failed. Ensure the selected CLI is authenticated, or switch provider in Settings.",
-            );
-        }
-    }
+    fn maybe_prompt_summary_cli_setup(&mut self, _key: &TimelineSummaryWindowKey, _err: &str) {}
 
     fn is_summary_setup_missing(err: &str) -> bool {
         let lower = err.to_ascii_lowercase();
@@ -6732,108 +6500,7 @@ impl App {
     }
 
     pub fn schedule_detail_summary_jobs(&mut self) -> Option<AsyncCommand> {
-        if self.view != View::SessionDetail {
-            return None;
-        }
-
-        let session = self.selected_session().cloned()?;
-        self.ensure_summary_ready_for_session(&session);
-        if !self.summary_allowed_for_session(&session) {
-            return None;
-        }
-
-        if self.detail_entered_at.elapsed() < Self::detail_summary_warmup_duration() {
-            return None;
-        }
-
-        self.prune_stale_summary_inflight();
-
-        let base = self.get_base_visible_events(&session);
-        if base.is_empty() {
-            return None;
-        }
-        let anchors = self.build_summary_anchors(&session, &base);
-        if anchors.is_empty() {
-            return None;
-        }
-
-        let viewport_end = self
-            .detail_event_index
-            .saturating_add(self.detail_viewport_height as usize)
-            .saturating_add(4);
-
-        for anchor in anchors {
-            if self.timeline_summary_cache.contains_key(&anchor.key)
-                || self.pending_summary_contains(&anchor.key)
-                || self.timeline_summary_inflight.contains(&anchor.key)
-            {
-                continue;
-            }
-
-            let context = self.build_summary_context(&session, &base, &anchor);
-            if context.trim().is_empty() {
-                continue;
-            }
-
-            let cache_lookup_key = self.summary_cache_lookup_key(&anchor.key, &context);
-            if let Some(ref lookup_key) = cache_lookup_key {
-                if self.maybe_use_summary_disk_cache(&anchor.key, lookup_key) {
-                    continue;
-                }
-            }
-
-            let visible_priority = anchor.display_index <= viewport_end;
-            self.timeline_summary_pending
-                .push_back(TimelineSummaryWindowRequest {
-                    key: anchor.key,
-                    context,
-                    visible_priority,
-                    cache_lookup_key,
-                });
-        }
-
-        if self.timeline_summary_pending.is_empty() {
-            return None;
-        }
-
-        let max_inflight = self.daemon_config.daemon.summary_max_inflight.max(1) as usize;
-        if self.timeline_summary_inflight.len() >= max_inflight {
-            return None;
-        }
-
-        let debounce_ms = self.daemon_config.daemon.summary_debounce_ms.max(50);
-        if let Some(last) = self.last_summary_request_at {
-            if last.elapsed() < Duration::from_millis(debounce_ms) {
-                return None;
-            }
-        }
-
-        let next_index = self
-            .timeline_summary_pending
-            .iter()
-            .position(|request| request.visible_priority)
-            .unwrap_or(0);
-        let request = self.timeline_summary_pending.remove(next_index)?;
-
-        if let Some(ref lookup_key) = request.cache_lookup_key {
-            self.timeline_summary_lookup_keys
-                .insert(request.key.clone(), lookup_key.clone());
-        } else {
-            self.timeline_summary_lookup_keys.remove(&request.key);
-        }
-
-        self.timeline_summary_inflight.insert(request.key.clone());
-        self.timeline_summary_inflight_started
-            .insert(request.key.clone(), Instant::now());
-        self.last_summary_request_at = Some(Instant::now());
-
-        Some(AsyncCommand::GenerateTimelineSummary {
-            key: request.key,
-            epoch: self.timeline_summary_epoch,
-            provider: self.daemon_config.daemon.summary_provider.clone(),
-            context: request.context,
-            agent_tool: session.agent.tool.clone(),
-        })
+        None
     }
 
     pub fn turn_summary_key(

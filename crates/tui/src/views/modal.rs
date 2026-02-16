@@ -33,14 +33,6 @@ pub enum ConfirmAction {
     DeleteSession {
         session_id: String,
     },
-    /// Enable timeline summary via a detected CLI provider.
-    ConfigureSummaryCli {
-        provider: String,
-    },
-    /// Run a "hello" responsiveness probe for installed summary CLIs.
-    ProbeSummaryCli {
-        session_id: String,
-    },
 }
 
 /// What happens when a TextInput modal is submitted.

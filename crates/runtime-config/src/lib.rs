@@ -44,6 +44,9 @@ pub struct DaemonSettings {
     /// Enable realtime file preview refresh in TUI session detail.
     #[serde(default = "default_detail_realtime_preview_enabled")]
     pub detail_realtime_preview_enabled: bool,
+    /// Expand selected timeline event detail rows by default in TUI session detail.
+    #[serde(default = "default_detail_auto_expand_selected_event")]
+    pub detail_auto_expand_selected_event: bool,
     /// Enable timeline/event summary generation in TUI detail view.
     #[serde(default = "default_false")]
     pub summary_enabled: bool,
@@ -103,6 +106,7 @@ impl Default for DaemonSettings {
             health_check_interval_secs: 300,
             realtime_debounce_ms: 500,
             detail_realtime_preview_enabled: false,
+            detail_auto_expand_selected_event: true,
             summary_enabled: false,
             summary_provider: None,
             summary_model: None,
@@ -291,6 +295,9 @@ fn default_realtime_debounce_ms() -> u64 {
 fn default_detail_realtime_preview_enabled() -> bool {
     false
 }
+fn default_detail_auto_expand_selected_event() -> bool {
+    true
+}
 fn default_publish_on() -> PublishMode {
     PublishMode::Manual
 }
@@ -457,6 +464,7 @@ method = "native"
     #[test]
     fn daemon_summary_defaults_are_stable() {
         let cfg = DaemonConfig::default();
+        assert!(cfg.daemon.detail_auto_expand_selected_event);
         assert!(!cfg.daemon.summary_enabled);
         assert_eq!(cfg.daemon.summary_provider, None);
         assert_eq!(cfg.daemon.summary_model, None);
@@ -482,10 +490,12 @@ summary_event_window = 8
 summary_debounce_ms = 100
 summary_max_inflight = 4
 summary_window_migrated_v2 = false
+detail_auto_expand_selected_event = false
 "#,
         )
         .expect("parse summary config");
 
+        assert!(!cfg.daemon.detail_auto_expand_selected_event);
         assert!(cfg.daemon.summary_enabled);
         assert_eq!(cfg.daemon.summary_provider.as_deref(), Some("openai"));
         assert_eq!(cfg.daemon.summary_model.as_deref(), Some("gpt-4o-mini"));

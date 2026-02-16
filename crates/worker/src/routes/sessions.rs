@@ -271,8 +271,9 @@ fn public_feed_cache_key(query_pairs: &[(String, String)]) -> String {
     format!("https://cache.opensession.io/api/sessions?{encoded}")
 }
 
-fn requires_authenticated_list(public_feed_enabled: bool, is_authenticated: bool) -> bool {
-    !public_feed_enabled && !is_authenticated
+fn worker_public_feed_enabled() -> bool {
+    // Worker deployment is public-feed-first by product policy.
+    true
 }
 
 /// GET /api/sessions — list sessions (public, paginated, filtered)
@@ -280,11 +281,7 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let url = req.url()?;
     let query_pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
     let mut q = parse_session_list_query(&query_pairs);
-    let public_feed_enabled = crate::env_flag_bool(
-        &ctx.env,
-        opensession_api::deploy::ENV_PUBLIC_FEED_ENABLED,
-        true,
-    );
+    let public_feed_enabled = worker_public_feed_enabled();
     let team_api_enabled = crate::env_flag_bool(
         &ctx.env,
         opensession_api::deploy::ENV_TEAM_API_ENABLED,
@@ -302,15 +299,6 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
                 .into_err_response();
             }
         }
-    }
-    let is_authenticated = if public_feed_enabled {
-        false
-    } else {
-        storage::auth_from_req(&req, &ctx.env).await.is_ok()
-    };
-    if requires_authenticated_list(public_feed_enabled, is_authenticated) {
-        return ServiceError::Unauthorized("public feed disabled; authentication required".into())
-            .into_err_response();
     }
     let has_auth_header = req.headers().get("Authorization").ok().flatten().is_some();
     let has_session_cookie = req
@@ -531,20 +519,10 @@ pub async fn delete(req: Request, ctx: RouteContext<()>) -> Result<Response> {
 
 #[cfg(test)]
 mod tests {
-    use super::requires_authenticated_list;
+    use super::worker_public_feed_enabled;
 
     #[test]
-    fn requires_auth_when_public_feed_disabled_and_not_authenticated() {
-        assert!(requires_authenticated_list(false, false));
-    }
-
-    #[test]
-    fn allows_authenticated_list_when_public_feed_disabled() {
-        assert!(!requires_authenticated_list(false, true));
-    }
-
-    #[test]
-    fn allows_public_list_when_public_feed_enabled() {
-        assert!(!requires_authenticated_list(true, false));
+    fn worker_public_feed_is_forced_enabled() {
+        assert!(worker_public_feed_enabled());
     }
 }

@@ -192,12 +192,23 @@ pub async fn callback(
         .map_err(|e| ApiErr::internal(format!("token response read failed: {e}")))?;
 
     let access_token = oauth::parse_access_token_response(&token_raw).map_err(|e| {
-        let base = e.message();
-        if token_status.is_success() {
-            ApiErr::internal(base)
+        let mut msg = if token_status.is_success() {
+            e.message().to_string()
         } else {
-            ApiErr::internal(format!("{base} (status {token_status})"))
+            format!("{} (status {token_status})", e.message())
+        };
+        if msg.contains("incorrect_client_credentials") {
+            msg.push_str(match provider_id.as_str() {
+                "github" => {
+                    "; verify GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET match the GitHub OAuth app"
+                }
+                "gitlab" => {
+                    "; verify GITLAB_CLIENT_ID/GITLAB_CLIENT_SECRET match the GitLab OAuth app"
+                }
+                _ => "; verify OAuth client credentials",
+            });
         }
+        ApiErr::internal(msg)
     })?;
 
     // Fetch userinfo

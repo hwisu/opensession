@@ -35,7 +35,7 @@ opensession .    # 현재 git 레포 범위
 | 항목 | Docker (Axum 서버) | Worker (Wrangler) |
 |------|---------------------|-------------------|
 | 주 목적 | 팀 협업 | 개인 공유 |
-| 비로그인 시 홈(`/`) | 세션 목록(공개 피드) | 세션 목록(공개 피드) |
+| 비로그인 시 홈(`/`) | 세션 목록(공개 피드) | 랜딩 페이지(게스트 모드) |
 | 로그인 시 홈(`/`) | 세션 목록 | 세션 목록 |
 | 팀 API (`/api/teams*`, `/api/invitations*`, `/api/sync/pull`) | 활성화 | `ENABLE_TEAM_API=false`일 때 비활성화 |
 | 팀 UI (`/teams`, `/invitations`) | 활성화 | 숨김/비활성화 |
@@ -44,7 +44,7 @@ opensession .    # 현재 git 레포 범위
 - 웹 빌드 프로필: `VITE_APP_PROFILE=docker|worker`
 - 저장소 기본값:
   - `docker-compose.yml`: `OPENSESSION_PUBLIC_FEED_ENABLED=true` (익명 `GET /api/sessions` 허용)
-  - `wrangler.toml`: `ENABLE_TEAM_API=false`, `OPENSESSION_PUBLIC_FEED_ENABLED=true`
+  - `wrangler.toml`: `ENABLE_TEAM_API=false`, `OPENSESSION_PUBLIC_FEED_ENABLED=true` (Worker 리스트 API는 정책상 공개 피드 고정)
 
 ### 셀프 호스팅 서버
 

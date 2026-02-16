@@ -38,10 +38,16 @@ async fn issue_tokens(env: &Env, user_id: &str, nickname: &str) -> Result<AuthTo
     Ok(bundle.response)
 }
 
-fn required_secret(env: &Env, name: &str) -> Result<String> {
-    let raw = env.secret(name)?.to_string();
-    oauth::normalize_oauth_config_value(&raw)
-        .ok_or_else(|| Error::from(format!("{name} is empty after trimming")))
+fn required_oauth_config(env: &Env, name: &str) -> Result<String> {
+    if let Ok(secret) = env.secret(name) {
+        if let Some(normalized) = oauth::normalize_oauth_config_value(&secret.to_string()) {
+            return Ok(normalized);
+        }
+    }
+    if let Some(from_var) = optional_var(env, name) {
+        return Ok(from_var);
+    }
+    Err(Error::from(format!("{name} is missing or empty")))
 }
 
 fn optional_var(env: &Env, name: &str) -> Option<String> {
@@ -55,15 +61,15 @@ fn optional_var(env: &Env, name: &str) -> Option<String> {
 fn load_provider_config(env: &Env, provider_id: &str) -> Result<oauth::OAuthProviderConfig> {
     match provider_id {
         "github" => {
-            let client_id = required_secret(env, "GITHUB_CLIENT_ID")?;
-            let client_secret = required_secret(env, "GITHUB_CLIENT_SECRET")?;
+            let client_id = required_oauth_config(env, "GITHUB_CLIENT_ID")?;
+            let client_secret = required_oauth_config(env, "GITHUB_CLIENT_SECRET")?;
             Ok(oauth::github_preset(client_id, client_secret))
         }
         "gitlab" => {
             let url = optional_var(env, "GITLAB_URL")
                 .ok_or_else(|| Error::from("GITLAB_URL is missing or empty"))?;
-            let client_id = required_secret(env, "GITLAB_CLIENT_ID")?;
-            let client_secret = required_secret(env, "GITLAB_CLIENT_SECRET")?;
+            let client_id = required_oauth_config(env, "GITLAB_CLIENT_ID")?;
+            let client_secret = required_oauth_config(env, "GITLAB_CLIENT_SECRET")?;
             let ext_url = optional_var(env, "GITLAB_EXTERNAL_URL");
             Ok(oauth::gitlab_preset(url, ext_url, client_id, client_secret))
         }
@@ -437,11 +443,22 @@ async fn oauth_callback_inner(req: Request, env: &Env, provider_id: &str) -> Res
     let access_token = match oauth::parse_access_token_response(&token_raw) {
         Ok(token) => token,
         Err(e) => {
-            let msg = if (200..300).contains(&token_status) {
+            let mut msg = if (200..300).contains(&token_status) {
                 e.message().to_string()
             } else {
                 format!("{} (status {token_status})", e.message())
             };
+            if msg.contains("incorrect_client_credentials") {
+                msg.push_str(match provider_id {
+                    "github" => {
+                        "; verify GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET bindings match the GitHub OAuth app"
+                    }
+                    "gitlab" => {
+                        "; verify GITLAB_CLIENT_ID/GITLAB_CLIENT_SECRET bindings match the GitLab OAuth app"
+                    }
+                    _ => "; verify OAuth client credentials",
+                });
+            }
             return ServiceError::Internal(msg).into_err_response();
         }
     };

@@ -9,6 +9,11 @@
 	let { children }: { children: Snippet } = $props();
 </script>
 
-<AppShell currentPath={$page.url.pathname} appProfile={appProfile} onNavigate={(path) => goto(path)}>
+<AppShell
+	currentPath={$page.url.pathname}
+	appProfile={appProfile}
+	redirectGuestsToLanding={appProfile === 'worker'}
+	onNavigate={(path) => goto(path)}
+>
 	{@render children()}
 </AppShell>

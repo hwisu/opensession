@@ -78,7 +78,20 @@ pub fn normalize_oauth_config_value(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        let maybe_unquoted = if trimmed.len() >= 2
+            && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+                || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+        {
+            &trimmed[1..trimmed.len() - 1]
+        } else {
+            trimmed
+        };
+        let normalized = maybe_unquoted.trim();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized.to_string())
+        }
     }
 }
 
@@ -469,5 +482,18 @@ mod tests {
             Some("value-with-spaces".to_string())
         );
         assert_eq!(normalize_oauth_config_value("   \n\t  "), None);
+    }
+
+    #[test]
+    fn normalize_oauth_config_value_strips_wrapping_quotes() {
+        assert_eq!(
+            normalize_oauth_config_value(" \"quoted-value\" "),
+            Some("quoted-value".to_string())
+        );
+        assert_eq!(
+            normalize_oauth_config_value(" 'another' "),
+            Some("another".to_string())
+        );
+        assert_eq!(normalize_oauth_config_value("  \"   \" "), None);
     }
 }

@@ -36,7 +36,7 @@ opensession .    # current git repo scope
 | Area | Docker (Axum server) | Worker (Wrangler) |
 |------|-----------------------|-------------------|
 | Primary focus | Team collaboration | Personal sharing |
-| Home `/` when signed out | Session list (public feed) | Session list (public feed) |
+| Home `/` when signed out | Session list (public feed) | Landing page (guest mode) |
 | Home `/` when signed in | Session list | Session list |
 | Team API (`/api/teams*`, `/api/invitations*`, `/api/sync/pull`) | Enabled | Disabled when `ENABLE_TEAM_API=false` |
 | Team UI (`/teams`, `/invitations`) | Enabled | Hidden/disabled |
@@ -45,7 +45,7 @@ opensession .    # current git repo scope
 - `Web build profile`: `VITE_APP_PROFILE=docker|worker` controls UI surface.
 - Repository defaults:
 - `docker-compose.yml` sets `OPENSESSION_PUBLIC_FEED_ENABLED=true` (anonymous `GET /api/sessions` allowed).
-  - `wrangler.toml` sets `ENABLE_TEAM_API=false` and `OPENSESSION_PUBLIC_FEED_ENABLED=true`.
+  - `wrangler.toml` sets `ENABLE_TEAM_API=false` and `OPENSESSION_PUBLIC_FEED_ENABLED=true` (Worker list API is currently public-feed-on by policy).
 
 ### Self-Hosted Server
 

@@ -21,9 +21,7 @@ binding = "SESSIONS"
 bucket_name = "opensession-io-sessions"
 
 [observability]
-[observability.logs]
 enabled = false
-invocation_logs = true
 
 [vars]
 BASE_URL = "https://opensession.io"

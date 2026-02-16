@@ -1,7 +1,7 @@
 <script lang="ts">
 import { tick } from 'svelte';
 import type { Snippet } from 'svelte';
-import { getSettings, isAuthenticated, listInvitations } from '../api';
+import { getSettings, isAuthenticated, listInvitations, verifyAuth } from '../api';
 import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
@@ -17,6 +17,7 @@ const {
 	currentPath,
 	children,
 	appProfile = 'docker',
+	redirectGuestsToLanding = false,
 	onNavigate = (path: string) => {
 		window.location.assign(path);
 	},
@@ -24,6 +25,7 @@ const {
 	currentPath: string;
 	children: Snippet;
 	appProfile?: 'docker' | 'worker';
+	redirectGuestsToLanding?: boolean;
 	onNavigate?: (path: string) => void;
 } = $props();
 
@@ -35,12 +37,24 @@ let paletteOpen = $state(false);
 let paletteQuery = $state('');
 let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
+let authGuardSeq = 0;
 
 const SETTINGS_REFRESH_INTERVAL_MS = 30_000;
 const INBOX_REFRESH_INTERVAL_MS = 30_000;
 const teamFeaturesEnabled = $derived(appProfile === 'docker');
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/');
+
+function isGuestAllowedPath(path: string): boolean {
+	return (
+		path === '/' ||
+		path === '/login' ||
+		path === '/register' ||
+		path === '/auth/callback' ||
+		path.startsWith('/docs') ||
+		path.startsWith('/dx')
+	);
+}
 
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/', label: 'Sessions' }];
@@ -242,6 +256,25 @@ $effect(() => {
 				inboxCount = 0;
 			});
 	}
+});
+
+$effect(() => {
+	void currentPath;
+	const seq = ++authGuardSeq;
+	if (!redirectGuestsToLanding || isGuestAllowedPath(currentPath)) return;
+	let cancelled = false;
+	verifyAuth()
+		.then((ok) => {
+			if (cancelled || seq !== authGuardSeq || ok) return;
+			onNavigate('/');
+		})
+		.catch(() => {
+			if (cancelled || seq !== authGuardSeq) return;
+			onNavigate('/');
+		});
+	return () => {
+		cancelled = true;
+	};
 });
 
 $effect(() => {

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/hwisu/opensession/compare/opensession-v0.2.0...opensession-v0.2.1) - 2026-02-16
+
+### Added
+
+- *(storage)* use sqlite summary cache and default local git-native
+- prefer BASE_URL for server public URL
+
+### Fixed
+
+- *(cli)* make default scope mode compile-clean and clippy-clean
+- fix oauth redirect base URL to prevent github callback mismatch
+
+### Other
+
+- Fix tui workspace run, summary pipeline, and parity gates
+- *(tui)* simplify capture settings and add profile e2e coverage
+- simplify tui flow and centralize config fallbacks
+- *(cli)* make handoff pipe-friendly defaults for nu
+- *(handoff)* enrich objective and task summary signal
+- stage all pending changes
+
 ## [0.2.0](https://github.com/hwisu/opensession/compare/opensession-v0.1.4...opensession-v0.2.0) - 2026-02-15
 
 ### Added

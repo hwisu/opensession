@@ -143,7 +143,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  [/]       ", key_style),
             Span::styled(
-                "Switch section (Workspace/Capture/Storage/Account)",
+                "Switch section (Web Share/Team Share/Capture Flow/Storage/Account)",
                 desc_style,
             ),
         ]),

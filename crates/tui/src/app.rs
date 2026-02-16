@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::async_ops::{AsyncCommand, CommandResult};
-use crate::config::{self, DaemonConfig, GitStorageMethod, PublishMode, SettingField};
+use crate::config::{self, DaemonConfig, PublishMode, SettingField};
 use crate::live::{
     DefaultLiveFeedProvider, FollowTailState, LiveFeedProvider, LiveSubscription, LiveUpdate,
     LiveUpdateBatch,
@@ -180,14 +180,16 @@ pub enum TeamDetailFocus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Workspace,
+    TeamShare,
     CaptureSync,
     StoragePrivacy,
     Account,
 }
 
 impl SettingsSection {
-    pub const ORDER: [Self; 4] = [
+    pub const ORDER: [Self; 5] = [
         Self::Workspace,
+        Self::TeamShare,
         Self::CaptureSync,
         Self::StoragePrivacy,
         Self::Account,
@@ -195,8 +197,9 @@ impl SettingsSection {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Workspace => "Workspace",
-            Self::CaptureSync => "Capture & Sync",
+            Self::Workspace => "Web Share",
+            Self::TeamShare => "Team Share",
+            Self::CaptureSync => "Capture Flow",
             Self::StoragePrivacy => "Storage & Privacy",
             Self::Account => "Account",
         }
@@ -204,8 +207,9 @@ impl SettingsSection {
 
     pub fn panel_title(self) -> &'static str {
         match self {
-            Self::Workspace => "Workspace",
-            Self::CaptureSync => "Capture & Sync",
+            Self::Workspace => "Web Share (Public Git)",
+            Self::TeamShare => "Team Share (Docker Private)",
+            Self::CaptureSync => "Capture Flow",
             Self::StoragePrivacy => "Storage & Privacy",
             Self::Account => "Account",
         }
@@ -214,6 +218,7 @@ impl SettingsSection {
     pub fn group(self) -> Option<config::SettingsGroup> {
         match self {
             Self::Workspace => Some(config::SettingsGroup::Workspace),
+            Self::TeamShare => Some(config::SettingsGroup::TeamShare),
             Self::CaptureSync => Some(config::SettingsGroup::CaptureSync),
             Self::StoragePrivacy => Some(config::SettingsGroup::StoragePrivacy),
             Self::Account => None,
@@ -544,6 +549,22 @@ mod turn_extract_tests {
         }
         session.recompute_stats();
         session
+    }
+
+    #[test]
+    fn settings_sections_expose_web_and_team_share_split() {
+        assert_eq!(SettingsSection::ORDER.len(), 5);
+        assert_eq!(SettingsSection::Workspace.label(), "Web Share");
+        assert_eq!(SettingsSection::TeamShare.label(), "Team Share");
+        assert_eq!(SettingsSection::CaptureSync.label(), "Capture Flow");
+        assert_eq!(
+            SettingsSection::Workspace.panel_title(),
+            "Web Share (Public Git)"
+        );
+        assert_eq!(
+            SettingsSection::TeamShare.panel_title(),
+            "Team Share (Docker Private)"
+        );
     }
 
     #[test]
@@ -1600,7 +1621,6 @@ pub struct UploadPopup {
     pub status: Option<String>,
     pub phase: UploadPhase,
     pub results: Vec<(String, Result<String, String>)>,
-    pub git_storage_ready: bool,
 }
 
 pub enum UploadPhase {
@@ -2255,9 +2275,6 @@ impl App {
                 if matches!(self.connection_ctx, ConnectionContext::Local) {
                     self.flash_info("No server configured");
                 } else if self.list_state.selected().is_some() {
-                    let gs = &self.daemon_config.git_storage;
-                    let git_storage_ready =
-                        gs.method == GitStorageMethod::PlatformApi && !gs.token.is_empty();
                     self.upload_popup = Some(UploadPopup {
                         teams: Vec::new(),
                         selected: 0,
@@ -2265,7 +2282,6 @@ impl App {
                         status: Some("Fetching teams...".to_string()),
                         phase: UploadPhase::FetchingTeams,
                         results: Vec::new(),
-                        git_storage_ready,
                     });
                 }
             }
@@ -2459,7 +2475,7 @@ impl App {
                             self.view = View::SessionList;
                             self.active_tab = Tab::Sessions;
                             self.flash_info(
-                                "Local mode enabled. Configure cloud sync later in Settings > Workspace",
+                                "Local mode enabled. Configure cloud sync later in Settings > Web Share / Team Share",
                             );
                         }
                         SetupScenario::Team | SetupScenario::Public => {
@@ -2481,7 +2497,7 @@ impl App {
                 self.view = View::SessionList;
                 self.active_tab = Tab::Sessions;
                 self.flash_info(
-                    "You can configure this later in Settings > Workspace (~/.config/opensession/opensession.toml)",
+                    "You can configure this later in Settings > Web Share / Team Share (~/.config/opensession/opensession.toml)",
                 );
             }
             _ => {}
@@ -2561,7 +2577,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Workspace (~/.config/opensession/opensession.toml)",
+                        "You can configure this later in Settings > Web Share / Team Share (~/.config/opensession/opensession.toml)",
                     );
                 }
             }
@@ -2632,7 +2648,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Workspace (~/.config/opensession/opensession.toml)",
+                        "You can configure this later in Settings > Web Share / Team Share (~/.config/opensession/opensession.toml)",
                     );
                 }
             }
@@ -2696,16 +2712,7 @@ impl App {
                 }
                 KeyCode::Char(' ') => {
                     // Toggle check on current item
-                    let is_personal = popup
-                        .teams
-                        .get(popup.selected)
-                        .is_some_and(|t| t.is_personal);
-                    if is_personal && !popup.git_storage_ready {
-                        popup.status = Some(
-                            "Session storage required for personal upload (Settings > Storage & Privacy > Session Storage)"
-                                .into(),
-                        );
-                    } else if let Some(c) = popup.checked.get_mut(popup.selected) {
+                    if let Some(c) = popup.checked.get_mut(popup.selected) {
                         *c = !*c;
                         popup.status = None;
                     }
@@ -2714,13 +2721,8 @@ impl App {
                     // Toggle all: if any checked, uncheck all; else check all
                     let any_checked = popup.checked.iter().any(|&c| c);
                     let new_val = !any_checked;
-                    for (i, c) in popup.checked.iter_mut().enumerate() {
-                        let is_personal = popup.teams.get(i).is_some_and(|t| t.is_personal);
-                        if new_val && is_personal && !popup.git_storage_ready {
-                            *c = false;
-                        } else {
-                            *c = new_val;
-                        }
+                    for c in &mut popup.checked {
+                        *c = new_val;
                     }
                 }
                 KeyCode::Enter => {
@@ -2917,6 +2919,7 @@ impl App {
                         self.handle_account_settings_key(key);
                     }
                     SettingsSection::Workspace
+                    | SettingsSection::TeamShare
                     | SettingsSection::CaptureSync
                     | SettingsSection::StoragePrivacy => {
                         self.handle_daemon_config_key(key);
@@ -2970,7 +2973,7 @@ impl App {
             }
             KeyCode::Char('r') => {
                 if self.daemon_config.server.api_key.is_empty() {
-                    self.flash_info("Set API key in Workspace first");
+                    self.flash_info("Set API key in Web Share first");
                 } else {
                     self.profile_loading = true;
                     self.pending_command = Some(AsyncCommand::FetchProfile);
@@ -2998,7 +3001,7 @@ impl App {
             KeyCode::Char('r') if self.settings_section == SettingsSection::CaptureSync => {
                 self.startup_status.daemon_pid = config::daemon_pid();
                 self.sync_daemon_publish_policy_from_runtime();
-                self.flash_info("Capture & Sync status refreshed");
+                self.flash_info("Capture Flow status refreshed");
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.settings_index + 1 < field_count {
@@ -3054,11 +3057,6 @@ impl App {
 
     pub fn daemon_config_field_block_reason(&self, field: SettingField) -> Option<&'static str> {
         match field {
-            SettingField::GitStorageToken
-                if self.daemon_config.git_storage.method == GitStorageMethod::None =>
-            {
-                Some("Set Session Storage Method to Platform API or Native first")
-            }
             SettingField::SummaryCliAgent if !self.daemon_config.daemon.summary_enabled => {
                 Some("Turn ON LLM Summary Enabled first")
             }

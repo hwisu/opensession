@@ -347,6 +347,18 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 dirty_mark,
                 Style::new().fg(Theme::ACCENT_YELLOW),
             ));
+            spans.push(Span::styled("   ", Style::new()));
+            spans.push(Span::styled(
+                " [/] ",
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(Theme::ACCENT_YELLOW)
+                    .bold(),
+            ));
+            spans.push(Span::styled(
+                " switch section",
+                Style::new().fg(Theme::TEXT_MUTED),
+            ));
 
             let p = Paragraph::new(Line::from(spans));
             frame.render_widget(p, inner);
@@ -394,8 +406,14 @@ fn settings_footer_line(app: &App) -> Line<'static> {
             Span::styled("move", desc_style),
             Span::styled("  Enter ", key_style),
             Span::styled("edit/cycle", desc_style),
-            Span::styled("  [/] ", key_style),
-            Span::styled("section", desc_style),
+            Span::styled(
+                "  [/] ",
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(Theme::ACCENT_YELLOW)
+                    .bold(),
+            ),
+            Span::styled("section prev/next", desc_style),
             Span::styled("  s ", key_style),
             Span::styled("save", desc_style),
             Span::styled("  q/Esc ", key_style),
@@ -612,41 +630,20 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
             for (i, team) in popup.teams.iter().enumerate() {
                 let is_cursor = i == popup.selected;
                 let is_checked = popup.checked.get(i).copied().unwrap_or(false);
-                let disabled = team.is_personal && !popup.git_storage_ready;
-                let check = if disabled {
-                    "[-]"
-                } else if is_checked {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
+                let check = if is_checked { "[x]" } else { "[ ]" };
                 let pointer = if is_cursor { ">" } else { " " };
-                let badge = if team.is_personal {
-                    if disabled {
-                        "git required"
-                    } else {
-                        "git"
-                    }
-                } else {
-                    "server"
-                };
+                let badge = if team.is_personal { "personal" } else { "team" };
                 // Pad team name to align badges
                 let name_width = 30usize.saturating_sub(team.name.len());
                 let padding = " ".repeat(name_width);
-                let style = if disabled {
-                    Style::new().fg(Theme::TEXT_MUTED)
-                } else if is_cursor {
+                let style = if is_cursor {
                     Style::new().fg(Theme::TEXT_PRIMARY).bold()
                 } else if is_checked {
                     Style::new().fg(Theme::ACCENT_BLUE)
                 } else {
                     Style::new().fg(Theme::TEXT_SECONDARY)
                 };
-                let badge_style = if disabled {
-                    Style::new().fg(Theme::ACCENT_RED)
-                } else {
-                    Style::new().fg(Theme::TEXT_MUTED)
-                };
+                let badge_style = Style::new().fg(Theme::TEXT_MUTED);
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!(" {} {} {}{}", pointer, check, team.name, padding),
@@ -1042,6 +1039,7 @@ mod tests {
         assert!(text.contains("j/k"));
         assert!(text.contains("Enter"));
         assert!(text.contains("[/]"));
+        assert!(text.contains("prev/next"));
         assert!(text.contains("q/Esc"));
         assert!(text.contains("help"));
     }

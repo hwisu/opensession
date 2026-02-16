@@ -10,7 +10,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             .title(" Collaboration ")
             .padding(Theme::PADDING_CARD);
         let msg = Paragraph::new(
-            "Collaboration is unavailable in local mode.\nConfigure server/team in Settings > Workspace.",
+            "Collaboration is unavailable in local mode.\nConfigure server/team in Settings > Web Share / Team Share.",
         )
         .block(block)
         .style(Style::new().fg(Theme::TEXT_MUTED));

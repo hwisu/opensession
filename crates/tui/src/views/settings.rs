@@ -5,9 +5,9 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 const SESSION_STORAGE_METHOD_DETAILS: [&str; 3] = [
-    "· Platform API — Store session JSONL via provider REST API (requires token)",
-    "· Native       — Store session snapshots as local git objects (no provider API)",
-    "· None         — Disable session snapshot storage",
+    "· Git-Native (Branch Based) — Store session snapshots as local git branch objects",
+    "· SQLite                    — Store session snapshots in local SQLite storage",
+    "· WARNING                   — SQLite session data can grow local disk usage quickly",
 ];
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -262,7 +262,32 @@ fn mask_password(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{mask_password, SESSION_STORAGE_METHOD_DETAILS};
+    use super::{mask_password, render, SESSION_STORAGE_METHOD_DETAILS};
+    use crate::app::{App, SettingsSection};
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn render_text(app: &App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, app, frame.area()))
+            .expect("draw");
+        buffer_to_string(terminal.backend().buffer())
+    }
 
     #[test]
     fn mask_password_returns_empty_for_empty_input() {
@@ -282,10 +307,43 @@ mod tests {
             .map(|s| s.to_ascii_lowercase())
             .collect::<Vec<_>>();
 
-        assert!(details.iter().any(|line| line.contains("platform api")));
-        assert!(details.iter().any(|line| line.contains("native")));
-        assert!(details.iter().any(|line| line.contains("none")));
-        assert!(details.iter().all(|line| !line.contains("sqlite")));
+        assert!(details.iter().any(|line| line.contains("git-native")));
+        assert!(details.iter().any(|line| line.contains("sqlite")));
+        assert!(details
+            .iter()
+            .any(|line| line.contains("sqlite") && line.contains("warning")));
+        assert!(details.iter().all(|line| !line.contains("platform api")));
+    }
+
+    #[test]
+    fn web_share_panel_shows_public_git_purpose_and_section_hint() {
+        let mut app = App::new(vec![]);
+        app.settings_section = SettingsSection::Workspace;
+        let text = render_text(&app, 160, 40);
+
+        assert!(text.contains("Web Share = register Public Git target"));
+        assert!(text.contains("[/]"));
+    }
+
+    #[test]
+    fn team_share_panel_shows_private_rbac_purpose() {
+        let mut app = App::new(vec![]);
+        app.settings_section = SettingsSection::TeamShare;
+        let text = render_text(&app, 160, 40);
+
+        assert!(text.contains("Team Share = Docker-based private collaboration"));
+        assert!(text.contains("role permissions"));
+    }
+
+    #[test]
+    fn capture_flow_panel_explains_capture_vs_sync() {
+        let mut app = App::new(vec![]);
+        app.settings_section = SettingsSection::CaptureSync;
+        let text = render_text(&app, 180, 50);
+
+        assert!(text.contains("Capture = collect local events"));
+        assert!(text.contains("Sync = upload captured sessions"));
+        assert!(text.contains("capture-runtime:off"));
     }
 }
 
@@ -309,11 +367,42 @@ fn render_daemon_config(
         format!("── {} ──", section_title),
         Style::new().fg(Theme::ACCENT_BLUE).bold(),
     ))];
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("[/]", Style::new().fg(Theme::ACCENT_YELLOW).bold()),
+        Span::styled(
+            " move section (left/right bracket keys)",
+            Style::new().fg(Theme::TEXT_MUTED),
+        ),
+    ]));
+
+    match section {
+        SettingsGroup::Workspace => {
+            lines.push(Line::from(Span::styled(
+                "  Web Share = register Public Git target and publish shareable logs",
+                Style::new().fg(Theme::TEXT_MUTED),
+            )));
+        }
+        SettingsGroup::TeamShare => {
+            lines.push(Line::from(Span::styled(
+                "  Team Share = Docker-based private collaboration with role permissions",
+                Style::new().fg(Theme::TEXT_MUTED),
+            )));
+        }
+        SettingsGroup::CaptureSync => {
+            lines.push(Line::from(Span::styled(
+                "  Capture = collect local events · Sync = upload captured sessions to share targets",
+                Style::new().fg(Theme::TEXT_MUTED),
+            )));
+        }
+        _ => {}
+    }
+
     if section == SettingsGroup::CaptureSync {
         let daemon_status = if daemon_running {
-            "daemon:on (d to stop)"
+            "capture-runtime:on (d to stop)"
         } else {
-            "daemon:off (d to start)"
+            "capture-runtime:off (d to start)"
         };
         lines.push(Line::from(Span::styled(
             format!("  {}", daemon_status),

@@ -114,7 +114,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     hint_lines.push(Line::raw(""));
     hint_lines.push(Line::from(Span::styled(
-        "Skip now? Configure later in Settings > Workspace.",
+        "Skip now? Configure later in Settings > Web Share / Team Share.",
         Style::new().fg(Theme::TEXT_HINT),
     )));
     let settings_url = format!(
@@ -252,7 +252,7 @@ fn render_scenario_picker(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "You can skip this now and configure it later in Settings > Workspace.",
+            "You can skip this now and configure it later in Settings > Web Share / Team Share.",
             Style::new().fg(Theme::TEXT_HINT),
         )),
         Line::from(Span::styled(

@@ -13,33 +13,30 @@ pub use opensession_runtime_config::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitStorageMode {
-    None,
-    PlatformApi,
     Native,
+    Sqlite,
 }
 
 impl GitStorageMode {
     fn from_core(method: GitStorageMethod) -> Self {
         match method {
-            GitStorageMethod::None => Self::None,
-            GitStorageMethod::PlatformApi => Self::PlatformApi,
             GitStorageMethod::Native => Self::Native,
+            GitStorageMethod::Sqlite => Self::Sqlite,
+            GitStorageMethod::Unknown => Self::Native,
         }
     }
 
     fn to_core(self) -> GitStorageMethod {
         match self {
-            Self::PlatformApi => GitStorageMethod::PlatformApi,
             Self::Native => GitStorageMethod::Native,
-            Self::None => GitStorageMethod::None,
+            Self::Sqlite => GitStorageMethod::Sqlite,
         }
     }
 
     fn as_toml_method(self) -> &'static str {
         match self {
-            Self::None => "none",
-            Self::PlatformApi => "platform_api",
             Self::Native => "native",
+            Self::Sqlite => "sqlite",
         }
     }
 }
@@ -127,13 +124,11 @@ fn parse_git_storage_mode(
         .and_then(toml::Value::as_str);
 
     match value.map(|s| s.trim().to_ascii_lowercase()) {
-        Some(v) if v == "none" => GitStorageMode::None,
-        Some(v) if v == "platform_api" || v == "platform-api" || v == "api" => {
-            GitStorageMode::PlatformApi
-        }
-        Some(v) if v == "native" => GitStorageMode::Native,
-        Some(v) if v == "sqlite_local" || v == "sqlite-local" || v == "sqlite" => {
+        Some(v) if v == "native" || v == "platform_api" || v == "platform-api" || v == "api" => {
             GitStorageMode::Native
+        }
+        Some(v) if v == "sqlite" || v == "sqlite_local" || v == "sqlite-local" || v == "none" => {
+            GitStorageMode::Sqlite
         }
         _ => GitStorageMode::from_core(fallback),
     }
@@ -491,7 +486,6 @@ pub enum SettingField {
     SummaryMaxInflight,
     WatchPaths,
     GitStorageMethod,
-    GitStorageToken,
     StripPaths,
     StripEnvVars,
 }
@@ -523,6 +517,7 @@ impl SettingItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsGroup {
     Workspace,
+    TeamShare,
     CaptureSync,
     TimelineIntelligence,
     StoragePrivacy,
@@ -530,75 +525,83 @@ pub enum SettingsGroup {
 
 /// The ordered list of items shown in the settings view.
 pub const SETTINGS_LAYOUT: &[SettingItem] = &[
-    SettingItem::Header("Server"),
+    SettingItem::Header("Web Share (Public Git)"),
     SettingItem::Field {
         field: SettingField::ServerUrl,
-        label: "Server URL",
-        description: "URL of the OpenSession server to sync with",
+        label: "Web Endpoint URL",
+        description: "Public web endpoint used for git-backed log sharing",
         dependency_hint: None,
     },
     SettingItem::Field {
         field: SettingField::ApiKey,
-        label: "API Key (personal)",
-        description: "Personal authentication key for cloud/team/public sync",
+        label: "Web API Key",
+        description: "Personal auth key used for public web share registration and uploads",
         dependency_hint: None,
     },
+    SettingItem::Header("Team Share (Docker Private)"),
     SettingItem::Field {
         field: SettingField::TeamId,
-        label: "Team ID",
-        description: "Default team to publish sessions to",
-        dependency_hint: None,
+        label: "Private Team ID",
+        description: "Docker-based private team scope with role-based access control (RBAC)",
+        dependency_hint: Some("Used only for Team Share targets"),
     },
-    SettingItem::Header("Identity"),
+    SettingItem::Header("Profile"),
     SettingItem::Field {
         field: SettingField::Nickname,
         label: "Handle",
-        description: "Display handle shown on your sessions",
+        description: "Display handle shown on your shared sessions",
         dependency_hint: None,
     },
     SettingItem::Field {
         field: SettingField::CalendarDisplayMode,
         label: "Calendar Mode",
-        description: "Date format in list: smart / relative / absolute",
+        description: "Date format in lists: smart / relative / absolute",
         dependency_hint: None,
     },
-    SettingItem::Header("Daemon Publish"),
+    SettingItem::Header("Capture Runtime"),
     SettingItem::Field {
         field: SettingField::AutoPublish,
-        label: "Daemon Capture",
-        description: "Toggle daemon capture. ON => forced publish on session end",
+        label: "Capture + Auto Sync",
+        description: "ON: capture continuously and auto-sync at session end. OFF: manual sync only",
         dependency_hint: None,
     },
     SettingItem::Field {
         field: SettingField::DebounceSecs,
-        label: "Debounce (secs)",
-        description: "Seconds to wait after last event before publishing",
+        label: "Sync Debounce (secs)",
+        description: "Wait time after last event before sync upload starts",
         dependency_hint: Some("Applies when daemon is running"),
     },
     SettingItem::Field {
         field: SettingField::RealtimeDebounceMs,
-        label: "Realtime Poll (ms)",
+        label: "Realtime Sync Poll (ms)",
         description:
-            "Global polling interval for daemon realtime publish and detail auto-refresh checks",
-        dependency_hint: Some("Used by daemon realtime publish and detail auto-refresh"),
+            "Polling interval for daemon realtime sync and Session Detail auto-refresh checks",
+        dependency_hint: Some("Shared by realtime sync and detail auto-refresh loops"),
     },
     SettingItem::Field {
         field: SettingField::HealthCheckSecs,
-        label: "Health Check (secs)",
-        description: "How often the daemon checks server connectivity",
+        label: "Sync Health Check (secs)",
+        description: "How often capture runtime checks endpoint connectivity before sync",
         dependency_hint: Some("Applies when daemon is running"),
     },
     SettingItem::Field {
         field: SettingField::MaxRetries,
-        label: "Max Retries",
-        description: "Maximum retry attempts for failed uploads",
+        label: "Sync Retry Limit",
+        description: "Maximum retry attempts for failed sync uploads",
         dependency_hint: Some("Applies when daemon is running"),
     },
-    SettingItem::Header("Timeline Detail"),
+    SettingItem::Header("Capture Scope"),
+    SettingItem::Field {
+        field: SettingField::WatchPaths,
+        label: "Parse Paths",
+        description: "Folders watched for local agent logs (comma-separated)",
+        dependency_hint: Some("Applies when daemon is running"),
+    },
+    SettingItem::Header("Detail View Sync"),
     SettingItem::Field {
         field: SettingField::DetailRealtimePreviewEnabled,
         label: "Detail Auto-Refresh",
-        description: "Auto-reload Session Detail when selected source file mtime changes",
+        description: "Auto-reload Session Detail when selected source file changes",
         dependency_hint: Some("Global toggle for Session Detail live refresh"),
     },
     SettingItem::Field {
@@ -701,26 +704,12 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Header name for Summary API Key",
         dependency_hint: Some("Default: Authorization: Bearer"),
     },
-    SettingItem::Header("Watchers"),
-    SettingItem::Field {
-        field: SettingField::WatchPaths,
-        label: "Parse Paths",
-        description: "Folders watched for all supported agents (comma-separated)",
-        dependency_hint: Some("Applies when daemon is running"),
-    },
     SettingItem::Header("Session Storage"),
     SettingItem::Field {
         field: SettingField::GitStorageMethod,
         label: "Storage Method",
-        description:
-            "Session snapshot backend: native(local git objects) · platform_api(provider API) · none(disabled)",
-        dependency_hint: None,
-    },
-    SettingItem::Field {
-        field: SettingField::GitStorageToken,
-        label: "Platform API Token",
-        description: "Token used by platform_api backend (GitHub/GitLab PAT)",
-        dependency_hint: Some("Used when Storage Method is Platform API"),
+        description: "Session storage backend: git-native(branch based) · sqlite(local database)",
+        dependency_hint: Some("SQLite mode may grow quickly with large session bodies"),
     },
     SettingItem::Header("Privacy"),
     SettingItem::Field {
@@ -873,23 +862,9 @@ impl SettingField {
             Self::SummaryMaxInflight => config.daemon.summary_max_inflight.to_string(),
             Self::WatchPaths => format!("{} paths", config.watchers.custom_paths.len()),
             Self::GitStorageMethod => match git_storage_mode() {
-                GitStorageMode::None => "None".to_string(),
-                GitStorageMode::PlatformApi => "Platform API".to_string(),
-                GitStorageMode::Native => "Native".to_string(),
+                GitStorageMode::Native => "Git-Native (Branch Based)".to_string(),
+                GitStorageMode::Sqlite => "SQLite".to_string(),
             },
-            Self::GitStorageToken => {
-                if config.git_storage.token.is_empty() {
-                    "(not set)".to_string()
-                } else {
-                    let len = config.git_storage.token.len();
-                    let visible = len.min(4);
-                    format!(
-                        "{}...{}",
-                        &config.git_storage.token[..visible],
-                        len - visible
-                    )
-                }
-            }
             Self::StripPaths => on_off(config.privacy.strip_paths),
             Self::StripEnvVars => on_off(config.privacy.strip_env_vars),
         }
@@ -948,7 +923,6 @@ impl SettingField {
             Self::SummaryDebounceMs => config.daemon.summary_debounce_ms.to_string(),
             Self::SummaryMaxInflight => config.daemon.summary_max_inflight.to_string(),
             Self::WatchPaths => config.watchers.custom_paths.join(", "),
-            Self::GitStorageToken => config.git_storage.token.clone(),
             _ => String::new(),
         }
     }
@@ -990,9 +964,8 @@ impl SettingField {
             }
             Self::GitStorageMethod => {
                 let next = match git_storage_mode() {
-                    GitStorageMode::None => GitStorageMode::PlatformApi,
-                    GitStorageMode::PlatformApi => GitStorageMode::Native,
-                    GitStorageMode::Native => GitStorageMode::None,
+                    GitStorageMode::Native => GitStorageMode::Sqlite,
+                    GitStorageMode::Sqlite => GitStorageMode::Native,
                 };
                 set_git_storage_mode(config, next);
             }
@@ -1136,9 +1109,6 @@ impl SettingField {
                     parsed
                 };
             }
-            Self::GitStorageToken => {
-                config.git_storage.token = value.to_string();
-            }
             Self::SummaryEnabled => {
                 let lowered = value.to_lowercase();
                 config.daemon.summary_enabled =
@@ -1200,9 +1170,7 @@ impl SettingField {
             }
             Self::GitStorageMethod => {
                 let mode = match value.trim().to_ascii_lowercase().as_str() {
-                    "none" => GitStorageMode::None,
-                    "platform_api" | "platform-api" | "api" => GitStorageMode::PlatformApi,
-                    "sqlite_local" | "sqlite-local" | "sqlite" => GitStorageMode::Native,
+                    "sqlite" | "sqlite_local" | "sqlite-local" | "none" => GitStorageMode::Sqlite,
                     _ => GitStorageMode::Native,
                 };
                 set_git_storage_mode(config, mode);
@@ -1332,9 +1300,10 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
     match field {
         SettingField::ServerUrl
         | SettingField::ApiKey
-        | SettingField::TeamId
         | SettingField::Nickname
         | SettingField::CalendarDisplayMode => SettingsGroup::Workspace,
+
+        SettingField::TeamId => SettingsGroup::TeamShare,
 
         SettingField::AutoPublish
         | SettingField::DebounceSecs
@@ -1361,10 +1330,9 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         | SettingField::SummaryDebounceMs
         | SettingField::SummaryMaxInflight => SettingsGroup::TimelineIntelligence,
 
-        SettingField::GitStorageMethod
-        | SettingField::GitStorageToken
-        | SettingField::StripPaths
-        | SettingField::StripEnvVars => SettingsGroup::StoragePrivacy,
+        SettingField::GitStorageMethod | SettingField::StripPaths | SettingField::StripEnvVars => {
+            SettingsGroup::StoragePrivacy
+        }
     }
 }
 
@@ -1458,7 +1426,36 @@ mod tests {
     }
 
     #[test]
-    fn storage_privacy_section_uses_session_storage_wording() {
+    fn workspace_section_focuses_on_web_share_fields() {
+        let workspace_fields = selectable_fields(SettingsGroup::Workspace);
+        assert!(workspace_fields.contains(&SettingField::ServerUrl));
+        assert!(workspace_fields.contains(&SettingField::ApiKey));
+        assert!(!workspace_fields.contains(&SettingField::TeamId));
+    }
+
+    #[test]
+    fn team_share_section_has_docker_private_wording() {
+        let items = section_items(SettingsGroup::TeamShare);
+        assert!(items
+            .iter()
+            .any(|item| matches!(item, SettingItem::Header("Team Share (Docker Private)"))));
+
+        let team_description = items.iter().find_map(|item| match item {
+            SettingItem::Field {
+                field: SettingField::TeamId,
+                description,
+                ..
+            } => Some(*description),
+            _ => None,
+        });
+        let team_description = team_description.expect("TeamId field should exist in TeamShare");
+        let lowered = team_description.to_ascii_lowercase();
+        assert!(lowered.contains("docker"));
+        assert!(lowered.contains("role-based"));
+    }
+
+    #[test]
+    fn storage_privacy_section_uses_git_native_and_sqlite_wording() {
         let items = section_items(SettingsGroup::StoragePrivacy);
 
         assert!(items
@@ -1476,7 +1473,32 @@ mod tests {
         let method_description =
             method_description.expect("GitStorageMethod field should exist in StoragePrivacy");
 
-        assert!(method_description.contains("Session snapshot backend"));
-        assert!(!method_description.to_ascii_lowercase().contains("sqlite"));
+        let lowered = method_description.to_ascii_lowercase();
+        assert!(lowered.contains("git-native"));
+        assert!(lowered.contains("sqlite"));
+        assert!(!lowered.contains("platform_api"));
+    }
+
+    #[test]
+    fn git_storage_method_cycles_between_two_modes() {
+        let mut cfg = DaemonConfig::default();
+        set_git_storage_mode(&mut cfg, GitStorageMode::Native);
+
+        SettingField::GitStorageMethod.cycle_enum(&mut cfg);
+        assert_eq!(cfg.git_storage.method, GitStorageMethod::Sqlite);
+
+        SettingField::GitStorageMethod.cycle_enum(&mut cfg);
+        assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
+    }
+
+    #[test]
+    fn git_storage_method_set_value_accepts_legacy_aliases() {
+        let mut cfg = DaemonConfig::default();
+
+        SettingField::GitStorageMethod.set_value(&mut cfg, "none");
+        assert_eq!(cfg.git_storage.method, GitStorageMethod::Sqlite);
+
+        SettingField::GitStorageMethod.set_value(&mut cfg, "platform_api");
+        assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
     }
 }

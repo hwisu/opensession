@@ -183,7 +183,6 @@ fn render_lane_timeline(
 ) {
     let total_visible = events.len();
     let current_idx = app.detail_event_index.min(total_visible.saturating_sub(1));
-    let auto_expand_selected = app.daemon_config.daemon.detail_auto_expand_selected_event;
     let max_lane = events
         .iter()
         .flat_map(|de| {
@@ -256,14 +255,16 @@ fn render_lane_timeline(
             Style::new().fg(Theme::TEXT_MUTED),
         ));
         spans.push(Span::raw("  "));
+        spans.push(Span::styled("│", Style::new().fg(Theme::TREE).bold()));
+        spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            lane_cells(display_event, lane_count),
-            Style::new().fg(Theme::TREE),
+            format!("{:<11}", display_event_lane_label(display_event)),
+            Style::new().fg(Theme::ACCENT_TEAL),
         ));
         let active_agents = display_event_agent_count(display_event);
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            format!("A{active_agents}"),
+            format_active_agents(active_agents),
             if active_agents > 1 {
                 Style::new().fg(Theme::ACCENT_CYAN).bold()
             } else {
@@ -281,8 +282,8 @@ fn render_lane_timeline(
             }
             DisplayEvent::Single {
                 event,
-                lane,
-                marker,
+                lane: _,
+                marker: _,
                 ..
             } => {
                 let (kind, kind_color) = event_type_display(&event.event_type);
@@ -304,18 +305,6 @@ fn render_lane_timeline(
                     event_compact_summary(&event.event_type, &event.content.blocks),
                     Style::new().fg(Theme::TEXT_PRIMARY),
                 ));
-                if let Some(badge) = lane_assignment_badge(event, *lane, *marker) {
-                    spans.push(Span::styled(
-                        format!(" {badge}"),
-                        Style::new().fg(Theme::ACCENT_CYAN),
-                    ));
-                }
-                if let Some(task_badge) = event_task_badge(event) {
-                    spans.push(Span::styled(
-                        format!(" {task_badge}"),
-                        Style::new().fg(Theme::ACCENT_TEAL).bold(),
-                    ));
-                }
             }
         }
 
@@ -326,7 +315,7 @@ fn render_lane_timeline(
         };
         lines.push(Line::from(spans).style(line_style));
 
-        let expanded = app.expanded_events.contains(&i) || (auto_expand_selected && selected);
+        let expanded = !app.expanded_events.contains(&i);
         if expanded {
             append_event_detail_rows(&mut lines, display_event, 3);
         }
@@ -499,9 +488,7 @@ fn display_event_task_key(event: &DisplayEvent<'_>) -> Option<String> {
         .event()
         .task_id
         .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(compact_task_id)
+        .and_then(task_id_display_label)
 }
 
 fn timeline_task_group_line(task_key: &str, lane: usize) -> Line<'static> {
@@ -523,27 +510,17 @@ fn timeline_task_group_line(task_key: &str, lane: usize) -> Line<'static> {
     ])
 }
 
-fn lane_cells(event: &DisplayEvent<'_>, lane_count: usize) -> String {
-    let mut out = String::with_capacity(lane_count * 2);
-    for lane in 0..lane_count {
-        let active = event.active_lanes().contains(&lane);
-        let ch = if lane == event.lane() {
-            match event.marker() {
-                LaneMarker::Fork => '+',
-                LaneMarker::Merge => '-',
-                LaneMarker::None => '*',
-            }
-        } else if active {
-            '|'
-        } else {
-            ' '
-        };
-        out.push(ch);
-        if lane + 1 < lane_count {
-            out.push(' ');
-        }
+fn display_event_lane_label(event: &DisplayEvent<'_>) -> String {
+    let lane_label = if event.lane() == 0 {
+        "main".to_string()
+    } else {
+        format!("L{}", event.lane())
+    };
+    match event.marker() {
+        LaneMarker::Fork => format!("{lane_label} fork"),
+        LaneMarker::Merge => format!("{lane_label} merge"),
+        LaneMarker::None => lane_label,
     }
-    out
 }
 
 fn display_event_agent_count(event: &DisplayEvent<'_>) -> usize {
@@ -553,19 +530,25 @@ fn display_event_agent_count(event: &DisplayEvent<'_>) -> usize {
     active_agents.max(1)
 }
 
+fn format_active_agents(active_agents: usize) -> String {
+    if active_agents == 1 {
+        "1 agent".to_string()
+    } else {
+        format!("{active_agents} agents")
+    }
+}
+
 fn timeline_lane_legend_line() -> Line<'static> {
     Line::from(vec![
         Span::styled("  Legend ", Style::new().fg(Theme::TEXT_KEY).bold()),
-        Span::styled("*", Style::new().fg(Theme::TREE)),
-        Span::styled(" event  ", Style::new().fg(Theme::TEXT_MUTED)),
-        Span::styled("|", Style::new().fg(Theme::TREE)),
-        Span::styled(" active  ", Style::new().fg(Theme::TEXT_MUTED)),
-        Span::styled("+/-", Style::new().fg(Theme::TREE)),
-        Span::styled(" fork/merge  ", Style::new().fg(Theme::TEXT_MUTED)),
-        Span::styled("◆/·", Style::new().fg(Theme::ACCENT_YELLOW)),
-        Span::styled(" 5m/1m  ", Style::new().fg(Theme::TEXT_MUTED)),
-        Span::styled("A#", Style::new().fg(Theme::ACCENT_CYAN)),
-        Span::styled(" active agents", Style::new().fg(Theme::TEXT_MUTED)),
+        Span::styled("lane(main/Ln)", Style::new().fg(Theme::ACCENT_TEAL)),
+        Span::styled(" │ ", Style::new().fg(Theme::GUTTER)),
+        Span::styled("N agents", Style::new().fg(Theme::ACCENT_CYAN)),
+        Span::styled(" │ ", Style::new().fg(Theme::GUTTER)),
+        Span::styled(
+            "Enter: fold/unfold event",
+            Style::new().fg(Theme::TEXT_MUTED),
+        ),
     ])
 }
 
@@ -735,14 +718,63 @@ fn append_content_preview<'a>(lines: &mut Vec<Line<'a>>, event: &Event, max_line
     }
 
     for block in &event.content.blocks {
-        if let ContentBlock::Text { text } = block {
-            for line in text.lines().take(max_lines) {
-                lines.push(Line::from(vec![
-                    Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
-                    Span::styled(truncate(line, 120), Style::new().fg(Theme::TEXT_SECONDARY)),
-                ]));
+        match block {
+            ContentBlock::Text { text } => {
+                let mut shown = 0usize;
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || is_low_signal_text_line(trimmed) {
+                        continue;
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
+                        Span::styled(
+                            truncate(trimmed, 120),
+                            Style::new().fg(Theme::TEXT_SECONDARY),
+                        ),
+                    ]));
+                    shown += 1;
+                    if shown >= max_lines {
+                        break;
+                    }
+                }
+                if shown > 0 {
+                    return;
+                }
             }
-            return;
+            ContentBlock::Code { code, .. } => {
+                let mut shown = 0usize;
+                for line in code.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
+                        Span::styled(
+                            truncate(trimmed, 120),
+                            Style::new().fg(Theme::TEXT_SECONDARY),
+                        ),
+                    ]));
+                    shown += 1;
+                    if shown >= max_lines {
+                        break;
+                    }
+                }
+                if shown > 0 {
+                    return;
+                }
+            }
+            ContentBlock::Json { data } => {
+                if let Some(hint) = json_value_hint(data, 100) {
+                    lines.push(Line::from(vec![
+                        Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
+                        Span::styled(truncate(&hint, 120), Style::new().fg(Theme::TEXT_SECONDARY)),
+                    ]));
+                    return;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -796,12 +828,12 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
             }
         }
         EventType::SystemMessage => "(system)".to_string(),
-        EventType::Thinking => "reasoning".to_string(),
-        EventType::ToolCall { name } => format!("{name}()"),
+        EventType::Thinking => first_meaningful_text_line_opt(blocks, 56)
+            .or_else(|| first_text_line_opt(blocks, 56))
+            .unwrap_or_else(|| "thinking".to_string()),
+        EventType::ToolCall { name } => tool_call_compact_summary(name, blocks),
         EventType::ToolResult { name, is_error, .. } => {
-            let hint = first_meaningful_text_line_opt(blocks, 48)
-                .or_else(|| first_json_block_hint(blocks, 48))
-                .or_else(|| first_code_line(blocks, 48));
+            let hint = tool_result_hint(name, blocks, 52);
             if *is_error {
                 if let Some(hint) = hint {
                     format!("{name} error: {hint}")
@@ -814,19 +846,20 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
                 format!("{name} ok")
             }
         }
-        EventType::FileRead { path } => short_path(path).to_string(),
+        EventType::FileRead { path } => display_path_label(path),
         EventType::CodeSearch { query } => truncate(query, 52),
         EventType::FileSearch { pattern } => truncate(pattern, 52),
         EventType::FileEdit { path, diff } => {
+            let label = display_path_label(path);
             if let Some(d) = diff {
                 let (add, del) = count_diff_lines(d);
-                format!("{} +{} -{}", short_path(path), add, del)
+                format!("{label} +{add} -{del}")
             } else {
-                short_path(path).to_string()
+                label
             }
         }
-        EventType::FileCreate { path } => format!("+ {}", short_path(path)),
-        EventType::FileDelete { path } => format!("- {}", short_path(path)),
+        EventType::FileCreate { path } => format!("+ {}", display_path_label(path)),
+        EventType::FileDelete { path } => format!("- {}", display_path_label(path)),
         EventType::ShellCommand { command, exit_code } => {
             let cmd = compact_shell_command(command, 52);
             match exit_code {
@@ -856,33 +889,242 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
     }
 }
 
-fn lane_assignment_badge(event: &Event, lane: usize, marker: LaneMarker) -> Option<String> {
-    if lane == 0 || marker != LaneMarker::Fork {
-        return None;
+fn tool_result_hint(name: &str, blocks: &[ContentBlock], max_len: usize) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "exec_command" | "shell" | "bash" | "execute_command" | "spawn_process"
+    ) {
+        return first_meaningful_text_line_opt(blocks, max_len)
+            .or_else(|| first_code_line(blocks, max_len));
     }
-    if !matches!(event.event_type, EventType::TaskStart { .. }) {
-        return None;
-    }
+    first_meaningful_text_line_opt(blocks, max_len)
+        .or_else(|| first_json_block_hint(blocks, max_len))
+        .or_else(|| first_code_line(blocks, max_len))
+}
 
-    let task = event
-        .task_id
-        .as_deref()
-        .map(compact_task_id)
-        .unwrap_or_default();
-    if task.is_empty() {
-        Some(format!("[L{lane}]"))
-    } else {
-        Some(format!("[L{lane} {task}]"))
+fn tool_call_compact_summary(name: &str, blocks: &[ContentBlock]) -> String {
+    let lower = name.to_ascii_lowercase();
+    let json = first_json_block(blocks);
+    match lower.as_str() {
+        "exec_command" | "shell" | "bash" | "execute_command" | "spawn_process" => {
+            if let Some(cmd) = tool_command_hint(blocks, json, 56) {
+                format!("run {cmd}")
+            } else {
+                "run command".to_string()
+            }
+        }
+        "write_stdin" => {
+            let chars = json
+                .and_then(|value| json_find_string(value, &["chars", "text", "input"]))
+                .map(|value| compact_text_snippet(&value, 28));
+            let target = json.and_then(|value| json_find_string(value, &["session_id", "id"]));
+            match (chars, target) {
+                (Some(chars), Some(target)) => format!("stdin {chars} -> {target}"),
+                (Some(chars), None) => format!("stdin {chars}"),
+                (None, Some(target)) => format!("stdin -> {target}"),
+                (None, None) => "stdin update".to_string(),
+            }
+        }
+        "read_file" | "read" | "view" => tool_path_hint(blocks, json)
+            .map(|path| format!("read {path}"))
+            .unwrap_or_else(|| "read file".to_string()),
+        "write_file" | "write_to_file" | "create_file" | "create" => tool_path_hint(blocks, json)
+            .map(|path| format!("write {path}"))
+            .unwrap_or_else(|| "write file".to_string()),
+        "apply_patch" | "apply_diff" | "replace_in_file" | "search_and_replace"
+        | "insert_content" => tool_path_hint(blocks, json)
+            .map(|path| format!("edit {path}"))
+            .unwrap_or_else(|| "edit file".to_string()),
+        "search_query" | "websearch" | "web_search" => tool_query_hint(json)
+            .map(|query| format!("search {query}"))
+            .unwrap_or_else(|| "search web".to_string()),
+        "image_query" => tool_query_hint(json)
+            .map(|query| format!("image {query}"))
+            .unwrap_or_else(|| "search images".to_string()),
+        "grep" | "search_files" | "find_references" | "find" => {
+            if let Some(pattern) = tool_pattern_hint(json) {
+                format!("find {pattern}")
+            } else {
+                name.to_string()
+            }
+        }
+        "list_files" | "glob" => json
+            .and_then(|value| json_find_string(value, &["path", "pattern", "glob", "cwd"]))
+            .map(|value| format!("list {}", compact_text_snippet(&value, 44)))
+            .unwrap_or_else(|| "list files".to_string()),
+        "open" => json
+            .and_then(|value| json_find_string(value, &["ref_id", "url"]))
+            .map(|value| format!("open {}", compact_text_snippet(&value, 44)))
+            .unwrap_or_else(|| "open page".to_string()),
+        "click" => {
+            let target = json.and_then(|value| json_find_string(value, &["ref_id", "url"]));
+            let id = json
+                .and_then(|value| json_find_u64(value, &["id"]))
+                .map(|value| value.to_string());
+            match (target, id) {
+                (Some(target), Some(id)) => format!("click {id} in {target}"),
+                (None, Some(id)) => format!("click {id}"),
+                (Some(target), None) => format!("click in {target}"),
+                (None, None) => "click".to_string(),
+            }
+        }
+        "weather" => json
+            .and_then(|value| json_find_string(value, &["location"]))
+            .map(|value| format!("weather {}", compact_text_snippet(&value, 44)))
+            .unwrap_or_else(|| "weather".to_string()),
+        "finance" => json
+            .and_then(|value| json_find_string(value, &["ticker", "symbol"]))
+            .map(|value| format!("quote {}", compact_text_snippet(&value, 44)))
+            .unwrap_or_else(|| "quote".to_string()),
+        "time" => json
+            .and_then(|value| json_find_string(value, &["utc_offset"]))
+            .map(|value| format!("time {value}"))
+            .unwrap_or_else(|| "time".to_string()),
+        "sports" => {
+            let league = json.and_then(|value| json_find_string(value, &["league"]));
+            let action = json.and_then(|value| json_find_string(value, &["fn"]));
+            match (league, action) {
+                (Some(league), Some(action)) => format!("sports {league} {action}"),
+                (Some(league), None) => format!("sports {league}"),
+                _ => "sports".to_string(),
+            }
+        }
+        "update_plan" => {
+            let steps = json
+                .and_then(|value| json_find_array_len(value, &["plan"]))
+                .unwrap_or(0);
+            if steps > 0 {
+                format!("update plan ({steps} steps)")
+            } else {
+                "update plan".to_string()
+            }
+        }
+        "request_user_input" => {
+            let questions = json
+                .and_then(|value| json_find_array_len(value, &["questions"]))
+                .unwrap_or(0);
+            if questions > 0 {
+                format!("request input ({questions})")
+            } else {
+                "request input".to_string()
+            }
+        }
+        "parallel" => {
+            let tools = json
+                .and_then(|value| json_find_array_len(value, &["tool_uses"]))
+                .unwrap_or(0);
+            if tools > 0 {
+                format!("run {tools} tools")
+            } else {
+                "run tools".to_string()
+            }
+        }
+        _ => {
+            if let Some(hint) = first_json_block_hint(blocks, 48) {
+                format!("{name}: {hint}")
+            } else if let Some(hint) = first_meaningful_text_line_opt(blocks, 48) {
+                format!("{name}: {hint}")
+            } else {
+                name.to_string()
+            }
+        }
     }
 }
 
-fn event_task_badge(event: &Event) -> Option<String> {
-    let task_id = event
-        .task_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())?;
-    Some(format!("[task:{}]", compact_task_id(task_id)))
+fn tool_command_hint(
+    blocks: &[ContentBlock],
+    json: Option<&serde_json::Value>,
+    max_len: usize,
+) -> Option<String> {
+    if let Some(code) = first_code_line(blocks, max_len) {
+        return Some(compact_shell_command(&code, max_len));
+    }
+    let cmd = json
+        .and_then(|value| json_find_string(value, &["cmd", "command"]))
+        .map(|value| compact_shell_command(&value, max_len));
+    if cmd.is_some() {
+        return cmd;
+    }
+    json.and_then(|value| {
+        json_find_command_array(value).map(|parts| compact_shell_command(&parts.join(" "), max_len))
+    })
+}
+
+fn tool_query_hint(json: Option<&serde_json::Value>) -> Option<String> {
+    json.and_then(|value| json_find_string(value, &["q", "query", "text"]))
+        .map(|value| compact_text_snippet(&value, 44))
+        .filter(|value| !value.is_empty())
+}
+
+fn tool_pattern_hint(json: Option<&serde_json::Value>) -> Option<String> {
+    json.and_then(|value| json_find_string(value, &["pattern", "regex", "content_pattern"]))
+        .map(|value| compact_text_snippet(&value, 44))
+        .filter(|value| !value.is_empty())
+}
+
+fn tool_path_hint(blocks: &[ContentBlock], json: Option<&serde_json::Value>) -> Option<String> {
+    let from_json = json.and_then(|value| {
+        json_find_string(
+            value,
+            &[
+                "path",
+                "file_path",
+                "filePath",
+                "filepath",
+                "target_path",
+                "targetPath",
+                "file",
+                "filename",
+                "ref_id",
+                "uri",
+                "url",
+            ],
+        )
+    });
+    let from_text = first_text_line_opt(blocks, 64);
+    from_json
+        .or(from_text)
+        .map(|value| compact_text_snippet(&value, 64))
+        .filter(|value| !is_low_signal_value(value))
+        .map(|value| {
+            if value.contains('/') {
+                short_path(&value).to_string()
+            } else {
+                value
+            }
+        })
+}
+
+fn display_path_label(path: &str) -> String {
+    if is_low_signal_value(path) {
+        "file".to_string()
+    } else {
+        short_path(path).to_string()
+    }
+}
+
+fn task_id_display_label(task_id: &str) -> Option<String> {
+    let trimmed = task_id.trim();
+    if trimmed.is_empty() || is_low_signal_task_id(trimmed) {
+        None
+    } else {
+        Some(compact_task_id(trimmed))
+    }
+}
+
+fn is_low_signal_task_id(task_id: &str) -> bool {
+    let lower = task_id.trim().to_ascii_lowercase();
+    lower.starts_with("call_") || lower.starts_with("call-") || lower.starts_with("task:call_")
+}
+
+fn is_low_signal_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower == "unknown" || lower == "(unknown)" || lower == "null" || is_low_signal_task_id(trimmed)
 }
 
 fn compact_task_id(task_id: &str) -> String {
@@ -903,6 +1145,134 @@ fn compact_task_id(task_id: &str) -> String {
         .rev()
         .collect();
     format!("{head}…{tail}")
+}
+
+fn first_json_block(blocks: &[ContentBlock]) -> Option<&serde_json::Value> {
+    blocks.iter().find_map(|block| {
+        if let ContentBlock::Json { data } = block {
+            Some(data)
+        } else {
+            None
+        }
+    })
+}
+
+fn json_find_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(raw) = map.get(*key).and_then(|entry| entry.as_str()) {
+                    let trimmed = raw.trim();
+                    if !is_low_signal_value(trimmed) {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            for nested in map.values() {
+                if let Some(found) = json_find_string(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                if let Some(found) = json_find_string(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn json_find_u64(value: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(num) = map.get(*key).and_then(|entry| entry.as_u64()) {
+                    return Some(num);
+                }
+            }
+            for nested in map.values() {
+                if let Some(found) = json_find_u64(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                if let Some(found) = json_find_u64(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn json_find_array_len(value: &serde_json::Value, keys: &[&str]) -> Option<usize> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(values) = map.get(*key).and_then(|entry| entry.as_array()) {
+                    return Some(values.len());
+                }
+            }
+            for nested in map.values() {
+                if let Some(found) = json_find_array_len(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                if let Some(found) = json_find_array_len(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn json_find_command_array(value: &serde_json::Value) -> Option<Vec<String>> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(parts) = map.get("command").and_then(|entry| entry.as_array()) {
+                let command: Vec<String> = parts
+                    .iter()
+                    .filter_map(|entry| entry.as_str())
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(ToString::to_string)
+                    .collect();
+                if !command.is_empty() {
+                    return Some(command);
+                }
+            }
+            for nested in map.values() {
+                if let Some(found) = json_find_command_array(nested) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                if let Some(found) = json_find_command_array(nested) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn first_text_line(blocks: &[ContentBlock], max_chars: usize) -> String {
@@ -929,8 +1299,12 @@ fn first_text_line_opt(blocks: &[ContentBlock], max_len: usize) -> Option<String
 }
 
 fn is_low_signal_text_line(line: &str) -> bool {
-    let lower = line.trim().to_ascii_lowercase();
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
     if lower.is_empty() {
+        return true;
+    }
+    if matches!(lower.as_str(), "think reasoning" | "edit unknown" | "()") {
         return true;
     }
     if lower.starts_with("chunk id:") || lower.contains("chunk id:") {
@@ -940,6 +1314,16 @@ fn is_low_signal_text_line(line: &str) -> bool {
         || lower.starts_with("process exited with code")
         || lower.starts_with("original token count:")
         || lower.starts_with("token count:")
+        || (lower.starts_with("result ") && lower.contains("output:"))
+    {
+        return true;
+    }
+    if lower.contains("[task:call_") || (lower.contains("[l") && lower.contains(" call_")) {
+        return true;
+    }
+    if trimmed
+        .chars()
+        .all(|ch| ch == '*' || ch == '|' || ch == '+' || ch == '-' || ch == ' ')
     {
         return true;
     }
@@ -1333,14 +1717,11 @@ mod tests {
     }
 
     #[test]
-    fn event_task_badge_includes_compact_task_id() {
-        let event = make_event_with_task(
-            EventType::TaskStart { title: None },
-            "",
-            "task-1234567890abcdef",
-        );
-        let badge = event_task_badge(&event).expect("badge");
-        assert!(badge.starts_with("[task:task-"));
+    fn task_id_display_label_hides_call_ids() {
+        assert!(task_id_display_label("call_Xvu4vvSffgP").is_none());
+        let label = task_id_display_label("task-1234567890abcdef")
+            .expect("normal task labels stay visible");
+        assert!(label.starts_with("task-"));
     }
 
     #[test]
@@ -1368,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn event_summary_tool_call_uses_json_hint() {
+    fn event_summary_tool_call_uses_tool_specific_fields() {
         let event = Event {
             event_id: "tool-call-json".to_string(),
             timestamp: Utc::now(),
@@ -1387,8 +1768,23 @@ mod tests {
 
         assert!(
             event_compact_summary(&event.event_type, &event.content.blocks)
-                .contains("exec_command")
+                .contains("run cargo test")
         );
+    }
+
+    #[test]
+    fn event_summary_file_edit_unknown_path_uses_generic_label() {
+        let event = make_event(
+            EventType::FileEdit {
+                path: "unknown".to_string(),
+                diff: Some("+ hello\n- bye".to_string()),
+            },
+            "",
+        );
+
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(summary.starts_with("file +1 -1"));
+        assert!(!summary.contains("unknown"));
     }
 
     #[test]

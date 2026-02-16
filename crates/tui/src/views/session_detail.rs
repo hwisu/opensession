@@ -22,14 +22,14 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let [header_area, bar_area, timeline_area] = Layout::vertical([
-        Constraint::Length(7),
+        Constraint::Length(6),
         Constraint::Length(1),
         Constraint::Fill(1),
     ])
     .areas(area);
 
     render_session_header(frame, app, &session, header_area);
-    app.detail_viewport_height = timeline_area.height.saturating_sub(2);
+    app.detail_viewport_height = timeline_area.height.saturating_sub(3);
 
     let mut visible_events = app.get_visible_events(&session);
     if visible_events.is_empty() {
@@ -79,11 +79,23 @@ fn render_session_header(
     let repo = attrs
         .get("git_repo_name")
         .or_else(|| attrs.get("repo"))
-        .and_then(|v| v.as_str());
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            attrs
+                .get("git")
+                .and_then(|git| nested_json_string(git, &["repo_name", "repository", "repo"]))
+        });
     let branch = attrs
         .get("git_branch")
         .or_else(|| attrs.get("branch"))
-        .and_then(|v| v.as_str());
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            attrs
+                .get("git")
+                .and_then(|git| nested_json_string(git, &["branch", "current_branch", "ref"]))
+        });
 
     let mut line1 = vec![Span::styled(
         title,
@@ -97,10 +109,10 @@ fn render_session_header(
             Style::new().fg(theme::user_color(&actor_color_key)).bold(),
         ));
     }
-    if let Some(r) = repo {
+    if let Some(r) = repo.as_deref() {
         line1.push(Span::styled("  ", Style::new()));
         line1.push(Span::styled(r, Style::new().fg(Theme::ACCENT_BLUE)));
-        if let Some(b) = branch {
+        if let Some(b) = branch.as_deref() {
             line1.push(Span::styled(
                 format!("/{b}"),
                 Style::new().fg(Theme::ACCENT_GREEN),
@@ -175,6 +187,36 @@ fn render_session_header(
     frame.render_widget(header, area);
 }
 
+fn nested_json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(text) = map.get(*key).and_then(|entry| entry.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            for nested in map.values() {
+                if let Some(found) = nested_json_string(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                if let Some(found) = nested_json_string(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn render_lane_timeline(
     frame: &mut Frame,
     app: &mut App,
@@ -193,14 +235,26 @@ fn render_lane_timeline(
         })
         .max()
         .unwrap_or(0);
-    let lane_count = max_lane + 1;
+    let _lane_count = max_lane + 1;
     let (turn_lookup, turn_groups) = build_linear_turn_group_lookup(events);
     let mut active_turn: Option<usize> = None;
     let mut active_task: Option<String> = None;
+    let block = Theme::block().title(format!(
+        " Timeline ({}/{}) ",
+        current_idx + 1,
+        total_visible
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 12 || inner.height < 3 {
+        return;
+    }
+    let [header_area, body_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let layout = stream_layout_spec(body_area.width as usize);
+    frame.render_widget(Paragraph::new(stream_header_line(&layout)), header_area);
 
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(timeline_lane_legend_line());
-    lines.push(Line::raw(""));
     let mut event_line_positions: Vec<usize> = Vec::with_capacity(total_visible);
 
     for (i, display_event) in events.iter().enumerate() {
@@ -210,11 +264,19 @@ fn render_lane_timeline(
 
         if turn_idx != active_turn {
             if i > 0 {
-                lines.push(Line::raw(""));
+                lines.push(stream_center_line(
+                    &layout,
+                    "",
+                    Style::new().fg(Theme::TEXT_MUTED),
+                ));
             }
             if let Some(turn_idx) = turn_idx {
                 if let Some(group) = turn_groups.get(turn_idx) {
-                    lines.push(timeline_turn_group_line(group));
+                    lines.push(stream_center_line(
+                        &layout,
+                        &timeline_turn_group_text(group),
+                        Style::new().fg(Theme::ACCENT_BLUE).bold(),
+                    ));
                 }
             }
             active_turn = turn_idx;
@@ -223,105 +285,131 @@ fn render_lane_timeline(
 
         if i > 0 {
             let previous_timestamp = events[i - 1].event().timestamp;
-            if let Some(separator_line) =
+            if let Some((separator, is_major)) =
                 timeline_separator_line(previous_timestamp, event.timestamp)
             {
-                lines.push(separator_line);
+                lines.push(stream_center_line(
+                    &layout,
+                    &separator,
+                    if is_major {
+                        Style::new().fg(Theme::ACCENT_YELLOW).bold()
+                    } else {
+                        Style::new().fg(Theme::TEXT_MUTED)
+                    },
+                ));
             }
         }
 
         let task_key = display_event_task_key(display_event);
         if task_key != active_task {
             if let Some(task_key) = task_key.as_deref() {
-                lines.push(timeline_task_group_line(task_key, display_event.lane()));
+                let right = display_event_sub_agent_label(display_event).unwrap_or_default();
+                lines.push(stream_row_line(
+                    &layout,
+                    "",
+                    &format!("task {task_key}"),
+                    &right,
+                    (
+                        Style::new().fg(Theme::TEXT_MUTED),
+                        Style::new().fg(Theme::ACCENT_TEAL).bold(),
+                        Style::new().fg(Theme::TEXT_MUTED),
+                        Style::new(),
+                    ),
+                ));
             }
             active_task = task_key;
         }
 
-        event_line_positions.push(lines.len());
-
-        let mut spans = Vec::new();
-        spans.push(Span::styled(
-            if selected { ">" } else { " " },
-            Style::new().fg(if selected {
-                Theme::ACCENT_BLUE
-            } else {
-                Theme::TEXT_MUTED
-            }),
-        ));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            event.timestamp.format("%H:%M:%S").to_string(),
-            Style::new().fg(Theme::TEXT_MUTED),
-        ));
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled("│", Style::new().fg(Theme::TREE).bold()));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            format!("{:<11}", display_event_lane_label(display_event)),
-            Style::new().fg(Theme::ACCENT_TEAL),
-        ));
-        let active_agents = display_event_agent_count(display_event);
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format_active_agents(active_agents),
-            if active_agents > 1 {
-                Style::new().fg(Theme::ACCENT_CYAN).bold()
-            } else {
-                Style::new().fg(Theme::TEXT_MUTED)
-            },
-        ));
-        spans.push(Span::raw(" "));
-
-        match display_event {
-            DisplayEvent::Collapsed { count, kind, .. } => {
-                spans.push(Span::styled(
-                    format!("{kind} x{count}"),
-                    Style::new().fg(Theme::ROLE_AGENT).bold(),
-                ));
-            }
-            DisplayEvent::Single {
-                event,
-                lane: _,
-                marker: _,
-                ..
-            } => {
-                let (kind, kind_color) = event_type_display(&event.event_type);
-                if matches!(
-                    event.event_type,
-                    EventType::TaskStart { .. } | EventType::TaskEnd { .. }
-                ) {
-                    spans.push(Span::styled(
-                        format!(" {kind:^8} "),
-                        Style::new().fg(Color::Black).bg(kind_color).bold(),
-                    ));
-                } else {
-                    spans.push(Span::styled(
-                        format!("{kind:>10} "),
-                        Style::new().fg(kind_color).bold(),
-                    ));
-                }
-                spans.push(Span::styled(
-                    event_compact_summary(&event.event_type, &event.content.blocks),
-                    Style::new().fg(Theme::TEXT_PRIMARY),
-                ));
-            }
+        for question_line in interactive_question_context_lines(events, i) {
+            lines.push(stream_center_line(
+                &layout,
+                &format!("Q {question_line}"),
+                Style::new().fg(Theme::ACCENT_BLUE),
+            ));
         }
 
-        let line_style = if selected {
-            Style::new().bg(Theme::BG_SURFACE)
-        } else {
-            Style::new()
+        event_line_positions.push(lines.len());
+        let left = format!(
+            "{} {}",
+            if selected { ">" } else { " " },
+            event.timestamp.format("%H:%M:%S")
+        );
+        let active_agents = display_event_agent_count(display_event);
+        let mut right = format_active_agents(active_agents);
+        if let Some(sub_agent) = display_event_sub_agent_label(display_event) {
+            if !right.is_empty() {
+                right.push_str(" · ");
+            }
+            right.push_str(&sub_agent);
+        }
+        if let DisplayEvent::Single { event, .. } = display_event {
+            if matches!(event.event_type, EventType::FileEdit { diff: Some(_), .. }) {
+                if !right.is_empty() {
+                    right.push_str(" · ");
+                }
+                right.push_str(if app.expanded_diff_events.contains(&i) {
+                    "diff:on"
+                } else {
+                    "diff:d"
+                });
+            }
+        }
+        let (center, center_style, summary_text) = match display_event {
+            DisplayEvent::Collapsed { count, kind, .. } => (
+                format!("{kind} x{count}"),
+                Style::new().fg(Theme::ROLE_AGENT).bold(),
+                format!("{kind} x{count}"),
+            ),
+            DisplayEvent::Single { event, .. } => {
+                let (kind, kind_color) = event_type_display(&event.event_type);
+                let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+                (
+                    format!("{kind:>9} {summary}"),
+                    Style::new().fg(kind_color),
+                    summary,
+                )
+            }
         };
-        lines.push(Line::from(spans).style(line_style));
+        lines.push(stream_row_line(
+            &layout,
+            &left,
+            &center,
+            &right,
+            (
+                Style::new().fg(if selected {
+                    Theme::ACCENT_BLUE
+                } else {
+                    Theme::TEXT_MUTED
+                }),
+                center_style,
+                if active_agents > 1 {
+                    Style::new().fg(Theme::ACCENT_CYAN).bold()
+                } else {
+                    Style::new().fg(Theme::TEXT_MUTED)
+                },
+                if selected {
+                    Style::new().bg(Theme::BG_SURFACE)
+                } else {
+                    Style::new()
+                },
+            ),
+        ));
 
         let expanded = !app.expanded_events.contains(&i);
         if expanded {
-            append_event_detail_rows(&mut lines, display_event, 3);
+            let show_diff = app.expanded_diff_events.contains(&i);
+            append_event_detail_rows(
+                &mut lines,
+                &layout,
+                display_event,
+                &summary_text,
+                3,
+                show_diff,
+            );
         }
     }
 
-    let visible_height = area.height.saturating_sub(2) as usize;
+    let visible_height = body_area.height as usize;
     let target_line = event_line_positions.get(current_idx).copied().unwrap_or(0);
     let max_scroll = lines.len().saturating_sub(visible_height);
     let mut scroll = if target_line >= visible_height {
@@ -335,15 +423,9 @@ fn render_lane_timeline(
     app.detail_scroll = scroll as u16;
 
     let timeline = Paragraph::new(lines.clone())
-        .block(Theme::block().title(format!(
-            " Timeline ({}/{}) lanes:{} ",
-            current_idx + 1,
-            total_visible,
-            lane_count
-        )))
         .wrap(Wrap { trim: false })
-        .scroll((app.detail_scroll, app.detail_h_scroll));
-    frame.render_widget(timeline, area);
+        .scroll((app.detail_scroll, 0));
+    frame.render_widget(timeline, body_area);
 
     if lines.len() > visible_height {
         let mut scrollbar_state = ScrollbarState::new(lines.len()).position(scroll);
@@ -351,14 +433,7 @@ fn render_lane_timeline(
             .begin_symbol(None)
             .end_symbol(None)
             .thumb_style(Style::new().fg(Theme::TEXT_MUTED));
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
+        frame.render_stateful_widget(scrollbar, body_area, &mut scrollbar_state);
     }
 }
 
@@ -457,30 +532,143 @@ fn build_linear_turn_group_lookup(
     (lookup, groups)
 }
 
-fn timeline_turn_group_line(group: &LinearTurnGroupMeta) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled("  ── ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(
-            format!("Turn #{}", group.turn_number),
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        ),
-        Span::styled(
-            format!(" · {} events", group.event_count),
+#[derive(Debug, Clone, Copy)]
+struct StreamLayoutSpec {
+    left: usize,
+    center: usize,
+    right: usize,
+}
+
+fn stream_layout_spec(total: usize) -> StreamLayoutSpec {
+    let mut left = 18usize;
+    let mut center = 88usize;
+    let mut right = 20usize;
+    let sep = 6usize; // " │ " * 2
+
+    if total < 64 {
+        right = 0;
+        left = 12.min(total.saturating_sub(12));
+        center = total.saturating_sub(left + 3);
+        return StreamLayoutSpec {
+            left,
+            center,
+            right,
+        };
+    }
+
+    let overflow = left + center + right + sep;
+    if overflow > total {
+        let mut remaining = overflow - total;
+        let right_shrink = right.saturating_sub(12).min(remaining);
+        right -= right_shrink;
+        remaining -= right_shrink;
+
+        let left_shrink = left.saturating_sub(12).min(remaining);
+        left -= left_shrink;
+        remaining -= left_shrink;
+
+        let center_shrink = center.saturating_sub(64).min(remaining);
+        center -= center_shrink;
+        remaining -= center_shrink;
+
+        if remaining > 0 {
+            let right_shrink_to_zero = right.min(remaining);
+            right -= right_shrink_to_zero;
+            remaining -= right_shrink_to_zero;
+        }
+        if remaining > 0 {
+            let left_shrink_more = left.saturating_sub(8).min(remaining);
+            left -= left_shrink_more;
+            remaining -= left_shrink_more;
+        }
+        if remaining > 0 {
+            center = center.saturating_sub(remaining);
+        }
+    } else {
+        let mut extra = total - overflow;
+        let center_grow = (96usize.saturating_sub(center)).min(extra);
+        center += center_grow;
+        extra -= center_grow;
+        right += extra;
+    }
+    StreamLayoutSpec {
+        left,
+        center,
+        right,
+    }
+}
+
+fn stream_header_line(layout: &StreamLayoutSpec) -> Line<'static> {
+    stream_row_line(
+        layout,
+        "time/stream",
+        "conversation",
+        "agents/sub/diff",
+        (
+            Style::new().fg(Theme::TEXT_KEY).bold(),
+            Style::new().fg(Theme::TEXT_KEY).bold(),
+            Style::new().fg(Theme::TEXT_KEY).bold(),
             Style::new().fg(Theme::TEXT_MUTED),
         ),
+    )
+}
+
+fn stream_center_line(layout: &StreamLayoutSpec, text: &str, style: Style) -> Line<'static> {
+    stream_row_line(
+        layout,
+        "",
+        text,
+        "",
+        (
+            Style::new().fg(Theme::TEXT_MUTED),
+            style,
+            Style::new().fg(Theme::TEXT_MUTED),
+            Style::new(),
+        ),
+    )
+}
+
+fn stream_row_line(
+    layout: &StreamLayoutSpec,
+    left: &str,
+    center: &str,
+    right: &str,
+    styles: (Style, Style, Style, Style),
+) -> Line<'static> {
+    let (left_style, center_style, right_style, row_style) = styles;
+    let mut spans = vec![
+        Span::styled(fit_cell(left, layout.left), left_style),
+        Span::styled(" │ ", Style::new().fg(Theme::TREE)),
+        Span::styled(fit_cell(center, layout.center), center_style),
     ];
-    if group.task_count > 0 {
-        spans.push(Span::styled(
-            format!(" · {} tasks", group.task_count),
-            Style::new().fg(Theme::ACCENT_TEAL),
-        ));
+    if layout.right > 0 {
+        spans.push(Span::styled(" │ ", Style::new().fg(Theme::TREE)));
+        spans.push(Span::styled(fit_cell(right, layout.right), right_style));
     }
-    spans.push(Span::styled(" · ", Style::new().fg(Theme::GUTTER)));
-    spans.push(Span::styled(
-        group.prompt.clone(),
-        Style::new().fg(Theme::TEXT_SECONDARY),
-    ));
-    Line::from(spans)
+    Line::from(spans).style(row_style)
+}
+
+fn fit_cell(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let clipped = truncate(value, width);
+    let pad = width.saturating_sub(clipped.chars().count());
+    if pad == 0 {
+        clipped
+    } else {
+        format!("{clipped}{}", " ".repeat(pad))
+    }
+}
+
+fn timeline_turn_group_text(group: &LinearTurnGroupMeta) -> String {
+    let mut text = format!("Turn #{} · {} events", group.turn_number, group.event_count);
+    if group.task_count > 0 {
+        text.push_str(&format!(" · {} tasks", group.task_count));
+    }
+    text.push_str(" · ");
+    text.push_str(&group.prompt);
+    text
 }
 
 fn display_event_task_key(event: &DisplayEvent<'_>) -> Option<String> {
@@ -491,35 +679,11 @@ fn display_event_task_key(event: &DisplayEvent<'_>) -> Option<String> {
         .and_then(task_id_display_label)
 }
 
-fn timeline_task_group_line(task_key: &str, lane: usize) -> Line<'static> {
-    let lane_label = if lane == 0 {
-        "main".to_string()
+fn display_event_sub_agent_label(event: &DisplayEvent<'_>) -> Option<String> {
+    if event.lane() == 0 {
+        None
     } else {
-        format!("L{lane}")
-    };
-    Line::from(vec![
-        Span::styled("    ↳ ", Style::new().fg(Theme::ACCENT_TEAL)),
-        Span::styled(
-            format!("task {task_key}"),
-            Style::new().fg(Theme::ACCENT_TEAL).bold(),
-        ),
-        Span::styled(
-            format!(" · lane {lane_label}"),
-            Style::new().fg(Theme::TEXT_MUTED),
-        ),
-    ])
-}
-
-fn display_event_lane_label(event: &DisplayEvent<'_>) -> String {
-    let lane_label = if event.lane() == 0 {
-        "main".to_string()
-    } else {
-        format!("L{}", event.lane())
-    };
-    match event.marker() {
-        LaneMarker::Fork => format!("{lane_label} fork"),
-        LaneMarker::Merge => format!("{lane_label} merge"),
-        LaneMarker::None => lane_label,
+        Some(format!("sub-agent #{}", event.lane()))
     }
 }
 
@@ -538,24 +702,10 @@ fn format_active_agents(active_agents: usize) -> String {
     }
 }
 
-fn timeline_lane_legend_line() -> Line<'static> {
-    Line::from(vec![
-        Span::styled("  Legend ", Style::new().fg(Theme::TEXT_KEY).bold()),
-        Span::styled("lane(main/Ln)", Style::new().fg(Theme::ACCENT_TEAL)),
-        Span::styled(" │ ", Style::new().fg(Theme::GUTTER)),
-        Span::styled("N agents", Style::new().fg(Theme::ACCENT_CYAN)),
-        Span::styled(" │ ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(
-            "Enter: fold/unfold event",
-            Style::new().fg(Theme::TEXT_MUTED),
-        ),
-    ])
-}
-
 fn timeline_separator_line(
     previous: DateTime<Utc>,
     current: DateTime<Utc>,
-) -> Option<Line<'static>> {
+) -> Option<(String, bool)> {
     if current <= previous {
         return None;
     }
@@ -572,22 +722,137 @@ fn timeline_separator_line(
     let current_five_minute_bucket = current.timestamp().div_euclid(300);
 
     if previous_five_minute_bucket != current_five_minute_bucket {
-        Some(Line::from(vec![
-            Span::styled("  ◆ ", Style::new().fg(Theme::ACCENT_YELLOW).bold()),
-            Span::styled(
-                format!("{} (+{})", current.format("%H:%M"), elapsed),
-                Style::new().fg(Theme::ACCENT_YELLOW),
-            ),
-        ]))
+        Some((
+            format!("5m -------- {} (+{})", current.format("%H:%M"), elapsed),
+            true,
+        ))
     } else {
-        Some(Line::from(vec![
-            Span::styled("  · ", Style::new().fg(Theme::TEXT_MUTED)),
-            Span::styled(
-                format!("{} (+{})", current.format("%H:%M"), elapsed),
-                Style::new().fg(Theme::TEXT_MUTED),
-            ),
-        ]))
+        Some((
+            format!("1m ---- {} (+{})", current.format("%H:%M"), elapsed),
+            false,
+        ))
     }
+}
+
+fn interactive_question_context_lines(events: &[DisplayEvent<'_>], index: usize) -> Vec<String> {
+    let current = events.get(index).map(DisplayEvent::event);
+    let Some(current) = current else {
+        return Vec::new();
+    };
+    if !matches!(current.event_type, EventType::UserMessage) {
+        return Vec::new();
+    }
+    if event_attr_text(current, "source") != Some("interactive") {
+        return Vec::new();
+    }
+
+    let call_id = event_attr_text(current, "call_id").map(str::to_string);
+    let question_ids: BTreeSet<String> = event_attr_string_array(current, "question_ids")
+        .into_iter()
+        .collect();
+
+    if index > 0 {
+        let prev = events[index - 1].event();
+        if event_attr_text(prev, "source") == Some("interactive_question")
+            && call_id
+                .as_deref()
+                .is_none_or(|cid| event_attr_text(prev, "call_id") == Some(cid))
+        {
+            return Vec::new();
+        }
+    }
+
+    for prev in events[..index].iter().rev() {
+        let event = prev.event();
+        if event_attr_text(event, "source") != Some("interactive_question") {
+            continue;
+        }
+        if let Some(cid) = call_id.as_deref() {
+            if event_attr_text(event, "call_id") != Some(cid) {
+                continue;
+            }
+        }
+        let lines = event_question_lines(event, &question_ids);
+        if !lines.is_empty() {
+            return lines;
+        }
+    }
+    vec!["(question context unavailable)".to_string()]
+}
+
+fn event_question_lines(event: &Event, question_ids: &BTreeSet<String>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(items) = event
+        .attributes
+        .get("question_meta")
+        .and_then(|value| value.as_array())
+    {
+        for item in items {
+            let id = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("question");
+            if !question_ids.is_empty() && !question_ids.contains(id) {
+                continue;
+            }
+            let header = item
+                .get("header")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let question = item
+                .get("question")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("(no question text)");
+            let label = match header {
+                Some(header) => format!("{id} ({header})"),
+                None => id.to_string(),
+            };
+            lines.push(format!("{label}: {question}"));
+        }
+    }
+    if !lines.is_empty() {
+        return lines;
+    }
+    for block in &event.content.blocks {
+        if let ContentBlock::Text { text } = block {
+            for line in text.lines() {
+                let trimmed = line.trim().trim_start_matches('-').trim();
+                if trimmed.is_empty() || is_low_signal_text_line(trimmed) {
+                    continue;
+                }
+                lines.push(trimmed.to_string());
+            }
+        }
+    }
+    lines
+}
+
+fn event_attr_text<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
+    event
+        .attributes
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn event_attr_string_array(event: &Event, key: &str) -> Vec<String> {
+    event
+        .attributes
+        .get(key)
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn format_elapsed_short(delta_seconds: i64) -> String {
@@ -610,97 +875,60 @@ fn format_elapsed_short(delta_seconds: i64) -> String {
 
 fn append_event_detail_rows<'a>(
     lines: &mut Vec<Line<'a>>,
+    layout: &StreamLayoutSpec,
     display_event: &DisplayEvent<'_>,
+    summary_text: &str,
     max_preview_lines: usize,
+    show_diff: bool,
 ) {
     match display_event {
-        DisplayEvent::Single {
-            event,
-            source_index,
-            lane,
-            marker,
-            ..
-        } => {
-            let mut meta_parts = vec![format!("#{source_index}")];
-            let lane_label = if *lane == 0 {
-                "main".to_string()
-            } else {
-                format!("L{lane}")
-            };
-            meta_parts.push(format!("lane {lane_label}"));
-            if let Some(marker) = lane_marker_text(*marker) {
-                meta_parts.push(marker.to_string());
+        DisplayEvent::Single { event, .. } => {
+            let preview_rows = collect_content_preview_rows(
+                event,
+                max_preview_lines,
+                Some(summary_text),
+                show_diff,
+            );
+            if preview_rows.is_empty() {
+                if matches!(event.event_type, EventType::FileEdit { diff: Some(_), .. })
+                    && !show_diff
+                {
+                    lines.push(stream_center_line(
+                        layout,
+                        "diff hidden · press d to expand",
+                        Style::new().fg(Theme::TEXT_MUTED),
+                    ));
+                }
+                return;
             }
-            if let Some(task) = display_event_task_key(display_event) {
-                meta_parts.push(format!("task {task}"));
+            for (text, style) in preview_rows {
+                lines.push(stream_center_line(layout, &text, style));
             }
-            if let Some(duration_ms) = event.duration_ms {
-                meta_parts.push(format!("{duration_ms}ms"));
-            }
-            lines.push(timeline_detail_kv_line(
-                "meta",
-                meta_parts.join(" · "),
-                Style::new().fg(Theme::TEXT_MUTED),
-            ));
-
-            let action = event_compact_summary(&event.event_type, &event.content.blocks);
-            if !action.is_empty() {
-                lines.push(timeline_detail_kv_line(
-                    "action",
-                    action,
-                    Style::new().fg(Theme::TEXT_SECONDARY),
-                ));
-            }
-
-            if matches!(
-                event.event_type,
-                EventType::ToolResult { is_error: true, .. }
-            ) {
-                lines.push(timeline_detail_kv_line(
-                    "status",
-                    "error".to_string(),
-                    Style::new().fg(Theme::ACCENT_RED).bold(),
-                ));
-            } else if matches!(event.event_type, EventType::ToolResult { .. }) {
-                lines.push(timeline_detail_kv_line(
-                    "status",
-                    "ok".to_string(),
-                    Style::new().fg(Theme::ACCENT_GREEN),
-                ));
-            }
-
-            append_content_preview(lines, event, max_preview_lines);
         }
-        DisplayEvent::Collapsed {
-            first,
-            source_index,
-            count,
-            kind,
-            ..
-        } => {
-            lines.push(timeline_detail_kv_line(
-                "group",
-                format!("{kind} ×{count} (from #{source_index})"),
-                Style::new().fg(Theme::TEXT_SECONDARY),
-            ));
-            append_content_preview(lines, first, max_preview_lines.min(2));
+        DisplayEvent::Collapsed { first, .. } => {
+            for (text, style) in
+                collect_content_preview_rows(first, max_preview_lines.min(2), None, false)
+            {
+                lines.push(stream_center_line(layout, &text, style));
+            }
         }
     }
 }
 
-fn timeline_detail_kv_line<'a>(label: &str, value: String, value_style: Style) -> Line<'a> {
-    Line::from(vec![
-        Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(format!("{label:<7} "), Style::new().fg(Theme::TEXT_MUTED)),
-        Span::styled(value, value_style),
-    ])
-}
-
-fn append_content_preview<'a>(lines: &mut Vec<Line<'a>>, event: &Event, max_lines: usize) {
+fn collect_content_preview_rows(
+    event: &Event,
+    max_lines: usize,
+    summary_hint: Option<&str>,
+    show_diff: bool,
+) -> Vec<(String, Style)> {
+    let mut rows = Vec::new();
     if let EventType::FileEdit {
         diff: Some(diff), ..
     } = &event.event_type
     {
+        if !show_diff {
+            return rows;
+        }
         for line in diff.lines().take(max_lines) {
             let style = if line.starts_with('+') {
                 Style::new().fg(Theme::ACCENT_GREEN)
@@ -709,74 +937,91 @@ fn append_content_preview<'a>(lines: &mut Vec<Line<'a>>, event: &Event, max_line
             } else {
                 Style::new().fg(Theme::TEXT_MUTED)
             };
-            lines.push(Line::from(vec![
-                Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
-                Span::styled(truncate(line, 120), style),
-            ]));
+            rows.push((truncate(line, 120), style));
         }
-        return;
+        return rows;
     }
 
     for block in &event.content.blocks {
         match block {
             ContentBlock::Text { text } => {
-                let mut shown = 0usize;
                 for line in text.lines() {
                     let trimmed = line.trim();
                     if trimmed.is_empty() || is_low_signal_text_line(trimmed) {
                         continue;
                     }
-                    lines.push(Line::from(vec![
-                        Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
-                        Span::styled(
-                            truncate(trimmed, 120),
-                            Style::new().fg(Theme::TEXT_SECONDARY),
-                        ),
-                    ]));
-                    shown += 1;
-                    if shown >= max_lines {
-                        break;
+                    if summary_hint
+                        .is_some_and(|summary| detail_line_matches_summary(trimmed, summary))
+                    {
+                        continue;
                     }
-                }
-                if shown > 0 {
-                    return;
+                    rows.push((
+                        format!("· {}", truncate(trimmed, 120)),
+                        Style::new().fg(Theme::TEXT_SECONDARY),
+                    ));
+                    if rows.len() >= max_lines {
+                        return rows;
+                    }
                 }
             }
             ContentBlock::Code { code, .. } => {
-                let mut shown = 0usize;
                 for line in code.lines() {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
                         continue;
                     }
-                    lines.push(Line::from(vec![
-                        Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
-                        Span::styled(
-                            truncate(trimmed, 120),
-                            Style::new().fg(Theme::TEXT_SECONDARY),
-                        ),
-                    ]));
-                    shown += 1;
-                    if shown >= max_lines {
-                        break;
+                    if summary_hint
+                        .is_some_and(|summary| detail_line_matches_summary(trimmed, summary))
+                    {
+                        continue;
                     }
-                }
-                if shown > 0 {
-                    return;
+                    rows.push((
+                        format!("· {}", truncate(trimmed, 120)),
+                        Style::new().fg(Theme::TEXT_SECONDARY),
+                    ));
+                    if rows.len() >= max_lines {
+                        return rows;
+                    }
                 }
             }
             ContentBlock::Json { data } => {
                 if let Some(hint) = json_value_hint(data, 100) {
-                    lines.push(Line::from(vec![
-                        Span::styled("    | ", Style::new().fg(Theme::GUTTER)),
-                        Span::styled(truncate(&hint, 120), Style::new().fg(Theme::TEXT_SECONDARY)),
-                    ]));
-                    return;
+                    if !summary_hint
+                        .is_some_and(|summary| detail_line_matches_summary(&hint, summary))
+                    {
+                        rows.push((
+                            format!("· {}", truncate(&hint, 120)),
+                            Style::new().fg(Theme::TEXT_SECONDARY),
+                        ));
+                        if rows.len() >= max_lines {
+                            return rows;
+                        }
+                    }
                 }
             }
             _ => {}
         }
     }
+    rows
+}
+
+fn detail_line_matches_summary(line: &str, summary: &str) -> bool {
+    let normalized_line = line
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let normalized_summary = summary
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if normalized_line.is_empty() || normalized_summary.is_empty() {
+        return false;
+    }
+    normalized_line == normalized_summary
+        || normalized_line.contains(&normalized_summary)
+        || normalized_summary.contains(&normalized_line)
 }
 
 fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
@@ -810,7 +1055,9 @@ fn event_type_display(event_type: &EventType) -> (&'static str, Color) {
 fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> String {
     match event_type {
         EventType::UserMessage => {
-            let text = first_text_line(blocks, 56);
+            let text = first_meaningful_text_line_opt(blocks, 56)
+                .or_else(|| first_text_line_opt(blocks, 56))
+                .unwrap_or_default();
             if text.is_empty() {
                 "(user prompt)".to_string()
             } else {
@@ -827,7 +1074,9 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
                 text
             }
         }
-        EventType::SystemMessage => "(system)".to_string(),
+        EventType::SystemMessage => first_meaningful_text_line_opt(blocks, 56)
+            .or_else(|| first_text_line_opt(blocks, 56))
+            .unwrap_or_else(|| "(system)".to_string()),
         EventType::Thinking => first_meaningful_text_line_opt(blocks, 56)
             .or_else(|| first_text_line_opt(blocks, 56))
             .unwrap_or_else(|| "thinking".to_string()),
@@ -1304,7 +1553,24 @@ fn is_low_signal_text_line(line: &str) -> bool {
     if lower.is_empty() {
         return true;
     }
-    if matches!(lower.as_str(), "think reasoning" | "edit unknown" | "()") {
+    if matches!(
+        lower.as_str(),
+        "think reasoning"
+            | "edit unknown"
+            | "()"
+            | "interactive response"
+            | "interactive prompt"
+            | "output:"
+            | "status ok"
+            | "status error"
+    ) {
+        return true;
+    }
+    if lower.starts_with("meta #")
+        || lower.starts_with("action ")
+        || lower.starts_with("status ")
+        || lower.starts_with("result ")
+    {
         return true;
     }
     if lower.starts_with("chunk id:") || lower.contains("chunk id:") {
@@ -1634,8 +1900,10 @@ mod tests {
         let major = timeline_separator_line(base, base + Duration::seconds(301))
             .expect("five-minute separator should be present");
 
-        assert!(minor.to_string().contains('·'));
-        assert!(major.to_string().contains('◆'));
+        assert!(minor.0.contains("1m ----"));
+        assert!(!minor.1);
+        assert!(major.0.contains("5m --------"));
+        assert!(major.1);
     }
 
     #[test]
@@ -1682,7 +1950,7 @@ mod tests {
     }
 
     #[test]
-    fn append_event_detail_rows_emits_meta_action_and_preview() {
+    fn append_event_detail_rows_hides_diff_by_default_and_shows_when_expanded() {
         let event = make_event_with_task(
             EventType::FileEdit {
                 path: "/tmp/repo/src/main.rs".to_string(),
@@ -1699,21 +1967,31 @@ mod tests {
             active_lanes: vec![0, 2],
         };
 
+        let layout = StreamLayoutSpec {
+            left: 12,
+            center: 80,
+            right: 18,
+        };
         let mut lines: Vec<Line<'_>> = Vec::new();
-        append_event_detail_rows(&mut lines, &display, 2);
+        append_event_detail_rows(&mut lines, &layout, &display, "src/main.rs +1 -1", 2, false);
         let rendered = lines
             .iter()
             .map(Line::to_string)
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("meta"));
-        assert!(rendered.contains("#7"));
-        assert!(rendered.contains("lane L2"));
-        assert!(rendered.contains("task task-42"));
-        assert!(rendered.contains("action"));
-        assert!(rendered.contains("src/main.rs"));
-        assert!(rendered.contains("+ new"));
+        assert!(rendered.contains("diff hidden"));
+        assert!(!rendered.contains("+ new"));
+
+        lines.clear();
+        append_event_detail_rows(&mut lines, &layout, &display, "src/main.rs +1 -1", 2, true);
+        let rendered_with_diff = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_with_diff.contains("+ new"));
+        assert!(rendered_with_diff.contains("- old"));
     }
 
     #[test]

@@ -121,6 +121,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Expand/collapse selected event details", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  d         ", key_style),
+            Span::styled("Toggle file diff preview for selected event", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  1-6       ", key_style),
             Span::styled("Filter: All/Msgs/Tools/Think/Files/Shell", desc_style),
         ]),

@@ -1211,6 +1211,25 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn detail_d_key_toggles_diff_expansion_only() {
+        let session = make_live_session("turn-diff-toggle", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_event_index = 2;
+
+        assert!(!app.expanded_diff_events.contains(&2));
+        assert!(!app.expanded_events.contains(&2));
+
+        app.handle_detail_key(KeyCode::Char('d'));
+        assert!(app.expanded_diff_events.contains(&2));
+        assert!(!app.expanded_events.contains(&2));
+
+        app.handle_detail_key(KeyCode::Char('d'));
+        assert!(!app.expanded_diff_events.contains(&2));
+        assert!(!app.expanded_events.contains(&2));
+    }
+
+    #[test]
     fn summary_cache_lookup_key_uses_cache_namespace_prefix() {
         let mut app = App::new(vec![]);
         app.daemon_config.daemon.summary_disk_cache_enabled = true;
@@ -1472,6 +1491,7 @@ pub struct App {
     pub event_filters: HashSet<EventFilter>,
     pub collapse_consecutive: bool,
     pub expanded_events: HashSet<usize>,
+    pub expanded_diff_events: HashSet<usize>,
     pub detail_view_mode: DetailViewMode,
     pub focus_detail_view: bool,
     pub detail_h_scroll: u16,
@@ -1837,6 +1857,7 @@ impl App {
             event_filters: HashSet::from([EventFilter::All]),
             collapse_consecutive: false,
             expanded_events: HashSet::new(),
+            expanded_diff_events: HashSet::new(),
             detail_view_mode: DetailViewMode::Linear,
             focus_detail_view: false,
             detail_h_scroll: 0,
@@ -2424,6 +2445,7 @@ impl App {
             KeyCode::PageDown => self.detail_page_down(),
             KeyCode::PageUp => self.detail_page_up(),
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_expanded(),
+            KeyCode::Char('d') => self.toggle_diff_expanded(),
             KeyCode::Char('u') => self.jump_to_next_user_message(),
             KeyCode::Char('U') => self.jump_to_prev_user_message(),
             KeyCode::Char('n') => self.jump_to_next_same_type(),
@@ -4400,6 +4422,7 @@ impl App {
                 self.detail_h_scroll = 0;
                 self.event_filters = HashSet::from([EventFilter::All]);
                 self.expanded_events.clear();
+                self.expanded_diff_events.clear();
                 self.turn_raw_overrides.clear();
                 self.turn_prompt_expanded.clear();
                 self.detail_view_mode = DetailViewMode::Linear;
@@ -4502,6 +4525,15 @@ impl App {
             self.expanded_events.remove(&idx);
         } else {
             self.expanded_events.insert(idx);
+        }
+    }
+
+    fn toggle_diff_expanded(&mut self) {
+        let idx = self.detail_event_index;
+        if self.expanded_diff_events.contains(&idx) {
+            self.expanded_diff_events.remove(&idx);
+        } else {
+            self.expanded_diff_events.insert(idx);
         }
     }
 

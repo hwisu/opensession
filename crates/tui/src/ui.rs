@@ -280,6 +280,19 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled(format!(" {} ", label), style));
                 spans.push(Span::styled(" ", Style::new()));
             }
+            spans.push(Span::styled(
+                "   Enter ",
+                Style::new().fg(Theme::TEXT_KEY).bold(),
+            ));
+            spans.push(Span::styled(
+                "details",
+                Style::new().fg(Theme::TEXT_KEY_DESC),
+            ));
+            spans.push(Span::styled(
+                "  d ",
+                Style::new().fg(Theme::TEXT_KEY).bold(),
+            ));
+            spans.push(Span::styled("diff", Style::new().fg(Theme::TEXT_KEY_DESC)));
 
             let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());

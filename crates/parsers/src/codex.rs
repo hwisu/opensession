@@ -380,6 +380,20 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
 
     let mut attributes = HashMap::new();
     if let Some(git) = git_info {
+        if let Some(branch) = json_object_string(
+            &git,
+            &["branch", "git_branch", "current_branch", "ref", "head"],
+        ) {
+            attributes.insert("git_branch".to_string(), serde_json::Value::String(branch));
+        }
+        if let Some(repo_name) =
+            json_object_string(&git, &["repo_name", "repository", "repo", "name"])
+        {
+            attributes.insert(
+                "git_repo_name".to_string(),
+                serde_json::Value::String(repo_name),
+            );
+        }
         attributes.insert("git".to_string(), git);
     }
     if let Some(ref dir) = cwd {
@@ -695,6 +709,34 @@ fn process_item_with_options(
                                         .collect(),
                                 ),
                             );
+                            attributes.insert(
+                                "question_meta".to_string(),
+                                serde_json::Value::Array(
+                                    meta.questions
+                                        .iter()
+                                        .map(|q| {
+                                            let mut row = serde_json::Map::new();
+                                            row.insert(
+                                                "id".to_string(),
+                                                serde_json::Value::String(q.id.clone()),
+                                            );
+                                            if let Some(header) = q.header.as_ref() {
+                                                row.insert(
+                                                    "header".to_string(),
+                                                    serde_json::Value::String(header.clone()),
+                                                );
+                                            }
+                                            if let Some(question) = q.question.as_ref() {
+                                                row.insert(
+                                                    "question".to_string(),
+                                                    serde_json::Value::String(question.clone()),
+                                                );
+                                            }
+                                            serde_json::Value::Object(row)
+                                        })
+                                        .collect(),
+                                ),
+                            );
                             events.push(Event {
                                 event_id: format!("codex-{}", counter),
                                 timestamp: ts,
@@ -724,6 +766,12 @@ fn process_item_with_options(
                                 .collect(),
                         ),
                     );
+                    if let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) {
+                        attributes.insert(
+                            "call_id".to_string(),
+                            serde_json::Value::String(call_id.to_string()),
+                        );
+                    }
                     attributes.insert("raw_answers".to_string(), raw_answers);
                     events.push(Event {
                         event_id: format!("codex-{}", counter),
@@ -976,7 +1024,7 @@ fn parse_request_user_input_call_meta(args: &serde_json::Value) -> RequestUserIn
 }
 
 fn render_interactive_questions(questions: &[InteractiveQuestionMeta]) -> String {
-    let mut lines = vec!["Interactive prompt".to_string()];
+    let mut lines = Vec::new();
     for q in questions {
         let mut label = q.id.clone();
         if let Some(header) = q.header.as_deref() {
@@ -985,7 +1033,11 @@ fn render_interactive_questions(questions: &[InteractiveQuestionMeta]) -> String
         let body = q.question.as_deref().unwrap_or("(no question text)");
         lines.push(format!("- {label}: {body}"));
     }
-    lines.join("\n")
+    if lines.is_empty() {
+        "(no interactive questions)".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn parse_request_user_input_answers(
@@ -1034,7 +1086,7 @@ fn parse_request_user_input_answers(
         }
     }
 
-    let rendered = format!("Interactive response\n{}", lines.join("\n"));
+    let rendered = lines.join("\n");
     Some((rendered, question_ids, parsed))
 }
 
@@ -1127,6 +1179,36 @@ fn looks_like_injected_codex_user_text(text: &str) -> bool {
         || lower.contains("</environment_context>")
         || lower.contains("<turn_aborted>")
         || lower.contains("</turn_aborted>")
+}
+
+fn json_object_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(s) = map.get(*key).and_then(|entry| entry.as_str()) {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            for nested in map.values() {
+                if let Some(found) = json_object_string(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                if let Some(found) = json_object_string(nested, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn parse_timestamp(ts: &str) -> Result<DateTime<Utc>> {
@@ -1378,6 +1460,22 @@ provider = "anthropic"
             Some("google".to_string())
         );
         assert_eq!(infer_provider_from_model("unknown"), None);
+    }
+
+    #[test]
+    fn test_json_object_string_extracts_nested_branch_and_repo() {
+        let git = serde_json::json!({
+            "meta": {"repository": "ops"},
+            "current": {"branch": "main"}
+        });
+        assert_eq!(
+            json_object_string(&git, &["branch", "current_branch", "ref"]).as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            json_object_string(&git, &["repo_name", "repository", "repo"]).as_deref(),
+            Some("ops")
+        );
     }
 
     #[test]
@@ -1933,6 +2031,14 @@ provider = "anthropic"
                     .get("source")
                     .and_then(|value| value.as_str())
                     == Some("interactive")
+                && event
+                    .attributes
+                    .get("call_id")
+                    .and_then(|value| value.as_str())
+                    == Some("call_req_1")
+                && event.content.blocks.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text } if text.contains("layout_mode: Always multi-column") && !text.contains("Interactive response"))
+                })
         }));
         assert!(session.events.iter().any(|event| {
             matches!(event.event_type, EventType::SystemMessage)
@@ -1941,6 +2047,11 @@ provider = "anthropic"
                     .get("source")
                     .and_then(|value| value.as_str())
                     == Some("interactive_question")
+                && event
+                    .attributes
+                    .get("question_meta")
+                    .and_then(|value| value.as_array())
+                    .is_some()
                 && event.content.blocks.iter().any(|block| {
                     matches!(block, ContentBlock::Text { text } if text.contains("Select mode"))
                 })

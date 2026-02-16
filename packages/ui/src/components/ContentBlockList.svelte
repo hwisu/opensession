@@ -1,6 +1,6 @@
 <script lang="ts">
 import { highlightCode } from '../highlight';
-import { isLongContent, renderMarkdown } from '../markdown';
+import { extractStandaloneFencedCode, isLongContent, renderMarkdown } from '../markdown';
 import type { ContentBlock } from '../types';
 import CodeBlockView from './CodeBlockView.svelte';
 
@@ -18,11 +18,19 @@ let {
 {#each blocks as block}
 	{#if block.type === 'Text'}
 		{@const long = isLongContent(block.text, 30)}
+		{@const fencedCode = extractStandaloneFencedCode(block.text)}
 		{#if block.text.trim()}
-			<div class="md-content" class:ev-collapsed={long && !showFull}>
-				{@html renderMarkdown(block.text)}
-			</div>
-			{#if long}
+			{#if fencedCode}
+				<div class="my-2">
+					<CodeBlockView code={fencedCode.code} language={fencedCode.language}
+						startLine={1} bind:showFull />
+				</div>
+			{:else}
+				<div class="md-content" class:ev-collapsed={long && !showFull}>
+					{@html renderMarkdown(block.text)}
+				</div>
+			{/if}
+			{#if long && !fencedCode}
 				<button
 					onclick={() => (showFull = !showFull)}
 					class="mt-1 text-xs font-medium text-accent hover:underline"

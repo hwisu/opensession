@@ -67,6 +67,31 @@ export function renderMarkdown(text: string): string {
 	}
 }
 
+/**
+ * Parse a text blob that contains only a single fenced code block.
+ * Returns null when the text has additional prose/markdown around the code.
+ */
+export function extractStandaloneFencedCode(
+	text: string,
+): { code: string; language?: string } | null {
+	if (!text) return null;
+	const normalized = text.replace(/\r\n?/g, '\n').trim();
+	if (!normalized) return null;
+
+	// ```lang\n...\n``` or ~~~lang\n...\n~~~
+	const match = normalized.match(
+		/^(?<fence>`{3,}|~{3,})(?<lang>[^\n`]*)\n(?<code>[\s\S]*?)\n\k<fence>$/,
+	);
+	if (!match?.groups) return null;
+
+	const code = match.groups.code ?? '';
+	const language = (match.groups.lang ?? '').trim();
+	return {
+		code,
+		language: language.length > 0 ? language : undefined,
+	};
+}
+
 function escapeHtml(text: string): string {
 	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

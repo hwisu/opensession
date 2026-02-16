@@ -110,10 +110,51 @@ export async function injectAuth(page: Page, user: TestUser) {
 export async function uploadSession(
 	request: APIRequestContext,
 	accessToken: string,
-	opts?: { title?: string; teamId?: string },
+	opts?: { title?: string; teamId?: string; events?: Array<Record<string, unknown>> },
 ): Promise<string> {
 	const sessionId = crypto.randomUUID();
 	const now = new Date().toISOString();
+	const defaultEvents = [
+		{
+			event_id: crypto.randomUUID(),
+			timestamp: now,
+			event_type: { type: 'UserMessage' },
+			task_id: crypto.randomUUID(),
+			content: { blocks: [{ type: 'Text', text: 'Hello, write a test' }] },
+			duration_ms: null,
+			attributes: {},
+		},
+		{
+			event_id: crypto.randomUUID(),
+			timestamp: new Date(Date.now() + 1000).toISOString(),
+			event_type: { type: 'AgentMessage' },
+			task_id: null,
+			content: { blocks: [{ type: 'Text', text: 'Sure, here is a test.' }] },
+			duration_ms: null,
+			attributes: {},
+		},
+	];
+	const events = opts?.events ?? defaultEvents;
+
+	const firstTs = new Date(String(events[0]?.['timestamp'] ?? now)).getTime();
+	const lastTs = new Date(String(events[events.length - 1]?.['timestamp'] ?? now)).getTime();
+	const durationSeconds =
+		Number.isFinite(firstTs) && Number.isFinite(lastTs) && lastTs >= firstTs
+			? Math.floor((lastTs - firstTs) / 1000)
+			: 0;
+	const eventTypes = events.map((event) => {
+		const maybeType = (event['event_type'] as { type?: unknown } | undefined)?.type;
+		return typeof maybeType === 'string' ? maybeType : '';
+	});
+	const userMessageCount = eventTypes.filter((type) => type === 'UserMessage').length;
+	const messageCount = eventTypes.filter((type) =>
+		['UserMessage', 'AgentMessage', 'SystemMessage'].includes(type),
+	).length;
+	const taskCount = new Set(
+		events
+			.map((event) => event['task_id'])
+			.filter((taskId): taskId is string => typeof taskId === 'string' && taskId.length > 0),
+	).size;
 
 	const session = {
 		version: 'hail-1.0.0',
@@ -133,35 +174,16 @@ export async function uploadSession(
 			related_session_ids: [],
 			attributes: {},
 		},
-		events: [
-			{
-				event_id: crypto.randomUUID(),
-				timestamp: now,
-				event_type: { type: 'UserMessage' },
-				task_id: crypto.randomUUID(),
-				content: { blocks: [{ type: 'Text', text: 'Hello, write a test' }] },
-				duration_ms: null,
-				attributes: {},
-			},
-			{
-				event_id: crypto.randomUUID(),
-				timestamp: new Date(Date.now() + 1000).toISOString(),
-				event_type: { type: 'AgentMessage' },
-				task_id: null,
-				content: { blocks: [{ type: 'Text', text: 'Sure, here is a test.' }] },
-				duration_ms: null,
-				attributes: {},
-			},
-		],
+		events,
 		stats: {
-			event_count: 2,
-			message_count: 2,
+			event_count: events.length,
+			message_count: messageCount,
 			tool_call_count: 0,
-			task_count: 1,
-			duration_seconds: 1,
+			task_count: taskCount,
+			duration_seconds: durationSeconds,
 			total_input_tokens: 100,
 			total_output_tokens: 50,
-			user_message_count: 1,
+			user_message_count: userMessageCount,
 			files_changed: 0,
 			lines_added: 0,
 			lines_removed: 0,

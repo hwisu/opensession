@@ -9,6 +9,10 @@ name = "opensession-core"
 publish = true
 
 [[package]]
+name = "opensession-runtime-config"
+publish = true
+
+[[package]]
 name = "opensession-parsers"
 publish = true
 
@@ -45,13 +49,6 @@ git_tag_enable = false
 
 [[package]]
 name = "opensession-daemon"
-publish = false
-release = true
-git_release_enable = false
-git_tag_enable = false
-
-[[package]]
-name = "opensession-runtime-config"
 publish = false
 release = true
 git_release_enable = false

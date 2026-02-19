@@ -110,7 +110,7 @@ fn render_preview(
         .map(|path| path.to_string_lossy().into_owned());
     let base = base_handoff_command(selected_source_path.as_deref());
 
-    let mut lines = preview_lines(&candidate, selected_source_path.as_deref(), &base);
+    let mut lines = preview_lines(candidate, selected_source_path.as_deref(), &base);
     let max_lines = area.height.saturating_sub(2) as usize;
     if max_lines == 0 {
         return;

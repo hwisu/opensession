@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13](https://github.com/hwisu/opensession/compare/opensession-core-v0.2.12...opensession-core-v0.2.13) - 2026-02-19
+
+### Other
+
+- Simplify handoff flow and add provider populate mode
+
 ## [0.2.12](https://github.com/hwisu/opensession/compare/opensession-core-v0.2.11...opensession-core-v0.2.12) - 2026-02-19
 
 ### Other

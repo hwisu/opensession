@@ -59,7 +59,8 @@ Issue the key from your web settings page (`/settings`); it is shown once at iss
 |------|----------------|-------------------|
 | Home `/` | Landing for guests, session list after login | Landing for guests, session list after login |
 | Upload UI `/upload` | Enabled | Disabled (read-only) |
-| API surface | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
+| GitHub share UI `/gh/{owner}/{repo}/{ref}/{path...}` | Enabled | Read-only fallback (unsupported banner) |
+| API surface | `/api/health`, `/api/capabilities`, `/api/ingest/preview`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
 | Auth routes | Enabled when `JWT_SECRET` is set | Enabled when `JWT_SECRET` is set |
 | Team/invitation/sync routes | Disabled | Disabled |
 
@@ -228,7 +229,8 @@ custom_paths = [
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
-| GET | `/api/capabilities` | Runtime feature flags (`auth_enabled`, `upload_enabled`) |
+| GET | `/api/capabilities` | Runtime feature flags (`auth_enabled`, `upload_enabled`, `ingest_preview_enabled`, `gh_share_enabled`) |
+| POST | `/api/ingest/preview` | Parse preview from GitHub source or inline file content |
 | GET | `/api/auth/providers` | Available auth providers |
 | POST | `/api/auth/register` | Email/password registration |
 | POST | `/api/auth/login` | Email/password login |

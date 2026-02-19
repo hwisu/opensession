@@ -442,6 +442,75 @@ pub struct SessionLink {
     pub created_at: String,
 }
 
+/// Source descriptor for parser preview requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum ParseSource {
+    /// Fetch and parse a raw file from a public GitHub repository.
+    Github {
+        owner: String,
+        repo: String,
+        r#ref: String,
+        path: String,
+    },
+    /// Parse inline file content supplied by clients (for local upload preview).
+    Inline {
+        filename: String,
+        /// Base64-encoded UTF-8 text content.
+        content_base64: String,
+    },
+}
+
+/// Candidate parser ranked by detection confidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct ParseCandidate {
+    pub id: String,
+    pub confidence: u8,
+    pub reason: String,
+}
+
+/// Request body for `POST /api/ingest/preview`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct ParsePreviewRequest {
+    pub source: ParseSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser_hint: Option<String>,
+}
+
+/// Response body for `POST /api/ingest/preview`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct ParsePreviewResponse {
+    pub parser_used: String,
+    #[serde(default)]
+    pub parser_candidates: Vec<ParseCandidate>,
+    #[cfg_attr(feature = "ts", ts(type = "any"))]
+    pub session: Session,
+    pub source: ParseSource,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_adapter: Option<String>,
+}
+
+/// Structured parser preview error response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct ParsePreviewErrorResponse {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parser_candidates: Vec<ParseCandidate>,
+}
+
 // ─── Streaming Events ────────────────────────────────────────────────────────
 
 /// Request body for `POST /api/sessions/:id/events` — append live events.
@@ -483,6 +552,8 @@ pub struct HealthResponse {
 pub struct CapabilitiesResponse {
     pub auth_enabled: bool,
     pub upload_enabled: bool,
+    pub ingest_preview_enabled: bool,
+    pub gh_share_enabled: bool,
 }
 
 // ─── Service Error ───────────────────────────────────────────────────────────
@@ -575,6 +646,84 @@ impl From<&ServiceError> for ApiError {
 
 // ─── TypeScript generation ───────────────────────────────────────────────────
 
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    #[test]
+    fn parse_preview_request_round_trip() {
+        let req = ParsePreviewRequest {
+            source: ParseSource::Github {
+                owner: "hwisu".to_string(),
+                repo: "opensession".to_string(),
+                r#ref: "main".to_string(),
+                path: "sessions/demo.hail.jsonl".to_string(),
+            },
+            parser_hint: Some("hail".to_string()),
+        };
+
+        let json = serde_json::to_string(&req).expect("request should serialize");
+        let decoded: ParsePreviewRequest =
+            serde_json::from_str(&json).expect("request should deserialize");
+
+        match decoded.source {
+            ParseSource::Github {
+                owner,
+                repo,
+                r#ref,
+                path,
+            } => {
+                assert_eq!(owner, "hwisu");
+                assert_eq!(repo, "opensession");
+                assert_eq!(r#ref, "main");
+                assert_eq!(path, "sessions/demo.hail.jsonl");
+            }
+            _ => panic!("expected github parse source"),
+        }
+        assert_eq!(decoded.parser_hint.as_deref(), Some("hail"));
+    }
+
+    #[test]
+    fn parse_preview_error_response_round_trip_with_candidates() {
+        let payload = ParsePreviewErrorResponse {
+            code: "parser_selection_required".to_string(),
+            message: "choose parser".to_string(),
+            parser_candidates: vec![ParseCandidate {
+                id: "codex".to_string(),
+                confidence: 89,
+                reason: "event markers".to_string(),
+            }],
+        };
+
+        let json = serde_json::to_string(&payload).expect("error payload should serialize");
+        let decoded: ParsePreviewErrorResponse =
+            serde_json::from_str(&json).expect("error payload should deserialize");
+
+        assert_eq!(decoded.code, "parser_selection_required");
+        assert_eq!(decoded.parser_candidates.len(), 1);
+        assert_eq!(decoded.parser_candidates[0].id, "codex");
+    }
+
+    #[test]
+    fn capabilities_response_round_trip_includes_new_fields() {
+        let caps = CapabilitiesResponse {
+            auth_enabled: true,
+            upload_enabled: true,
+            ingest_preview_enabled: true,
+            gh_share_enabled: false,
+        };
+
+        let json = serde_json::to_string(&caps).expect("capabilities should serialize");
+        let decoded: CapabilitiesResponse =
+            serde_json::from_str(&json).expect("capabilities should deserialize");
+
+        assert!(decoded.auth_enabled);
+        assert!(decoded.upload_enabled);
+        assert!(decoded.ingest_preview_enabled);
+        assert!(!decoded.gh_share_enabled);
+    }
+}
+
 #[cfg(all(test, feature = "ts"))]
 mod tests {
     use super::*;
@@ -603,7 +752,8 @@ mod tests {
             ($($t:ty),+ $(,)?) => {
                 $(
                     let decl = <$t>::decl(&cfg);
-                    let decl = if decl.contains(" = {") {
+                    let is_struct_decl = decl.contains(" = {") && !decl.contains("} |");
+                    let decl = if is_struct_decl {
                         // Struct → export interface
                         decl
                             .replacen("type ", "export interface ", 1)
@@ -647,6 +797,11 @@ mod tests {
             SessionListQuery,
             SessionDetail,
             SessionLink,
+            ParseSource,
+            ParseCandidate,
+            ParsePreviewRequest,
+            ParsePreviewResponse,
+            ParsePreviewErrorResponse,
             // OAuth
             oauth::AuthProvidersResponse,
             oauth::OAuthProviderInfo,

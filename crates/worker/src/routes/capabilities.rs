@@ -8,5 +8,7 @@ pub async fn handle(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
     Response::from_json(&CapabilitiesResponse {
         auth_enabled: config.auth_enabled(),
         upload_enabled: false,
+        ingest_preview_enabled: false,
+        gh_share_enabled: false,
     })
 }

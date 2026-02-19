@@ -3,6 +3,10 @@ import type {
 	AuthProvidersResponse,
 	AuthTokenResponse,
 	CapabilitiesResponse,
+	ParsePreviewErrorResponse,
+	ParsePreviewRequest,
+	ParsePreviewResponse,
+	ParseSource,
 	Session,
 	SessionListResponse,
 	UserSettings,
@@ -116,6 +120,15 @@ export class ApiError extends Error {
 			}
 		}
 		super(msg);
+	}
+}
+
+export class PreviewApiError extends Error {
+	constructor(
+		public status: number,
+		public payload: ParsePreviewErrorResponse,
+	) {
+		super(payload.message);
 	}
 }
 
@@ -297,7 +310,12 @@ export async function getApiCapabilities(): Promise<CapabilitiesResponse> {
 	} catch {
 		// ignore and fall through
 	}
-	return { auth_enabled: false, upload_enabled: false };
+	return {
+		auth_enabled: false,
+		upload_enabled: false,
+		ingest_preview_enabled: false,
+		gh_share_enabled: false,
+	};
 }
 
 export async function isAuthApiAvailable(): Promise<boolean> {
@@ -308,6 +326,99 @@ export async function isAuthApiAvailable(): Promise<boolean> {
 export async function isUploadApiAvailable(): Promise<boolean> {
 	const capabilities = await getApiCapabilities();
 	return capabilities.upload_enabled;
+}
+
+export async function isIngestPreviewApiAvailable(): Promise<boolean> {
+	const capabilities = await getApiCapabilities();
+	return capabilities.ingest_preview_enabled;
+}
+
+export async function isGhShareAvailable(): Promise<boolean> {
+	const capabilities = await getApiCapabilities();
+	return capabilities.gh_share_enabled;
+}
+
+async function postIngestPreview(req: ParsePreviewRequest): Promise<ParsePreviewResponse> {
+	const url = `${getBaseUrl()}/api/ingest/preview`;
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+	const auth = await getAuthHeader();
+	if (auth) headers.Authorization = auth;
+
+	const res = await fetch(url, {
+		method: 'POST',
+		headers,
+		body: JSON.stringify(req),
+	});
+
+	const body = await res.text();
+	if (!res.ok) {
+		let parsed: ParsePreviewErrorResponse | null = null;
+		try {
+			parsed = JSON.parse(body) as ParsePreviewErrorResponse;
+		} catch {
+			parsed = null;
+		}
+		if (parsed && typeof parsed.code === 'string' && typeof parsed.message === 'string') {
+			throw new PreviewApiError(res.status, parsed);
+		}
+		throw new ApiError(res.status, body);
+	}
+
+	if (!body.trim()) {
+		throw new ApiError(res.status, 'Empty ingest preview response');
+	}
+	return JSON.parse(body) as ParsePreviewResponse;
+}
+
+export async function previewSessionFromGithubSource(params: {
+	owner: string;
+	repo: string;
+	ref: string;
+	path: string;
+	parser_hint?: string;
+}): Promise<ParsePreviewResponse> {
+	const source: ParseSource = {
+		kind: 'github',
+		owner: params.owner,
+		repo: params.repo,
+		ref: params.ref,
+		path: params.path,
+	};
+	return postIngestPreview({
+		source,
+		parser_hint: params.parser_hint ?? null,
+	});
+}
+
+export async function previewSessionFromInlineSource(params: {
+	filename: string;
+	content_base64: string;
+	parser_hint?: string;
+}): Promise<ParsePreviewResponse> {
+	const source: ParseSource = {
+		kind: 'inline',
+		filename: params.filename,
+		content_base64: params.content_base64,
+	};
+	return postIngestPreview({
+		source,
+		parser_hint: params.parser_hint ?? null,
+	});
+}
+
+export function getParsePreviewError(error: unknown): ParsePreviewErrorResponse | null {
+	if (error instanceof PreviewApiError) return error.payload;
+	if (error instanceof ApiError) {
+		try {
+			const parsed = JSON.parse(error.body) as ParsePreviewErrorResponse;
+			if (typeof parsed.code === 'string' && typeof parsed.message === 'string') {
+				return parsed;
+			}
+		} catch {
+			// ignore non-json errors
+		}
+	}
+	return null;
 }
 
 export function getOAuthUrl(provider: string): string {

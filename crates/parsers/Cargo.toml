@@ -26,3 +26,4 @@ shellexpand = { workspace = true }
 regex = { workspace = true }
 toml = { workspace = true }
 rusqlite = { workspace = true }
+tempfile = { workspace = true }

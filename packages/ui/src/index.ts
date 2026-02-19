@@ -6,9 +6,12 @@ export {
 	authLogin,
 	authLogout,
 	authRegister,
+	getParsePreviewError,
 	getApiCapabilities,
 	getAuthProviders,
 	getOAuthUrl,
+	isGhShareAvailable,
+	isIngestPreviewApiAvailable,
 	getSession,
 	getSettings,
 	handleAuthCallback,
@@ -16,6 +19,9 @@ export {
 	isAuthenticated,
 	isUploadApiAvailable,
 	listSessions,
+	previewSessionFromGithubSource,
+	previewSessionFromInlineSource,
+	PreviewApiError,
 	setBaseUrl,
 	uploadSession,
 	verifyAuth,
@@ -40,6 +46,18 @@ export { parseHailInput, parseHailJsonl } from './hail-parse';
 // Highlight & Markdown utilities
 export { highlightCode } from './highlight';
 export { isLongContent, lineCount, renderMarkdown } from './markdown';
+// Session filter/view helpers
+export {
+	buildNativeFilterOptions,
+	buildUnifiedFilterOptions,
+	filterEventsByNativeGroups,
+	filterEventsByUnifiedKeys,
+	isNativeAdapterSupported,
+	nativeGroupForEvent,
+	unifiedFilterKeyForEvent,
+	type FilterOption,
+	type SessionViewMode,
+} from './session-filters';
 // Parser conformance constants
 export {
 	conformanceCoverageScore,

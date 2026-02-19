@@ -2630,6 +2630,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shellexpand",
+ "tempfile",
  "toml",
  "tracing",
  "uuid",
@@ -2649,9 +2650,11 @@ version = "0.2.15"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "opensession-api",
  "opensession-core",
+ "opensession-parsers",
  "reqwest",
  "rusqlite",
  "sea-query",
@@ -2661,6 +2664,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
 ]
 

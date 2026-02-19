@@ -12,6 +12,8 @@ export interface TestUser {
 export interface ApiCapabilities {
 	auth_enabled: boolean;
 	upload_enabled: boolean;
+	ingest_preview_enabled: boolean;
+	gh_share_enabled: boolean;
 }
 
 let _admin: TestUser | null = null;

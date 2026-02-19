@@ -132,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         // Health
         .route("/health", get(routes::health::health))
         .route("/capabilities", get(routes::capabilities::capabilities))
+        .route("/ingest/preview", post(routes::ingest::preview))
         // Auth
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))

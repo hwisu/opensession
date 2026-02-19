@@ -90,6 +90,7 @@ export interface Stats {
 export type {
 	ApiError as ApiErrorResponse,
 	AuthProvidersResponse,
+	CapabilitiesResponse,
 	HealthResponse,
 	LinkedProvider,
 	LinkType,

@@ -77,4 +77,6 @@ export interface LinkedProvider { provider: string, provider_username: string, d
 
 export interface HealthResponse { status: string, version: string, }
 
+export interface CapabilitiesResponse { auth_enabled: boolean, upload_enabled: boolean, }
+
 export interface ApiError { error: string, }

@@ -1,5 +1,6 @@
 use worker::*;
 
+mod config;
 mod db_helpers;
 mod error;
 mod routes;
@@ -45,10 +46,24 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
     let router = Router::new()
         // Health
         .get_async("/api/health", routes::health::handle)
+        .get_async("/api/capabilities", routes::capabilities::handle)
         // Public sessions (read-only)
         .get_async("/api/sessions", routes::sessions::list)
         .get_async("/api/sessions/:id", routes::sessions::get)
         .get_async("/api/sessions/:id/raw", routes::sessions::get_raw)
+        // Auth
+        .get_async("/api/auth/providers", routes::auth::providers)
+        .post_async("/api/auth/register", routes::auth::auth_register)
+        .post_async("/api/auth/login", routes::auth::login)
+        .post_async("/api/auth/refresh", routes::auth::refresh)
+        .post_async("/api/auth/logout", routes::auth::logout)
+        .post_async("/api/auth/verify", routes::auth::verify)
+        .get_async("/api/auth/me", routes::auth::me)
+        .get_async("/api/auth/oauth/:provider", routes::auth::oauth_redirect)
+        .get_async(
+            "/api/auth/oauth/:provider/callback",
+            routes::auth::oauth_callback,
+        )
         // Docs (content negotiation: markdown for AI agents, HTML for browsers)
         .get_async("/docs", routes::docs::handle)
         .get_async("/llms.txt", routes::docs::llms_txt);

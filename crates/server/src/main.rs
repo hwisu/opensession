@@ -131,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
     let api = Router::new()
         // Health
         .route("/health", get(routes::health::health))
+        .route("/capabilities", get(routes::capabilities::capabilities))
         // Auth (legacy)
         .route("/register", post(routes::auth::register))
         .route("/auth/verify", post(routes::auth::verify))

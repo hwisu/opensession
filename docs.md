@@ -7,14 +7,13 @@ OpenSession is now optimized for a git-native workflow.
 | Area | Server (Axum) | Worker (Wrangler) |
 |------|----------------|-------------------|
 | Primary focus | Read + upload sessions | Public session browsing |
-| Home `/` | Guest landing, session list after login | Public session list |
+| Home `/` | Guest landing, session list after login | Guest landing, session list after login |
 | Upload UI `/upload` | Enabled | Disabled (read-only) |
-| Auth routes | Enabled | Disabled |
+| Auth routes | Enabled when `JWT_SECRET` is set | Enabled when `JWT_SECRET` is set |
 | Team/invitation/sync routes | Disabled | Disabled |
-| API surface | `/api/health`, `/api/sessions*` | `/api/health`, `/api/sessions*` |
+| API surface | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
 
-Build profile:
-- `VITE_APP_PROFILE=server|worker`
+Web UI behavior is runtime-driven via `GET /api/capabilities` (no build-time profile flag).
 
 ## Quick Start
 
@@ -117,6 +116,14 @@ Important environment variables:
 
 Always available:
 - `GET /api/health`
+- `GET /api/capabilities`
+- `GET /api/auth/providers`
+- `POST /api/auth/register` (when `JWT_SECRET` is configured)
+- `POST /api/auth/login` (when `JWT_SECRET` is configured)
+- `POST /api/auth/refresh` (when `JWT_SECRET` is configured)
+- `POST /api/auth/logout` (when `JWT_SECRET` is configured)
+- `POST /api/auth/verify` (when `JWT_SECRET` is configured)
+- `GET /api/auth/me` (when `JWT_SECRET` is configured)
 - `POST /api/sessions` (server profile, auth required)
 - `GET /api/sessions`
 - `GET /api/sessions/{id}`

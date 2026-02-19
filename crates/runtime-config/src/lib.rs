@@ -392,26 +392,6 @@ pub fn apply_compat_fallbacks(config: &mut DaemonConfig, _root: Option<&toml::Va
     changed
 }
 
-/// True when `[git_storage].method` is absent/invalid in the source TOML.
-///
-/// Retained as a compatibility helper for callers that still inspect legacy
-/// config layouts directly.
-pub fn config_file_missing_git_storage_method(root: Option<&toml::Value>) -> bool {
-    let Some(root) = root else {
-        return false;
-    };
-    let Some(table) = root.as_table() else {
-        return false;
-    };
-    let Some(git_storage) = table.get("git_storage") else {
-        return true;
-    };
-    match git_storage.as_table() {
-        Some(section) => !section.contains_key("method"),
-        None => true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

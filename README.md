@@ -47,18 +47,17 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 
 When set to `0|false|off|no`, TUI skips full disk re-discovery at startup and relies on cached local DB sessions first.
 
-## Runtime Profiles
+## Runtime Capabilities
 
 | Area | Server (Axum) | Worker (Wrangler) |
 |------|----------------|-------------------|
-| Home `/` | Landing for guests, session list after login | Public session list |
+| Home `/` | Landing for guests, session list after login | Landing for guests, session list after login |
 | Upload UI `/upload` | Enabled | Disabled (read-only) |
-| API surface | `/api/health`, `/api/sessions*` | `/api/health`, `/api/sessions*` |
-| Auth routes | Enabled | Disabled |
+| API surface | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
+| Auth routes | Enabled when `JWT_SECRET` is set | Enabled when `JWT_SECRET` is set |
 | Team/invitation/sync routes | Disabled | Disabled |
 
-Web build profile:
-- `VITE_APP_PROFILE=server|worker`
+Web UI behavior is runtime-driven via `GET /api/capabilities` (no build-time profile flag).
 
 ## Architecture
 
@@ -133,6 +132,14 @@ custom_paths = [
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
+| GET | `/api/capabilities` | Runtime feature flags (`auth_enabled`, `upload_enabled`) |
+| GET | `/api/auth/providers` | Available auth providers |
+| POST | `/api/auth/register` | Email/password registration |
+| POST | `/api/auth/login` | Email/password login |
+| POST | `/api/auth/refresh` | Refresh access token |
+| POST | `/api/auth/logout` | Revoke refresh token |
+| POST | `/api/auth/verify` | Verify access token |
+| GET | `/api/auth/me` | Current user profile |
 | POST | `/api/sessions` | Upload HAIL session (auth required) |
 | GET | `/api/sessions` | List sessions |
 | GET | `/api/sessions/{id}` | Get session detail |

@@ -498,6 +498,15 @@ pub struct HealthResponse {
     pub version: String,
 }
 
+/// Returned by `GET /api/capabilities` — runtime feature availability.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct CapabilitiesResponse {
+    pub auth_enabled: bool,
+    pub upload_enabled: bool,
+}
+
 // ─── Service Error ───────────────────────────────────────────────────────────
 
 /// Framework-agnostic service error.
@@ -654,6 +663,7 @@ mod tests {
             oauth::LinkedProvider,
             // Health
             HealthResponse,
+            CapabilitiesResponse,
             ApiError,
         );
 

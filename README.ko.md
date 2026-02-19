@@ -47,18 +47,17 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 
 `0|false|off|no`로 설정하면 TUI 시작 시 전체 디스크 재탐색을 건너뛰고, 로컬 DB 캐시 세션을 우선 사용합니다.
 
-## 런타임 프로필
+## 런타임 기능
 
 | 항목 | Server (Axum) | Worker (Wrangler) |
 |------|----------------|-------------------|
-| 홈(`/`) | 게스트 랜딩, 로그인 후 세션 목록 | 공개 세션 목록 |
+| 홈(`/`) | 게스트 랜딩, 로그인 후 세션 목록 | 게스트 랜딩, 로그인 후 세션 목록 |
 | 업로드 UI(`/upload`) | 사용 가능 | 비활성(read-only) |
-| API 표면 | `/api/health`, `/api/sessions*` | `/api/health`, `/api/sessions*` |
-| 인증 라우트 | 활성 | 비활성 |
+| API 표면 | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
+| 인증 라우트 | `JWT_SECRET` 설정 시 활성 | `JWT_SECRET` 설정 시 활성 |
 | 팀/초대/싱크 라우트 | 비활성 | 비활성 |
 
-웹 빌드 프로필:
-- `VITE_APP_PROFILE=server|worker`
+웹 UI 동작은 `GET /api/capabilities` 기반 런타임 감지로 결정됩니다(빌드 타임 프로필 플래그 없음).
 
 ## 아키텍처
 
@@ -133,6 +132,14 @@ custom_paths = [
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
 | GET | `/api/health` | 헬스 체크 |
+| GET | `/api/capabilities` | 런타임 기능 플래그(`auth_enabled`, `upload_enabled`) |
+| GET | `/api/auth/providers` | 사용 가능한 인증 공급자 목록 |
+| POST | `/api/auth/register` | 이메일/비밀번호 회원가입 |
+| POST | `/api/auth/login` | 이메일/비밀번호 로그인 |
+| POST | `/api/auth/refresh` | 액세스 토큰 갱신 |
+| POST | `/api/auth/logout` | 리프레시 토큰 무효화 |
+| POST | `/api/auth/verify` | 액세스 토큰 검증 |
+| GET | `/api/auth/me` | 현재 사용자 프로필 |
 | POST | `/api/sessions` | HAIL 세션 업로드 (인증 필요) |
 | GET | `/api/sessions` | 세션 목록 조회 |
 | GET | `/api/sessions/{id}` | 세션 상세 조회 |

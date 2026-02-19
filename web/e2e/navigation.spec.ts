@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { getAdmin, injectAuth, uploadSession } from './helpers';
+import { getAdmin, getCapabilities, injectAuth, uploadSession } from './helpers';
 
 test.describe('Navigation', () => {
 	test('unauthenticated nav links are present', async ({ page }) => {
@@ -7,6 +7,8 @@ test.describe('Navigation', () => {
 		const nav = page.locator('nav');
 		await expect(nav.getByText('Sessions')).toBeVisible();
 		await expect(nav.getByText('Docs')).toBeVisible();
+		await expect(nav.getByText('Login')).toBeVisible();
+		await expect(nav.getByText('Register')).toHaveCount(0);
 		await expect(nav.getByText('DX')).toHaveCount(0);
 		await expect(nav.getByText('Inbox')).toHaveCount(0);
 		await expect(nav.getByText('Teams')).toHaveCount(0);
@@ -66,12 +68,14 @@ test.describe('Navigation', () => {
 	});
 
 	test('authenticated nav shows settings link', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
 		await page.goto('/');
-		await expect(
-			page.locator('nav').getByText(`[${admin.nickname}]`),
-		).toBeVisible();
+
+		await expect(page.locator('nav').getByText(`[${admin.nickname}]`)).toBeVisible();
 		const teamsCount = await page.locator('nav').getByText('Teams').count();
 		const inboxCount = await page.locator('nav').getByText('Inbox').count();
 		if (teamsCount > 0 || inboxCount > 0) {
@@ -81,6 +85,10 @@ test.describe('Navigation', () => {
 			await expect(page.locator('nav').getByText('Teams')).toHaveCount(0);
 			await expect(page.locator('nav').getByText('Inbox')).toHaveCount(0);
 		}
-		await expect(page.locator('nav').getByText('Upload')).toBeVisible();
+		if (capabilities.upload_enabled) {
+			await expect(page.locator('nav').getByText('Upload')).toBeVisible();
+		} else {
+			await expect(page.locator('nav').getByText('Upload')).toHaveCount(0);
+		}
 	});
 });

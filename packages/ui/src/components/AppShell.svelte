@@ -1,7 +1,14 @@
 <script lang="ts">
 import { tick } from 'svelte';
 import type { Snippet } from 'svelte';
-import { authLogout, getSettings, isAuthApiAvailable, isAuthenticated, verifyAuth } from '../api';
+import {
+	ApiError,
+	authLogout,
+	getApiCapabilities,
+	getSettings,
+	isAuthenticated,
+	verifyAuth,
+} from '../api';
 import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
@@ -16,14 +23,12 @@ type PaletteCommand = {
 const {
 	currentPath,
 	children,
-	appProfile = 'server',
 	onNavigate = (path: string) => {
 		window.location.assign(path);
 	},
 }: {
 	currentPath: string;
 	children: Snippet;
-	appProfile?: 'server' | 'worker';
 	onNavigate?: (path: string) => void;
 } = $props();
 
@@ -34,16 +39,17 @@ let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
 let authGuardSeq = 0;
 let authEnabled = $state(false);
+let uploadEnabled = $state(false);
+let hasLocalAuth = $state(false);
 
-const uploadEnabled = $derived(authEnabled);
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/');
 
 function isGuestAllowedPath(path: string): boolean {
 	return (
 		path === '/' ||
+		path.startsWith('/session/') ||
 		path === '/login' ||
-		path === '/register' ||
 		path === '/auth/callback' ||
 		path.startsWith('/docs')
 	);
@@ -59,17 +65,17 @@ const navLinks = $derived.by(() => {
 });
 
 $effect(() => {
-	void appProfile;
-	authEnabled = appProfile === 'server';
 	let cancelled = false;
-	isAuthApiAvailable()
-		.then((available) => {
+	getApiCapabilities()
+		.then((capabilities) => {
 			if (cancelled) return;
-			authEnabled = available;
+			authEnabled = capabilities.auth_enabled;
+			uploadEnabled = capabilities.upload_enabled;
 		})
 		.catch(() => {
 			if (cancelled) return;
-			authEnabled = appProfile === 'server';
+			authEnabled = false;
+			uploadEnabled = false;
 		});
 
 	return () => {
@@ -91,11 +97,13 @@ $effect(() => {
 	void currentPath;
 	if (!authEnabled) {
 		user = null;
+		hasLocalAuth = false;
 		return;
 	}
 
 	if (!isAuthenticated()) {
 		user = null;
+		hasLocalAuth = false;
 		return;
 	}
 
@@ -104,17 +112,29 @@ $effect(() => {
 		.then(async (ok) => {
 			if (!ok || cancelled) {
 				user = null;
+				hasLocalAuth = false;
 				return;
 			}
 			try {
 				const settings = await getSettings();
-				if (!cancelled) user = settings;
-			} catch {
-				if (!cancelled) user = null;
+				if (!cancelled) {
+					user = settings;
+					hasLocalAuth = true;
+				}
+			} catch (e) {
+				if (cancelled) return;
+				user = null;
+				hasLocalAuth = false;
+				if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+					await authLogout();
+				}
 			}
 		})
 		.catch(() => {
-			if (!cancelled) user = null;
+			if (!cancelled) {
+				user = null;
+				hasLocalAuth = false;
+			}
 		});
 
 	return () => {
@@ -124,7 +144,8 @@ $effect(() => {
 
 $effect(() => {
 	void currentPath;
-	if (!authEnabled || isGuestAllowedPath(currentPath)) return;
+	if (isGuestAllowedPath(currentPath)) return;
+	if (!uploadEnabled || currentPath !== '/upload') return;
 	const seq = ++authGuardSeq;
 	let cancelled = false;
 	verifyAuth()
@@ -185,7 +206,7 @@ const allPaletteCommands = $derived.by(() => {
 		);
 	}
 
-	if (authEnabled && !user) {
+	if (!hasLocalAuth) {
 		commands.push(
 			createPaletteCommand(
 				'go-login',
@@ -193,13 +214,6 @@ const allPaletteCommands = $derived.by(() => {
 				'Sign in to your account',
 				['login', 'auth', 'signin'],
 				() => onNavigate('/login'),
-			),
-			createPaletteCommand(
-				'go-register',
-				'Go to Register',
-				'Create a new account',
-				['register', 'signup', 'auth'],
-				() => onNavigate('/register'),
 			),
 		);
 	}
@@ -318,6 +332,7 @@ function handlePaletteInputKeydown(e: KeyboardEvent) {
 async function handleSignOut() {
 	await authLogout();
 	user = null;
+	hasLocalAuth = false;
 	onNavigate('/');
 }
 
@@ -369,30 +384,22 @@ function handleGlobalKey(e: KeyboardEvent) {
 				</a>
 			{/each}
 
-			{#if authEnabled}
-				{#if user}
-					<span class="px-2 py-1 text-xs text-text-secondary sm:text-sm">[{user.nickname}]</span>
-					<button
-						type="button"
-						onclick={handleSignOut}
-						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
-					>
-						Logout
-					</button>
-				{:else}
-					<a
-						href="/login"
-						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
-					>
-						Login
-					</a>
-					<a
-						href="/register"
-						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
-					>
-						Register
-					</a>
-				{/if}
+			{#if hasLocalAuth}
+				<span class="px-2 py-1 text-xs text-text-secondary sm:text-sm">[{user?.nickname ?? 'account'}]</span>
+				<button
+					type="button"
+					onclick={handleSignOut}
+					class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
+				>
+					Logout
+				</button>
+			{:else}
+				<a
+					href="/login"
+					class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
+				>
+					Login
+				</a>
 			{/if}
 		</div>
 	</nav>

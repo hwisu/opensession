@@ -1,6 +1,7 @@
 import type {
 	AuthProvidersResponse,
 	AuthTokenResponse,
+	CapabilitiesResponse,
 	Session,
 	SessionListResponse,
 	UserSettings,
@@ -40,7 +41,16 @@ function getRefreshToken(): string | null {
 function getTokenExpiry(): number {
 	if (typeof window !== 'undefined') {
 		const v = localStorage.getItem('opensession_token_expiry');
-		return v ? parseInt(v, 10) : 0;
+		if (!v) return 0;
+		const parsed = parseInt(v, 10);
+		if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+		// Backward compatibility: older clients may have stored millisecond timestamps.
+		if (parsed > 10_000_000_000) {
+			const normalized = Math.floor(parsed / 1000);
+			localStorage.setItem('opensession_token_expiry', String(normalized));
+			return normalized;
+		}
+		return parsed;
 	}
 	return 0;
 }
@@ -294,15 +304,56 @@ export async function getAuthProviders(): Promise<AuthProvidersResponse> {
 	return res.json();
 }
 
-export async function isAuthApiAvailable(): Promise<boolean> {
-	const url = `${getBaseUrl()}/api/auth/providers`;
+export async function getApiCapabilities(): Promise<CapabilitiesResponse> {
+	const url = `${getBaseUrl()}/api/capabilities`;
 	try {
 		const res = await fetch(url);
-		if (res.status === 404 || res.status === 405) return false;
-		return true;
+		if (res.ok) {
+			return res.json();
+		}
+		if (res.status === 404 || res.status === 405) {
+			return { auth_enabled: false, upload_enabled: false };
+		}
 	} catch {
-		return false;
+		// fall through to legacy probe
 	}
+
+	// Legacy fallback for deployments that haven't added /api/capabilities yet.
+	const authEnabled = await (async () => {
+		try {
+			const res = await fetch(`${getBaseUrl()}/api/auth/providers`);
+			if (res.status === 404 || res.status === 405) return false;
+			return res.ok;
+		} catch {
+			return false;
+		}
+	})();
+
+	const uploadEnabled = await (async () => {
+		try {
+			const res = await fetch(`${getBaseUrl()}/api/sessions`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: '{}',
+			});
+			// 400/401/403 imply the route exists; 404/405 imply disabled.
+			return !(res.status === 404 || res.status === 405);
+		} catch {
+			return false;
+		}
+	})();
+
+	return { auth_enabled: authEnabled, upload_enabled: uploadEnabled };
+}
+
+export async function isAuthApiAvailable(): Promise<boolean> {
+	const capabilities = await getApiCapabilities();
+	return capabilities.auth_enabled;
+}
+
+export async function isUploadApiAvailable(): Promise<boolean> {
+	const capabilities = await getApiCapabilities();
+	return capabilities.upload_enabled;
 }
 
 export function getOAuthUrl(provider: string): string {

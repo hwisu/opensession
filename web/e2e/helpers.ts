@@ -1,14 +1,6 @@
 import { type Page, type APIRequestContext } from '@playwright/test';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const PROFILE_ENV = (process.env.E2E_APP_PROFILE || process.env.VITE_APP_PROFILE || 'server')
-	.trim()
-	.toLowerCase();
-
-export type AppProfile = 'server' | 'worker';
-export const appProfile: AppProfile = PROFILE_ENV === 'worker' ? 'worker' : 'server';
-export const isServerProfile = appProfile === 'server';
-export const isWorkerProfile = appProfile === 'worker';
 
 export interface TestUser {
 	user_id: string;
@@ -18,7 +10,23 @@ export interface TestUser {
 	api_key: string;
 }
 
+export interface ApiCapabilities {
+	auth_enabled: boolean;
+	upload_enabled: boolean;
+}
+
 let _admin: TestUser | null = null;
+let _capabilities: ApiCapabilities | null = null;
+
+export async function getCapabilities(request: APIRequestContext): Promise<ApiCapabilities> {
+	if (_capabilities) return _capabilities;
+	const resp = await request.get(`${BASE_URL}/api/capabilities`);
+	if (!resp.ok()) {
+		throw new Error(`Capabilities request failed: ${resp.status()} ${await resp.text()}`);
+	}
+	_capabilities = await resp.json();
+	return _capabilities;
+}
 
 /**
  * Register the admin user (first registered user = admin on self-hosted).

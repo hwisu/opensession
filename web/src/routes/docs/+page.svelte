@@ -1,21 +1,24 @@
 <script lang="ts">
+	import { isUploadApiAvailable } from '@opensession/ui';
 	import { DocsPage } from '@opensession/ui/components';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { isAuthApiAvailable } from '$lib/api';
-	import { appProfile } from '$lib/profile';
 
-	let authEnabled = $state(appProfile === 'server');
+	let uploadEnabled = $state(false);
 
 	onMount(() => {
 		let cancelled = false;
-		void isAuthApiAvailable().then((enabled) => {
-			if (!cancelled) authEnabled = enabled;
-		});
+		void isUploadApiAvailable()
+			.then((enabled) => {
+				if (!cancelled) uploadEnabled = enabled;
+			})
+			.catch(() => {
+				if (!cancelled) uploadEnabled = false;
+			});
 		return () => {
 			cancelled = true;
 		};
 	});
 </script>
 
-<DocsPage onNavigate={(path) => goto(path)} showUploadLink={authEnabled} />
+<DocsPage onNavigate={(path) => goto(path)} showUploadLink={uploadEnabled} />

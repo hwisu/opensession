@@ -2,7 +2,6 @@ mod config;
 mod health;
 pub mod hooks;
 mod scheduler;
-mod tail;
 mod watcher;
 
 use anyhow::Result;

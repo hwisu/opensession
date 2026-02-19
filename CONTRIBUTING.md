@@ -44,8 +44,8 @@ crates/
 - **Feature naming**: backend feature is `backend` (not `server`).
 - **Deployment profiles**:
   - Server/Axum supports auth and session upload/listing.
-  - Worker/Wrangler is public read-only browsing.
-  - Web UI profile is selected at build-time via `VITE_APP_PROFILE`.
+  - Worker/Wrangler serves public browsing with runtime-gated auth.
+  - Web UI behavior is selected at runtime via `GET /api/capabilities`.
 
 ## Database Migrations
 

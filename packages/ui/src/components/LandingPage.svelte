@@ -36,13 +36,6 @@ const highlights = [
 				>
 					Sign In
 				</button>
-				<button
-					type="button"
-					onclick={() => onNavigate('/register')}
-					class="border border-border px-4 py-2 text-xs font-semibold text-text-secondary transition-colors hover:border-accent hover:text-accent"
-				>
-					Create Account
-				</button>
 				<a
 					href="https://github.com/hwisu/opensession"
 					target="_blank"
@@ -65,7 +58,7 @@ const highlights = [
 				{/each}
 			</ul>
 			<div class="mt-4 border-t border-border pt-3 text-[11px] text-text-muted">
-				Browse docs without login. Sign in to upload and manage private workflows.
+				Browse docs without login. Sign in to create an account, upload, and manage workflows.
 			</div>
 		</div>
 	</section>

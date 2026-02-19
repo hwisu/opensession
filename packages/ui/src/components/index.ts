@@ -10,7 +10,6 @@ export { default as ExpandableChip } from './ExpandableChip.svelte';
 export { default as HomePage } from './HomePage.svelte';
 export { default as LandingPage } from './LandingPage.svelte';
 export { default as LoginPage } from './LoginPage.svelte';
-export { default as RegisterPage } from './RegisterPage.svelte';
 export { default as SessionCard } from './SessionCard.svelte';
 export { default as SessionDetailPage } from './SessionDetailPage.svelte';
 export { default as SessionListPage } from './SessionListPage.svelte';

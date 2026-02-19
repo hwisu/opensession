@@ -326,16 +326,6 @@ mod tests {
     }
 
     #[test]
-    fn team_share_panel_shows_private_rbac_purpose() {
-        let mut app = App::new(vec![]);
-        app.settings_section = SettingsSection::TeamShare;
-        let text = render_text(&app, 160, 40);
-
-        assert!(text.contains("Team Share = git-native scoped collaboration key"));
-        assert!(text.contains("optional"));
-    }
-
-    #[test]
     fn capture_flow_panel_explains_capture_vs_sync() {
         let mut app = App::new(vec![]);
         app.settings_section = SettingsSection::CaptureSync;
@@ -380,12 +370,6 @@ fn render_daemon_config(
         SettingsGroup::Workspace => {
             lines.push(Line::from(Span::styled(
                 "  Web Share = register Public Git target and publish shareable logs",
-                Style::new().fg(Theme::TEXT_MUTED),
-            )));
-        }
-        SettingsGroup::TeamShare => {
-            lines.push(Line::from(Span::styled(
-                "  Team Share = git-native scoped collaboration key (optional)",
                 Style::new().fg(Theme::TEXT_MUTED),
             )));
         }

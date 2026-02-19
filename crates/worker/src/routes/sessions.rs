@@ -29,7 +29,6 @@ impl From<storage::SessionRow> for SessionSummary {
             id: s.id,
             user_id: s.user_id,
             nickname: s.nickname,
-            team_id: s.team_id,
             tool: s.tool,
             agent_provider: s.agent_provider,
             agent_model: s.agent_model,
@@ -75,7 +74,6 @@ fn parse_session_list_query(query_pairs: &[(String, String)]) -> SessionListQuer
             .unwrap_or(20),
         search: params.get("search").map(|v| (*v).to_string()),
         tool: params.get("tool").map(|v| (*v).to_string()),
-        team_id: params.get("team_id").map(|v| (*v).to_string()),
         sort: parse_query_enum(&params, "sort"),
         time_range: parse_query_enum(&params, "time_range"),
     }
@@ -218,7 +216,6 @@ pub async fn get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
 
             Response::from_json(&SessionDetail {
                 summary,
-                team_name: None,
                 linked_sessions,
             })
         }

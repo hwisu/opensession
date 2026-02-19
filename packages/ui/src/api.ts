@@ -181,7 +181,6 @@ export async function listSessions(params?: {
 	per_page?: number;
 	sort?: string;
 	time_range?: string;
-	team_id?: string;
 }): Promise<SessionListResponse> {
 	return request<SessionListResponse>(`/api/sessions${buildQuery(params)}`);
 }
@@ -205,13 +204,10 @@ async function requestRaw(path: string): Promise<string> {
 	return res.text();
 }
 
-export async function uploadSession(
-	session: Session,
-	scopeId: string = 'local',
-): Promise<{ id: string; url: string }> {
+export async function uploadSession(session: Session): Promise<{ id: string; url: string }> {
 	return request('/api/sessions', {
 		method: 'POST',
-		body: JSON.stringify({ session, team_id: scopeId }),
+		body: JSON.stringify({ session }),
 	});
 }
 

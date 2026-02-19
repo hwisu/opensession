@@ -88,19 +88,11 @@ export interface Stats {
 // Regenerate: cargo test -p opensession-api -- export_typescript
 
 export type {
-	AcceptInvitationResponse,
 	ApiError as ApiErrorResponse,
 	AuthProvidersResponse,
 	HealthResponse,
-	InvitationResponse,
-	InvitationStatus,
 	LinkedProvider,
 	LinkType,
-	ListInvitationsResponse,
-	ListMembersResponse,
-	ListTeamInviteKeysResponse,
-	ListTeamsResponse,
-	MemberResponse,
 	OAuthProviderInfo,
 	RegisterResponse,
 	SessionDetail,
@@ -108,42 +100,14 @@ export type {
 	SessionListResponse,
 	SessionSummary,
 	SortOrder,
-	CreateTeamInviteKeyRequest,
-	CreateTeamInviteKeyResponse,
-	JoinTeamWithKeyRequest,
-	JoinTeamWithKeyResponse,
-	TeamDetailResponse,
-	TeamInviteKeySummary,
-	TeamResponse,
-	TeamRole,
-	TeamStatsResponse,
-	TeamStatsTotals,
 	TimeRange,
-	ToolStats,
 	UploadResponse,
 	UserSettingsResponse,
-	UserStats,
 	VerifyResponse,
 } from './api-types.generated';
 
 // Convenience alias for backward compatibility
 export type SessionListItem = import('./api-types.generated').SessionSummary;
-
-// ─── Team/task tool detection ────────────────────────────────────────────────
-
-export const TEAM_TOOL_NAMES = [
-	'TaskCreate',
-	'TaskUpdate',
-	'TaskList',
-	'TaskGet',
-	'TeamCreate',
-	'TeamDelete',
-	'SendMessage',
-] as const;
-export type TeamToolName = (typeof TEAM_TOOL_NAMES)[number];
-export function isTeamTool(name: string): name is TeamToolName {
-	return (TEAM_TOOL_NAMES as readonly string[]).includes(name);
-}
 
 // ─── UI-only types (not from server) ─────────────────────────────────────────
 

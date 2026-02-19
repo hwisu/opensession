@@ -180,7 +180,7 @@ enum PublishAction {
 
 #[derive(Subcommand)]
 enum AccountAction {
-    /// Connect server/API key in one command (team_id is optional)
+    /// Connect server/API key in one command
     Connect {
         /// Set the server URL
         #[arg(long)]
@@ -189,16 +189,6 @@ enum AccountAction {
         /// Set the API key
         #[arg(long)]
         api_key: Option<String>,
-
-        /// Optional legacy team scope for uploads (defaults to local when unset)
-        #[arg(long)]
-        team_id: Option<String>,
-    },
-    /// Set upload scope ID quickly (legacy; default is local)
-    Team {
-        /// Scope ID
-        #[arg(long, short = 't')]
-        id: String,
     },
     /// Show current account/server config
     Show,
@@ -805,18 +795,13 @@ async fn run_daemon_action(action: DaemonAction) -> anyhow::Result<()> {
 
 async fn run_account_action(action: AccountAction) -> anyhow::Result<()> {
     match action {
-        AccountAction::Connect {
-            server,
-            api_key,
-            team_id,
-        } => {
-            if server.is_none() && api_key.is_none() && team_id.is_none() {
+        AccountAction::Connect { server, api_key } => {
+            if server.is_none() && api_key.is_none() {
                 config::show_config()
             } else {
-                config::set_config(server, api_key, team_id)
+                config::set_config(server, api_key)
             }
         }
-        AccountAction::Team { id } => config::set_team(id),
         AccountAction::Show => config::show_config(),
         AccountAction::Status => server::run_status().await,
         AccountAction::Verify => server::run_verify().await,

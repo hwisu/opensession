@@ -112,7 +112,6 @@ pub struct ProjectPrivacy {
 /// Project-level identity overrides (e.g., different team for different repos).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectIdentity {
-    pub team_id: Option<String>,
     pub nickname: Option<String>,
 }
 
@@ -199,9 +198,6 @@ pub fn merge_project_config(global: &DaemonConfig, project: &ProjectConfig) -> D
     }
 
     if let Some(ref identity) = project.identity {
-        if let Some(ref team_id) = identity.team_id {
-            merged.identity.team_id = team_id.clone();
-        }
         if let Some(ref nickname) = identity.nickname {
             merged.identity.nickname = nickname.clone();
         }
@@ -247,13 +243,9 @@ pub fn merge_project_configs(shared: &ProjectConfig, local: &ProjectConfig) -> P
     }
 
     if let Some(ref local_identity) = local.identity {
-        let base = merged.identity.get_or_insert(ProjectIdentity {
-            team_id: None,
-            nickname: None,
-        });
-        if local_identity.team_id.is_some() {
-            base.team_id = local_identity.team_id.clone();
-        }
+        let base = merged
+            .identity
+            .get_or_insert(ProjectIdentity { nickname: None });
         if local_identity.nickname.is_some() {
             base.nickname = local_identity.nickname.clone();
         }
@@ -297,7 +289,7 @@ pub fn generate_default_project_config() -> String {
 # exclude_tools = []
 
 # [identity]
-# team_id = ""           # Override the default team for this repo
+# nickname = ""          # Optional per-repo display handle override
 
 # [hooks]
 # prepare_commit_msg = true  # Add AI-Session trailer to commit messages
@@ -374,7 +366,7 @@ strip_paths = false
 exclude_patterns = ["*.log"]
 
 [identity]
-team_id = "team-abc"
+nickname = "repo-user"
 "#,
         )
         .unwrap();
@@ -384,7 +376,7 @@ team_id = "team-abc"
         assert_eq!(privacy.strip_paths, Some(false));
         assert_eq!(privacy.exclude_patterns, Some(vec!["*.log".to_string()]));
         let identity = loaded.identity.unwrap();
-        assert_eq!(identity.team_id, Some("team-abc".to_string()));
+        assert_eq!(identity.nickname, Some("repo-user".to_string()));
     }
 
     #[test]
@@ -411,16 +403,13 @@ team_id = "team-abc"
         let global = DaemonConfig::default();
         let project = ProjectConfig {
             identity: Some(ProjectIdentity {
-                team_id: Some("project-team".to_string()),
-                nickname: None,
+                nickname: Some("project-nick".to_string()),
             }),
             ..Default::default()
         };
 
         let merged = merge_project_config(&global, &project);
-        assert_eq!(merged.identity.team_id, "project-team");
-        // nickname unchanged
-        assert_eq!(merged.identity.nickname, "user");
+        assert_eq!(merged.identity.nickname, "project-nick");
     }
 
     #[test]
@@ -463,8 +452,7 @@ team_id = "team-abc"
                 exclude_tools: None,
             }),
             identity: Some(ProjectIdentity {
-                team_id: Some("shared-team".to_string()),
-                nickname: None,
+                nickname: Some("shared-nick".to_string()),
             }),
             hooks: Some(ProjectHooks {
                 prepare_commit_msg: true,
@@ -482,7 +470,6 @@ team_id = "team-abc"
                 exclude_tools: None,
             }),
             identity: Some(ProjectIdentity {
-                team_id: None,
                 nickname: Some("me".to_string()), // add
             }),
             hooks: Some(ProjectHooks {
@@ -503,8 +490,7 @@ team_id = "team-abc"
         );
 
         let identity = merged.identity.unwrap();
-        assert_eq!(identity.team_id, Some("shared-team".to_string())); // shared preserved
-        assert_eq!(identity.nickname, Some("me".to_string())); // local added
+        assert_eq!(identity.nickname, Some("me".to_string())); // local override
 
         let hooks = merged.hooks.unwrap();
         assert!(!hooks.prepare_commit_msg); // local override

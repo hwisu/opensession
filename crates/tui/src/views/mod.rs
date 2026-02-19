@@ -1,10 +1,7 @@
 pub mod help;
-pub mod invitations;
 pub mod modal;
 pub mod session_detail;
 pub mod session_list;
 pub mod settings;
 pub mod setup;
 pub mod tab_bar;
-pub mod team_detail;
-pub mod teams;

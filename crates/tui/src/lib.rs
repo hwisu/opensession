@@ -71,11 +71,6 @@ fn run_with_options_sync(options: RunOptions) -> Result<()> {
 
     // Build server info from daemon config
     app.server_info = build_server_info(&daemon_config);
-    app.team_id = if daemon_config.identity.team_id.is_empty() {
-        None
-    } else {
-        Some(daemon_config.identity.team_id.clone())
-    };
     app.daemon_config = daemon_config;
     app.realtime_preview_enabled = app.daemon_config.daemon.detail_realtime_preview_enabled;
     app.connection_ctx = App::derive_connection_ctx(&app.daemon_config);
@@ -304,12 +299,6 @@ fn session_from_cached_row(row: &LocalSessionRow) -> Session {
             serde_json::Value::String(user_id.to_string()),
         );
     }
-    if let Some(team_id) = row.team_id.as_deref().filter(|v| !v.trim().is_empty()) {
-        attributes.insert(
-            "team_id".to_string(),
-            serde_json::Value::String(team_id.to_string()),
-        );
-    }
     if let Some(git_repo) = row
         .git_repo_name
         .as_deref()
@@ -511,14 +500,9 @@ fn event_loop(
                     .enumerate()
                     .find(|(i, t)| popup.checked[*i] && !uploaded_names.contains(&t.name));
 
-                if let Some((_idx, team)) = next_target {
-                    let team_id = if team.is_personal {
-                        None
-                    } else {
-                        Some(team.id.clone())
-                    };
-                    let team_name = team.name.clone();
-                    let is_personal = team.is_personal;
+                if let Some((_idx, target)) = next_target {
+                    let target_name = target.name.clone();
+                    let is_personal = target.is_personal;
 
                     let session_clone = app.selected_session().cloned();
 
@@ -533,8 +517,7 @@ fn event_loop(
                         if let Some(json) = session_json {
                             app.pending_command = Some(async_ops::AsyncCommand::UploadSession {
                                 session_json: json,
-                                team_id,
-                                team_name,
+                                target_name,
                                 body_url,
                             });
                         }

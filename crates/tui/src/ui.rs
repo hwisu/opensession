@@ -3,10 +3,7 @@ use crate::app::{
     View, ViewMode,
 };
 use crate::theme::Theme;
-use crate::views::{
-    help, invitations, modal, session_detail, session_list, settings, setup, tab_bar, team_detail,
-    teams,
-};
+use crate::views::{help, modal, session_detail, session_list, settings, setup, tab_bar};
 use opensession_core::trace::{ContentBlock, EventType, Session};
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph};
@@ -97,9 +94,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SessionList => session_list::render(frame, app, body_area),
         View::SessionDetail => session_detail::render(frame, app, body_area),
         View::Settings => settings::render(frame, app, body_area),
-        View::Teams => teams::render(frame, app, body_area),
-        View::TeamDetail => team_detail::render(frame, app, body_area),
-        View::Invitations => invitations::render(frame, app, body_area),
         View::Help => {}  // rendered as overlay below
         View::Setup => {} // handled above
     }
@@ -143,7 +137,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let count = app.session_count();
             let mode_label = match &app.view_mode {
                 ViewMode::Local => "Local".to_string(),
-                ViewMode::Team(t) => format!("Team: {t}"),
                 ViewMode::Repo(r) => format!("Repo: {r}"),
             };
 
@@ -156,11 +149,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 ConnectionContext::CloudPersonal => {
                     ("PERSONAL".to_string(), Color::Black, Theme::BADGE_PERSONAL)
                 }
-                ConnectionContext::CloudTeam { team_name } => (
-                    format!("\u{2191} {team_name}"),
-                    Color::Black,
-                    Theme::BADGE_TEAM,
-                ),
             };
 
             let session_count_span = if app.loading_sessions {
@@ -293,43 +281,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());
             frame.render_widget(p, area);
-        }
-        View::Teams | View::TeamDetail => {
-            let block = Theme::block();
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-
-            let title = if matches!(app.view, View::TeamDetail) {
-                app.team_detail
-                    .as_ref()
-                    .map(|d| format!(" Team: {} ", d.team.name))
-                    .unwrap_or_else(|| " Team Detail ".to_string())
-            } else {
-                format!(" Collaboration ({} teams) ", app.teams.len())
-            };
-
-            let spans = vec![Span::styled(
-                title,
-                Style::new().fg(Theme::ACCENT_ORANGE).bold(),
-            )];
-            let p = Paragraph::new(Line::from(spans));
-            frame.render_widget(p, inner);
-        }
-        View::Invitations => {
-            let block = Theme::block();
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-
-            let count = app.invitations.len();
-            let spans = vec![
-                Span::styled(" Inbox ", Style::new().fg(Theme::ACCENT_ORANGE).bold()),
-                Span::styled(
-                    format!(" {} pending", count),
-                    Style::new().fg(Theme::TEXT_SECONDARY),
-                ),
-            ];
-            let p = Paragraph::new(Line::from(spans));
-            frame.render_widget(p, inner);
         }
         View::Settings => {
             let block = Theme::block();
@@ -613,7 +564,7 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, popup_area);
 
     let title = match &popup.phase {
-        UploadPhase::FetchingTeams => " Fetching Teams... ",
+        UploadPhase::FetchingTeams => " Fetching Upload Targets... ",
         UploadPhase::SelectTeam => " Publish Session ",
         UploadPhase::Uploading => " Uploading... ",
         UploadPhase::Done => " Upload Results ",
@@ -636,14 +587,18 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
             )));
         }
         UploadPhase::SelectTeam => {
-            for (i, team) in popup.teams.iter().enumerate() {
+            for (i, target) in popup.teams.iter().enumerate() {
                 let is_cursor = i == popup.selected;
                 let is_checked = popup.checked.get(i).copied().unwrap_or(false);
                 let check = if is_checked { "[x]" } else { "[ ]" };
                 let pointer = if is_cursor { ">" } else { " " };
-                let badge = if team.is_personal { "personal" } else { "team" };
-                // Pad team name to align badges
-                let name_width = 30usize.saturating_sub(team.name.len());
+                let badge = if target.is_personal {
+                    "public"
+                } else {
+                    "scope"
+                };
+                // Pad target name to align badges
+                let name_width = 30usize.saturating_sub(target.name.len());
                 let padding = " ".repeat(name_width);
                 let style = if is_cursor {
                     Style::new().fg(Theme::TEXT_PRIMARY).bold()
@@ -655,7 +610,7 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
                 let badge_style = Style::new().fg(Theme::TEXT_MUTED);
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!(" {} {} {}{}", pointer, check, team.name, padding),
+                        format!(" {} {} {}{}", pointer, check, target.name, padding),
                         style,
                     ),
                     Span::styled(badge, badge_style),
@@ -699,13 +654,13 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
             }
         }
         UploadPhase::Done => {
-            for (team_name, result) in &popup.results {
+            for (target_name, result) in &popup.results {
                 match result {
                     Ok(url) => {
                         lines.push(Line::from(vec![
                             Span::styled("  + ", Style::new().fg(Theme::ACCENT_GREEN)),
                             Span::styled(
-                                format!("{team_name}: "),
+                                format!("{target_name}: "),
                                 Style::new().fg(Theme::TEXT_PRIMARY),
                             ),
                             Span::styled(url.as_str(), Style::new().fg(Theme::TEXT_SECONDARY)),
@@ -715,7 +670,7 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
                         lines.push(Line::from(vec![
                             Span::styled("  x ", Style::new().fg(Theme::ACCENT_RED)),
                             Span::styled(
-                                format!("{team_name}: "),
+                                format!("{target_name}: "),
                                 Style::new().fg(Theme::TEXT_PRIMARY),
                             ),
                             Span::styled(e.as_str(), Style::new().fg(Theme::ACCENT_RED)),

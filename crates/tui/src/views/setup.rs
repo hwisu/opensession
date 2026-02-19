@@ -4,14 +4,7 @@ use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-const TEAM_SETUP_FIELDS: [(SettingField, &str); 4] = [
-    (SettingField::ServerUrl, "Server URL"),
-    (SettingField::ApiKey, "API Key (personal)"),
-    (SettingField::TeamId, "Team ID"),
-    (SettingField::Nickname, "Handle"),
-];
-
-const PUBLIC_SETUP_FIELDS: [(SettingField, &str); 3] = [
+const SETUP_FIELDS: [(SettingField, &str); 3] = [
     (SettingField::ServerUrl, "Server URL"),
     (SettingField::ApiKey, "API Key (personal)"),
     (SettingField::Nickname, "Handle"),
@@ -114,7 +107,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     hint_lines.push(Line::raw(""));
     hint_lines.push(Line::from(Span::styled(
-        "Skip now? Configure later in Settings > Web Share / Team Share.",
+        "Skip now? Configure later in Settings > Web Share.",
         Style::new().fg(Theme::TEXT_HINT),
     )));
     let settings_url = format!(
@@ -184,11 +177,6 @@ fn render_scenario_picker(frame: &mut Frame, app: &App, area: Rect) {
             "Browse local sessions only. No cloud setup required.",
         ),
         (
-            SetupScenario::Team,
-            "Team mode",
-            "Sync to your team with personal API key + team ID.",
-        ),
-        (
             SetupScenario::Public,
             "Public mode",
             "Auto-publish to personal public feed (Git setup required).",
@@ -252,7 +240,7 @@ fn render_scenario_picker(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "You can skip this now and configure it later in Settings > Web Share / Team Share.",
+            "You can skip this now and configure it later in Settings > Web Share.",
             Style::new().fg(Theme::TEXT_HINT),
         )),
         Line::from(Span::styled(
@@ -271,11 +259,7 @@ fn render_apikey_form(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(form_block, area);
 
     let mut lines = Vec::new();
-    let fields: &[(SettingField, &str)] = if app.setup_scenario == Some(SetupScenario::Public) {
-        &PUBLIC_SETUP_FIELDS
-    } else {
-        &TEAM_SETUP_FIELDS
-    };
+    let fields: &[(SettingField, &str)] = &SETUP_FIELDS;
     for (i, (field, label)) in fields.iter().enumerate() {
         let is_selected = i == app.settings_index;
         let is_editing = is_selected && app.editing_field;
@@ -467,32 +451,30 @@ mod tests {
         let text = render_text(&app, 120, 40);
         assert!(text.contains("How do you want to use OpenSession?"));
         assert!(text.contains("Local mode"));
-        assert!(text.contains("Team mode"));
         assert!(text.contains("Public mode"));
     }
 
     #[test]
-    fn apikey_team_scenario_includes_team_id_field() {
-        let mut app = App::new(vec![]);
-        app.setup_step = SetupStep::Configure;
-        app.setup_mode = SetupMode::ApiKey;
-        app.setup_scenario = Some(SetupScenario::Team);
-
-        let text = render_text(&app, 120, 40);
-        assert!(text.contains("API/Account"));
-        assert!(text.contains("Team ID"));
-        assert!(text.contains("Server URL"));
-    }
-
-    #[test]
-    fn apikey_public_scenario_hides_team_id_and_shows_git_hint() {
+    fn apikey_setup_renders_required_fields() {
         let mut app = App::new(vec![]);
         app.setup_step = SetupStep::Configure;
         app.setup_mode = SetupMode::ApiKey;
         app.setup_scenario = Some(SetupScenario::Public);
 
         let text = render_text(&app, 120, 40);
-        assert!(!text.contains("Team ID"));
+        assert!(text.contains("API/Account"));
+        assert!(text.contains("Server URL"));
+        assert!(text.contains("Handle"));
+    }
+
+    #[test]
+    fn apikey_public_scenario_shows_git_hint() {
+        let mut app = App::new(vec![]);
+        app.setup_step = SetupStep::Configure;
+        app.setup_mode = SetupMode::ApiKey;
+        app.setup_scenario = Some(SetupScenario::Public);
+
+        let text = render_text(&app, 120, 40);
         assert!(text.contains("Public mode requires Git setup"));
     }
 

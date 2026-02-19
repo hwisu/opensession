@@ -24,58 +24,6 @@ pub use opensession_core::trace::{
 
 // ─── Shared Enums ────────────────────────────────────────────────────────────
 
-/// Role within a team.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub enum TeamRole {
-    Admin,
-    Member,
-}
-
-impl TeamRole {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Admin => "admin",
-            Self::Member => "member",
-        }
-    }
-}
-
-impl std::fmt::Display for TeamRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Status of a team invitation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub enum InvitationStatus {
-    Pending,
-    Accepted,
-    Declined,
-}
-
-impl InvitationStatus {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Pending => "pending",
-            Self::Accepted => "accepted",
-            Self::Declined => "declined",
-        }
-    }
-}
-
-impl std::fmt::Display for InvitationStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Sort order for session listings.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -307,7 +255,6 @@ pub struct OAuthLinkResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UploadRequest {
     pub session: Session,
-    pub team_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,7 +297,6 @@ pub struct SessionSummary {
     pub id: String,
     pub user_id: Option<String>,
     pub nickname: Option<String>,
-    pub team_id: String,
     pub tool: String,
     pub agent_provider: Option<String>,
     pub agent_model: Option<String>,
@@ -416,7 +362,6 @@ pub struct SessionListQuery {
     pub per_page: u32,
     pub search: Option<String>,
     pub tool: Option<String>,
-    pub team_id: Option<String>,
     /// Sort order (default: recent)
     pub sort: Option<SortOrder>,
     /// Time range filter (default: all)
@@ -432,7 +377,6 @@ impl SessionListQuery {
     ) -> bool {
         !has_auth_header
             && !has_session_cookie
-            && self.team_id.is_none()
             && self.search.as_deref().is_none_or(|s| s.trim().is_empty())
             && self.page <= 10
             && self.per_page <= 50
@@ -449,7 +393,6 @@ mod session_list_query_tests {
             per_page: 20,
             search: None,
             tool: None,
-            team_id: None,
             sort: None,
             time_range: None,
         }
@@ -469,11 +412,7 @@ mod session_list_query_tests {
     }
 
     #[test]
-    fn public_feed_not_cacheable_for_team_or_search_or_large_page() {
-        let mut q = base_query();
-        q.team_id = Some("team-1".into());
-        assert!(!q.is_public_feed_cacheable(false, false));
-
+    fn public_feed_not_cacheable_for_search_or_large_page() {
         let mut q = base_query();
         q.search = Some("hello".into());
         assert!(!q.is_public_feed_cacheable(false, false));
@@ -510,7 +449,6 @@ pub struct SessionDetail {
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub summary: SessionSummary,
-    pub team_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub linked_sessions: Vec<SessionLink>,
 }
@@ -524,346 +462,6 @@ pub struct SessionLink {
     pub linked_session_id: String,
     pub link_type: LinkType,
     pub created_at: String,
-}
-
-// ─── Teams ──────────────────────────────────────────────────────────────────
-
-/// Request body for `POST /api/teams` — create a new team.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct CreateTeamRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub is_public: Option<bool>,
-}
-
-/// Single team record returned by list and detail endpoints.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct TeamResponse {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub is_public: bool,
-    pub created_by: String,
-    pub created_at: String,
-}
-
-/// Returned by `GET /api/teams` — teams the authenticated user belongs to.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct ListTeamsResponse {
-    pub teams: Vec<TeamResponse>,
-}
-
-/// Returned by `GET /api/teams/:id` — team info with member count and recent sessions.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct TeamDetailResponse {
-    #[serde(flatten)]
-    #[cfg_attr(feature = "ts", ts(flatten))]
-    pub team: TeamResponse,
-    pub member_count: i64,
-    pub sessions: Vec<SessionSummary>,
-}
-
-/// Request body for `PUT /api/teams/:id` — partial team update.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct UpdateTeamRequest {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub is_public: Option<bool>,
-}
-
-/// Query parameters for `GET /api/teams/:id/stats`.
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct TeamStatsQuery {
-    /// Time range filter (default: all)
-    pub time_range: Option<TimeRange>,
-}
-
-/// Returned by `GET /api/teams/:id/stats` — aggregated team statistics.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct TeamStatsResponse {
-    pub team_id: String,
-    pub time_range: TimeRange,
-    pub totals: TeamStatsTotals,
-    pub by_user: Vec<UserStats>,
-    pub by_tool: Vec<ToolStats>,
-}
-
-/// Aggregate totals across all sessions in a team.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct TeamStatsTotals {
-    pub session_count: i64,
-    pub message_count: i64,
-    pub event_count: i64,
-    pub tool_call_count: i64,
-    pub duration_seconds: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-}
-
-/// Per-user aggregated statistics within a team.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct UserStats {
-    pub user_id: String,
-    pub nickname: String,
-    pub session_count: i64,
-    pub message_count: i64,
-    pub event_count: i64,
-    pub duration_seconds: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-}
-
-/// Per-tool aggregated statistics within a team.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct ToolStats {
-    pub tool: String,
-    pub session_count: i64,
-    pub message_count: i64,
-    pub event_count: i64,
-    pub duration_seconds: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-}
-
-/// Request body for `POST /api/teams/:id/keys`.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct CreateTeamInviteKeyRequest {
-    pub role: Option<TeamRole>,
-    /// Defaults to 7 days. Clamped to [1, 30].
-    pub expires_in_days: Option<u32>,
-}
-
-/// Create response for team invite key generation.
-/// `invite_key` is only returned once.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct CreateTeamInviteKeyResponse {
-    pub key_id: String,
-    pub invite_key: String,
-    pub role: TeamRole,
-    pub expires_at: String,
-}
-
-/// Team invite key metadata, safe to list repeatedly.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct TeamInviteKeySummary {
-    pub id: String,
-    pub role: TeamRole,
-    pub created_by_nickname: String,
-    pub created_at: String,
-    pub expires_at: String,
-    pub used_at: Option<String>,
-    pub revoked_at: Option<String>,
-}
-
-/// Returned by `GET /api/teams/:id/keys`.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct ListTeamInviteKeysResponse {
-    pub keys: Vec<TeamInviteKeySummary>,
-}
-
-/// Request body for `POST /api/teams/join-with-key`.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct JoinTeamWithKeyRequest {
-    pub invite_key: String,
-}
-
-/// Returned after successful key redemption.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct JoinTeamWithKeyResponse {
-    pub team_id: String,
-    pub team_name: String,
-    pub role: TeamRole,
-}
-
-// ─── From impls: core stats → API types ─────────────────────────────────────
-
-impl From<opensession_core::stats::SessionAggregate> for TeamStatsTotals {
-    fn from(a: opensession_core::stats::SessionAggregate) -> Self {
-        Self {
-            session_count: saturating_i64(a.session_count),
-            message_count: saturating_i64(a.message_count),
-            event_count: saturating_i64(a.event_count),
-            tool_call_count: saturating_i64(a.tool_call_count),
-            duration_seconds: saturating_i64(a.duration_seconds),
-            total_input_tokens: saturating_i64(a.total_input_tokens),
-            total_output_tokens: saturating_i64(a.total_output_tokens),
-        }
-    }
-}
-
-impl From<(String, opensession_core::stats::SessionAggregate)> for ToolStats {
-    fn from((tool, a): (String, opensession_core::stats::SessionAggregate)) -> Self {
-        Self {
-            tool,
-            session_count: saturating_i64(a.session_count),
-            message_count: saturating_i64(a.message_count),
-            event_count: saturating_i64(a.event_count),
-            duration_seconds: saturating_i64(a.duration_seconds),
-            total_input_tokens: saturating_i64(a.total_input_tokens),
-            total_output_tokens: saturating_i64(a.total_output_tokens),
-        }
-    }
-}
-
-// ─── Invitations ─────────────────────────────────────────────────────────────
-
-/// Request body for `POST /api/teams/:id/invite` — invite a user by email or OAuth identity.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct InviteRequest {
-    pub email: Option<String>,
-    /// OAuth provider name (e.g., "github", "gitlab").
-    pub oauth_provider: Option<String>,
-    /// Username on the OAuth provider (e.g., "octocat").
-    pub oauth_provider_username: Option<String>,
-    pub role: Option<TeamRole>,
-}
-
-/// Single invitation record returned by list and detail endpoints.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct InvitationResponse {
-    pub id: String,
-    pub team_id: String,
-    pub team_name: String,
-    pub email: Option<String>,
-    pub oauth_provider: Option<String>,
-    pub oauth_provider_username: Option<String>,
-    pub invited_by_nickname: String,
-    pub role: TeamRole,
-    pub status: InvitationStatus,
-    pub created_at: String,
-}
-
-/// Returned by `GET /api/invitations` — pending invitations for the current user.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct ListInvitationsResponse {
-    pub invitations: Vec<InvitationResponse>,
-}
-
-/// Returned by `POST /api/invitations/:id/accept` — confirms team join.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct AcceptInvitationResponse {
-    pub team_id: String,
-    pub role: TeamRole,
-}
-
-// ─── Members (admin-managed) ────────────────────────────────────────────────
-
-/// Request body for `POST /api/teams/:id/members` — add a member by nickname.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct AddMemberRequest {
-    pub nickname: String,
-}
-
-/// Single team member record.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct MemberResponse {
-    pub user_id: String,
-    pub nickname: String,
-    pub role: TeamRole,
-    pub joined_at: String,
-}
-
-/// Returned by `GET /api/teams/:id/members`.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct ListMembersResponse {
-    pub members: Vec<MemberResponse>,
-}
-
-// ─── Config Sync ─────────────────────────────────────────────────────────────
-
-/// Team-level configuration synced to CLI clients.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct ConfigSyncResponse {
-    pub privacy: Option<SyncedPrivacyConfig>,
-    pub watchers: Option<SyncedWatcherConfig>,
-}
-
-/// Privacy settings synced from the team — controls what data is recorded.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct SyncedPrivacyConfig {
-    pub exclude_patterns: Option<Vec<String>>,
-    pub exclude_tools: Option<Vec<String>>,
-}
-
-/// Watcher toggle settings synced from the team — which tools to monitor.
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct SyncedWatcherConfig {
-    pub claude_code: Option<bool>,
-    pub opencode: Option<bool>,
-    pub cursor: Option<bool>,
-}
-
-// ─── Sync ────────────────────────────────────────────────────────────────────
-
-/// Query parameters for `GET /api/sync/pull` — cursor-based session sync.
-#[derive(Debug, Deserialize)]
-pub struct SyncPullQuery {
-    pub team_id: String,
-    /// Cursor: uploaded_at of the last received session
-    pub since: Option<String>,
-    /// Max sessions per page (default 100)
-    pub limit: Option<u32>,
-}
-
-/// Returned by `GET /api/sync/pull` — paginated session data with cursor.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SyncPullResponse {
-    pub sessions: Vec<SessionSummary>,
-    /// Cursor for the next page (None = no more data)
-    pub next_cursor: Option<String>,
-    pub has_more: bool,
 }
 
 // ─── Streaming Events ────────────────────────────────────────────────────────
@@ -1026,8 +624,6 @@ mod tests {
 
         collect_ts!(
             // Shared enums
-            TeamRole,
-            InvitationStatus,
             SortOrder,
             TimeRange,
             LinkType,
@@ -1052,32 +648,6 @@ mod tests {
             SessionListQuery,
             SessionDetail,
             SessionLink,
-            // Teams
-            CreateTeamRequest,
-            TeamResponse,
-            ListTeamsResponse,
-            TeamDetailResponse,
-            UpdateTeamRequest,
-            TeamStatsQuery,
-            TeamStatsResponse,
-            TeamStatsTotals,
-            UserStats,
-            ToolStats,
-            CreateTeamInviteKeyRequest,
-            CreateTeamInviteKeyResponse,
-            TeamInviteKeySummary,
-            ListTeamInviteKeysResponse,
-            JoinTeamWithKeyRequest,
-            JoinTeamWithKeyResponse,
-            // Members
-            AddMemberRequest,
-            MemberResponse,
-            ListMembersResponse,
-            // Invitations
-            InviteRequest,
-            InvitationResponse,
-            ListInvitationsResponse,
-            AcceptInvitationResponse,
             // OAuth
             oauth::AuthProvidersResponse,
             oauth::OAuthProviderInfo,

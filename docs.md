@@ -7,9 +7,10 @@ OpenSession is now optimized for a git-native workflow.
 | Area | Server (Axum) | Worker (Wrangler) |
 |------|----------------|-------------------|
 | Primary focus | Read + upload sessions | Public session browsing |
-| Home `/` | Session list | Session list |
+| Home `/` | Guest landing, session list after login | Public session list |
 | Upload UI `/upload` | Enabled | Disabled (read-only) |
-| Team/auth routes | Disabled | Disabled |
+| Auth routes | Enabled | Disabled |
+| Team/invitation/sync routes | Disabled | Disabled |
 | API surface | `/api/health`, `/api/sessions*` | `/api/health`, `/api/sessions*` |
 
 Build profile:
@@ -52,11 +53,10 @@ opensession .    # current git repository scope
 - `opensession publish upload`
 - `opensession publish upload-all`
 - `opensession daemon start|stop|status|health|select|show|stream-push`
-- `opensession account connect|show|status|verify|team`
+- `opensession account connect|show|status|verify`
 - `opensession docs completion`
 
 Notes:
-- `account team` is legacy/optional. When unset, uploads default to `local` scope.
 - `publish upload --git` stores sessions on `opensession/sessions` branch.
 
 ## Configuration
@@ -76,7 +76,6 @@ api_key = ""
 
 [identity]
 nickname = "user"
-team_id = ""   # optional; empty => local scope
 
 [watchers]
 custom_paths = [
@@ -110,7 +109,7 @@ Important environment variables:
 
 Always available:
 - `GET /api/health`
-- `POST /api/sessions`
+- `POST /api/sessions` (server profile, auth required)
 - `GET /api/sessions`
 - `GET /api/sessions/{id}`
 - `GET /api/sessions/{id}/raw`
@@ -121,10 +120,6 @@ Always available:
 - `tool`
 - `sort`
 - `time_range`
-- `risk_level`
-- `triage_status`
-- `policy_status`
-- `outcome_status`
 
 ## Migration Parity
 

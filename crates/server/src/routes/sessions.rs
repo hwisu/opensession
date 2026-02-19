@@ -15,7 +15,9 @@ use opensession_core::extract;
 use opensession_core::scoring::SessionScoreRegistry;
 
 use crate::error::ApiErr;
+use crate::routes::auth::AuthUser;
 use crate::storage::{session_from_row, sq_execute, sq_query_map, sq_query_row, Db};
+use crate::AppConfig;
 
 const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalidate=60";
 
@@ -23,13 +25,14 @@ const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalid
 // Upload session
 // ---------------------------------------------------------------------------
 
-/// POST /api/sessions — upload a new session (requires team membership).
+/// POST /api/sessions — upload a new session (authenticated users only).
 pub async fn upload_session(
     State(db): State<Db>,
+    user: AuthUser,
     Json(req): Json<UploadRequest>,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiErr> {
     let session = &req.session;
-    let team_id = req.team_id.as_deref().unwrap_or("local");
+    let team_id = "local";
 
     let body_jsonl = session.to_jsonl().map_err(|e| {
         tracing::error!("serialize session body: {e}");
@@ -90,7 +93,7 @@ pub async fn upload_session(
         &conn,
         db::sessions::insert(&db::sessions::InsertParams {
             id: &session_id,
-            user_id: "local",
+            user_id: &user.user_id,
             team_id,
             tool: &session.agent.tool,
             agent_provider: &session.agent.provider,
@@ -172,15 +175,25 @@ pub async fn upload_session(
 }
 
 // ---------------------------------------------------------------------------
-// List sessions (team-scoped)
+// List sessions
 // ---------------------------------------------------------------------------
 
 /// GET /api/sessions — list sessions (public, paginated, filtered).
 pub async fn list_sessions(
     State(db): State<Db>,
+    State(config): State<AppConfig>,
+    auth_user: Result<AuthUser, ApiErr>,
     Query(q): Query<SessionListQuery>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, ApiErr> {
+    let has_auth_header = headers.get(header::AUTHORIZATION).is_some();
+    let is_authenticated = auth_user.is_ok();
+    if !can_access_session_list(config.public_feed_enabled, is_authenticated) {
+        return Err(ApiErr::unauthorized(
+            "public session feed is disabled; authentication required",
+        ));
+    }
+
     let built = db::sessions::list(&q);
     let conn = db.conn();
 
@@ -200,7 +213,6 @@ pub async fn list_sessions(
     })
     .into_response();
 
-    let has_auth_header = headers.get(header::AUTHORIZATION).is_some();
     let has_session_cookie = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
@@ -213,6 +225,10 @@ pub async fn list_sessions(
     }
 
     Ok(resp)
+}
+
+fn can_access_session_list(public_feed_enabled: bool, is_authenticated: bool) -> bool {
+    public_feed_enabled || is_authenticated
 }
 
 // ---------------------------------------------------------------------------
@@ -229,12 +245,6 @@ pub async fn get_session(
     let summary: SessionSummary =
         sq_query_row(&conn, db::sessions::get_by_id(&id), session_from_row)
             .map_err(|_| ApiErr::not_found("session not found"))?;
-
-    let team_name: Option<String> =
-        sq_query_row(&conn, db::teams::get_name(&summary.team_id), |row| {
-            row.get(0)
-        })
-        .ok();
 
     // Fetch linked sessions
     let linked_sessions: Vec<SessionLink> =
@@ -256,7 +266,6 @@ pub async fn get_session(
 
     Ok(Json(SessionDetail {
         summary,
-        team_name,
         linked_sessions,
     }))
 }
@@ -320,4 +329,17 @@ pub async fn get_session_raw(
         body,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_access_session_list;
+
+    #[test]
+    fn session_list_access_rules_follow_public_feed_flag() {
+        assert!(can_access_session_list(true, false));
+        assert!(can_access_session_list(true, true));
+        assert!(can_access_session_list(false, true));
+        assert!(!can_access_session_list(false, false));
+    }
 }

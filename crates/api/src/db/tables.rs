@@ -52,26 +52,6 @@ pub enum Sessions {
 }
 
 #[derive(Iden)]
-pub enum Teams {
-    Table,
-    Id,
-    Name,
-    Description,
-    IsPublic,
-    CreatedBy,
-    CreatedAt,
-}
-
-#[derive(Iden)]
-pub enum TeamMembers {
-    Table,
-    TeamId,
-    UserId,
-    Role,
-    JoinedAt,
-}
-
-#[derive(Iden)]
 pub enum SessionLinks {
     Table,
     SessionId,
@@ -110,53 +90,6 @@ pub enum RefreshTokens {
     TokenHash,
     ExpiresAt,
     CreatedAt,
-}
-
-#[derive(Iden)]
-pub enum TeamInvitations {
-    Table,
-    Id,
-    TeamId,
-    Email,
-    OauthProvider,
-    OauthProviderUsername,
-    InvitedBy,
-    Role,
-    Status,
-    CreatedAt,
-    ExpiresAt,
-}
-
-#[derive(Iden)]
-pub enum TeamInviteKeys {
-    Table,
-    Id,
-    TeamId,
-    KeyHash,
-    Role,
-    CreatedBy,
-    CreatedAt,
-    ExpiresAt,
-    UsedBy,
-    UsedAt,
-    RevokedAt,
-}
-
-#[derive(Iden)]
-pub enum SessionSync {
-    Table,
-    SessionId,
-    SourcePath,
-    SyncStatus,
-    LastSyncedAt,
-}
-
-#[derive(Iden)]
-pub enum SyncCursors {
-    Table,
-    TeamId,
-    Cursor,
-    UpdatedAt,
 }
 
 #[derive(Iden)]

@@ -45,7 +45,6 @@ pub struct SessionRow {
     pub id: String,
     pub user_id: Option<String>,
     pub nickname: Option<String>,
-    pub team_id: String,
     pub tool: String,
     pub agent_provider: Option<String>,
     pub agent_model: Option<String>,

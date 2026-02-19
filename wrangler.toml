@@ -25,5 +25,4 @@ enabled = false
 
 [vars]
 BASE_URL = "https://opensession.io"
-ENABLE_TEAM_API = "false"
 OPENSESSION_PUBLIC_FEED_ENABLED = "true"

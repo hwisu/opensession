@@ -29,8 +29,8 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let mut lines = vec![
         Line::from(Span::styled("── Global ──", header_style)),
         Line::from(vec![
-            Span::styled("  1/2/3     ", key_style),
-            Span::styled("Switch tabs (Sessions/Collaboration/Settings)", desc_style),
+            Span::styled("  1/2       ", key_style),
+            Span::styled("Switch tabs (Sessions/Settings)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  ?         ", key_style),
@@ -60,11 +60,11 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Tab       ", key_style),
-            Span::styled("Cycle view mode (Local/Team/Repo)", desc_style),
+            Span::styled("Cycle view mode (Local/Repo)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  p         ", key_style),
-            Span::styled("Publish session (multi-target)", desc_style),
+            Span::styled("Publish session", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  m         ", key_style),
@@ -72,7 +72,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  t         ", key_style),
-            Span::styled("Cycle tool filter (Local/Team/Repo)", desc_style),
+            Span::styled("Cycle tool filter (Local/Repo)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  r         ", key_style),
@@ -88,7 +88,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  d         ", key_style),
-            Span::styled("Delete session (Team/Repo)", desc_style),
+            Span::styled("Delete session (Repo view)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  PgDn/PgUp ", key_style),
@@ -133,17 +133,11 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Back to session list", desc_style),
         ]),
         Line::raw(""),
-        Line::from(Span::styled("── Collaboration ──", header_style)),
-        Line::from(vec![
-            Span::styled("  i         ", key_style),
-            Span::styled("Open inbox from collaboration view", desc_style),
-        ]),
-        Line::raw(""),
         Line::from(Span::styled("── Settings ──", header_style)),
         Line::from(vec![
             Span::styled("  [/]       ", key_style),
             Span::styled(
-                "Switch section (Web Share/Team Share/Capture Flow/Storage/Account)",
+                "Switch section (Web Share/Capture Flow/Storage/Account)",
                 desc_style,
             ),
         ]),

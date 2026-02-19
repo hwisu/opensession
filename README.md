@@ -15,9 +15,9 @@ from Claude Code, Cursor, Codex, Goose, Aider, and other AI tools.
 
 OpenSession now defaults to a git-native workflow:
 - No Docker-required product flow.
-- Server profile: session read/upload.
+- Server profile: auth + session read/upload.
 - Worker profile: public session read-only.
-- Team/auth routes are pruned from active runtime paths.
+- Team/invitation/sync routes are pruned from active runtime paths.
 
 ## Quick Start
 
@@ -43,10 +43,11 @@ opensession .    # current git repo scope
 
 | Area | Server (Axum) | Worker (Wrangler) |
 |------|----------------|-------------------|
-| Home `/` | Session list | Session list |
+| Home `/` | Landing for guests, session list after login | Public session list |
 | Upload UI `/upload` | Enabled | Disabled (read-only) |
 | API surface | `/api/health`, `/api/sessions*` | `/api/health`, `/api/sessions*` |
-| Team/auth runtime routes | Disabled | Disabled |
+| Auth routes | Enabled | Disabled |
+| Team/invitation/sync routes | Disabled | Disabled |
 
 Web build profile:
 - `VITE_APP_PROFILE=server|worker`
@@ -57,7 +58,7 @@ Web build profile:
 ┌─────────┐    ┌────────┐    ┌──────────────────┐
 │  CLI /  │───▶│ daemon │───▶│ server (Axum)    │
 │  TUI    │    │ (watch │    │ SQLite + disk     │
-└─────────┘    │ +sync) │    │ :3000             │
+└─────────┘    │ +upload)│    │ :3000             │
                └────────┘    └──────────────────┘
 ```
 
@@ -72,7 +73,7 @@ Single Cargo workspace with 12 crates:
 | `local-db` | Local SQLite database layer |
 | `git-native` | Git operations via `gix` |
 | `server` | Axum HTTP server with SQLite storage |
-| `daemon` | Background file watcher and sync agent |
+| `daemon` | Background file watcher and upload agent |
 | `cli` | CLI entry point (binary: `opensession`) |
 | `tui` | Terminal UI for browsing sessions |
 | `worker` | Cloudflare Workers backend (WASM, excluded from workspace) |
@@ -91,7 +92,6 @@ Single Cargo workspace with 12 crates:
 | `opensession daemon select --repo ...` | Select watcher paths/repos |
 | `opensession daemon show` | Show daemon watcher targets |
 | `opensession account connect` | Set server URL/API key (optional) |
-| `opensession account team` | Optional legacy scope id command |
 | `opensession account status\|verify` | Check server connectivity |
 | `opensession docs completion <shell>` | Generate shell completions |
 
@@ -112,7 +112,6 @@ api_key = ""
 
 [identity]
 nickname = "user"
-team_id = ""  # optional; empty => local scope
 
 [watchers]
 custom_paths = [
@@ -126,7 +125,7 @@ custom_paths = [
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
-| POST | `/api/sessions` | Upload HAIL session |
+| POST | `/api/sessions` | Upload HAIL session (auth required) |
 | GET | `/api/sessions` | List sessions |
 | GET | `/api/sessions/{id}` | Get session detail |
 | GET | `/api/sessions/{id}/raw` | Download raw HAIL JSONL |

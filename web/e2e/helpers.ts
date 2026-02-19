@@ -110,7 +110,7 @@ export async function injectAuth(page: Page, user: TestUser) {
 export async function uploadSession(
 	request: APIRequestContext,
 	accessToken: string,
-	opts?: { title?: string; teamId?: string; events?: Array<Record<string, unknown>> },
+	opts?: { title?: string; events?: Array<Record<string, unknown>> },
 ): Promise<string> {
 	const sessionId = crypto.randomUUID();
 	const now = new Date().toISOString();
@@ -190,25 +190,10 @@ export async function uploadSession(
 		},
 	};
 
-	const uploadBody: { session: typeof session; team_id?: string } = { session };
-	if (opts?.teamId) {
-		uploadBody.team_id = opts.teamId;
-	}
-
 	let resp = await request.post(`${BASE_URL}/api/sessions`, {
-		data: uploadBody,
+		data: { session },
 		headers: { Authorization: `Bearer ${accessToken}` },
 	});
-
-	// Some deployments require explicit team membership even for uploads.
-	// If personal upload is rejected, create a team and retry once.
-	if (resp.status() === 403 && !opts?.teamId) {
-		const teamId = await createTeam(request, accessToken);
-		resp = await request.post(`${BASE_URL}/api/sessions`, {
-			data: { ...uploadBody, team_id: teamId },
-			headers: { Authorization: `Bearer ${accessToken}` },
-		});
-	}
 
 	if (!resp.ok()) {
 		throw new Error(`Upload failed: ${resp.status()} ${await resp.text()}`);
@@ -216,42 +201,4 @@ export async function uploadSession(
 
 	const result: { id: string; url: string } = await resp.json();
 	return result.id;
-}
-
-/**
- * Create a team via the API. Returns the team id.
- */
-export async function createTeam(
-	request: APIRequestContext,
-	accessToken: string,
-	name?: string,
-): Promise<string> {
-	const teamName = name || `pw-team-${crypto.randomUUID().slice(0, 8)}`;
-	const resp = await request.post(`${BASE_URL}/api/teams`, {
-		data: { name: teamName, description: 'Playwright test team', is_public: false },
-		headers: { Authorization: `Bearer ${accessToken}` },
-	});
-	if (!resp.ok()) {
-		throw new Error(`Create team failed: ${resp.status()} ${await resp.text()}`);
-	}
-	const team: { id: string } = await resp.json();
-	return team.id;
-}
-
-/**
- * Add a member to a team by nickname. Requires team admin token.
- */
-export async function addMember(
-	request: APIRequestContext,
-	adminToken: string,
-	teamId: string,
-	nickname: string,
-): Promise<void> {
-	const resp = await request.post(`${BASE_URL}/api/teams/${teamId}/members`, {
-		data: { nickname },
-		headers: { Authorization: `Bearer ${adminToken}` },
-	});
-	if (!resp.ok()) {
-		throw new Error(`Add member failed: ${resp.status()} ${await resp.text()}`);
-	}
 }

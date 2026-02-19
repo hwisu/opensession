@@ -34,12 +34,6 @@ const tool = $derived(getToolConfig(session.agent.tool));
 			<hr class="border-border" />
 		{/if}
 
-		{#if detail?.team_name}
-			<div class="text-xs text-text-secondary">
-				Team: {detail.team_name}
-			</div>
-		{/if}
-
 		<h3 class="text-xs font-semibold uppercase tracking-wider text-text-muted">Session</h3>
 
 		<div class="space-y-2 text-xs">

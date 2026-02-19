@@ -57,14 +57,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
         return upload_to_git(&session);
     }
 
-    // Server upload path (git-native default: local scope without auth/team setup).
-    let target_team_id = if config.server.team_id.trim().is_empty() {
-        "local".to_string()
-    } else {
-        config.server.team_id.clone()
-    };
     println!("Uploading to {}...", config.server.url);
-    println!("Target scope: {}", target_team_id);
 
     let mut client = ApiClient::new(&config.server.url, Duration::from_secs(60))?;
     if !config.server.api_key.trim().is_empty() {
@@ -80,7 +73,6 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
     let resp = client
         .upload_session(&opensession_api_client::opensession_api::UploadRequest {
             session,
-            team_id: Some(target_team_id),
             body_url: None,
             linked_session_ids: linked,
             git_remote: None,

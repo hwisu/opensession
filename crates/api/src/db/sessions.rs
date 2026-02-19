@@ -23,7 +23,6 @@ fn session_columns(q: &mut sea_query::SelectStatement) -> &mut sea_query::Select
     q.column((Sessions::Table, Sessions::Id))
         .column((Sessions::Table, Sessions::UserId))
         .column((Users::Table, Users::Nickname))
-        .column((Sessions::Table, Sessions::TeamId))
         .column((Sessions::Table, Sessions::Tool))
         .column((Sessions::Table, Sessions::AgentProvider))
         .column((Sessions::Table, Sessions::AgentModel))
@@ -209,7 +208,6 @@ pub fn list(q: &SessionListQuery) -> BuiltSessionListQuery {
         .column((Alias::new("s"), Sessions::Id))
         .column((Alias::new("s"), Sessions::UserId))
         .column((Alias::new("u"), Users::Nickname))
-        .column((Alias::new("s"), Sessions::TeamId))
         .column((Alias::new("s"), Sessions::Tool))
         .column((Alias::new("s"), Sessions::AgentProvider))
         .column((Alias::new("s"), Sessions::AgentModel))
@@ -254,12 +252,6 @@ pub fn list(q: &SessionListQuery) -> BuiltSessionListQuery {
 
     if let Some(ref tool) = q.tool {
         let cond = Expr::col((Alias::new("s"), Sessions::Tool)).eq(tool.as_str());
-        count_q.and_where(cond.clone());
-        select_q.and_where(cond);
-    }
-
-    if let Some(ref team_id) = q.team_id {
-        let cond = Expr::col((Alias::new("s"), Sessions::TeamId)).eq(team_id.as_str());
         count_q.and_where(cond.clone());
         select_q.and_where(cond);
     }
@@ -371,20 +363,6 @@ pub fn delete_links(session_id: &str) -> Built {
         .build(SqliteQueryBuilder)
 }
 
-/// SELECT session listing for a team (e.g., recent 50 for team detail).
-pub fn list_by_team(team_id: &str, limit: u64) -> Built {
-    session_select()
-        .and_where(Expr::col((Sessions::Table, Sessions::TeamId)).eq(team_id))
-        .and_where(
-            Expr::col((Sessions::Table, Sessions::EventCount))
-                .gt(0)
-                .or(Expr::col((Sessions::Table, Sessions::MessageCount)).gt(0)),
-        )
-        .order_by((Sessions::Table, Sessions::CreatedAt), Order::Desc)
-        .limit(limit)
-        .build(SqliteQueryBuilder)
-}
-
 /// INSERT into FTS index for a newly inserted session.
 /// Server-specific: D1 does not support FTS.
 pub fn insert_fts(session_id: &str) -> Built {
@@ -407,39 +385,4 @@ pub fn delete_fts(session_id: &str) -> Built {
     .to_string();
     let values = sea_query::Values(vec![session_id.into()]);
     (sql, values)
-}
-
-/// SELECT for sync pull: keyset pagination by (uploaded_at, id).
-pub fn sync_pull(
-    team_id: &str,
-    cursor_uploaded_at: Option<&str>,
-    cursor_session_id: Option<&str>,
-    limit: u64,
-) -> Built {
-    let mut q = session_select()
-        .and_where(Expr::col((Sessions::Table, Sessions::TeamId)).eq(team_id))
-        .to_owned();
-
-    match (cursor_uploaded_at, cursor_session_id) {
-        (Some(at), Some(sid)) => {
-            // Keyset pagination: (uploaded_at, id) > (cursor_at, cursor_id)
-            q.and_where(
-                Expr::tuple([
-                    Expr::col((Sessions::Table, Sessions::UploadedAt)).into(),
-                    Expr::col((Sessions::Table, Sessions::Id)).into(),
-                ])
-                .gt(Expr::tuple([Expr::value(at), Expr::value(sid)])),
-            );
-        }
-        (Some(at), None) => {
-            // Legacy cursor: just uploaded_at > cursor
-            q.and_where(Expr::col((Sessions::Table, Sessions::UploadedAt)).gt(at));
-        }
-        _ => {}
-    }
-
-    q.order_by((Sessions::Table, Sessions::UploadedAt), Order::Asc)
-        .order_by((Sessions::Table, Sessions::Id), Order::Asc)
-        .limit(limit)
-        .build(SqliteQueryBuilder)
 }

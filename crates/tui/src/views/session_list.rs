@@ -25,7 +25,7 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
             if app.startup_status.config_exists {
                 "No sessions found. Make sure you have Claude Code sessions in ~/.claude/projects/"
             } else {
-                "No sessions yet. You can keep browsing locally, then configure sync in Settings > Web Share / Team Share."
+                "No sessions yet. You can keep browsing locally, then configure sync in Settings > Web Share."
             }
         } else if app.has_active_session_filters() {
             "No sessions match the current filters."
@@ -662,7 +662,6 @@ fn render_empty(frame: &mut Frame, area: Rect, msg: &str, app: &App) {
 fn list_title(app: &App) -> String {
     let mut base = match &app.view_mode {
         ViewMode::Local => " Sessions ".to_string(),
-        ViewMode::Team(tid) => format!(" Team: {} ", truncate(tid, 30)),
         ViewMode::Repo(repo) => format!(" Repo: {} ", truncate(repo, 40)),
     };
     if let Some(tool) = app.active_tool_filter() {

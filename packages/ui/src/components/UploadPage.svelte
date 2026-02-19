@@ -10,7 +10,6 @@ const {
 	onSuccess: (id: string) => void;
 } = $props();
 
-const DEFAULT_TEAM_ID = 'local';
 const PASTE_PARSE_DEBOUNCE_MS = 180;
 
 let parsedSession = $state<Session | null>(null);
@@ -112,7 +111,7 @@ async function handleUpload() {
 	uploading = true;
 	uploadError = null;
 	try {
-		const result = await uploadSession(parsedSession, DEFAULT_TEAM_ID);
+		const result = await uploadSession(parsedSession);
 		onSuccess(result.id);
 	} catch (e) {
 		uploadError = e instanceof Error ? e.message : 'Upload failed';

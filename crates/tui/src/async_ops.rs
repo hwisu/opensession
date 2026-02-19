@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use opensession_api::*;
+use opensession_api::{
+    ChangePasswordRequest, LoginRequest, RegenerateKeyResponse, SessionListQuery,
+    SessionListResponse, UploadRequest, UserSettingsResponse,
+};
 
 use crate::app::TeamInfo;
 use crate::config::DaemonConfig;
@@ -17,31 +20,9 @@ pub enum AsyncCommand {
     FetchUploadTeams,
     UploadSession {
         session_json: serde_json::Value,
-        team_id: Option<String>,
-        team_name: String,
+        target_name: String,
         body_url: Option<String>,
     },
-
-    // ── Teams ─────────────────────────────────────────────────────────
-    FetchTeams,
-    FetchTeamDetail(String),
-    FetchMembers(String),
-    CreateTeam {
-        name: String,
-    },
-    InviteMember {
-        team_id: String,
-        email: String,
-    },
-    RemoveMember {
-        team_id: String,
-        user_id: String,
-    },
-
-    // ── Invitations ───────────────────────────────────────────────────
-    FetchInvitations,
-    AcceptInvitation(String),
-    DeclineInvitation(String),
 
     // ── Profile / Account ─────────────────────────────────────────────
     FetchProfile,
@@ -68,15 +49,7 @@ pub enum CommandResult {
 
     // Upload flow
     UploadTeams(Result<Vec<TeamInfo>, String>),
-    UploadDone(Result<(String, String), (String, String)>), // Ok((team_name, url)) or Err((team_name, error))
-
-    // Teams
-    Teams(Result<Vec<TeamResponse>, String>),
-    TeamDetail(Result<TeamDetailResponse, String>),
-    Members(Result<Vec<MemberResponse>, String>),
-
-    // Invitations
-    Invitations(Result<Vec<InvitationResponse>, String>),
+    UploadDone(Result<(String, String), (String, String)>), // Ok((target_name, url)) or Err((target_name, error))
 
     // Profile / Account
     Profile(Result<UserSettingsResponse, String>),
@@ -85,7 +58,7 @@ pub enum CommandResult {
     // Server Sessions
     ServerSessions(Result<SessionListResponse, String>),
 
-    // Generic OK (team create, invite, remove, password change, accept/decline)
+    // Generic OK (password change etc.)
     GenericOk(Result<String, String>),
 
     // Delete
@@ -127,22 +100,11 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
         // ── Upload flow ───────────────────────────────────────────────
         AsyncCommand::FetchUploadTeams => {
             let result = async {
-                let client = make_client(config)?;
-                let list = client.list_teams().await.map_err(|e| format!("{e}"))?;
-
-                let mut teams = vec![TeamInfo {
+                Ok(vec![TeamInfo {
                     id: String::new(),
                     name: "Personal (Public)".to_string(),
                     is_personal: true,
-                }];
-                for t in list.teams {
-                    teams.push(TeamInfo {
-                        id: t.id,
-                        name: t.name,
-                        is_personal: false,
-                    });
-                }
-                Ok(teams)
+                }])
             }
             .await;
             CommandResult::UploadTeams(result)
@@ -150,8 +112,7 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
 
         AsyncCommand::UploadSession {
             session_json,
-            team_id,
-            team_name,
+            target_name,
             body_url,
         } => {
             let result = async {
@@ -161,7 +122,6 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
                 let resp = client
                     .upload_session(&UploadRequest {
                         session,
-                        team_id,
                         body_url,
                         linked_session_ids: None,
                         git_remote: None,
@@ -178,133 +138,9 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
             }
             .await;
             CommandResult::UploadDone(match result {
-                Ok(url) => Ok((team_name, url)),
-                Err(e) => Err((team_name, e)),
+                Ok(url) => Ok((target_name, url)),
+                Err(e) => Err((target_name, e)),
             })
-        }
-
-        // ── Teams ─────────────────────────────────────────────────────
-        AsyncCommand::FetchTeams => {
-            let result = async {
-                let client = make_client(config)?;
-                let list = client.list_teams().await.map_err(|e| format!("{e}"))?;
-                Ok(list.teams)
-            }
-            .await;
-            CommandResult::Teams(result)
-        }
-
-        AsyncCommand::FetchTeamDetail(id) => {
-            let result = async {
-                let client = make_client(config)?;
-                client.get_team(&id).await.map_err(|e| format!("{e}"))
-            }
-            .await;
-            CommandResult::TeamDetail(result)
-        }
-
-        AsyncCommand::FetchMembers(team_id) => {
-            let result = async {
-                let client = make_client(config)?;
-                let list = client
-                    .list_members(&team_id)
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok(list.members)
-            }
-            .await;
-            CommandResult::Members(result)
-        }
-
-        AsyncCommand::CreateTeam { name } => {
-            let result = async {
-                let client = make_client(config)?;
-                let resp = client
-                    .create_team(&CreateTeamRequest {
-                        name: name.clone(),
-                        description: None,
-                        is_public: Some(false),
-                    })
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok(format!("Team '{}' created", resp.name))
-            }
-            .await;
-            CommandResult::GenericOk(result)
-        }
-
-        AsyncCommand::InviteMember { team_id, email } => {
-            let result = async {
-                let client = make_client(config)?;
-                client
-                    .invite_member(
-                        &team_id,
-                        &InviteRequest {
-                            email: Some(email.clone()),
-                            oauth_provider: None,
-                            oauth_provider_username: None,
-                            role: None,
-                        },
-                    )
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok(format!("Invitation sent to {email}"))
-            }
-            .await;
-            CommandResult::GenericOk(result)
-        }
-
-        AsyncCommand::RemoveMember { team_id, user_id } => {
-            let result = async {
-                let client = make_client(config)?;
-                client
-                    .remove_member(&team_id, &user_id)
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok("Member removed".to_string())
-            }
-            .await;
-            CommandResult::GenericOk(result)
-        }
-
-        // ── Invitations ───────────────────────────────────────────────
-        AsyncCommand::FetchInvitations => {
-            let result = async {
-                let client = make_client(config)?;
-                let list = client
-                    .list_invitations()
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok(list.invitations)
-            }
-            .await;
-            CommandResult::Invitations(result)
-        }
-
-        AsyncCommand::AcceptInvitation(id) => {
-            let result = async {
-                let client = make_client(config)?;
-                let resp = client
-                    .accept_invitation(&id)
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok(format!("Joined team (role: {})", resp.role))
-            }
-            .await;
-            CommandResult::GenericOk(result)
-        }
-
-        AsyncCommand::DeclineInvitation(id) => {
-            let result = async {
-                let client = make_client(config)?;
-                client
-                    .decline_invitation(&id)
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok("Invitation declined".to_string())
-            }
-            .await;
-            CommandResult::GenericOk(result)
         }
 
         // ── Profile / Account ─────────────────────────────────────────

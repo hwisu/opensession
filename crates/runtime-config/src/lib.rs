@@ -181,16 +181,12 @@ impl Default for ServerSettings {
 pub struct IdentitySettings {
     #[serde(default = "default_nickname")]
     pub nickname: String,
-    /// Team ID to upload sessions to
-    #[serde(default)]
-    pub team_id: String,
 }
 
 impl Default for IdentitySettings {
     fn default() -> Self {
         Self {
             nickname: default_nickname(),
-            team_id: String::new(),
         }
     }
 }
@@ -380,27 +376,12 @@ pub fn default_watch_paths() -> Vec<String> {
 
 /// Apply compatibility fallbacks after loading raw TOML.
 /// Returns true when any field was updated.
-pub fn apply_compat_fallbacks(config: &mut DaemonConfig, root: Option<&toml::Value>) -> bool {
+pub fn apply_compat_fallbacks(config: &mut DaemonConfig, _root: Option<&toml::Value>) -> bool {
     let mut changed = false;
 
     if config.git_storage.method == GitStorageMethod::Unknown {
         config.git_storage.method = GitStorageMethod::Native;
         changed = true;
-    }
-
-    if config.identity.team_id.trim().is_empty() {
-        if let Some(team_id) = root
-            .and_then(toml::Value::as_table)
-            .and_then(|table| table.get("server"))
-            .and_then(toml::Value::as_table)
-            .and_then(|section| section.get("team_id"))
-            .and_then(toml::Value::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            config.identity.team_id = team_id.to_string();
-            changed = true;
-        }
     }
 
     if config.watchers.custom_paths.is_empty() {
@@ -439,14 +420,10 @@ mod tests {
     fn apply_compat_fallbacks_populates_legacy_fields() {
         let mut cfg = DaemonConfig::default();
         cfg.git_storage.method = GitStorageMethod::Unknown;
-        cfg.identity.team_id.clear();
         cfg.watchers.custom_paths.clear();
 
         let root: toml::Value = toml::from_str(
             r#"
-[server]
-team_id = "team-legacy"
-
 [git_storage]
 "#,
         )
@@ -455,7 +432,6 @@ team_id = "team-legacy"
         let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
         assert!(changed);
         assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
-        assert_eq!(cfg.identity.team_id, "team-legacy");
         assert!(!cfg.watchers.custom_paths.is_empty());
     }
 
@@ -486,14 +462,10 @@ method = "platform_api"
     #[test]
     fn apply_compat_fallbacks_is_noop_for_modern_values() {
         let mut cfg = DaemonConfig::default();
-        cfg.identity.team_id = "team-modern".to_string();
         cfg.watchers.custom_paths = vec!["/tmp/one".to_string()];
 
         let root: toml::Value = toml::from_str(
             r#"
-[server]
-team_id = "team-from-file"
-
 [git_storage]
 method = "native"
 "#,
@@ -503,7 +475,6 @@ method = "native"
         let before = cfg.clone();
         let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
         assert!(!changed);
-        assert_eq!(cfg.identity.team_id, before.identity.team_id);
         assert_eq!(cfg.watchers.custom_paths, before.watchers.custom_paths);
         assert_eq!(cfg.git_storage.method, before.git_storage.method);
     }

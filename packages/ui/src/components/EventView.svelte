@@ -4,7 +4,6 @@ import {
 	calcContentLength,
 	findCodeStats,
 	findFirstText,
-	findJsonPayload,
 	formatContentLength,
 	getToolName,
 	isToolError,
@@ -13,7 +12,6 @@ import {
 import { highlightCode } from '../highlight';
 import { isLongContent, renderMarkdown } from '../markdown';
 import type { Event } from '../types';
-import { isTeamTool } from '../types';
 import CodeBlockView from './CodeBlockView.svelte';
 import ContentBlockList from './ContentBlockList.svelte';
 import DiffView from './DiffView.svelte';
@@ -22,23 +20,17 @@ import {
 	arrowLeftIcon,
 	arrowRightIcon,
 	chevronRightIcon,
-	clipboardIcon,
 	fileEditIcon,
 	fileIcon,
 	globeIcon,
 	imageIcon,
 	lightningIcon,
-	listIcon,
-	refreshIcon,
 	searchIcon,
-	sendIcon,
 	taskEndIcon,
 	taskStartIcon,
 	terminalIcon,
 	trashIcon,
-	usersIcon,
 } from './icons';
-import TeamToolMeta from './TeamToolMeta.svelte';
 
 const {
 	event,
@@ -96,18 +88,6 @@ const subAgentDesc = $derived.by(() => {
 	return findFirstText(event.content.blocks);
 });
 
-// --- Team tool detection ---
-const isTeamToolCall = $derived(
-	eventTypeName === 'ToolCall' &&
-		'data' in event.event_type &&
-		isTeamTool(getToolName(event.event_type)),
-);
-const teamToolName = $derived(isTeamToolCall ? getToolName(event.event_type) : '');
-const teamPayload = $derived.by(() => {
-	if (!isTeamToolCall) return null;
-	return findJsonPayload(event.content.blocks);
-});
-
 // --- Icon lookup table ---
 const ICON_MAP: Record<string, string> = {
 	FileRead: fileIcon,
@@ -124,24 +104,12 @@ const ICON_MAP: Record<string, string> = {
 	TaskEnd: taskEndIcon,
 };
 
-const TEAM_TOOL_ICONS: Record<string, string> = {
-	TaskCreate: clipboardIcon,
-	TaskUpdate: refreshIcon,
-	SendMessage: sendIcon,
-	TeamCreate: usersIcon,
-	TeamDelete: usersIcon,
-	TaskList: listIcon,
-	TaskGet: listIcon,
-};
-
 const chipIcon = $derived(
-	isTeamToolCall
-		? (TEAM_TOOL_ICONS[teamToolName] ?? lightningIcon)
-		: eventTypeName === 'ToolCall'
-			? lightningIcon
-			: eventTypeName === 'ToolResult'
-				? arrowLeftIcon
-				: (ICON_MAP[eventTypeName] ?? '&#x2022;'),
+	eventTypeName === 'ToolCall'
+		? lightningIcon
+		: eventTypeName === 'ToolResult'
+			? arrowLeftIcon
+			: (ICON_MAP[eventTypeName] ?? '&#x2022;'),
 );
 
 // --- Chip label ---
@@ -235,11 +203,9 @@ const metaBadgeText = $derived.by(() => {
 
 // --- Chip name label (for ToolCall/ToolResult) ---
 const chipNameLabel = $derived(
-	isTeamToolCall
-		? teamToolName
-		: eventTypeName === 'ToolCall' || eventTypeName === 'ToolResult'
-			? getToolName(event.event_type)
-			: '',
+	eventTypeName === 'ToolCall' || eventTypeName === 'ToolResult'
+		? getToolName(event.event_type)
+		: '',
 );
 
 const pairedResultIsError = $derived(pairedResult ? isToolError(pairedResult.event_type) : false);
@@ -398,9 +364,7 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 			nameColorClass={chipNameColorClass}
 		>
 			{#snippet metaBadge()}
-				{#if isTeamToolCall}
-					<TeamToolMeta toolName={teamToolName} payload={teamPayload} />
-				{:else if isError}
+				{#if isError}
 					<span class="shrink-0 rounded bg-error/20 px-1.5 py-0.5 text-[10px] text-error">error</span>
 				{:else if pairedResult && pairedResultIsError}
 					<span class="shrink-0 rounded bg-error/20 px-1.5 py-0.5 text-[10px] text-error">error</span>

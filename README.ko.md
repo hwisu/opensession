@@ -15,9 +15,9 @@
 
 OpenSession은 git-native 워크플로를 기본으로 전환했습니다.
 - Docker 필수 운영 흐름을 제거했습니다.
-- 서버 프로필: 세션 조회/업로드.
+- 서버 프로필: 인증 + 세션 조회/업로드.
 - Worker 프로필: 공개 세션 조회 전용(read-only).
-- 팀/인증 라우트는 활성 런타임 경로에서 정리되었습니다.
+- 팀/초대/싱크 라우트는 활성 런타임 경로에서 정리되었습니다.
 
 ## 빠른 시작
 
@@ -43,10 +43,11 @@ opensession .    # 현재 git 레포 범위
 
 | 항목 | Server (Axum) | Worker (Wrangler) |
 |------|----------------|-------------------|
-| 홈(`/`) | 세션 목록 | 세션 목록 |
+| 홈(`/`) | 게스트 랜딩, 로그인 후 세션 목록 | 공개 세션 목록 |
 | 업로드 UI(`/upload`) | 사용 가능 | 비활성(read-only) |
 | API 표면 | `/api/health`, `/api/sessions*` | `/api/health`, `/api/sessions*` |
-| 팀/인증 런타임 라우트 | 비활성 | 비활성 |
+| 인증 라우트 | 활성 | 비활성 |
+| 팀/초대/싱크 라우트 | 비활성 | 비활성 |
 
 웹 빌드 프로필:
 - `VITE_APP_PROFILE=server|worker`
@@ -57,7 +58,7 @@ opensession .    # 현재 git 레포 범위
 ┌─────────┐    ┌────────┐    ┌──────────────────┐
 │  CLI /  │───▶│ daemon │───▶│ server (Axum)    │
 │  TUI    │    │ (watch │    │ SQLite + disk     │
-└─────────┘    │ +sync) │    │ :3000             │
+└─────────┘    │ +upload)│   │ :3000             │
                └────────┘    └──────────────────┘
 ```
 
@@ -72,7 +73,7 @@ opensession .    # 현재 git 레포 범위
 | `local-db` | 로컬 SQLite 레이어 |
 | `git-native` | `gix` 기반 Git 연산 |
 | `server` | Axum HTTP 서버 + SQLite 저장소 |
-| `daemon` | 백그라운드 감시/동기화 에이전트 |
+| `daemon` | 백그라운드 감시/업로드 에이전트 |
 | `cli` | CLI 엔트리 (`opensession`) |
 | `tui` | 터미널 세션 탐색 UI |
 | `worker` | Cloudflare Workers 백엔드 (WASM, 워크스페이스 제외) |
@@ -91,7 +92,6 @@ opensession .    # 현재 git 레포 범위
 | `opensession daemon select --repo ...` | 감시 경로/레포 선택 |
 | `opensession daemon show` | 현재 감시 대상 확인 |
 | `opensession account connect` | 서버 URL/API 키 설정(선택) |
-| `opensession account team` | 레거시 scope id 설정(선택) |
 | `opensession account status\|verify` | 서버 연결 상태 확인 |
 | `opensession docs completion <shell>` | 쉘 자동완성 생성 |
 
@@ -112,7 +112,6 @@ api_key = ""
 
 [identity]
 nickname = "user"
-team_id = ""  # 선택값, 비우면 local scope
 
 [watchers]
 custom_paths = [
@@ -126,7 +125,7 @@ custom_paths = [
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
 | GET | `/api/health` | 헬스 체크 |
-| POST | `/api/sessions` | HAIL 세션 업로드 |
+| POST | `/api/sessions` | HAIL 세션 업로드 (인증 필요) |
 | GET | `/api/sessions` | 세션 목록 조회 |
 | GET | `/api/sessions/{id}` | 세션 상세 조회 |
 | GET | `/api/sessions/{id}/raw` | 원본 HAIL JSONL 다운로드 |

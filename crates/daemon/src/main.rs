@@ -1,8 +1,6 @@
 mod config;
-mod config_sync;
 mod health;
 pub mod hooks;
-mod pull_sync;
 mod scheduler;
 mod tail;
 mod watcher;
@@ -32,9 +30,7 @@ async fn main() {
 async fn run() -> Result<()> {
     info!("opensession-daemon starting");
 
-    let local_cfg = config::load_config()?;
-    let synced_cfg = config_sync::load_synced_config();
-    let cfg = config_sync::merge_configs(&local_cfg, &synced_cfg);
+    let cfg = config::load_config()?;
     let watch_paths = config::resolve_watch_paths(&cfg);
 
     if watch_paths.is_empty() {
@@ -81,26 +77,6 @@ async fn run() -> Result<()> {
         health_shutdown,
     ));
 
-    // Start config sync poller in background
-    let sync_shutdown = shutdown_rx.clone();
-    let sync_handle = tokio::spawn(config_sync::run_config_sync(
-        cfg.server.url.clone(),
-        cfg.server.api_key.clone(),
-        cfg.daemon.health_check_interval_secs, // reuse same interval
-        sync_shutdown,
-    ));
-
-    // Start pull sync in background
-    let pull_shutdown = shutdown_rx.clone();
-    let pull_db = Arc::clone(&db);
-    let pull_handle = tokio::spawn(pull_sync::run_pull_sync(
-        cfg.server.url.clone(),
-        cfg.server.api_key.clone(),
-        cfg.identity.team_id.clone(),
-        pull_db,
-        pull_shutdown,
-    ));
-
     // Wait for shutdown signal
     wait_for_shutdown().await;
 
@@ -110,8 +86,6 @@ async fn run() -> Result<()> {
     // Wait for tasks to finish
     let _ = scheduler_handle.await;
     let _ = health_handle.await;
-    let _ = sync_handle.await;
-    let _ = pull_handle.await;
 
     // Clean up PID file
     cleanup_pid_file();

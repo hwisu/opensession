@@ -2,10 +2,7 @@
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
-use opensession_api::{
-    InvitationResponse, MemberResponse, SortOrder, TeamDetailResponse, TeamResponse, TimeRange,
-    UserSettingsResponse,
-};
+use opensession_api::{SortOrder, TimeRange, UserSettingsResponse};
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
 use opensession_local_db::{
     LocalDb, LocalSessionFilter, LocalSessionRow, LocalSortOrder, LocalTimeRange,
@@ -32,7 +29,7 @@ use crate::timeline_summary::{
     TimelineSummaryCacheEntry, TimelineSummaryPayload, TimelineSummaryWindowKey,
     TimelineSummaryWindowRequest,
 };
-pub use crate::views::modal::{ConfirmAction, InputAction, Modal};
+pub use crate::views::modal::{ConfirmAction, Modal};
 
 /// A display-level event for the timeline. Wraps real events with collapse/summary info.
 #[derive(Debug, Clone)]
@@ -154,9 +151,6 @@ pub enum View {
     SessionDetail,
     Setup,
     Settings,
-    Teams,
-    TeamDetail,
-    Invitations,
     Help,
 }
 
@@ -164,32 +158,21 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Sessions,
-    Collaboration,
     Settings,
-}
-
-/// Focus section within TeamDetail view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TeamDetailFocus {
-    Info,
-    Members,
-    Invite,
 }
 
 /// Settings sub-section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Workspace,
-    TeamShare,
     CaptureSync,
     StoragePrivacy,
     Account,
 }
 
 impl SettingsSection {
-    pub const ORDER: [Self; 5] = [
+    pub const ORDER: [Self; 4] = [
         Self::Workspace,
-        Self::TeamShare,
         Self::CaptureSync,
         Self::StoragePrivacy,
         Self::Account,
@@ -198,7 +181,6 @@ impl SettingsSection {
     pub fn label(self) -> &'static str {
         match self {
             Self::Workspace => "Web Share",
-            Self::TeamShare => "Team Share",
             Self::CaptureSync => "Capture Flow",
             Self::StoragePrivacy => "Storage & Privacy",
             Self::Account => "Account",
@@ -208,7 +190,6 @@ impl SettingsSection {
     pub fn panel_title(self) -> &'static str {
         match self {
             Self::Workspace => "Web Share (Public Git)",
-            Self::TeamShare => "Team Share (Git Native)",
             Self::CaptureSync => "Capture Flow",
             Self::StoragePrivacy => "Storage & Privacy",
             Self::Account => "Account",
@@ -218,7 +199,6 @@ impl SettingsSection {
     pub fn group(self) -> Option<config::SettingsGroup> {
         match self {
             Self::Workspace => Some(config::SettingsGroup::Workspace),
-            Self::TeamShare => Some(config::SettingsGroup::TeamShare),
             Self::CaptureSync => Some(config::SettingsGroup::CaptureSync),
             Self::StoragePrivacy => Some(config::SettingsGroup::StoragePrivacy),
             Self::Account => None,
@@ -274,12 +254,11 @@ pub enum SetupStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupScenario {
     Local,
-    Team,
     Public,
 }
 
 impl SetupScenario {
-    pub const ALL: [Self; 3] = [Self::Local, Self::Team, Self::Public];
+    pub const ALL: [Self; 2] = [Self::Local, Self::Public];
 }
 
 /// State for the email/password login form.
@@ -552,18 +531,13 @@ mod turn_extract_tests {
     }
 
     #[test]
-    fn settings_sections_expose_web_and_team_share_split() {
-        assert_eq!(SettingsSection::ORDER.len(), 5);
+    fn settings_sections_expose_web_capture_storage_account() {
+        assert_eq!(SettingsSection::ORDER.len(), 4);
         assert_eq!(SettingsSection::Workspace.label(), "Web Share");
-        assert_eq!(SettingsSection::TeamShare.label(), "Team Share");
         assert_eq!(SettingsSection::CaptureSync.label(), "Capture Flow");
         assert_eq!(
             SettingsSection::Workspace.panel_title(),
             "Web Share (Public Git)"
-        );
-        assert_eq!(
-            SettingsSection::TeamShare.panel_title(),
-            "Team Share (Git Native)"
         );
     }
 
@@ -965,7 +939,7 @@ mod turn_extract_tests {
     #[test]
     fn selected_session_actor_label_falls_back_to_db_user_id() {
         let mut app = App::new(vec![]);
-        app.view_mode = ViewMode::Team("team-1".to_string());
+        app.view_mode = ViewMode::Repo("repo-1".to_string());
         app.db_sessions = vec![LocalSessionRow {
             id: "db-1".to_string(),
             source_path: None,
@@ -1549,8 +1523,6 @@ pub enum ConnectionContext {
     Server { url: String },
     /// Connected to opensession.io (or cloud), personal mode.
     CloudPersonal,
-    /// Connected to opensession.io (or cloud), team mode.
-    CloudTeam { team_name: String },
 }
 
 /// View mode selector — what set of sessions to display.
@@ -1558,8 +1530,6 @@ pub enum ConnectionContext {
 pub enum ViewMode {
     /// Show local sessions only (file-parsed, original behaviour).
     Local,
-    /// Show all sessions for the given team (includes remote_only from sync).
-    Team(String),
     /// Show sessions grouped by a specific git repo name.
     Repo(String),
 }
@@ -1568,7 +1538,6 @@ impl std::fmt::Display for ViewMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ViewMode::Local => write!(f, "Local"),
-            ViewMode::Team(t) => write!(f, "Team: {t}"),
             ViewMode::Repo(r) => write!(f, "Repo: {r}"),
         }
     }
@@ -1639,7 +1608,7 @@ pub struct App {
     // ── Local DB + view mode ──────────────────────────────────────
     pub db: Option<Arc<LocalDb>>,
     pub view_mode: ViewMode,
-    /// DB-backed session list (for Team/Repo views).
+    /// DB-backed session list (for repo view).
     pub db_sessions: Vec<LocalSessionRow>,
     /// Total DB-backed rows for the active filter (across all pages).
     pub db_total_sessions: usize,
@@ -1651,8 +1620,6 @@ pub struct App {
     pub repo_picker_open: bool,
     pub repo_picker_query: String,
     pub repo_picker_index: usize,
-    /// Team ID from config (if any).
-    pub team_id: Option<String>,
 
     // ── Tool filter ──────────────────────────────────────────────
     pub tool_filter: Option<String>,
@@ -1706,26 +1673,6 @@ pub struct App {
     pub active_tab: Tab,
     pub pending_command: Option<AsyncCommand>,
 
-    // ── Teams ────────────────────────────────────────────────────
-    pub teams: Vec<TeamResponse>,
-    pub teams_list_state: ListState,
-    pub teams_loading: bool,
-
-    // ── Team detail ──────────────────────────────────────────────
-    pub team_detail: Option<TeamDetailResponse>,
-    pub team_members: Vec<MemberResponse>,
-    pub team_members_list_state: ListState,
-    pub team_detail_focus: TeamDetailFocus,
-    pub invite_email: String,
-    pub invite_editing: bool,
-    /// Team ID of the team currently being viewed in detail.
-    pub viewing_team_id: Option<String>,
-
-    // ── Invitations ──────────────────────────────────────────────
-    pub invitations: Vec<InvitationResponse>,
-    pub invitations_list_state: ListState,
-    pub invitations_loading: bool,
-
     // ── Profile / Account (Settings enhancement) ─────────────────
     pub settings_section: SettingsSection,
     pub profile: Option<UserSettingsResponse>,
@@ -1740,7 +1687,7 @@ pub struct App {
     pub loading_sessions: bool,
 }
 
-/// State for the upload team-selection popup.
+/// State for the upload target-selection popup.
 pub struct UploadPopup {
     pub teams: Vec<TeamInfo>,
     pub selected: usize,
@@ -2006,7 +1953,6 @@ impl App {
             repo_picker_open: false,
             repo_picker_query: String::new(),
             repo_picker_index: 0,
-            team_id: None,
             tool_filter: None,
             available_tools: local_tools,
             session_time_range: TimeRange::All,
@@ -2036,19 +1982,6 @@ impl App {
             modal: None,
             active_tab: Tab::Sessions,
             pending_command: None,
-            teams: Vec::new(),
-            teams_list_state: ListState::default(),
-            teams_loading: false,
-            team_detail: None,
-            team_members: Vec::new(),
-            team_members_list_state: ListState::default(),
-            team_detail_focus: TeamDetailFocus::Info,
-            invite_email: String::new(),
-            invite_editing: false,
-            viewing_team_id: None,
-            invitations: Vec::new(),
-            invitations_list_state: ListState::default(),
-            invitations_loading: false,
             settings_section: SettingsSection::Workspace,
             profile: None,
             profile_loading: false,
@@ -2113,7 +2046,6 @@ impl App {
         // Help overlay — `?` from any non-editing state
         if matches!(key, KeyCode::Char('?'))
             && !self.editing_field
-            && !self.invite_editing
             && !self.password_form.editing
             && !self.searching
             && !matches!(self.view, View::Setup)
@@ -2135,11 +2067,8 @@ impl App {
         }
 
         // Global tab switching (only when not in detail/setup/editing/searching)
-        if !matches!(
-            self.view,
-            View::SessionDetail | View::Setup | View::TeamDetail | View::Help
-        ) && !self.editing_field
-            && !self.invite_editing
+        if !matches!(self.view, View::SessionDetail | View::Setup | View::Help)
+            && !self.editing_field
             && !self.password_form.editing
         {
             match key {
@@ -2148,16 +2077,6 @@ impl App {
                     return false;
                 }
                 KeyCode::Char('2') => {
-                    if self.can_use_collab_tabs() {
-                        self.switch_tab(Tab::Collaboration);
-                    }
-                    return false;
-                }
-                KeyCode::Char('3') => {
-                    self.switch_tab(Tab::Settings);
-                    return false;
-                }
-                KeyCode::Char('4') => {
                     self.switch_tab(Tab::Settings);
                     return false;
                 }
@@ -2170,9 +2089,6 @@ impl App {
             View::SessionDetail => self.handle_detail_key(key),
             View::Setup => self.handle_setup_key(key),
             View::Settings => self.handle_settings_key(key),
-            View::Teams => self.handle_teams_key(key),
-            View::TeamDetail => self.handle_team_detail_key(key),
-            View::Invitations => self.handle_invitations_key(key),
             View::Help => {
                 // Any key exits help
                 if self.focus_detail_view {
@@ -2231,15 +2147,6 @@ impl App {
             Tab::Sessions => {
                 self.view = View::SessionList;
                 self.apply_session_view_mode(ViewMode::Local);
-            }
-            Tab::Collaboration => {
-                self.view = View::Teams;
-                if self.is_local_mode() {
-                    self.flash_info("Collaboration requires a cloud/team server connection");
-                } else if self.teams.is_empty() && !self.teams_loading {
-                    self.teams_loading = true;
-                    self.pending_command = Some(AsyncCommand::FetchTeams);
-                }
             }
             Tab::Settings => {
                 self.view = View::Settings;
@@ -2405,7 +2312,7 @@ impl App {
                         teams: Vec::new(),
                         selected: 0,
                         checked: Vec::new(),
-                        status: Some("Fetching teams...".to_string()),
+                        status: Some("Fetching upload targets...".to_string()),
                         phase: UploadPhase::FetchingTeams,
                         results: Vec::new(),
                     });
@@ -2597,10 +2504,10 @@ impl App {
                             self.view = View::SessionList;
                             self.active_tab = Tab::Sessions;
                             self.flash_info(
-                                "Local mode enabled. Configure cloud sync later in Settings > Web Share / Team Share",
+                                "Local mode enabled. Configure cloud sync later in Settings > Web Share",
                             );
                         }
-                        SetupScenario::Team | SetupScenario::Public => {
+                        SetupScenario::Public => {
                             self.setup_step = SetupStep::Configure;
                             self.setup_mode = SetupMode::ApiKey;
                             self.settings_index = 0;
@@ -2619,7 +2526,7 @@ impl App {
                 self.view = View::SessionList;
                 self.active_tab = Tab::Sessions;
                 self.flash_info(
-                    "You can configure this later in Settings > Web Share / Team Share (~/.config/opensession/opensession.toml)",
+                    "You can configure this later in Settings > Web Share (~/.config/opensession/opensession.toml)",
                 );
             }
             _ => {}
@@ -2633,35 +2540,20 @@ impl App {
                 self.daemon_config.daemon.auto_publish = false;
                 self.daemon_config.daemon.publish_on = PublishMode::Manual;
             }
-            SetupScenario::Team => {
-                self.daemon_config.daemon.auto_publish = false;
-                self.daemon_config.daemon.publish_on = PublishMode::Manual;
-            }
             SetupScenario::Public => {
                 self.daemon_config.daemon.auto_publish = true;
                 self.daemon_config.daemon.publish_on = PublishMode::SessionEnd;
-                self.daemon_config.identity.team_id.clear();
             }
         }
     }
 
     fn handle_setup_apikey_key(&mut self, key: KeyCode) -> bool {
-        const TEAM_FIELDS: [SettingField; 4] = [
-            SettingField::ServerUrl,
-            SettingField::ApiKey,
-            SettingField::TeamId,
-            SettingField::Nickname,
-        ];
-        const PUBLIC_FIELDS: [SettingField; 3] = [
+        const SETUP_FIELDS: [SettingField; 3] = [
             SettingField::ServerUrl,
             SettingField::ApiKey,
             SettingField::Nickname,
         ];
-        let setup_fields: &[SettingField] = if self.setup_scenario == Some(SetupScenario::Public) {
-            &PUBLIC_FIELDS
-        } else {
-            &TEAM_FIELDS
-        };
+        let setup_fields: &[SettingField] = &SETUP_FIELDS;
         let setup_field_count = setup_fields.len();
 
         if self.editing_field {
@@ -2699,7 +2591,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Web Share / Team Share (~/.config/opensession/opensession.toml)",
+                        "You can configure this later in Settings > Web Share (~/.config/opensession/opensession.toml)",
                     );
                 }
             }
@@ -2770,7 +2662,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Web Share / Team Share (~/.config/opensession/opensession.toml)",
+                        "You can configure this later in Settings > Web Share (~/.config/opensession/opensession.toml)",
                     );
                 }
             }
@@ -3041,7 +2933,6 @@ impl App {
                         self.handle_account_settings_key(key);
                     }
                     SettingsSection::Workspace
-                    | SettingsSection::TeamShare
                     | SettingsSection::CaptureSync
                     | SettingsSection::StoragePrivacy => {
                         self.handle_daemon_config_key(key);
@@ -3327,236 +3218,6 @@ impl App {
             .unwrap_or(false)
     }
 
-    // ── Teams key handler ─────────────────────────────────────────────
-
-    fn handle_teams_key(&mut self, key: KeyCode) -> bool {
-        match key {
-            KeyCode::Char('q') => return true,
-            KeyCode::Esc => {
-                self.active_tab = Tab::Collaboration;
-                self.view = View::Teams;
-                return false;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.teams.is_empty() {
-                    let i = self
-                        .teams_list_state
-                        .selected()
-                        .map(|i| (i + 1).min(self.teams.len() - 1))
-                        .unwrap_or(0);
-                    self.teams_list_state.select(Some(i));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let i = self
-                    .teams_list_state
-                    .selected()
-                    .map(|i| i.saturating_sub(1))
-                    .unwrap_or(0);
-                self.teams_list_state.select(Some(i));
-            }
-            KeyCode::Enter => {
-                if let Some(idx) = self.teams_list_state.selected() {
-                    if let Some(team) = self.teams.get(idx) {
-                        let team_id = team.id.clone();
-                        self.viewing_team_id = Some(team_id.clone());
-                        self.team_detail = None;
-                        self.team_members.clear();
-                        self.team_members_list_state = ListState::default();
-                        self.team_detail_focus = TeamDetailFocus::Info;
-                        self.invite_email.clear();
-                        self.invite_editing = false;
-                        self.view = View::TeamDetail;
-                        self.pending_command = Some(AsyncCommand::FetchTeamDetail(team_id));
-                    }
-                }
-            }
-            KeyCode::Char('n') => {
-                // Open create-team modal
-                self.edit_buffer.clear();
-                self.modal = Some(Modal::TextInput {
-                    title: "Create Team".to_string(),
-                    label: "Team Name".to_string(),
-                    action: InputAction::CreateTeam,
-                });
-            }
-            KeyCode::Char('r') => {
-                self.teams_loading = true;
-                self.pending_command = Some(AsyncCommand::FetchTeams);
-            }
-            KeyCode::Char('i') => {
-                self.view = View::Invitations;
-                if self.invitations.is_empty() && !self.invitations_loading {
-                    self.invitations_loading = true;
-                    self.pending_command = Some(AsyncCommand::FetchInvitations);
-                }
-            }
-            _ => {}
-        }
-        false
-    }
-
-    // ── Team detail key handler ──────────────────────────────────────
-
-    fn handle_team_detail_key(&mut self, key: KeyCode) -> bool {
-        // If editing invite email
-        if self.invite_editing {
-            match key {
-                KeyCode::Esc => {
-                    self.invite_editing = false;
-                }
-                KeyCode::Enter => {
-                    if !self.invite_email.is_empty() {
-                        if let Some(ref tid) = self.viewing_team_id {
-                            self.pending_command = Some(AsyncCommand::InviteMember {
-                                team_id: tid.clone(),
-                                email: self.invite_email.clone(),
-                            });
-                        }
-                        self.invite_editing = false;
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.invite_email.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.invite_email.push(c);
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        match key {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.view = View::Teams;
-                self.active_tab = Tab::Collaboration;
-            }
-            KeyCode::Tab => {
-                self.team_detail_focus = match self.team_detail_focus {
-                    TeamDetailFocus::Info => TeamDetailFocus::Members,
-                    TeamDetailFocus::Members => TeamDetailFocus::Invite,
-                    TeamDetailFocus::Invite => TeamDetailFocus::Info,
-                };
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if matches!(self.team_detail_focus, TeamDetailFocus::Members)
-                    && !self.team_members.is_empty()
-                {
-                    let i = self
-                        .team_members_list_state
-                        .selected()
-                        .map(|i| (i + 1).min(self.team_members.len() - 1))
-                        .unwrap_or(0);
-                    self.team_members_list_state.select(Some(i));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if matches!(self.team_detail_focus, TeamDetailFocus::Members) {
-                    let i = self
-                        .team_members_list_state
-                        .selected()
-                        .map(|i| i.saturating_sub(1))
-                        .unwrap_or(0);
-                    self.team_members_list_state.select(Some(i));
-                }
-            }
-            KeyCode::Char('d') => {
-                // Remove member — show confirm modal
-                if matches!(self.team_detail_focus, TeamDetailFocus::Members) {
-                    if let Some(idx) = self.team_members_list_state.selected() {
-                        if let Some(member) = self.team_members.get(idx) {
-                            if let Some(ref tid) = self.viewing_team_id {
-                                self.modal = Some(Modal::Confirm {
-                                    title: "Remove Member".to_string(),
-                                    message: format!("Remove @{} from team?", member.nickname),
-                                    action: ConfirmAction::RemoveMember {
-                                        team_id: tid.clone(),
-                                        user_id: member.user_id.clone(),
-                                    },
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            KeyCode::Enter => {
-                if matches!(self.team_detail_focus, TeamDetailFocus::Invite) {
-                    self.invite_editing = true;
-                }
-            }
-            KeyCode::Char('r') => {
-                // Refresh team detail
-                if let Some(ref tid) = self.viewing_team_id {
-                    self.pending_command = Some(AsyncCommand::FetchTeamDetail(tid.clone()));
-                }
-            }
-            _ => {}
-        }
-        false
-    }
-
-    // ── Invitations key handler ──────────────────────────────────────
-
-    fn handle_invitations_key(&mut self, key: KeyCode) -> bool {
-        match key {
-            KeyCode::Char('q') => return true,
-            KeyCode::Esc => {
-                self.switch_tab(Tab::Sessions);
-                return false;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.invitations.is_empty() {
-                    let i = self
-                        .invitations_list_state
-                        .selected()
-                        .map(|i| (i + 1).min(self.invitations.len() - 1))
-                        .unwrap_or(0);
-                    self.invitations_list_state.select(Some(i));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let i = self
-                    .invitations_list_state
-                    .selected()
-                    .map(|i| i.saturating_sub(1))
-                    .unwrap_or(0);
-                self.invitations_list_state.select(Some(i));
-            }
-            KeyCode::Char('a') => {
-                // Accept invitation
-                if let Some(idx) = self.invitations_list_state.selected() {
-                    if let Some(inv) = self.invitations.get(idx) {
-                        if inv.status == opensession_api::InvitationStatus::Pending {
-                            let id = inv.id.clone();
-                            self.pending_command = Some(AsyncCommand::AcceptInvitation(id));
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('d') => {
-                // Decline invitation — confirm modal
-                if let Some(idx) = self.invitations_list_state.selected() {
-                    if let Some(inv) = self.invitations.get(idx) {
-                        if inv.status == opensession_api::InvitationStatus::Pending {
-                            self.modal = Some(Modal::Confirm {
-                                title: "Decline Invitation".to_string(),
-                                message: format!("Decline invitation to {}?", inv.team_name),
-                                action: ConfirmAction::DeclineInvitation(inv.id.clone()),
-                            });
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('r') => {
-                self.invitations_loading = true;
-                self.pending_command = Some(AsyncCommand::FetchInvitations);
-            }
-            _ => {}
-        }
-        false
-    }
-
     // ── Modal key handler ────────────────────────────────────────────
 
     fn handle_modal_key(&mut self, key: KeyCode) -> bool {
@@ -3574,15 +3235,8 @@ impl App {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     // Execute the confirmed action
                     match action {
-                        ConfirmAction::RemoveMember { team_id, user_id } => {
-                            self.pending_command =
-                                Some(AsyncCommand::RemoveMember { team_id, user_id });
-                        }
                         ConfirmAction::RegenerateApiKey => {
                             self.pending_command = Some(AsyncCommand::RegenerateApiKey);
-                        }
-                        ConfirmAction::DeclineInvitation(id) => {
-                            self.pending_command = Some(AsyncCommand::DeclineInvitation(id));
                         }
                         ConfirmAction::DeleteSession { session_id } => {
                             self.pending_command = Some(AsyncCommand::DeleteSession { session_id });
@@ -3613,50 +3267,6 @@ impl App {
                     self.modal = Some(Modal::Confirm {
                         title,
                         message,
-                        action,
-                    });
-                }
-            },
-            Modal::TextInput {
-                title,
-                label,
-                action,
-            } => match key {
-                KeyCode::Esc => {
-                    self.edit_buffer.clear();
-                }
-                KeyCode::Enter => {
-                    let value = self.edit_buffer.clone();
-                    self.edit_buffer.clear();
-                    if !value.is_empty() {
-                        match action {
-                            InputAction::CreateTeam => {
-                                self.pending_command =
-                                    Some(AsyncCommand::CreateTeam { name: value });
-                            }
-                        }
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.edit_buffer.pop();
-                    self.modal = Some(Modal::TextInput {
-                        title,
-                        label,
-                        action,
-                    });
-                }
-                KeyCode::Char(c) => {
-                    self.edit_buffer.push(c);
-                    self.modal = Some(Modal::TextInput {
-                        title,
-                        label,
-                        action,
-                    });
-                }
-                _ => {
-                    self.modal = Some(Modal::TextInput {
-                        title,
-                        label,
                         action,
                     });
                 }
@@ -3720,11 +3330,11 @@ impl App {
 
                 if let Some(ref mut popup) = self.upload_popup {
                     match result {
-                        Ok((team_name, url)) => {
-                            popup.results.push((team_name, Ok(url)));
+                        Ok((target_name, url)) => {
+                            popup.results.push((target_name, Ok(url)));
                         }
-                        Err((team_name, e)) => {
-                            popup.results.push((team_name, Err(e)));
+                        Err((target_name, e)) => {
+                            popup.results.push((target_name, Err(e)));
                         }
                     }
 
@@ -3747,53 +3357,6 @@ impl App {
                         popup.status = None;
                     }
                 }
-            }
-
-            CommandResult::Teams(Ok(teams)) => {
-                self.teams_loading = false;
-                self.teams = teams;
-                if !self.teams.is_empty() && self.teams_list_state.selected().is_none() {
-                    self.teams_list_state.select(Some(0));
-                }
-            }
-            CommandResult::Teams(Err(e)) => {
-                self.teams_loading = false;
-                self.flash_error(format!("Error: {e}"));
-            }
-
-            CommandResult::TeamDetail(Ok(detail)) => {
-                let team_id = detail.team.id.clone();
-                self.team_detail = Some(detail);
-                // Also fetch members
-                self.pending_command = Some(AsyncCommand::FetchMembers(team_id));
-            }
-            CommandResult::TeamDetail(Err(e)) => {
-                self.flash_error(format!("Error: {e}"));
-            }
-
-            CommandResult::Members(Ok(members)) => {
-                self.team_members = members;
-                if !self.team_members.is_empty()
-                    && self.team_members_list_state.selected().is_none()
-                {
-                    self.team_members_list_state.select(Some(0));
-                }
-            }
-            CommandResult::Members(Err(e)) => {
-                self.flash_error(format!("Error: {e}"));
-            }
-
-            CommandResult::Invitations(Ok(invs)) => {
-                self.invitations_loading = false;
-                self.invitations = invs;
-                if !self.invitations.is_empty() && self.invitations_list_state.selected().is_none()
-                {
-                    self.invitations_list_state.select(Some(0));
-                }
-            }
-            CommandResult::Invitations(Err(e)) => {
-                self.invitations_loading = false;
-                self.flash_error(format!("Error: {e}"));
             }
 
             CommandResult::Profile(Ok(profile)) => {
@@ -3864,23 +3427,6 @@ impl App {
 
             CommandResult::GenericOk(Ok(msg)) => {
                 self.flash_success(msg);
-                // Refresh relevant data after mutations
-                match self.view {
-                    View::Teams => {
-                        self.teams_loading = true;
-                        self.pending_command = Some(AsyncCommand::FetchTeams);
-                    }
-                    View::TeamDetail => {
-                        if let Some(ref tid) = self.viewing_team_id {
-                            self.pending_command = Some(AsyncCommand::FetchTeamDetail(tid.clone()));
-                        }
-                    }
-                    View::Invitations => {
-                        self.invitations_loading = true;
-                        self.pending_command = Some(AsyncCommand::FetchInvitations);
-                    }
-                    _ => {}
-                }
             }
             CommandResult::GenericOk(Err(e)) => {
                 self.flash_error(format!("Error: {e}"));
@@ -3906,13 +3452,6 @@ impl App {
                 self.config_dirty = false;
                 self.startup_status.config_exists = true;
                 self.flash_success("Config saved to opensession.toml");
-                // Update team_id in case it changed
-                let tid = &self.daemon_config.identity.team_id;
-                self.team_id = if tid.is_empty() {
-                    None
-                } else {
-                    Some(tid.clone())
-                };
                 // Re-derive connection context
                 self.connection_ctx = Self::derive_connection_ctx(&self.daemon_config);
             }
@@ -3938,13 +3477,7 @@ impl App {
                 url: config.server.url.clone(),
             };
         }
-        if config.identity.team_id.is_empty() {
-            ConnectionContext::CloudPersonal
-        } else {
-            ConnectionContext::CloudTeam {
-                team_name: config.identity.team_id.clone(),
-            }
-        }
+        ConnectionContext::CloudPersonal
     }
 
     fn toggle_event_filter(&mut self, filter: EventFilter) {
@@ -3973,21 +3506,11 @@ impl App {
     fn cycle_view_mode(&mut self) {
         let next = match &self.view_mode {
             ViewMode::Local => {
-                if let Some(ref tid) = self.team_id {
-                    ViewMode::Team(tid.clone())
-                } else if !self.repos.is_empty() {
-                    self.repo_index = 0;
-                    ViewMode::Repo(self.repos[0].clone())
-                } else {
-                    return; // nothing to cycle to
-                }
-            }
-            ViewMode::Team(_) => {
                 if !self.repos.is_empty() {
                     self.repo_index = 0;
                     ViewMode::Repo(self.repos[0].clone())
                 } else {
-                    ViewMode::Local
+                    return; // nothing to cycle to
                 }
             }
             ViewMode::Repo(_) => {
@@ -4041,7 +3564,7 @@ impl App {
                     by_agents.entry(agent_count).or_default().push(abs_idx);
                 }
             }
-            ViewMode::Team(_) | ViewMode::Repo(_) => {
+            ViewMode::Repo(_) => {
                 for (abs_idx, row) in self.db_sessions.iter().enumerate() {
                     let agent_count = self
                         .session_max_active_agents
@@ -4094,14 +3617,6 @@ impl App {
         let search = self.normalized_search_query();
         let base_filter = match &self.view_mode {
             ViewMode::Local => return, // Local mode uses self.sessions
-            ViewMode::Team(tid) => LocalSessionFilter {
-                team_id: Some(tid.clone()),
-                tool: self.tool_filter.clone(),
-                search: search.clone(),
-                sort: LocalSortOrder::Recent,
-                time_range: self.local_session_time_range(),
-                ..Default::default()
-            },
             ViewMode::Repo(repo) => LocalSessionFilter {
                 git_repo_name: Some(repo.clone()),
                 tool: self.tool_filter.clone(),
@@ -4239,22 +3754,6 @@ impl App {
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect(),
-            ViewMode::Team(tid) => {
-                let search = self.normalized_search_query();
-                let filter = LocalSessionFilter {
-                    team_id: Some(tid),
-                    tool: None,
-                    search,
-                    sort: LocalSortOrder::Recent,
-                    time_range: self.local_session_time_range(),
-                    ..Default::default()
-                };
-                if let Some(db) = self.db.as_ref() {
-                    db.list_session_tools(&filter).unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            }
             ViewMode::Repo(repo) => {
                 let search = self.normalized_search_query();
                 let filter = LocalSessionFilter {
@@ -4938,7 +4437,7 @@ impl App {
             .and_then(Self::actor_label_from_session)
     }
 
-    /// Get the selected DB session row (for Team/Repo views).
+    /// Get the selected DB session row (for repo view).
     pub fn selected_db_session(&self) -> Option<&LocalSessionRow> {
         let idx = self.list_state.selected()?;
         self.db_sessions.get(idx)
@@ -7172,7 +6671,7 @@ impl App {
                     self.rebuild_columns();
                 }
             }
-            ViewMode::Team(_) | ViewMode::Repo(_) => {
+            ViewMode::Repo(_) => {
                 self.reload_db_sessions();
                 if self.list_layout == ListLayout::ByUser {
                     self.rebuild_columns();

@@ -407,7 +407,6 @@ async fn upload_to_server(
 
     let upload_body = serde_json::to_value(&UploadRequest {
         session: session.clone(),
-        team_id: Some(config.identity.team_id.clone()),
         body_url: body_url.map(String::from),
         linked_session_ids: None,
         git_remote: None,

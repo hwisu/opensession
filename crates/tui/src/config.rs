@@ -248,10 +248,10 @@ pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
         *server = toml::Value::Table(toml::map::Map::new());
     }
     if let Some(server_table) = server.as_table_mut() {
-        server_table.insert(
-            "team_id".to_string(),
-            toml::Value::String(config.identity.team_id.clone()),
-        );
+        server_table.remove("team_id");
+    }
+    if let Some(identity_table) = root.get_mut("identity").and_then(toml::Value::as_table_mut) {
+        identity_table.remove("team_id");
     }
     apply_runtime_extensions_to_toml(&mut doc);
     let content = toml::to_string_pretty(&doc).context("Failed to serialize config")?;
@@ -459,7 +459,6 @@ fn process_alive(pid: u32) -> bool {
 pub enum SettingField {
     ServerUrl,
     ApiKey,
-    TeamId,
     Nickname,
     AutoPublish,
     DebounceSecs,
@@ -517,7 +516,6 @@ impl SettingItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsGroup {
     Workspace,
-    TeamShare,
     CaptureSync,
     TimelineIntelligence,
     StoragePrivacy,
@@ -537,13 +535,6 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         label: "Web API Key",
         description: "Personal auth key used for public web share registration and uploads",
         dependency_hint: None,
-    },
-    SettingItem::Header("Team Share (Git Native)"),
-    SettingItem::Field {
-        field: SettingField::TeamId,
-        label: "Scope ID (Optional)",
-        description: "Optional git-native scope/group key for organizing shared uploads",
-        dependency_hint: Some("Defaults to local scope when empty"),
     },
     SettingItem::Header("Profile"),
     SettingItem::Field {
@@ -767,13 +758,6 @@ impl SettingField {
                     format!("{}...", &key[..visible])
                 }
             }
-            Self::TeamId => {
-                if config.identity.team_id.is_empty() {
-                    "(not set)".to_string()
-                } else {
-                    config.identity.team_id.clone()
-                }
-            }
             Self::Nickname => config.identity.nickname.clone(),
             Self::AutoPublish => on_off(config.daemon.auto_publish),
             Self::DebounceSecs => config.daemon.debounce_secs.to_string(),
@@ -875,7 +859,6 @@ impl SettingField {
         match self {
             Self::ServerUrl => config.server.url.clone(),
             Self::ApiKey => config.server.api_key.clone(),
-            Self::TeamId => config.identity.team_id.clone(),
             Self::Nickname => config.identity.nickname.clone(),
             Self::DebounceSecs => config.daemon.debounce_secs.to_string(),
             Self::RealtimeDebounceMs => config.daemon.realtime_debounce_ms.to_string(),
@@ -1026,7 +1009,6 @@ impl SettingField {
         match self {
             Self::ServerUrl => config.server.url = value.to_string(),
             Self::ApiKey => config.server.api_key = value.to_string(),
-            Self::TeamId => config.identity.team_id = value.to_string(),
             Self::Nickname => config.identity.nickname = value.to_string(),
             Self::DebounceSecs => {
                 if let Ok(v) = value.parse() {
@@ -1303,8 +1285,6 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         | SettingField::Nickname
         | SettingField::CalendarDisplayMode => SettingsGroup::Workspace,
 
-        SettingField::TeamId => SettingsGroup::TeamShare,
-
         SettingField::AutoPublish
         | SettingField::DebounceSecs
         | SettingField::RealtimeDebounceMs
@@ -1430,28 +1410,6 @@ mod tests {
         let workspace_fields = selectable_fields(SettingsGroup::Workspace);
         assert!(workspace_fields.contains(&SettingField::ServerUrl));
         assert!(workspace_fields.contains(&SettingField::ApiKey));
-        assert!(!workspace_fields.contains(&SettingField::TeamId));
-    }
-
-    #[test]
-    fn team_share_section_uses_git_native_wording() {
-        let items = section_items(SettingsGroup::TeamShare);
-        assert!(items
-            .iter()
-            .any(|item| matches!(item, SettingItem::Header("Team Share (Git Native)"))));
-
-        let team_description = items.iter().find_map(|item| match item {
-            SettingItem::Field {
-                field: SettingField::TeamId,
-                description,
-                ..
-            } => Some(*description),
-            _ => None,
-        });
-        let team_description = team_description.expect("TeamId field should exist in TeamShare");
-        let lowered = team_description.to_ascii_lowercase();
-        assert!(lowered.contains("git-native"));
-        assert!(lowered.contains("scope"));
     }
 
     #[test]

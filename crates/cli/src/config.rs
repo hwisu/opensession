@@ -21,8 +21,6 @@ pub struct ServerConfig {
     pub url: String,
     #[serde(default)]
     pub api_key: String,
-    #[serde(default)]
-    pub team_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +48,6 @@ impl Default for ServerConfig {
         Self {
             url: default_server_url(),
             api_key: String::new(),
-            team_id: String::new(),
         }
     }
 }
@@ -102,12 +99,6 @@ fn ensure_child_table<'a>(
     entry.as_table_mut().expect("toml child table")
 }
 
-fn set_string(doc: &mut toml::Value, section: &str, key: &str, value: String) {
-    let root = ensure_root_table(doc);
-    let section_table = ensure_child_table(root, section);
-    section_table.insert(key.to_string(), toml::Value::String(value));
-}
-
 fn set_bool(doc: &mut toml::Value, section: &str, key: &str, value: bool) {
     let root = ensure_root_table(doc);
     let section_table = ensure_child_table(root, section);
@@ -135,19 +126,27 @@ fn load_runtime_config_from_doc(doc: &toml::Value) -> DaemonConfig {
     config
 }
 
-fn load_runtime_config_from_disk() -> Result<(DaemonConfig, bool)> {
+fn load_runtime_config_from_disk() -> Result<(DaemonConfig, bool, bool)> {
     let path = config_path()?;
     let mut auto_start = true;
+    let mut legacy_team_id_present = false;
 
     let config = if path.exists() {
         let doc = read_config_doc(&path)?;
         auto_start = get_bool(&doc, &["cli", "auto_start"]).unwrap_or(true);
+        legacy_team_id_present = [("server", "team_id"), ("identity", "team_id")]
+            .into_iter()
+            .any(|(section, key)| {
+                get_value(&doc, &[section, key])
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|v| !v.trim().is_empty())
+            });
         load_runtime_config_from_doc(&doc)
     } else {
         DaemonConfig::default()
     };
 
-    Ok((config, auto_start))
+    Ok((config, auto_start, legacy_team_id_present))
 }
 
 fn write_runtime_config(config: &DaemonConfig, auto_start: bool) -> Result<()> {
@@ -157,12 +156,6 @@ fn write_runtime_config(config: &DaemonConfig, auto_start: bool) -> Result<()> {
 
     let mut doc = toml::Value::try_from(config.clone()).context("Failed to serialize config")?;
     set_bool(&mut doc, "cli", "auto_start", auto_start);
-    set_string(
-        &mut doc,
-        "server",
-        "team_id",
-        config.identity.team_id.clone(),
-    );
 
     let content = toml::to_string_pretty(&doc).context("Failed to serialize config")?;
     let path = config_path()?;
@@ -173,7 +166,10 @@ fn write_runtime_config(config: &DaemonConfig, auto_start: bool) -> Result<()> {
 
 /// Load CLI-facing config from disk, returning default if not found.
 pub fn load_config() -> Result<CliConfig> {
-    let (runtime, auto_start) = load_runtime_config_from_disk()?;
+    let (runtime, auto_start, legacy_team_id_present) = load_runtime_config_from_disk()?;
+    if legacy_team_id_present {
+        eprintln!("Warning: legacy team_id fields are ignored and can be removed from config.");
+    }
     Ok(CliConfig {
         server: ServerConfig {
             url: if runtime.server.url.trim().is_empty() {
@@ -182,7 +178,6 @@ pub fn load_config() -> Result<CliConfig> {
                 runtime.server.url
             },
             api_key: runtime.server.api_key,
-            team_id: runtime.identity.team_id,
         },
         daemon: DaemonRefConfig { auto_start },
         privacy: PrivacyConfig {
@@ -193,23 +188,22 @@ pub fn load_config() -> Result<CliConfig> {
 
 /// Save CLI-facing config to disk (in `opensession.toml`).
 pub fn save_config(config: &CliConfig) -> Result<()> {
-    let (mut runtime, _) = load_runtime_config_from_disk()?;
+    let (mut runtime, _, _) = load_runtime_config_from_disk()?;
     runtime.server.url = config.server.url.clone();
     runtime.server.api_key = config.server.api_key.clone();
-    runtime.identity.team_id = config.server.team_id.clone();
     runtime.privacy.exclude_tools = config.privacy.exclude_tools.clone();
     write_runtime_config(&runtime, config.daemon.auto_start)
 }
 
 /// Load daemon runtime config from the canonical config file.
 pub fn load_daemon_config() -> Result<DaemonConfig> {
-    let (runtime, _) = load_runtime_config_from_disk()?;
+    let (runtime, _, _) = load_runtime_config_from_disk()?;
     Ok(runtime)
 }
 
 /// Save daemon runtime config while preserving CLI-specific flags.
 pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
-    let (_, auto_start) = load_runtime_config_from_disk()?;
+    let (_, auto_start, _) = load_runtime_config_from_disk()?;
     write_runtime_config(config, auto_start)
 }
 
@@ -232,14 +226,6 @@ pub fn show_config() -> Result<()> {
             )
         }
     );
-    println!(
-        "  team_id = {}",
-        if config.server.team_id.is_empty() {
-            "(default: local)".to_string()
-        } else {
-            config.server.team_id.clone()
-        }
-    );
     println!();
     println!("[daemon]");
     println!("  auto_start = {}", config.daemon.auto_start);
@@ -252,11 +238,7 @@ pub fn show_config() -> Result<()> {
 }
 
 /// Update config with provided values.
-pub fn set_config(
-    server_url: Option<String>,
-    api_key: Option<String>,
-    team_id: Option<String>,
-) -> Result<()> {
+pub fn set_config(server_url: Option<String>, api_key: Option<String>) -> Result<()> {
     let mut config = load_config()?;
 
     if let Some(url) = server_url {
@@ -265,20 +247,11 @@ pub fn set_config(
     if let Some(key) = api_key {
         config.server.api_key = key;
     }
-    if let Some(tid) = team_id {
-        config.server.team_id = tid;
-    }
 
     save_config(&config)?;
     println!("Configuration updated.");
     show_config()?;
     Ok(())
-}
-
-/// Set team id quickly.
-pub fn set_team(team_id: String) -> Result<()> {
-    eprintln!("Note: team_id is optional. Empty value defaults uploads to `local` scope.");
-    set_config(None, None, Some(team_id))
 }
 
 /// Return current daemon watch paths for CLI display/updates.

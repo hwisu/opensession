@@ -38,15 +38,6 @@ impl Db {
         let path = self.bodies_dir().join(storage_key);
         std::fs::read(&path).context("reading session body")
     }
-
-    /// Check whether a user belongs to a team.
-    pub fn is_team_member(&self, team_id: &str, user_id: &str) -> bool {
-        let (sql, values) = db::teams::member_exists(team_id, user_id);
-        sq_query_row(&self.conn(), (sql, values), |row| {
-            row.get::<_, i64>(0).map(|c| c > 0)
-        })
-        .unwrap_or(false)
-    }
 }
 
 // ── sea-query ↔ rusqlite helpers ──────────────────────────────────────────
@@ -119,35 +110,34 @@ pub fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSumm
         id: row.get(0)?,
         user_id: row.get(1)?,
         nickname: row.get(2)?,
-        team_id: row.get(3)?,
-        tool: row.get(4)?,
-        agent_provider: row.get(5)?,
-        agent_model: row.get(6)?,
-        title: row.get(7)?,
-        description: row.get(8)?,
-        tags: row.get(9)?,
-        created_at: row.get(10)?,
-        uploaded_at: row.get(11)?,
-        message_count: row.get(12)?,
-        task_count: row.get(13)?,
-        event_count: row.get(14)?,
-        duration_seconds: row.get(15)?,
-        total_input_tokens: row.get(16)?,
-        total_output_tokens: row.get(17)?,
-        git_remote: row.get(18)?,
-        git_branch: row.get(19)?,
-        git_commit: row.get(20)?,
-        git_repo_name: row.get(21)?,
-        pr_number: row.get(22)?,
-        pr_url: row.get(23)?,
-        working_directory: row.get(24)?,
-        files_modified: row.get(25)?,
-        files_read: row.get(26)?,
-        has_errors: row.get::<_, i64>(27).unwrap_or(0) != 0,
-        max_active_agents: row.get(28).unwrap_or(1),
-        session_score: row.get(29).unwrap_or(0),
+        tool: row.get(3)?,
+        agent_provider: row.get(4)?,
+        agent_model: row.get(5)?,
+        title: row.get(6)?,
+        description: row.get(7)?,
+        tags: row.get(8)?,
+        created_at: row.get(9)?,
+        uploaded_at: row.get(10)?,
+        message_count: row.get(11)?,
+        task_count: row.get(12)?,
+        event_count: row.get(13)?,
+        duration_seconds: row.get(14)?,
+        total_input_tokens: row.get(15)?,
+        total_output_tokens: row.get(16)?,
+        git_remote: row.get(17)?,
+        git_branch: row.get(18)?,
+        git_commit: row.get(19)?,
+        git_repo_name: row.get(20)?,
+        pr_number: row.get(21)?,
+        pr_url: row.get(22)?,
+        working_directory: row.get(23)?,
+        files_modified: row.get(24)?,
+        files_read: row.get(25)?,
+        has_errors: row.get::<_, i64>(26).unwrap_or(0) != 0,
+        max_active_agents: row.get(27).unwrap_or(1),
+        session_score: row.get(28).unwrap_or(0),
         score_plugin: row
-            .get::<_, String>(30)
+            .get::<_, String>(29)
             .unwrap_or_else(|_| opensession_core::scoring::DEFAULT_SCORE_PLUGIN.to_string()),
     })
 }

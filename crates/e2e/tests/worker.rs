@@ -28,7 +28,6 @@ async fn upload_route_is_disabled_in_worker_profile() {
             "/sessions",
             &UploadRequest {
                 session,
-                team_id: Some("local".to_string()),
                 body_url: None,
                 linked_session_ids: None,
                 git_remote: None,

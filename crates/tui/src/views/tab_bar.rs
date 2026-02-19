@@ -3,15 +3,14 @@ use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mode: bool) {
+pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, _local_mode: bool) {
     let tabs = [
         (Tab::Sessions, "1:Sessions", "Sessions"),
-        (Tab::Collaboration, "2:Collaboration", "Collaboration"),
-        (Tab::Settings, "3:Settings", "Settings"),
+        (Tab::Settings, "2:Settings", "Settings"),
     ];
 
     // In detail views, hide number prefixes since 1-6 keys are used for event filters
-    let hide_numbers = matches!(view, View::SessionDetail | View::TeamDetail);
+    let hide_numbers = matches!(view, View::SessionDetail);
 
     let mut spans = vec![Span::styled(" ", Style::new())];
 
@@ -28,8 +27,6 @@ pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, local_mo
                 .bg(Theme::ACCENT_BLUE)
                 .bold()
                 .add_modifier(Modifier::UNDERLINED)
-        } else if local_mode && *tab == Tab::Collaboration {
-            Style::new().fg(Theme::TAB_DIM)
         } else if hide_numbers {
             // Dimmer style in detail views where tabs are not directly switchable
             Style::new().fg(Theme::TAB_DIM)
@@ -84,24 +81,15 @@ mod tests {
     fn session_list_view_shows_numbered_tabs() {
         let text = render_tab_text(Tab::Sessions, View::SessionList, false);
         assert!(text.contains("1:Sessions"));
-        assert!(text.contains("2:Collaboration"));
-        assert!(text.contains("3:Settings"));
+        assert!(text.contains("2:Settings"));
     }
 
     #[test]
     fn session_detail_view_hides_number_prefixes() {
         let text = render_tab_text(Tab::Sessions, View::SessionDetail, false);
         assert!(text.contains("Sessions"));
-        assert!(text.contains("Collaboration"));
-        assert!(!text.contains("1:Sessions"));
-        assert!(!text.contains("2:Collaboration"));
-    }
-
-    #[test]
-    fn team_detail_view_hides_number_prefixes() {
-        let text = render_tab_text(Tab::Collaboration, View::TeamDetail, false);
-        assert!(text.contains("Sessions"));
         assert!(text.contains("Settings"));
-        assert!(!text.contains("3:Settings"));
+        assert!(!text.contains("1:Sessions"));
+        assert!(!text.contains("2:Settings"));
     }
 }

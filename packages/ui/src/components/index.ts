@@ -17,7 +17,6 @@ export { default as SessionDetailPage } from './SessionDetailPage.svelte';
 export { default as SessionListPage } from './SessionListPage.svelte';
 export { default as SessionSidebar } from './SessionSidebar.svelte';
 export { default as TaskGroup } from './TaskGroup.svelte';
-export { default as TeamToolMeta } from './TeamToolMeta.svelte';
 export { default as ThemeToggle } from './ThemeToggle.svelte';
 export { default as ThreadMinimap } from './ThreadMinimap.svelte';
 export { default as TimelineView } from './TimelineView.svelte';

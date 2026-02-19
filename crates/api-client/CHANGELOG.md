@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15](https://github.com/hwisu/opensession/compare/opensession-api-client-v0.2.14...opensession-api-client-v0.2.15) - 2026-02-19
+
+### Other
+
+- drop legacy paths and align tui/session pipelines
+
 ## [0.2.10](https://github.com/hwisu/opensession/compare/opensession-api-client-v0.2.9...opensession-api-client-v0.2.10) - 2026-02-19
 
 ### Other

@@ -110,11 +110,19 @@ cargo run -p opensession -- session handoff --help
 # v2 JSON + validation 리포트 (소프트 게이트, exit 0)
 cargo run -p opensession -- session handoff --last --format json --validate
 
-# strict validation 게이트 (위반 시 non-zero)
+# strict validation 게이트 (error 위반 시 non-zero)
 cargo run -p opensession -- session handoff --last --validate --strict
 
 # 머신 소비용 stream envelope
 cargo run -p opensession -- session handoff --last --format stream --validate
+
+# 최근 N개 세션 (숫자 또는 HEAD~N)
+cargo run -p opensession -- session handoff --last 6 --format json
+cargo run -p opensession -- session handoff --last HEAD~6 --format json
+
+# provider CLI로 HANDOFF.md 보강 생성
+cargo run -p opensession -- session handoff --last 6 --populate claude
+cargo run -p opensession -- session handoff --last 6 --populate claude:opus-4.6
 ```
 
 CLI 종류별 예시(세션 생성)와 대응 handoff 명령:
@@ -133,8 +141,9 @@ CLI 종류별 예시(세션 생성)와 대응 handoff 명령:
 
 동작 요약:
 - `--validate`: 사람이 읽는 리포트 + JSON 리포트를 출력하고 종료코드 `0`.
-- `--validate --strict`: 위반이 있으면 non-zero 종료.
+- `--validate --strict`: error 레벨 위반이 있을 때만 non-zero 종료.
 - 기본 스키마는 v2 실행 계약 출력입니다.
+- `--populate <provider[:model]>`: handoff JSON을 provider CLI(`claude`, `codex`, `opencode`, `gemini`, `amp`) 표준입력으로 전달해 `HANDOFF.md` 초안을 생성합니다.
 
 ## Worker 로컬 개발 (Wrangler, 실행 검증 완료)
 

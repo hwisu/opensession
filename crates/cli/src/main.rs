@@ -132,9 +132,9 @@ enum SessionAction {
         /// Session file(s). Multiple files can be specified for merged handoff
         files: Vec<PathBuf>,
 
-        /// Use the most recent session
-        #[arg(short, long)]
-        last: bool,
+        /// Use most recent session(s). Accepts optional count or HEAD~N (e.g. --last, --last 6, --last HEAD~6)
+        #[arg(short, long, num_args = 0..=1, default_missing_value = "1", value_name = "N|HEAD~N")]
+        last: Option<String>,
 
         /// Write output to a file instead of stdout
         #[arg(short, long)]
@@ -161,9 +161,13 @@ enum SessionAction {
         #[arg(long)]
         validate: bool,
 
-        /// Treat validation findings as hard failures (non-zero exit).
+        /// Treat error-level validation findings as hard failures (non-zero exit).
         #[arg(long)]
         strict: bool,
+
+        /// Populate HANDOFF.md via provider command: <provider[:model]> (e.g. claude, claude:opus-4.6)
+        #[arg(long)]
+        populate: Option<String>,
     },
 }
 
@@ -384,13 +388,24 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
             tool,
             validate,
             strict,
+            populate,
         } => {
             let format = format.unwrap_or_else(default_handoff_format_for_output);
-            let force_last =
-                should_default_to_last(&files, last, claude.as_deref(), gemini.as_deref(), &tool);
+            let force_last = should_default_to_last(
+                &files,
+                last.as_deref(),
+                claude.as_deref(),
+                gemini.as_deref(),
+                &tool,
+            );
+            let resolved_last = if last.is_none() && force_last {
+                Some("1".to_string())
+            } else {
+                last
+            };
             handoff::run_handoff(
                 &files,
-                last || force_last,
+                resolved_last.as_deref(),
                 output.as_deref(),
                 format,
                 claude.as_deref(),
@@ -398,6 +413,7 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
                 &tool,
                 validate,
                 strict,
+                populate.as_deref(),
             )
             .await
         }
@@ -414,12 +430,17 @@ fn default_handoff_format_for_output() -> OutputFormat {
 
 fn should_default_to_last(
     files: &[PathBuf],
-    last: bool,
+    last: Option<&str>,
     claude: Option<&str>,
     gemini: Option<&str>,
     tools: &[String],
 ) -> bool {
-    if last || !files.is_empty() || claude.is_some() || gemini.is_some() || !tools.is_empty() {
+    if last.is_some()
+        || !files.is_empty()
+        || claude.is_some()
+        || gemini.is_some()
+        || !tools.is_empty()
+    {
         return false;
     }
 

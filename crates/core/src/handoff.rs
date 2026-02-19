@@ -40,6 +40,8 @@ pub struct ExecutionContract {
     pub rollback_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rollback_hint_missing_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollback_hint_undefined_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
@@ -85,11 +87,19 @@ pub struct WorkPackage {
     pub evidence_refs: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UndefinedField {
+    pub path: String,
+    pub undefined_reason: String,
+}
+
 /// Summary extracted from a single session.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HandoffSummary {
     pub source_session_id: String,
     pub objective: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective_undefined_reason: Option<String>,
     pub tool: String,
     pub model: String,
     pub duration_seconds: u64,
@@ -106,6 +116,7 @@ pub struct HandoffSummary {
     pub verification: Verification,
     pub evidence: Vec<EvidenceRef>,
     pub work_packages: Vec<WorkPackage>,
+    pub undefined_fields: Vec<UndefinedField>,
 }
 
 /// Merged handoff from multiple sessions.
@@ -127,6 +138,7 @@ impl HandoffSummary {
     /// Extract a structured summary from a parsed session.
     pub fn from_session(session: &Session) -> Self {
         let objective = extract_objective(session);
+        let objective_undefined_reason = objective_unavailable_reason(&objective);
 
         let files_modified = collect_file_changes(&session.events);
         let modified_paths: HashSet<&str> =
@@ -147,10 +159,16 @@ impl HandoffSummary {
         );
         let evidence = collect_evidence(session, &objective, &task_summaries, &uncertainty);
         let work_packages = build_work_packages(&session.events, &evidence);
+        let undefined_fields = collect_undefined_fields(
+            objective_undefined_reason.as_deref(),
+            &execution_contract,
+            &evidence,
+        );
 
         HandoffSummary {
             source_session_id: session.session_id.clone(),
             objective,
+            objective_undefined_reason,
             tool: session.agent.tool.clone(),
             model: session.agent.model.clone(),
             duration_seconds: session.stats.duration_seconds,
@@ -167,6 +185,7 @@ impl HandoffSummary {
             verification,
             evidence,
             work_packages,
+            undefined_fields,
         }
     }
 }
@@ -447,7 +466,8 @@ fn build_execution_contract(
         next_actions,
         ordered_commands,
         rollback_hint,
-        rollback_hint_missing_reason,
+        rollback_hint_missing_reason: rollback_hint_missing_reason.clone(),
+        rollback_hint_undefined_reason: rollback_hint_missing_reason,
     }
 }
 
@@ -775,6 +795,53 @@ fn unresolved_failed_commands(checks_run: &[CheckRun]) -> Vec<String> {
 fn dedupe_keep_order(values: &mut Vec<String>) {
     let mut seen = HashSet::new();
     values.retain(|value| seen.insert(value.clone()));
+}
+
+fn objective_unavailable_reason(objective: &str) -> Option<String> {
+    if objective.trim().is_empty() || objective == "(objective unavailable)" {
+        Some(
+            "No user prompt, task title/summary, or session title could be used to infer objective."
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
+fn collect_undefined_fields(
+    objective_undefined_reason: Option<&str>,
+    execution_contract: &ExecutionContract,
+    evidence: &[EvidenceRef],
+) -> Vec<UndefinedField> {
+    let mut undefined = Vec::new();
+
+    if let Some(reason) = objective_undefined_reason {
+        undefined.push(UndefinedField {
+            path: "objective".to_string(),
+            undefined_reason: reason.to_string(),
+        });
+    }
+
+    if let Some(reason) = execution_contract
+        .rollback_hint_undefined_reason
+        .as_deref()
+        .or(execution_contract.rollback_hint_missing_reason.as_deref())
+    {
+        undefined.push(UndefinedField {
+            path: "execution_contract.rollback_hint".to_string(),
+            undefined_reason: reason.to_string(),
+        });
+    }
+
+    if evidence.is_empty() {
+        undefined.push(UndefinedField {
+            path: "evidence".to_string(),
+            undefined_reason:
+                "No objective/task/decision evidence could be mapped to source events.".to_string(),
+        });
+    }
+
+    undefined
 }
 
 fn event_source_type(event: &Event) -> String {
@@ -2016,12 +2083,21 @@ mod tests {
             .execution_contract
             .rollback_hint_missing_reason
             .is_some());
+        assert!(summary
+            .execution_contract
+            .rollback_hint_undefined_reason
+            .is_some());
     }
 
     #[test]
     fn test_validate_handoff_summary_flags_missing_objective() {
         let session = Session::new("missing-objective".to_string(), make_agent());
         let summary = HandoffSummary::from_session(&session);
+        assert!(summary.objective_undefined_reason.is_some());
+        assert!(summary
+            .undefined_fields
+            .iter()
+            .any(|f| f.path == "objective"));
         let report = validate_handoff_summary(&summary);
 
         assert!(!report.passed);

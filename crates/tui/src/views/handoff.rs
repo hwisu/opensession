@@ -65,7 +65,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  4) ", Style::new().fg(Theme::TEXT_KEY).bold()),
             Span::styled(
-                format!("{base} --format stream --validate"),
+                "opensession session handoff --last 6 --populate claude".to_string(),
+                Style::new().fg(Theme::TEXT_KEY_DESC),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  5) ", Style::new().fg(Theme::TEXT_KEY).bold()),
+            Span::styled(
+                "opensession session handoff --last HEAD~6 --populate claude:opus-4.6".to_string(),
                 Style::new().fg(Theme::TEXT_KEY_DESC),
             ),
         ]),
@@ -75,7 +82,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Theme::ACCENT_BLUE).bold(),
         )),
         Line::from("  - --validate: report findings, exit 0"),
-        Line::from("  - --validate --strict: non-zero on findings"),
+        Line::from("  - --validate --strict: non-zero on error findings"),
         Line::raw(""),
         Line::from(Span::styled(
             "Local index scope",

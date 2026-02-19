@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use dialoguer::Select;
@@ -8,13 +9,13 @@ use opensession_core::handoff::{
 use opensession_core::Session;
 use opensession_parsers::discover::discover_sessions;
 use opensession_parsers::{all_parsers, SessionParser};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 /// Run the handoff command: parse session file(s) and output a structured summary.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_handoff(
     files: &[PathBuf],
-    last: bool,
+    last: Option<&str>,
     output: Option<&Path>,
     format: crate::output::OutputFormat,
     claude: Option<&str>,
@@ -22,6 +23,7 @@ pub async fn run_handoff(
     tool_refs: &[String],
     validate: bool,
     strict: bool,
+    populate: Option<&str>,
 ) -> Result<()> {
     let sessions = resolve_sessions(files, last, claude, gemini, tool_refs)?;
 
@@ -39,9 +41,9 @@ pub async fn run_handoff(
             sessions.iter().map(HandoffSummary::from_session).collect();
         let reports = validate_handoff_summaries(&summaries);
         print_validation_reports(&reports)?;
-        let has_findings = reports.iter().any(|report| !report.passed);
-        if strict && has_findings {
-            bail!("Handoff validation failed in strict mode.");
+        let has_errors = has_error_findings(&reports);
+        if strict && has_errors {
+            bail!("Handoff validation failed in strict mode (error-level findings).");
         }
         crate::output::render_output_with_options(
             &sessions,
@@ -62,11 +64,38 @@ pub async fn run_handoff(
         std::fs::write(out, &final_result)
             .with_context(|| format!("Failed to write {}", out.display()))?;
         eprintln!("Handoff written to {}", out.display());
-    } else {
-        print!("{final_result}");
+    }
+
+    if let Some(spec) = populate {
+        run_populate(spec, &final_result)?;
+        return Ok(());
+    }
+
+    if output.is_none() {
+        let mut stdout = std::io::stdout();
+        write_handoff_to_writer(&mut stdout, &final_result)?;
     }
 
     Ok(())
+}
+
+fn write_handoff_to_writer(writer: &mut dyn Write, payload: &str) -> Result<()> {
+    if let Err(err) = writer.write_all(payload.as_bytes()) {
+        if err.kind() == std::io::ErrorKind::BrokenPipe {
+            return Ok(());
+        }
+        return Err(err).context("Failed to write handoff output to stdout");
+    }
+    Ok(())
+}
+
+fn has_error_findings(reports: &[HandoffValidationReport]) -> bool {
+    reports.iter().any(|report| {
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.severity.eq_ignore_ascii_case("error"))
+    })
 }
 
 fn print_validation_reports(reports: &[HandoffValidationReport]) -> Result<()> {
@@ -99,10 +128,99 @@ fn print_validation_reports(reports: &[HandoffValidationReport]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PopulateProvider {
+    Claude,
+    Codex,
+    OpenCode,
+    Gemini,
+    Amp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PopulateSpec {
+    provider: PopulateProvider,
+    model: Option<String>,
+}
+
+impl PopulateSpec {
+    fn parse(raw: &str) -> Result<Self> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            bail!("--populate requires a provider name, e.g. --populate claude");
+        }
+        let mut parts = trimmed.splitn(2, ':');
+        let provider_raw = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let model = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        let provider = match provider_raw.as_str() {
+            "claude" => PopulateProvider::Claude,
+            "codex" => PopulateProvider::Codex,
+            "opencode" => PopulateProvider::OpenCode,
+            "gemini" => PopulateProvider::Gemini,
+            "amp" => PopulateProvider::Amp,
+            _ => bail!(
+                "Unsupported --populate provider: {provider_raw}. Supported: claude, codex, opencode, gemini, amp"
+            ),
+        };
+
+        Ok(Self { provider, model })
+    }
+}
+
+fn run_populate(raw_spec: &str, handoff_payload: &str) -> Result<()> {
+    let spec = PopulateSpec::parse(raw_spec)?;
+    let prompt = populate_prompt(&spec);
+
+    let (bin, mut args): (&str, Vec<String>) = match spec.provider {
+        PopulateProvider::Claude => ("claude", vec!["-c".to_string()]),
+        PopulateProvider::Codex => ("codex", vec!["exec".to_string()]),
+        PopulateProvider::OpenCode => ("opencode", vec!["run".to_string()]),
+        PopulateProvider::Gemini => ("gemini", vec!["-p".to_string()]),
+        PopulateProvider::Amp => ("amp", vec!["-x".to_string()]),
+    };
+    args.push(prompt);
+
+    let mut child = Command::new(bin)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("Failed to start populate command `{bin}`"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(handoff_payload.as_bytes())
+            .context("Failed to pipe handoff payload into populate command stdin")?;
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
+        bail!("Populate command `{bin}` exited with status {status}");
+    }
+    Ok(())
+}
+
+fn populate_prompt(spec: &PopulateSpec) -> String {
+    let model_hint = spec
+        .model
+        .as_deref()
+        .map(|model| format!("Model preference: `{model}` if supported by this CLI. "))
+        .unwrap_or_default();
+    format!(
+        "{model_hint}Please populate `HANDOFF.md` from the JSON payload on stdin. Use any `*_undefined_reason` or `*_missing_reason` hints to fill missing sections. Keep unresolved items explicit."
+    )
+}
+
 /// Resolve session files: explicit paths, --last, tool refs, or interactive selection.
 fn resolve_sessions(
     files: &[PathBuf],
-    last: bool,
+    last: Option<&str>,
     claude: Option<&str>,
     gemini: Option<&str>,
     tool_refs: &[String],
@@ -168,10 +286,14 @@ fn resolve_sessions(
         return Ok(sessions);
     }
 
-    // Otherwise resolve a single file via --last or interactive
-    let resolved = resolve_session_file(last)?;
-    let session = parse_file(&parsers, &resolved)?;
-    Ok(vec![session])
+    // Otherwise resolve file(s) via --last or interactive
+    let last_count = parse_last_count(last)?;
+    let resolved = resolve_session_files(last_count)?;
+    let mut sessions = Vec::new();
+    for path in resolved {
+        sessions.push(parse_file(&parsers, &path)?);
+    }
+    Ok(sessions)
 }
 
 fn parse_file(parsers: &[Box<dyn SessionParser>], file: &Path) -> Result<Session> {
@@ -193,20 +315,65 @@ fn parse_file(parsers: &[Box<dyn SessionParser>], file: &Path) -> Result<Session
         .with_context(|| format!("Failed to parse {}", file.display()))
 }
 
-/// Resolve which session file to use: --last or interactive selection.
-fn resolve_session_file(last: bool) -> Result<PathBuf> {
+fn parse_last_count(last: Option<&str>) -> Result<Option<u32>> {
+    let Some(raw) = last else {
+        return Ok(None);
+    };
+
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("HEAD") {
+        return Ok(Some(1));
+    }
+
+    if let Ok(count) = value.parse::<u32>() {
+        if count == 0 {
+            bail!("--last count must be >= 1");
+        }
+        return Ok(Some(count));
+    }
+
+    if let Some(rest) = value
+        .strip_prefix("HEAD~")
+        .or_else(|| value.strip_prefix("head~"))
+    {
+        let count = rest
+            .parse::<u32>()
+            .with_context(|| format!("Invalid --last value `{value}`"))?;
+        if count == 0 {
+            bail!("--last count must be >= 1");
+        }
+        return Ok(Some(count));
+    }
+
+    bail!("Invalid --last value `{value}`. Use `--last`, `--last 6`, or `--last HEAD~6`.")
+}
+
+/// Resolve which session files to use: --last count or interactive selection.
+fn resolve_session_files(last_count: Option<u32>) -> Result<Vec<PathBuf>> {
     let all = collect_all_session_paths()?;
 
     if all.is_empty() {
         bail!("No AI sessions found on this machine. Nothing to hand off.");
     }
 
-    if last {
-        let (path, tool) = &all[0];
-        if std::io::stdout().is_terminal() {
-            eprintln!("Using most recent session [{}]", tool);
+    if let Some(count) = last_count {
+        let mut selected = Vec::new();
+        for (path, _tool) in all.iter().take(count as usize) {
+            selected.push(path.clone());
         }
-        return Ok(path.clone());
+        if selected.is_empty() {
+            bail!("No sessions found for --last {count}");
+        }
+        if std::io::stdout().is_terminal() {
+            if count == 1 {
+                if let Some((_, tool)) = all.first() {
+                    eprintln!("Using most recent session [{tool}]");
+                }
+            } else {
+                eprintln!("Using {}/{} most recent sessions", selected.len(), count);
+            }
+        }
+        return Ok(selected);
     }
 
     // Interactive selection
@@ -231,7 +398,7 @@ fn resolve_session_file(last: bool) -> Result<PathBuf> {
         .default(0)
         .interact()?;
 
-    Ok(all[selection].0.clone())
+    Ok(vec![all[selection].0.clone()])
 }
 
 /// Collect all discovered session paths, sorted by modification time (newest first).
@@ -261,7 +428,12 @@ fn collect_all_session_paths() -> Result<Vec<(PathBuf, String)>> {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        has_error_findings, parse_last_count, populate_prompt, write_handoff_to_writer,
+        PopulateProvider, PopulateSpec,
+    };
     use opensession_core::handoff::{format_duration, generate_handoff_markdown, HandoffSummary};
+    use opensession_core::handoff::{HandoffValidationReport, ValidationFinding};
     use opensession_core::testing;
     use opensession_core::{Agent, Event, EventType, Session, Stats};
 
@@ -404,5 +576,72 @@ mod tests {
         let md = generate_handoff_markdown(&summary);
         assert!(md.contains("## Errors"));
         assert!(md.contains("Shell: `cargo test` → exit 1"));
+    }
+
+    #[test]
+    fn test_parse_last_count_variants() {
+        assert_eq!(parse_last_count(None).unwrap(), None);
+        assert_eq!(parse_last_count(Some("")).unwrap(), Some(1));
+        assert_eq!(parse_last_count(Some("HEAD")).unwrap(), Some(1));
+        assert_eq!(parse_last_count(Some("6")).unwrap(), Some(6));
+        assert_eq!(parse_last_count(Some("HEAD~4")).unwrap(), Some(4));
+        assert!(parse_last_count(Some("0")).is_err());
+        assert!(parse_last_count(Some("HEAD~0")).is_err());
+    }
+
+    #[test]
+    fn test_strict_only_fails_on_error_findings() {
+        let warning_report = HandoffValidationReport {
+            session_id: "s1".to_string(),
+            passed: false,
+            findings: vec![ValidationFinding {
+                code: "objective_missing".to_string(),
+                severity: "warning".to_string(),
+                message: "Objective missing".to_string(),
+            }],
+        };
+        assert!(!has_error_findings(&[warning_report]));
+
+        let error_report = HandoffValidationReport {
+            session_id: "s2".to_string(),
+            passed: false,
+            findings: vec![ValidationFinding {
+                code: "work_package_cycle".to_string(),
+                severity: "error".to_string(),
+                message: "Cycle detected".to_string(),
+            }],
+        };
+        assert!(has_error_findings(&[error_report]));
+    }
+
+    #[test]
+    fn test_populate_spec_parse_and_prompt() {
+        let spec = PopulateSpec::parse("claude:opus-4.6").unwrap();
+        assert_eq!(spec.provider, PopulateProvider::Claude);
+        assert_eq!(spec.model.as_deref(), Some("opus-4.6"));
+
+        let prompt = populate_prompt(&spec);
+        assert!(prompt.contains("Model preference: `opus-4.6`"));
+        assert!(prompt.contains("HANDOFF.md"));
+    }
+
+    #[test]
+    fn test_write_handoff_to_writer_ignores_broken_pipe() {
+        struct BrokenPipeWriter;
+        impl std::io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "pipe closed",
+                ))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = BrokenPipeWriter;
+        assert!(write_handoff_to_writer(&mut writer, "payload").is_ok());
     }
 }

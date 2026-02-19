@@ -73,11 +73,19 @@ cargo run -p opensession -- session handoff --help
 # v2 + soft validation gate (exit 0)
 cargo run -p opensession -- session handoff --last --format json --validate
 
-# strict validation gate (non-zero on findings)
+# strict validation gate (non-zero on error findings)
 cargo run -p opensession -- session handoff --last --validate --strict
 
 # stream envelope output
 cargo run -p opensession -- session handoff --last --format stream --validate
+
+# last N sessions (count or HEAD~N)
+cargo run -p opensession -- session handoff --last 6 --format json
+cargo run -p opensession -- session handoff --last HEAD~6 --format json
+
+# populate HANDOFF.md via provider command
+cargo run -p opensession -- session handoff --last 6 --populate claude
+cargo run -p opensession -- session handoff --last 6 --populate claude:opus-4.6
 ```
 
 CLI-by-CLI examples:
@@ -96,8 +104,9 @@ Tips:
 
 Semantics:
 - `--validate`: report-only, exit `0`.
-- `--validate --strict`: non-zero on findings.
+- `--validate --strict`: non-zero only on error-level findings.
 - default schema is v2.
+- `--populate <provider[:model]>`: pipe handoff JSON into provider CLI (`claude`, `codex`, `opencode`, `gemini`, `amp`) and request `HANDOFF.md` population.
 
 ## Worker Local Dev (Wrangler, Verified)
 

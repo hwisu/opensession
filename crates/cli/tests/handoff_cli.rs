@@ -108,6 +108,28 @@ fn handoff_last_supports_all_output_formats() {
 }
 
 #[test]
+fn handoff_last_with_count_returns_multiple_sessions() {
+    let tmp = make_home();
+    let home = tmp.path();
+    create_codex_session(home, "2026/02/14/handoff-last-a.jsonl");
+    create_codex_session(home, "2026/02/15/handoff-last-b.jsonl");
+
+    let output = run(
+        home,
+        &["session", "handoff", "--last", "2", "--format", "json"],
+    );
+    assert!(
+        output.status.success(),
+        "handoff --last 2 failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    let arr = parsed.as_array().expect("json array");
+    assert_eq!(arr.len(), 2);
+}
+
+#[test]
 fn handoff_defaults_to_json_and_last_when_piped() {
     let tmp = make_home();
     let home = tmp.path();
@@ -158,7 +180,7 @@ fn handoff_validate_reports_but_exits_zero() {
 }
 
 #[test]
-fn handoff_strict_fails_on_validation_findings() {
+fn handoff_strict_does_not_fail_on_warning_only_findings() {
     let tmp = make_home();
     let home = tmp.path();
     let session = create_codex_assistant_only_session(home, "2026/02/14/handoff-strict.jsonl");
@@ -173,15 +195,12 @@ fn handoff_strict_fails_on_validation_findings() {
         ],
     );
     assert!(
-        !output.status.success(),
-        "strict should fail on findings, stderr={}",
+        output.status.success(),
+        "strict should pass when findings are warning-only, stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("\"type\":\"handoff_validation\""));
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("strict mode"));
 }
 
 #[test]

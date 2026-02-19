@@ -183,11 +183,17 @@ fn summary_to_json_v2(
     s: &HandoffSummary,
     validation: Option<&HandoffValidationReport>,
 ) -> serde_json::Value {
+    let objective_json = if s.objective_undefined_reason.is_some() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(s.objective.clone())
+    };
     let mut json = serde_json::json!({
         "session_id": s.source_session_id,
         "tool": s.tool,
         "model": s.model,
-        "objective": s.objective,
+        "objective": objective_json,
+        "objective_undefined_reason": s.objective_undefined_reason,
         "duration_seconds": s.duration_seconds,
         "stats": {
             "event_count": s.stats.event_count,
@@ -209,6 +215,7 @@ fn summary_to_json_v2(
         "verification": serde_json::to_value(&s.verification).unwrap_or(serde_json::Value::Null),
         "evidence": serde_json::to_value(&s.evidence).unwrap_or(serde_json::Value::Null),
         "work_packages": serde_json::to_value(&s.work_packages).unwrap_or(serde_json::Value::Null),
+        "undefined_fields": serde_json::to_value(&s.undefined_fields).unwrap_or(serde_json::Value::Null),
     });
     if let Some(validation) = validation {
         json["validation"] = serde_json::to_value(validation).unwrap_or(serde_json::Value::Null);
@@ -410,10 +417,12 @@ mod tests {
         assert_eq!(json["session_id"], "test-session-1");
         assert_eq!(json["tool"], "claude-code");
         assert_eq!(json["model"], "claude-opus-4-6");
+        assert!(json["objective"].is_string());
         assert!(json["stats"]["message_count"].as_u64().is_some());
         assert!(json["files_modified"].as_array().is_some());
         assert!(json.get("execution_contract").is_some());
         assert!(json.get("verification").is_some());
+        assert!(json.get("undefined_fields").is_some());
         assert!(json.get("task_summaries").is_none());
         assert!(json.get("errors").is_none());
         assert!(json.get("shell_commands").is_none());
@@ -433,9 +442,12 @@ mod tests {
         );
         let summary = HandoffSummary::from_session(&session);
         let json = summary_to_json_v2(&summary, None);
+        assert!(json["objective"].is_null());
+        assert!(json["objective_undefined_reason"].is_string());
         assert!(json["files_modified"].as_array().unwrap().is_empty());
         assert!(json["files_read"].as_array().unwrap().is_empty());
         assert!(json["verification"]["checks_run"].as_array().is_some());
+        assert!(json["undefined_fields"].as_array().is_some());
     }
 
     #[test]

@@ -125,6 +125,12 @@ cargo run -p opensession -- session handoff --last 6 --populate claude
 cargo run -p opensession -- session handoff --last 6 --populate claude:opus-4.6
 ```
 
+For faster repeated runs, prefer the built binary over `cargo run`:
+```bash
+cargo build -p opensession
+target/debug/opensession session handoff --last HEAD~2 --format json
+```
+
 Source CLI examples (session creation) and matching handoff commands:
 
 | Source CLI | Example command | Handoff command |
@@ -144,6 +150,8 @@ Behavior summary:
 - `--validate --strict`: exits non-zero only for error-level findings.
 - default schema is v2 execution-contract output.
 - `--populate <provider[:model]>`: pipes handoff JSON to a provider CLI (`claude`, `codex`, `opencode`, `gemini`, `amp`) and asks it to draft `HANDOFF.md`.
+- `execution_contract.parallel_actions`: parallelizable work packages are emitted separately from ordered next actions.
+- `execution_contract.ordered_steps`: preserves task order + timestamps + dependency links so downstream agents can replay without losing temporal consistency.
 
 ## Worker Local Dev (Wrangler, Verified)
 

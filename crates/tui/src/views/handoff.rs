@@ -83,6 +83,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )),
         Line::from("  - --validate: report findings, exit 0"),
         Line::from("  - --validate --strict: non-zero on error findings"),
+        Line::from("  - execution_contract.parallel_actions: parallelizable work packages"),
+        Line::from("  - execution_contract.ordered_steps: ordered task timeline with timestamps"),
         Line::raw(""),
         Line::from(Span::styled(
             "Local index scope",

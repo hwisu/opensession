@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -350,13 +351,23 @@ fn parse_last_count(last: Option<&str>) -> Result<Option<u32>> {
 
 /// Resolve which session files to use: --last count or interactive selection.
 fn resolve_session_files(last_count: Option<u32>) -> Result<Vec<PathBuf>> {
-    let all = collect_all_session_paths()?;
-
-    if all.is_empty() {
-        bail!("No AI sessions found on this machine. Nothing to hand off.");
-    }
-
     if let Some(count) = last_count {
+        if let Some(paths) = resolve_last_paths_from_local_index(count) {
+            if std::io::stdout().is_terminal() {
+                eprintln!(
+                    "Using {}/{} most recent sessions (local index)",
+                    paths.len(),
+                    count
+                );
+            }
+            return Ok(paths);
+        }
+
+        let all = collect_all_session_paths()?;
+        if all.is_empty() {
+            bail!("No AI sessions found on this machine. Nothing to hand off.");
+        }
+
         let mut selected = Vec::new();
         for (path, _tool) in all.iter().take(count as usize) {
             selected.push(path.clone());
@@ -374,6 +385,11 @@ fn resolve_session_files(last_count: Option<u32>) -> Result<Vec<PathBuf>> {
             }
         }
         return Ok(selected);
+    }
+
+    let all = collect_all_session_paths()?;
+    if all.is_empty() {
+        bail!("No AI sessions found on this machine. Nothing to hand off.");
     }
 
     // Interactive selection
@@ -399,6 +415,48 @@ fn resolve_session_files(last_count: Option<u32>) -> Result<Vec<PathBuf>> {
         .interact()?;
 
     Ok(vec![all[selection].0.clone()])
+}
+
+fn resolve_last_paths_from_local_index(count: u32) -> Option<Vec<PathBuf>> {
+    let db = opensession_local_db::LocalDb::open().ok()?;
+    let fetch_count = count.saturating_mul(8).max(count).min(512);
+    let rows = db.get_sessions_latest(fetch_count).ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+
+    let selected =
+        select_existing_session_paths(rows.into_iter().map(|row| row.source_path), count);
+    if selected.len() == count as usize {
+        Some(selected)
+    } else {
+        None
+    }
+}
+
+fn select_existing_session_paths(
+    source_paths: impl IntoIterator<Item = Option<String>>,
+    count: u32,
+) -> Vec<PathBuf> {
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    for source_path in source_paths.into_iter().flatten() {
+        if source_path.trim().is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(source_path);
+        if !path.exists() {
+            continue;
+        }
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        selected.push(path);
+        if selected.len() >= count as usize {
+            break;
+        }
+    }
+    selected
 }
 
 /// Collect all discovered session paths, sorted by modification time (newest first).
@@ -429,8 +487,8 @@ fn collect_all_session_paths() -> Result<Vec<(PathBuf, String)>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_error_findings, parse_last_count, populate_prompt, write_handoff_to_writer,
-        PopulateProvider, PopulateSpec,
+        has_error_findings, parse_last_count, populate_prompt, select_existing_session_paths,
+        write_handoff_to_writer, PopulateProvider, PopulateSpec,
     };
     use opensession_core::handoff::{format_duration, generate_handoff_markdown, HandoffSummary};
     use opensession_core::handoff::{HandoffValidationReport, ValidationFinding};
@@ -643,5 +701,29 @@ mod tests {
 
         let mut writer = BrokenPipeWriter;
         assert!(write_handoff_to_writer(&mut writer, "payload").is_ok());
+    }
+
+    #[test]
+    fn test_select_existing_session_paths_filters_invalid_and_dedupes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path_a = tmp.path().join("a.jsonl");
+        let path_b = tmp.path().join("b.jsonl");
+        std::fs::write(&path_a, "{}").unwrap();
+        std::fs::write(&path_b, "{}").unwrap();
+
+        let selected = select_existing_session_paths(
+            vec![
+                Some(path_a.to_string_lossy().into_owned()),
+                Some("".to_string()),
+                Some(path_a.to_string_lossy().into_owned()),
+                Some("/nonexistent/path.jsonl".to_string()),
+                Some(path_b.to_string_lossy().into_owned()),
+            ],
+            3,
+        );
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0], path_a);
+        assert_eq!(selected[1], path_b);
     }
 }

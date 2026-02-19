@@ -421,6 +421,8 @@ mod tests {
         assert!(json["stats"]["message_count"].as_u64().is_some());
         assert!(json["files_modified"].as_array().is_some());
         assert!(json.get("execution_contract").is_some());
+        assert!(json["execution_contract"]["parallel_actions"].is_array());
+        assert!(json["execution_contract"]["ordered_steps"].is_array());
         assert!(json.get("verification").is_some());
         assert!(json.get("undefined_fields").is_some());
         assert!(json.get("task_summaries").is_none());

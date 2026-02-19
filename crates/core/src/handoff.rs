@@ -36,12 +36,28 @@ pub struct Conversation {
 pub struct ExecutionContract {
     pub done_definition: Vec<String>,
     pub next_actions: Vec<String>,
+    pub parallel_actions: Vec<String>,
+    pub ordered_steps: Vec<OrderedStep>,
     pub ordered_commands: Vec<String>,
     pub rollback_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rollback_hint_missing_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rollback_hint_undefined_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OrderedStep {
+    pub sequence: u32,
+    pub work_package_id: String,
+    pub title: String,
+    pub status: String,
+    pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    pub evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
@@ -81,6 +97,13 @@ pub struct WorkPackage {
     pub id: String,
     pub title: String,
     pub status: String,
+    pub sequence: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     pub depends_on: Vec<String>,
     pub files: Vec<String>,
     pub commands: Vec<String>,
@@ -134,6 +157,11 @@ pub struct MergedHandoff {
 
 // ─── Extraction ──────────────────────────────────────────────────────────────
 
+const MAX_KEY_CONVERSATIONS: usize = 12;
+const MAX_USER_MESSAGES: usize = 18;
+const HEAD_KEEP_MESSAGES: usize = 3;
+const HEAD_KEEP_CONVERSATIONS: usize = 2;
+
 impl HandoffSummary {
     /// Extract a structured summary from a parsed session.
     pub fn from_session(session: &Session) -> Self {
@@ -151,14 +179,16 @@ impl HandoffSummary {
         let key_conversations = collect_conversation_pairs(&session.events);
         let verification = collect_verification(&session.events);
         let uncertainty = collect_uncertainty(session, &verification);
+        let evidence = collect_evidence(session, &objective, &task_summaries, &uncertainty);
+        let work_packages = build_work_packages(&session.events, &evidence);
         let execution_contract = build_execution_contract(
             &task_summaries,
             &verification,
             &uncertainty,
             &shell_commands,
+            &files_modified,
+            &work_packages,
         );
-        let evidence = collect_evidence(session, &objective, &task_summaries, &uncertainty);
-        let work_packages = build_work_packages(&session.events, &evidence);
         let undefined_fields = collect_undefined_fields(
             objective_undefined_reason.as_deref(),
             &execution_contract,
@@ -411,26 +441,161 @@ fn build_execution_contract(
     verification: &Verification,
     uncertainty: &Uncertainty,
     shell_commands: &[ShellCmd],
+    files_modified: &[FileChange],
+    work_packages: &[WorkPackage],
 ) -> ExecutionContract {
-    let done_definition = task_summaries.to_vec();
+    let ordered_steps = work_packages
+        .iter()
+        .filter(|pkg| is_material_work_package(pkg))
+        .map(|pkg| OrderedStep {
+            sequence: pkg.sequence,
+            work_package_id: pkg.id.clone(),
+            title: pkg.title.clone(),
+            status: pkg.status.clone(),
+            depends_on: pkg.depends_on.clone(),
+            started_at: pkg.started_at.clone(),
+            completed_at: pkg.completed_at.clone(),
+            evidence_refs: pkg.evidence_refs.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut done_definition = ordered_steps
+        .iter()
+        .filter(|step| step.status == "completed")
+        .map(|step| {
+            let pkg = work_packages
+                .iter()
+                .find(|pkg| pkg.id == step.work_package_id)
+                .expect("ordered step must map to existing work package");
+            let mut details = Vec::new();
+            if let Some(outcome) = pkg.outcome.as_deref() {
+                details.push(format!("outcome: {}", truncate_str(outcome, 140)));
+            }
+            let footprint = work_package_footprint(pkg);
+            if !footprint.is_empty() {
+                details.push(footprint);
+            }
+            let at = step
+                .completed_at
+                .as_deref()
+                .or(step.started_at.as_deref())
+                .unwrap_or("time-unavailable");
+            if details.is_empty() {
+                format!("[{}] Completed `{}` at {}.", step.sequence, step.title, at)
+            } else {
+                format!(
+                    "[{}] Completed `{}` at {} ({}).",
+                    step.sequence,
+                    step.title,
+                    at,
+                    details.join("; ")
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !verification.checks_passed.is_empty() {
+        let keep = verification
+            .checks_passed
+            .iter()
+            .take(3)
+            .map(|check| format!("`{check}`"))
+            .collect::<Vec<_>>();
+        let extra = verification.checks_passed.len().saturating_sub(3);
+        if extra > 0 {
+            done_definition.push(format!(
+                "Verification passed: {} (+{} more).",
+                keep.join(", "),
+                extra
+            ));
+        } else {
+            done_definition.push(format!("Verification passed: {}.", keep.join(", ")));
+        }
+    }
+
+    if !files_modified.is_empty() {
+        let keep = files_modified
+            .iter()
+            .take(3)
+            .map(|file| format!("`{}`", file.path))
+            .collect::<Vec<_>>();
+        let extra = files_modified.len().saturating_sub(3);
+        if extra > 0 {
+            done_definition.push(format!(
+                "Changed {} file(s): {} (+{} more).",
+                files_modified.len(),
+                keep.join(", "),
+                extra
+            ));
+        } else {
+            done_definition.push(format!(
+                "Changed {} file(s): {}.",
+                files_modified.len(),
+                keep.join(", ")
+            ));
+        }
+    }
+
+    if done_definition.is_empty() {
+        done_definition.extend(task_summaries.iter().take(5).cloned());
+    }
+    dedupe_keep_order(&mut done_definition);
 
     let mut next_actions = unresolved_failed_commands(&verification.checks_run)
         .into_iter()
         .map(|cmd| format!("Fix and re-run `{cmd}` until the check passes."))
         .collect::<Vec<_>>();
     next_actions.extend(
+        verification
+            .required_checks_missing
+            .iter()
+            .map(|missing| format!("Add/restore verification check: {missing}")),
+    );
+    next_actions.extend(ordered_steps.iter().filter_map(|step| {
+        if step.status == "completed" || step.depends_on.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "[{}] After dependencies [{}], execute `{}` ({}).",
+            step.sequence,
+            step.depends_on.join(", "),
+            step.title,
+            step.work_package_id
+        ))
+    }));
+    next_actions.extend(
         uncertainty
             .open_questions
             .iter()
             .map(|q| format!("Resolve open question: {q}")),
     );
+    let mut parallel_actions = ordered_steps
+        .iter()
+        .filter(|step| {
+            step.status != "completed"
+                && step.depends_on.is_empty()
+                && step.work_package_id != "main"
+        })
+        .map(|step| {
+            let at = step.started_at.as_deref().unwrap_or("time-unavailable");
+            format!(
+                "[{}] `{}` ({}) — start: {}",
+                step.sequence, step.title, step.work_package_id, at
+            )
+        })
+        .collect::<Vec<_>>();
 
-    if done_definition.is_empty() && next_actions.is_empty() {
+    if done_definition.is_empty()
+        && next_actions.is_empty()
+        && parallel_actions.is_empty()
+        && ordered_steps.is_empty()
+    {
         next_actions.push(
             "Define completion criteria and run at least one verification command.".to_string(),
         );
     }
     dedupe_keep_order(&mut next_actions);
+    dedupe_keep_order(&mut parallel_actions);
 
     let unresolved = unresolved_failed_commands(&verification.checks_run);
     let mut ordered_commands = unresolved;
@@ -464,11 +629,24 @@ fn build_execution_contract(
     ExecutionContract {
         done_definition,
         next_actions,
+        parallel_actions,
+        ordered_steps,
         ordered_commands,
         rollback_hint,
         rollback_hint_missing_reason: rollback_hint_missing_reason.clone(),
         rollback_hint_undefined_reason: rollback_hint_missing_reason,
     }
+}
+
+fn work_package_footprint(pkg: &WorkPackage) -> String {
+    let mut details = Vec::new();
+    if !pkg.files.is_empty() {
+        details.push(format!("files: {}", pkg.files.len()));
+    }
+    if !pkg.commands.is_empty() {
+        details.push(format!("commands: {}", pkg.commands.len()));
+    }
+    details.join(", ")
 }
 
 fn collect_evidence(
@@ -525,7 +703,10 @@ fn build_work_packages(events: &[Event], evidence: &[EvidenceRef]) -> Vec<WorkPa
     struct WorkPackageAcc {
         title: Option<String>,
         status: String,
+        outcome: Option<String>,
         first_ts: Option<chrono::DateTime<chrono::Utc>>,
+        first_idx: Option<usize>,
+        completed_ts: Option<chrono::DateTime<chrono::Utc>>,
         files: HashSet<String>,
         commands: Vec<String>,
         evidence_refs: Vec<String>,
@@ -540,7 +721,7 @@ fn build_work_packages(events: &[Event], evidence: &[EvidenceRef]) -> Vec<WorkPa
     }
 
     let mut grouped: BTreeMap<String, WorkPackageAcc> = BTreeMap::new();
-    for event in events {
+    for (event_idx, event) in events.iter().enumerate() {
         let key = package_key_for_event(event);
         let acc = grouped
             .entry(key.clone())
@@ -551,6 +732,7 @@ fn build_work_packages(events: &[Event], evidence: &[EvidenceRef]) -> Vec<WorkPa
 
         if acc.first_ts.is_none() {
             acc.first_ts = Some(event.timestamp);
+            acc.first_idx = Some(event_idx);
         }
         if let Some(ids) = evidence_by_event.get(event.event_id.as_str()) {
             acc.evidence_refs.extend(ids.clone());
@@ -565,47 +747,85 @@ fn build_work_packages(events: &[Event], evidence: &[EvidenceRef]) -> Vec<WorkPa
                     acc.status = "in_progress".to_string();
                 }
             }
-            EventType::TaskEnd { .. } => {
+            EventType::TaskEnd { summary } => {
                 acc.status = "completed".to_string();
+                acc.completed_ts = Some(event.timestamp);
+                if let Some(summary) = summary
+                    .as_deref()
+                    .map(collapse_whitespace)
+                    .filter(|summary| !summary.is_empty())
+                {
+                    acc.outcome = Some(summary.clone());
+                    if acc.title.is_none() {
+                        acc.title = Some(truncate_str(&summary, 160));
+                    }
+                }
             }
             EventType::FileEdit { path, .. }
             | EventType::FileCreate { path }
             | EventType::FileDelete { path } => {
                 acc.files.insert(path.clone());
+                if acc.status == "pending" {
+                    acc.status = "in_progress".to_string();
+                }
             }
             EventType::ShellCommand { command, .. } => {
                 acc.commands.push(collapse_whitespace(command));
+                if acc.status == "pending" {
+                    acc.status = "in_progress".to_string();
+                }
             }
             _ => {}
         }
     }
 
-    let mut packages = grouped
+    let mut by_first_seen = grouped
         .into_iter()
         .map(|(id, mut acc)| {
             dedupe_keep_order(&mut acc.commands);
             dedupe_keep_order(&mut acc.evidence_refs);
             let mut files: Vec<String> = acc.files.into_iter().collect();
             files.sort();
-            WorkPackage {
-                title: acc.title.unwrap_or_else(|| {
-                    if id == "main" {
-                        "Main flow".to_string()
-                    } else {
-                        format!("Task {id}")
-                    }
-                }),
-                id,
-                status: acc.status,
-                depends_on: Vec::new(),
-                files,
-                commands: acc.commands,
-                evidence_refs: acc.evidence_refs,
-            }
+            (
+                acc.first_ts,
+                acc.first_idx.unwrap_or(usize::MAX),
+                WorkPackage {
+                    title: acc.title.unwrap_or_else(|| {
+                        if id == "main" {
+                            "Main flow".to_string()
+                        } else {
+                            format!("Task {id}")
+                        }
+                    }),
+                    id,
+                    status: acc.status,
+                    sequence: 0,
+                    started_at: acc.first_ts.map(|ts| ts.to_rfc3339()),
+                    completed_at: acc.completed_ts.map(|ts| ts.to_rfc3339()),
+                    outcome: acc.outcome,
+                    depends_on: Vec::new(),
+                    files,
+                    commands: acc.commands,
+                    evidence_refs: acc.evidence_refs,
+                },
+            )
         })
         .collect::<Vec<_>>();
 
-    packages.sort_by(|a, b| a.id.cmp(&b.id));
+    by_first_seen.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.id.cmp(&b.2.id))
+    });
+
+    let mut packages = by_first_seen
+        .into_iter()
+        .map(|(_, _, package)| package)
+        .collect::<Vec<_>>();
+
+    for (idx, package) in packages.iter_mut().enumerate() {
+        package.sequence = (idx + 1) as u32;
+    }
 
     for i in 0..packages.len() {
         let cur_files: HashSet<&str> = packages[i].files.iter().map(String::as_str).collect();
@@ -625,7 +845,33 @@ fn build_work_packages(events: &[Event], evidence: &[EvidenceRef]) -> Vec<WorkPa
         }
     }
 
+    packages.retain(|pkg| pkg.id == "main" || is_material_work_package(pkg));
+    let known_ids: HashSet<String> = packages.iter().map(|pkg| pkg.id.clone()).collect();
+    for pkg in &mut packages {
+        pkg.depends_on.retain(|dep| known_ids.contains(dep));
+    }
+
     packages
+}
+
+fn is_generic_work_package_title(id: &str, title: &str) -> bool {
+    title == "Main flow" || title == format!("Task {id}")
+}
+
+fn is_material_work_package(pkg: &WorkPackage) -> bool {
+    if !pkg.files.is_empty() || !pkg.commands.is_empty() || pkg.outcome.is_some() {
+        return true;
+    }
+
+    if pkg.id == "main" {
+        return pkg.status != "pending";
+    }
+
+    if !is_generic_work_package_title(&pkg.id, &pkg.title) {
+        return true;
+    }
+
+    pkg.status == "completed" && !pkg.evidence_refs.is_empty()
 }
 
 fn package_key_for_event(event: &Event) -> String {
@@ -903,11 +1149,13 @@ fn collect_task_summaries(events: &[Event]) -> Vec<String> {
 }
 
 fn collect_user_messages(events: &[Event]) -> Vec<String> {
-    events
+    let messages = events
         .iter()
         .filter(|e| matches!(&e.event_type, EventType::UserMessage))
         .filter_map(extract_text_from_event)
-        .collect()
+        .map(|msg| truncate_str(&collapse_whitespace(&msg), 240))
+        .collect::<Vec<_>>();
+    condense_head_tail(messages, HEAD_KEEP_MESSAGES, MAX_USER_MESSAGES)
 }
 
 /// Pair adjacent User→Agent messages into conversations.
@@ -925,7 +1173,7 @@ fn collect_conversation_pairs(events: &[Event]) -> Vec<Conversation> {
         })
         .collect();
 
-    messages
+    let conversations = messages
         .windows(2)
         .filter_map(|pair| match (&pair[0].event_type, &pair[1].event_type) {
             (EventType::UserMessage, EventType::AgentMessage) => {
@@ -938,7 +1186,32 @@ fn collect_conversation_pairs(events: &[Event]) -> Vec<Conversation> {
             }
             _ => None,
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    condense_head_tail(
+        conversations,
+        HEAD_KEEP_CONVERSATIONS,
+        MAX_KEY_CONVERSATIONS,
+    )
+}
+
+fn condense_head_tail<T: Clone>(items: Vec<T>, head_keep: usize, max_total: usize) -> Vec<T> {
+    if items.len() <= max_total {
+        return items;
+    }
+
+    let max_total = max_total.max(head_keep);
+    let tail_keep = max_total.saturating_sub(head_keep);
+    let mut condensed = Vec::with_capacity(max_total);
+
+    condensed.extend(items.iter().take(head_keep).cloned());
+    condensed.extend(
+        items
+            .iter()
+            .skip(items.len().saturating_sub(tail_keep))
+            .cloned(),
+    );
+    condensed
 }
 
 // ─── Merge ───────────────────────────────────────────────────────────────────
@@ -1062,6 +1335,27 @@ pub fn validate_handoff_summary(summary: &HandoffSummary) -> HandoffValidationRe
         });
     }
 
+    let has_material_packages = summary.work_packages.iter().any(is_material_work_package);
+    if has_material_packages && summary.execution_contract.ordered_steps.is_empty() {
+        findings.push(ValidationFinding {
+            code: "ordered_steps_missing".to_string(),
+            severity: "warning".to_string(),
+            message: "Material work packages exist but execution_contract.ordered_steps is empty."
+                .to_string(),
+        });
+    } else if !ordered_steps_are_consistent(
+        &summary.execution_contract.ordered_steps,
+        &summary.work_packages,
+    ) {
+        findings.push(ValidationFinding {
+            code: "ordered_steps_inconsistent".to_string(),
+            severity: "error".to_string(),
+            message:
+                "execution_contract.ordered_steps is not temporally or referentially consistent."
+                    .to_string(),
+        });
+    }
+
     HandoffValidationReport {
         session_id: summary.source_session_id.clone(),
         passed: findings.is_empty(),
@@ -1118,6 +1412,48 @@ fn has_work_package_cycle(packages: &[WorkPackage]) -> bool {
     false
 }
 
+fn ordered_steps_are_consistent(steps: &[OrderedStep], work_packages: &[WorkPackage]) -> bool {
+    if steps.is_empty() {
+        return true;
+    }
+
+    if !steps
+        .windows(2)
+        .all(|pair| pair[0].sequence < pair[1].sequence)
+    {
+        return false;
+    }
+
+    let known_ids = work_packages
+        .iter()
+        .map(|pkg| pkg.id.as_str())
+        .collect::<HashSet<_>>();
+    if !steps
+        .iter()
+        .all(|step| known_ids.contains(step.work_package_id.as_str()))
+    {
+        return false;
+    }
+
+    let is_monotonic_time = |left: Option<&str>, right: Option<&str>| -> bool {
+        match (left, right) {
+            (Some(l), Some(r)) => {
+                let left = chrono::DateTime::parse_from_rfc3339(l).ok();
+                let right = chrono::DateTime::parse_from_rfc3339(r).ok();
+                match (left, right) {
+                    (Some(l), Some(r)) => l <= r,
+                    _ => false,
+                }
+            }
+            _ => true,
+        }
+    };
+
+    steps
+        .windows(2)
+        .all(|pair| is_monotonic_time(pair[0].started_at.as_deref(), pair[1].started_at.as_deref()))
+}
+
 // ─── Markdown generation ─────────────────────────────────────────────────────
 
 /// Generate a v2 Markdown handoff document from a single session summary.
@@ -1172,6 +1508,35 @@ fn append_v2_markdown_sections(md: &mut String, summary: &HandoffSummary) {
             md.push_str(&format!("  - {done}\n"));
         }
     }
+    if !summary.execution_contract.ordered_steps.is_empty() {
+        md.push_str("- **Execution Timeline (ordered):**\n");
+        for step in &summary.execution_contract.ordered_steps {
+            let started = step.started_at.as_deref().unwrap_or("?");
+            let completed = step.completed_at.as_deref().unwrap_or("-");
+            if step.depends_on.is_empty() {
+                md.push_str(&format!(
+                    "  - [{}] `{}` [{}] status={} start={} done={}\n",
+                    step.sequence,
+                    step.title,
+                    step.work_package_id,
+                    step.status,
+                    started,
+                    completed
+                ));
+            } else {
+                md.push_str(&format!(
+                    "  - [{}] `{}` [{}] status={} start={} done={} deps=[{}]\n",
+                    step.sequence,
+                    step.title,
+                    step.work_package_id,
+                    step.status,
+                    started,
+                    completed,
+                    step.depends_on.join(", ")
+                ));
+            }
+        }
+    }
     md.push('\n');
 
     md.push_str("## Next Actions (ordered)\n");
@@ -1180,6 +1545,12 @@ fn append_v2_markdown_sections(md: &mut String, summary: &HandoffSummary) {
     } else {
         for (idx, action) in summary.execution_contract.next_actions.iter().enumerate() {
             md.push_str(&format!("{}. {}\n", idx + 1, action));
+        }
+    }
+    if !summary.execution_contract.parallel_actions.is_empty() {
+        md.push_str("\nParallelizable Work Packages:\n");
+        for action in &summary.execution_contract.parallel_actions {
+            md.push_str(&format!("- {action}\n"));
         }
     }
     md.push('\n');
@@ -2078,6 +2449,7 @@ mod tests {
             summary.execution_contract.ordered_commands.first(),
             Some(&"cargo test".to_string())
         );
+        assert!(summary.execution_contract.parallel_actions.is_empty());
         assert!(summary.execution_contract.rollback_hint.is_none());
         assert!(summary
             .execution_contract
@@ -2119,6 +2491,10 @@ mod tests {
                 id: "a".to_string(),
                 title: "A".to_string(),
                 status: "pending".to_string(),
+                sequence: 1,
+                started_at: None,
+                completed_at: None,
+                outcome: None,
                 depends_on: vec!["b".to_string()],
                 files: Vec::new(),
                 commands: Vec::new(),
@@ -2128,6 +2504,10 @@ mod tests {
                 id: "b".to_string(),
                 title: "B".to_string(),
                 status: "pending".to_string(),
+                sequence: 2,
+                started_at: None,
+                completed_at: None,
+                outcome: None,
                 depends_on: vec!["a".to_string()],
                 files: Vec::new(),
                 commands: Vec::new(),
@@ -2184,5 +2564,243 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.code == "objective_evidence_missing"));
+    }
+
+    #[test]
+    fn test_execution_contract_includes_parallel_actions_for_independent_work_packages() {
+        let mut session = Session::new("parallel-actions".to_string(), make_agent());
+        session.events.push(make_event(
+            EventType::UserMessage,
+            "Refactor two independent modules",
+        ));
+
+        let mut a_start = make_event(
+            EventType::TaskStart {
+                title: Some("Refactor auth".to_string()),
+            },
+            "",
+        );
+        a_start.task_id = Some("auth".to_string());
+        session.events.push(a_start);
+
+        let mut a_edit = make_event(
+            EventType::FileEdit {
+                path: "src/auth.rs".to_string(),
+                diff: None,
+            },
+            "",
+        );
+        a_edit.task_id = Some("auth".to_string());
+        session.events.push(a_edit);
+
+        let mut b_start = make_event(
+            EventType::TaskStart {
+                title: Some("Refactor billing".to_string()),
+            },
+            "",
+        );
+        b_start.task_id = Some("billing".to_string());
+        session.events.push(b_start);
+
+        let mut b_edit = make_event(
+            EventType::FileEdit {
+                path: "src/billing.rs".to_string(),
+                diff: None,
+            },
+            "",
+        );
+        b_edit.task_id = Some("billing".to_string());
+        session.events.push(b_edit);
+
+        let summary = HandoffSummary::from_session(&session);
+        assert!(summary
+            .execution_contract
+            .parallel_actions
+            .iter()
+            .any(|action| action.contains("auth")));
+        assert!(summary
+            .execution_contract
+            .parallel_actions
+            .iter()
+            .any(|action| action.contains("billing")));
+        let md = generate_handoff_markdown_v2(&summary);
+        assert!(md.contains("Parallelizable Work Packages"));
+    }
+
+    #[test]
+    fn test_done_definition_prefers_material_signals() {
+        let mut session = Session::new("material-signals".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "Implement feature X"));
+        session.events.push(make_event(
+            EventType::FileEdit {
+                path: "src/lib.rs".to_string(),
+                diff: None,
+            },
+            "",
+        ));
+        session.events.push(make_event(
+            EventType::ShellCommand {
+                command: "cargo test".to_string(),
+                exit_code: Some(0),
+            },
+            "",
+        ));
+
+        let summary = HandoffSummary::from_session(&session);
+        assert!(summary
+            .execution_contract
+            .done_definition
+            .iter()
+            .any(|item| item.contains("Verification passed: `cargo test`")));
+        assert!(summary
+            .execution_contract
+            .done_definition
+            .iter()
+            .any(|item| item.contains("Changed 1 file(s): `src/lib.rs`")));
+        assert!(summary
+            .execution_contract
+            .ordered_steps
+            .iter()
+            .any(|step| step.work_package_id == "main"));
+    }
+
+    #[test]
+    fn test_ordered_steps_keep_temporal_and_task_context() {
+        let mut session = Session::new("ordered-steps".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "Process two tasks"));
+
+        let mut t1_start = make_event(
+            EventType::TaskStart {
+                title: Some("Prepare migration".to_string()),
+            },
+            "",
+        );
+        t1_start.task_id = Some("task-1".to_string());
+        session.events.push(t1_start);
+
+        let mut t1_end = make_event(
+            EventType::TaskEnd {
+                summary: Some("Migration script prepared".to_string()),
+            },
+            "",
+        );
+        t1_end.task_id = Some("task-1".to_string());
+        session.events.push(t1_end);
+
+        let mut t2_start = make_event(
+            EventType::TaskStart {
+                title: Some("Run verification".to_string()),
+            },
+            "",
+        );
+        t2_start.task_id = Some("task-2".to_string());
+        session.events.push(t2_start);
+
+        let mut t2_cmd = make_event(
+            EventType::ShellCommand {
+                command: "cargo test".to_string(),
+                exit_code: Some(0),
+            },
+            "",
+        );
+        t2_cmd.task_id = Some("task-2".to_string());
+        session.events.push(t2_cmd);
+
+        let summary = HandoffSummary::from_session(&session);
+        let steps = &summary.execution_contract.ordered_steps;
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].sequence < steps[1].sequence);
+        assert_eq!(steps[0].work_package_id, "task-1");
+        assert_eq!(steps[1].work_package_id, "task-2");
+        assert!(steps[0].completed_at.is_some());
+        assert!(summary
+            .work_packages
+            .iter()
+            .find(|pkg| pkg.id == "task-1")
+            .and_then(|pkg| pkg.outcome.as_deref())
+            .is_some());
+    }
+
+    #[test]
+    fn test_validate_handoff_summary_flags_inconsistent_ordered_steps() {
+        let mut session = Session::new("invalid-ordered-steps".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "test ordered steps"));
+        let mut summary = HandoffSummary::from_session(&session);
+        summary.work_packages = vec![WorkPackage {
+            id: "main".to_string(),
+            title: "Main flow".to_string(),
+            status: "completed".to_string(),
+            sequence: 1,
+            started_at: Some("2026-02-19T00:00:00Z".to_string()),
+            completed_at: Some("2026-02-19T00:01:00Z".to_string()),
+            outcome: Some("done".to_string()),
+            depends_on: Vec::new(),
+            files: vec!["src/lib.rs".to_string()],
+            commands: Vec::new(),
+            evidence_refs: Vec::new(),
+        }];
+        summary.execution_contract.ordered_steps = vec![OrderedStep {
+            sequence: 1,
+            work_package_id: "missing".to_string(),
+            title: "missing".to_string(),
+            status: "completed".to_string(),
+            depends_on: Vec::new(),
+            started_at: Some("2026-02-19T00:00:00Z".to_string()),
+            completed_at: Some("2026-02-19T00:01:00Z".to_string()),
+            evidence_refs: Vec::new(),
+        }];
+
+        let report = validate_handoff_summary(&summary);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ordered_steps_inconsistent"));
+    }
+
+    #[test]
+    fn test_message_and_conversation_collections_are_condensed() {
+        let mut session = Session::new("condense".to_string(), make_agent());
+
+        for i in 0..24 {
+            session
+                .events
+                .push(make_event(EventType::UserMessage, &format!("user-{i}")));
+            session
+                .events
+                .push(make_event(EventType::AgentMessage, &format!("agent-{i}")));
+        }
+
+        let summary = HandoffSummary::from_session(&session);
+        assert_eq!(summary.user_messages.len(), MAX_USER_MESSAGES);
+        assert_eq!(
+            summary.user_messages.first().map(String::as_str),
+            Some("user-0")
+        );
+        assert_eq!(
+            summary.user_messages.last().map(String::as_str),
+            Some("user-23")
+        );
+
+        assert_eq!(summary.key_conversations.len(), MAX_KEY_CONVERSATIONS);
+        assert_eq!(
+            summary
+                .key_conversations
+                .first()
+                .map(|conv| conv.user.as_str()),
+            Some("user-0")
+        );
+        assert_eq!(
+            summary
+                .key_conversations
+                .last()
+                .map(|conv| conv.user.as_str()),
+            Some("user-23")
+        );
     }
 }

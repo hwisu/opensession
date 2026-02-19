@@ -125,6 +125,12 @@ cargo run -p opensession -- session handoff --last 6 --populate claude
 cargo run -p opensession -- session handoff --last 6 --populate claude:opus-4.6
 ```
 
+반복 실행 성능이 중요하면 `cargo run` 대신 빌드된 바이너리를 사용하세요:
+```bash
+cargo build -p opensession
+target/debug/opensession session handoff --last HEAD~2 --format json
+```
+
 CLI 종류별 예시(세션 생성)와 대응 handoff 명령:
 
 | 소스 CLI | 예시 명령 | handoff 명령 |
@@ -144,6 +150,8 @@ CLI 종류별 예시(세션 생성)와 대응 handoff 명령:
 - `--validate --strict`: error 레벨 위반이 있을 때만 non-zero 종료.
 - 기본 스키마는 v2 실행 계약 출력입니다.
 - `--populate <provider[:model]>`: handoff JSON을 provider CLI(`claude`, `codex`, `opencode`, `gemini`, `amp`) 표준입력으로 전달해 `HANDOFF.md` 초안을 생성합니다.
+- `execution_contract.parallel_actions`: 순차 액션과 별도로 병렬 가능한 작업 패키지를 분리해 제공합니다.
+- `execution_contract.ordered_steps`: 작업 순서/타임스탬프/의존성을 함께 보존해 시간성과 정합성을 잃지 않고 후속 에이전트가 재실행할 수 있게 합니다.
 
 ## Worker 로컬 개발 (Wrangler, 실행 검증 완료)
 

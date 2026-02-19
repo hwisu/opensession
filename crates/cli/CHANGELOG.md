@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.14](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.14) - 2026-02-19
+
+### Other
+
+- Improve handoff temporal consistency and execution timeline
+- *(release)* apply release-plz update
+- Simplify handoff flow and add provider populate mode
+- *(release)* apply release-plz update
+- Remove legacy handoff paths and clean publish/docs
+- *(release)* apply release-plz update
+- test pushpush
+- *(release)* apply release-plz update
+- Fix TUI env-flag test flake and docs
+- Prune team surfaces and complete git-native runtime cleanup
+- *(release)* apply release-plz update
+- prune docker/team surfaces and align on git-native public sessions
+
 ## [0.2.13](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.13) - 2026-02-19
 
 ### Other

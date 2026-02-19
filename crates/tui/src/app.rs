@@ -801,6 +801,63 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn internal_summary_session_hides_low_message_uuid_title() {
+        let mut session = Session::new(
+            "019c5c24-597c-7ca3-a005-aef3c8f1ecfd".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.message_count = 0;
+        session.stats.user_message_count = 0;
+        session.stats.task_count = 0;
+        session.stats.event_count = 1;
+
+        assert!(App::is_internal_summary_session(&session));
+    }
+
+    #[test]
+    fn internal_summary_session_keeps_non_uuid_short_session() {
+        let mut session = Session::new(
+            "summary".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.message_count = 0;
+        session.stats.user_message_count = 0;
+        session.stats.task_count = 0;
+        session.stats.event_count = 1;
+
+        assert!(!App::is_internal_summary_session(&session));
+    }
+
+    #[test]
+    fn internal_summary_session_keeps_uuid_title_when_messages_are_enough() {
+        let mut session = Session::new(
+            "019c5c24-597c-7ca3-a005-aef3c8f1ecfd".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.message_count = 3;
+        session.stats.user_message_count = 1;
+        session.stats.task_count = 1;
+        session.stats.event_count = 8;
+
+        assert!(!App::is_internal_summary_session(&session));
+    }
+
+    #[test]
     fn rebuild_columns_groups_local_sessions_by_agent_count() {
         let mut app = App::new(vec![
             Session::new(
@@ -2186,6 +2243,15 @@ impl App {
             .iter()
             .any(Self::is_internal_summary_user_event)
         {
+            return true;
+        }
+
+        let display_title = session
+            .context
+            .title
+            .as_deref()
+            .unwrap_or(session.session_id.as_str());
+        if session.stats.message_count <= 2 && Self::is_probably_session_uuid(display_title) {
             return true;
         }
 

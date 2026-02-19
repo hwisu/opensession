@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.16](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.15...opensession-git-native-v0.2.16) - 2026-02-19
+
+### Fixed
+
+- isolate git-native tests from hook git env
+
 ## [0.2.8](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.7...opensession-git-native-v0.2.8) - 2026-02-19
 
 ### Added

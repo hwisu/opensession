@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.7...opensession-git-native-v0.2.8) - 2026-02-19
+
+### Added
+
+- *(retention)* prune git-native session history on schedule
+
 ## [0.1.3](https://github.com/hwisu/opensession/releases/tag/opensession-git-native-v0.1.3) - 2026-02-13
 
 ### Fixed

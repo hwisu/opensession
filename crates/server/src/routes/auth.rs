@@ -27,6 +27,7 @@ use crate::AppConfig;
 pub struct AuthUser {
     pub user_id: String,
     pub nickname: String,
+    #[allow(dead_code)]
     pub email: Option<String>,
 }
 

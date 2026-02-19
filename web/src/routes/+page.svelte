@@ -4,4 +4,8 @@
 	import { appProfile } from '$lib/profile';
 </script>
 
-<HomePage onNavigate={(path) => goto(path)} uploadEnabled={appProfile !== 'worker'} />
+<HomePage
+	onNavigate={(path) => goto(path)}
+	uploadEnabled={appProfile !== 'worker'}
+	showLandingForGuests={appProfile === 'server'}
+/>

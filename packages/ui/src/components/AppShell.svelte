@@ -1,6 +1,8 @@
 <script lang="ts">
 import { tick } from 'svelte';
 import type { Snippet } from 'svelte';
+import { authLogout, getSettings, isAuthenticated, verifyAuth } from '../api';
+import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
 type PaletteCommand = {
@@ -25,18 +27,32 @@ const {
 	onNavigate?: (path: string) => void;
 } = $props();
 
+let user = $state<UserSettings | null>(null);
 let paletteOpen = $state(false);
 let paletteQuery = $state('');
 let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
+let authGuardSeq = 0;
 
+const authEnabled = $derived(appProfile === 'server');
 const uploadEnabled = $derived(appProfile !== 'worker');
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/');
 
+function isGuestAllowedPath(path: string): boolean {
+	return (
+		path === '/' ||
+		path === '/login' ||
+		path === '/register' ||
+		path === '/auth/callback' ||
+		path.startsWith('/docs') ||
+		path.startsWith('/dx')
+	);
+}
+
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/', label: 'Sessions' }];
-	if (uploadEnabled) {
+	if (uploadEnabled && user) {
 		links.push({ href: '/upload', label: 'Upload' });
 	}
 	links.push({ href: '/dx', label: 'DX' });
@@ -52,6 +68,60 @@ const shortcutHints = $derived.by(() => {
 		return ['Cmd/Ctrl+K palette', 'j/k navigate', 'Enter open', '/ search', 't/o/r cycle', 'l layout'];
 	}
 	return ['Cmd/Ctrl+K palette', 'Esc back'];
+});
+
+$effect(() => {
+	void currentPath;
+	if (!authEnabled) {
+		user = null;
+		return;
+	}
+
+	if (!isAuthenticated()) {
+		user = null;
+		return;
+	}
+
+	let cancelled = false;
+	verifyAuth()
+		.then(async (ok) => {
+			if (!ok || cancelled) {
+				user = null;
+				return;
+			}
+			try {
+				const settings = await getSettings();
+				if (!cancelled) user = settings;
+			} catch {
+				if (!cancelled) user = null;
+			}
+		})
+		.catch(() => {
+			if (!cancelled) user = null;
+		});
+
+	return () => {
+		cancelled = true;
+	};
+});
+
+$effect(() => {
+	void currentPath;
+	if (!authEnabled || isGuestAllowedPath(currentPath)) return;
+	const seq = ++authGuardSeq;
+	let cancelled = false;
+	verifyAuth()
+		.then((ok) => {
+			if (cancelled || seq !== authGuardSeq || ok) return;
+			onNavigate('/login');
+		})
+		.catch(() => {
+			if (cancelled || seq !== authGuardSeq) return;
+			onNavigate('/login');
+		});
+	return () => {
+		cancelled = true;
+	};
 });
 
 function createPaletteCommand(
@@ -93,7 +163,7 @@ const allPaletteCommands = $derived.by(() => {
 		),
 	];
 
-	if (uploadEnabled) {
+	if (uploadEnabled && user) {
 		commands.push(
 			createPaletteCommand(
 				'go-upload',
@@ -101,6 +171,25 @@ const allPaletteCommands = $derived.by(() => {
 				'Upload a HAIL session file',
 				['upload', 'ingest', 'jsonl'],
 				() => onNavigate('/upload'),
+			),
+		);
+	}
+
+	if (authEnabled && !user) {
+		commands.push(
+			createPaletteCommand(
+				'go-login',
+				'Go to Login',
+				'Sign in to your account',
+				['login', 'auth', 'signin'],
+				() => onNavigate('/login'),
+			),
+			createPaletteCommand(
+				'go-register',
+				'Go to Register',
+				'Create a new account',
+				['register', 'signup', 'auth'],
+				() => onNavigate('/register'),
 			),
 		);
 	}
@@ -137,11 +226,7 @@ const visiblePaletteCommands = $derived.by(() => {
 	if (!normalizedPaletteQuery) return allPaletteCommands;
 
 	return allPaletteCommands.filter((command) => {
-		const haystack = [
-			command.label,
-			command.description,
-			...command.keywords,
-		]
+		const haystack = [command.label, command.description, ...command.keywords]
 			.join(' ')
 			.toLowerCase();
 		return haystack.includes(normalizedPaletteQuery);
@@ -220,6 +305,12 @@ function handlePaletteInputKeydown(e: KeyboardEvent) {
 	}
 }
 
+async function handleSignOut() {
+	await authLogout();
+	user = null;
+	onNavigate('/');
+}
+
 function handleGlobalKey(e: KeyboardEvent) {
 	if (isPaletteShortcut(e)) {
 		e.preventDefault();
@@ -249,41 +340,65 @@ function handleGlobalKey(e: KeyboardEvent) {
 
 <svelte:window onkeydown={handleGlobalKey} />
 
-<div class="grid h-screen max-w-[100vw] grid-rows-[auto_1fr_auto] overflow-hidden bg-bg-primary text-text-primary">
-	<!-- TopBar -->
-	<nav class="flex min-w-0 items-center justify-between border-b border-border bg-bg-secondary px-3 py-2 sm:px-4">
+<div class="grid min-h-[100dvh] max-w-[100vw] grid-rows-[auto_1fr_auto] overflow-hidden bg-bg-primary text-text-primary">
+	<nav class="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-bg-secondary px-2 py-2 sm:px-4">
 		<div class="flex items-center gap-1">
 			<a href="/" class="text-sm font-bold tracking-tight text-text-primary sm:text-base">
 				opensession<span class="text-accent">.io</span>
 			</a>
 			<ThemeToggle />
 		</div>
-		<div class="flex min-w-0 items-center gap-0.5 sm:gap-1">
+		<div class="flex min-w-0 flex-1 items-center justify-end gap-0.5 overflow-x-auto whitespace-nowrap pb-1 sm:pb-0">
 			{#each navLinks as link}
 				<a
 					href={link.href}
-					class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
+					class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
 					class:text-accent={isLinkActive(link.href)}
 				>
 					{link.label}
 				</a>
 			{/each}
+
+			{#if authEnabled}
+				{#if user}
+					<span class="px-2 py-1 text-xs text-text-secondary sm:text-sm">[{user.nickname}]</span>
+					<button
+						type="button"
+						onclick={handleSignOut}
+						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
+					>
+						Logout
+					</button>
+				{:else}
+					<a
+						href="/login"
+						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
+					>
+						Login
+					</a>
+					<a
+						href="/register"
+						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
+					>
+						Register
+					</a>
+				{/if}
+			{/if}
 		</div>
 	</nav>
 
-	<!-- Main Content -->
-	<main class="overflow-y-auto px-4 py-3">
+	<main class="overflow-y-auto px-2 py-3 sm:px-4">
 		{@render children()}
 	</main>
 
-	<!-- StatusBar -->
 	<footer
 		data-testid="shortcut-footer"
-		class="shrink-0 flex items-center gap-4 border-t border-border bg-bg-secondary px-4 py-1 text-xs text-text-muted"
+		class="shrink-0 flex items-center gap-3 border-t border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-muted sm:px-4 sm:text-xs"
 	>
 		<span class="font-medium text-text-secondary">Shortcuts</span>
+		<span class="sm:hidden">Cmd/Ctrl+K</span>
 		{#each shortcutHints as hint}
-			<span>{hint}</span>
+			<span class="hidden sm:inline">{hint}</span>
 		{/each}
 		<span class="ml-auto">opensession.io</span>
 	</footer>

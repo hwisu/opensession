@@ -3,12 +3,21 @@
 // API client
 export {
 	ApiError,
+	authLogin,
+	authLogout,
+	authRegister,
 	clearApiKey,
+	getAuthProviders,
+	getOAuthUrl,
 	getSession,
+	getSettings,
+	handleAuthCallback,
+	isAuthenticated,
 	listSessions,
 	setApiKey,
 	setBaseUrl,
 	uploadSession,
+	verifyAuth,
 } from './api';
 // API types (auto-generated)
 export type * from './api-types.generated';

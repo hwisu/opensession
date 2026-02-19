@@ -325,7 +325,7 @@ $effect(() => {
 </svelte:head>
 
 <div class="flex h-full flex-col">
-	<div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-2 py-1.5">
+	<div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
 		<div class="flex items-center gap-1" role="tablist" aria-label="Time range">
 			{#each timeRangeTabs as tab}
 				<button
@@ -342,7 +342,7 @@ $effect(() => {
 			{/each}
 		</div>
 
-		<div class="flex flex-1 items-center gap-1">
+		<div class="order-3 flex w-full items-center gap-1 sm:order-none sm:flex-1">
 			<label for="session-search" class="text-xs text-text-muted">/</label>
 			<input
 				id="session-search"
@@ -358,7 +358,7 @@ $effect(() => {
 		<select
 			bind:value={toolFilter}
 			onchange={() => fetchSessions(true)}
-			class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			class="w-full border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent sm:w-auto"
 		>
 			{#each tools as t}
 				<option value={t.value}>{t.label}</option>
@@ -367,13 +367,13 @@ $effect(() => {
 		<select
 			bind:value={sortBy}
 			onchange={() => fetchSessions(true)}
-			class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			class="w-full border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent sm:w-auto"
 		>
 			<option value="recent">Recent</option>
 			<option value="popular">Most Messages</option>
 			<option value="longest">Longest</option>
 		</select>
-		<div class="flex items-center border border-border bg-bg-secondary p-0.5">
+		<div class="flex w-full items-center justify-center border border-border bg-bg-secondary p-0.5 sm:w-auto">
 			<button
 				onclick={() => { listLayout = 'single'; }}
 				class="px-2 py-0.5 text-xs"

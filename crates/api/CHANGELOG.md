@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.8...opensession-api-v0.2.9) - 2026-02-19
+
+### Other
+
+- prune docker/team surfaces and align on git-native public sessions
+
 ## [0.2.7](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.6...opensession-api-v0.2.7) - 2026-02-16
 
 ### Added

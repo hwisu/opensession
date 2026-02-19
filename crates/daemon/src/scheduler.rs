@@ -5,11 +5,12 @@ use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_api_client::ApiClient;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_core::Session;
+use opensession_git_native::PruneStats;
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::LocalDb;
 use opensession_parsers::{all_parsers, SessionParser};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -77,6 +78,77 @@ fn resolve_publish_mode(settings: &DaemonSettings) -> PublishMode {
     PublishMode::Manual
 }
 
+/// Resolve retention schedule for git-native session pruning.
+fn resolve_git_retention_schedule(config: &DaemonConfig) -> Option<(u32, Duration)> {
+    if config.git_storage.method == GitStorageMethod::Sqlite {
+        return None;
+    }
+    if !config.git_storage.retention.enabled {
+        return None;
+    }
+
+    let keep_days = config.git_storage.retention.keep_days;
+    let interval_secs = config.git_storage.retention.interval_secs.max(60);
+    Some((keep_days, Duration::from_secs(interval_secs)))
+}
+
+fn run_git_retention_once(db: &LocalDb, keep_days: u32) -> Result<()> {
+    let workdirs = db.list_working_directories()?;
+    if workdirs.is_empty() {
+        debug!("Git retention: no working directories in local DB");
+        return Ok(());
+    }
+
+    let mut repo_roots = HashSet::new();
+    for wd in workdirs {
+        if let Some(root) = crate::config::find_repo_root(&wd) {
+            repo_roots.insert(root);
+        }
+    }
+
+    if repo_roots.is_empty() {
+        debug!("Git retention: no repo roots found from working directories");
+        return Ok(());
+    }
+
+    let storage = opensession_git_native::NativeGitStorage;
+    for repo_root in repo_roots {
+        match storage.prune_by_age(&repo_root, keep_days) {
+            Ok(PruneStats {
+                scanned_sessions,
+                expired_sessions,
+                rewritten,
+            }) => {
+                if rewritten {
+                    info!(
+                        repo = %repo_root.display(),
+                        keep_days,
+                        scanned_sessions,
+                        expired_sessions,
+                        "Git retention: pruned expired sessions"
+                    );
+                } else {
+                    debug!(
+                        repo = %repo_root.display(),
+                        keep_days,
+                        scanned_sessions,
+                        "Git retention: no expired sessions"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    repo = %repo_root.display(),
+                    keep_days,
+                    "Git retention failed: {e}"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Run the scheduler loop: receives file change events, debounces, parses, and uploads.
 pub async fn run_scheduler(
     config: DaemonConfig,
@@ -111,6 +183,8 @@ pub async fn run_scheduler(
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
 
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let retention_schedule = resolve_git_retention_schedule(&config);
+    let mut next_retention_run = retention_schedule.map(|(_, interval)| Instant::now() + interval);
 
     loop {
         tokio::select! {
@@ -145,6 +219,17 @@ pub async fn run_scheduler(
                                 error!("Failed to process {}: {:#}", path.display(), e);
                             }
                         }
+                    }
+                }
+
+                if let (Some((keep_days, interval)), Some(next_at)) =
+                    (retention_schedule, next_retention_run)
+                {
+                    if now >= next_at {
+                        if let Err(e) = run_git_retention_once(&db, keep_days) {
+                            warn!("Git retention scan failed: {e}");
+                        }
+                        next_retention_run = Some(now + interval);
                     }
                 }
 
@@ -482,5 +567,37 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_publish_mode(&settings), PublishMode::Manual);
+    }
+
+    #[test]
+    fn test_resolve_git_retention_schedule_disabled_by_default() {
+        let config = DaemonConfig::default();
+        assert!(resolve_git_retention_schedule(&config).is_none());
+    }
+
+    #[test]
+    fn test_resolve_git_retention_schedule_enabled_native_mode() {
+        let mut config = DaemonConfig::default();
+        config.git_storage.method = GitStorageMethod::Native;
+        config.git_storage.retention.enabled = true;
+        config.git_storage.retention.keep_days = 14;
+        config.git_storage.retention.interval_secs = 120;
+
+        let (keep_days, interval) =
+            resolve_git_retention_schedule(&config).expect("retention should be enabled");
+        assert_eq!(keep_days, 14);
+        assert_eq!(interval, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_resolve_git_retention_schedule_enforces_min_interval() {
+        let mut config = DaemonConfig::default();
+        config.git_storage.method = GitStorageMethod::Native;
+        config.git_storage.retention.enabled = true;
+        config.git_storage.retention.interval_secs = 0;
+
+        let (_, interval) =
+            resolve_git_retention_schedule(&config).expect("retention should be enabled");
+        assert_eq!(interval, Duration::from_secs(60));
     }
 }

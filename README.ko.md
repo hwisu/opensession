@@ -146,6 +146,11 @@ strip_env_vars = true
 
 [git_storage]
 method = "native"            # 세션 저장 백엔드: native | sqlite
+
+[git_storage.retention]
+enabled = false              # opt-in: 오래된 git-native 세션 blob 정리
+keep_days = 30               # 보관 기간(일)
+interval_secs = 86400        # 정리 주기(초)
 ```
 
 에이전트별 watcher 토글은 하위 호환을 위해 읽기만 지원하며,

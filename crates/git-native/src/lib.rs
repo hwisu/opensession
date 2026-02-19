@@ -7,7 +7,7 @@ pub mod url;
 pub(crate) mod test_utils;
 
 pub use error::{GitStorageError, Result};
-pub use store::NativeGitStorage;
+pub use store::{NativeGitStorage, PruneStats};
 pub use url::generate_raw_url;
 
 /// Branch name used for storing session data.

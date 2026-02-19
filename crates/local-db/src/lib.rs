@@ -1291,6 +1291,22 @@ impl LocalDb {
         }
         Ok(result)
     }
+
+    /// Get a list of distinct, non-empty working directories present in the DB.
+    pub fn list_working_directories(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT working_directory FROM sessions \
+             WHERE working_directory IS NOT NULL AND TRIM(working_directory) <> '' \
+             ORDER BY working_directory ASC",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
 }
 
 // ── Legacy schema backfill ─────────────────────────────────────────────
@@ -2356,6 +2372,31 @@ mod tests {
             .count_sessions_filtered(&LocalSessionFilter::default())
             .unwrap();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_list_working_directories_distinct_non_empty() {
+        let db = test_db();
+
+        let mut a = make_summary("wd-1", "claude-code", "One", "2024-01-01T00:00:00Z");
+        a.working_directory = Some("/tmp/repo-a".to_string());
+        let mut b = make_summary("wd-2", "claude-code", "Two", "2024-01-02T00:00:00Z");
+        b.working_directory = Some("/tmp/repo-a".to_string());
+        let mut c = make_summary("wd-3", "claude-code", "Three", "2024-01-03T00:00:00Z");
+        c.working_directory = Some("/tmp/repo-b".to_string());
+        let mut d = make_summary("wd-4", "claude-code", "Four", "2024-01-04T00:00:00Z");
+        d.working_directory = Some("".to_string());
+
+        db.upsert_remote_session(&a).unwrap();
+        db.upsert_remote_session(&b).unwrap();
+        db.upsert_remote_session(&c).unwrap();
+        db.upsert_remote_session(&d).unwrap();
+
+        let dirs = db.list_working_directories().unwrap();
+        assert_eq!(
+            dirs,
+            vec!["/tmp/repo-a".to_string(), "/tmp/repo-b".to_string()]
+        );
     }
 
     #[test]

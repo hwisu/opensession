@@ -106,6 +106,34 @@ pub fn create_commit(
     Ok(commit_id)
 }
 
+/// Replace a ref target with `new_tip`, requiring the current tip to match
+/// `expected_tip`.
+pub fn replace_ref_tip(
+    repo: &Repository,
+    ref_name: &str,
+    expected_tip: ObjectId,
+    new_tip: ObjectId,
+    message: &str,
+) -> Result<()> {
+    repo.edit_references([RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: message.into(),
+            },
+            expected: PreviousValue::ExistingMustMatch(gix::refs::Target::Object(expected_tip)),
+            new: gix::refs::Target::Object(new_tip),
+        },
+        name: ref_name
+            .try_into()
+            .map_err(|e: gix::validate::reference::name::Error| gix_err(e))?,
+        deref: false,
+    }])
+    .map_err(gix_err)?;
+    Ok(())
+}
+
 /// Delete a ref, requiring it currently points to `expected_tip`.
 pub fn delete_ref(repo: &Repository, ref_name: &str, expected_tip: ObjectId) -> Result<()> {
     repo.edit_references([RefEdit {
@@ -303,5 +331,46 @@ mod tests {
         // Now it should be gone
         let tip = find_ref_tip(&repo, "refs/heads/to-delete").unwrap();
         assert!(tip.is_none(), "ref should be deleted");
+    }
+
+    #[test]
+    fn test_replace_ref_tip() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let empty_tree = ObjectId::empty_tree(repo.object_hash());
+
+        let first_id = create_commit(
+            &repo,
+            "refs/heads/replace-test",
+            empty_tree,
+            None,
+            "first commit",
+        )
+        .unwrap();
+
+        let second_id = create_commit(
+            &repo,
+            "refs/heads/replace-test-next",
+            empty_tree,
+            None,
+            "second commit",
+        )
+        .unwrap();
+
+        replace_ref_tip(
+            &repo,
+            "refs/heads/replace-test",
+            first_id,
+            second_id,
+            "replace tip",
+        )
+        .unwrap();
+
+        let tip = find_ref_tip(&repo, "refs/heads/replace-test")
+            .unwrap()
+            .expect("replace-test should exist");
+        assert_eq!(tip.detach(), second_id);
     }
 }

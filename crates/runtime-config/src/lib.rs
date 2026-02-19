@@ -250,6 +250,8 @@ pub struct GitStorageSettings {
     pub method: GitStorageMethod,
     #[serde(default)]
     pub token: String,
+    #[serde(default)]
+    pub retention: GitRetentionSettings,
 }
 
 impl Default for GitStorageSettings {
@@ -257,6 +259,27 @@ impl Default for GitStorageSettings {
         Self {
             method: GitStorageMethod::Native,
             token: String::new(),
+            retention: GitRetentionSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitRetentionSettings {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_git_retention_keep_days")]
+    pub keep_days: u32,
+    #[serde(default = "default_git_retention_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for GitRetentionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keep_days: default_git_retention_keep_days(),
+            interval_secs: default_git_retention_interval_secs(),
         }
     }
 }
@@ -316,6 +339,12 @@ fn default_summary_debounce_ms() -> u64 {
 }
 fn default_summary_max_inflight() -> u32 {
     2
+}
+fn default_git_retention_keep_days() -> u32 {
+    30
+}
+fn default_git_retention_interval_secs() -> u64 {
+    86_400
 }
 fn default_server_url() -> String {
     "https://opensession.io".to_string()
@@ -534,5 +563,34 @@ detail_auto_expand_selected_event = false
         assert_eq!(cfg.daemon.summary_debounce_ms, 100);
         assert_eq!(cfg.daemon.summary_max_inflight, 4);
         assert!(!cfg.daemon.summary_window_migrated_v2);
+    }
+
+    #[test]
+    fn git_retention_defaults_are_stable() {
+        let cfg = DaemonConfig::default();
+        assert!(!cfg.git_storage.retention.enabled);
+        assert_eq!(cfg.git_storage.retention.keep_days, 30);
+        assert_eq!(cfg.git_storage.retention.interval_secs, 86_400);
+    }
+
+    #[test]
+    fn git_retention_fields_deserialize_from_toml() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[git_storage]
+method = "native"
+
+[git_storage.retention]
+enabled = true
+keep_days = 14
+interval_secs = 43200
+"#,
+        )
+        .expect("parse retention config");
+
+        assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
+        assert!(cfg.git_storage.retention.enabled);
+        assert_eq!(cfg.git_storage.retention.keep_days, 14);
+        assert_eq!(cfg.git_storage.retention.interval_secs, 43_200);
     }
 }

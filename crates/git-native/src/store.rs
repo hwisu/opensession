@@ -14,6 +14,17 @@ use crate::{SESSIONS_BRANCH, SESSIONS_REF};
 /// branch (`opensession/sessions`) without touching the working directory.
 pub struct NativeGitStorage;
 
+/// Result of a git-native retention prune run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneStats {
+    /// Number of unique sessions observed while scanning history.
+    pub scanned_sessions: usize,
+    /// Number of sessions considered expired by retention policy.
+    pub expired_sessions: usize,
+    /// Whether the sessions ref was rewritten.
+    pub rewritten: bool,
+}
+
 impl NativeGitStorage {
     /// Compute the storage path prefix for a session ID.
     /// e.g. session_id "abcdef-1234" → "v1/ab/abcdef-1234"
@@ -24,6 +35,16 @@ impl NativeGitStorage {
             session_id
         };
         format!("v1/{prefix}/{session_id}")
+    }
+
+    fn session_id_from_commit_message(message: &str) -> Option<&str> {
+        let first = message.lines().next()?.trim();
+        let id = first.strip_prefix("session: ")?.trim();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
     }
 }
 
@@ -91,6 +112,101 @@ impl NativeGitStorage {
 
         Ok(hail_path)
     }
+
+    /// Prune expired sessions from the sessions branch by age (days).
+    ///
+    /// This rewrites `opensession/sessions` to a new orphan commit containing
+    /// only currently retained paths.
+    pub fn prune_by_age(&self, repo_path: &Path, keep_days: u32) -> Result<PruneStats> {
+        let repo = ops::open_repo(repo_path)?;
+        let tip = match ops::find_ref_tip(&repo, SESSIONS_BRANCH)? {
+            Some(tip) => tip.detach(),
+            None => return Ok(PruneStats::default()),
+        };
+
+        let cutoff = chrono::Utc::now()
+            .timestamp()
+            .saturating_sub((keep_days as i64).saturating_mul(24 * 60 * 60));
+
+        // First-parent walk from tip to capture latest-seen timestamp per session.
+        let mut latest_seen: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        let mut current = Some(tip);
+        while let Some(commit_id) = current {
+            let commit = repo.find_commit(commit_id).map_err(gix_err)?;
+
+            let message = String::from_utf8_lossy(commit.message_raw_sloppy().as_ref());
+            if let Some(session_id) = Self::session_id_from_commit_message(&message) {
+                latest_seen
+                    .entry(session_id.to_string())
+                    .or_insert(commit.time().map_err(gix_err)?.seconds);
+            }
+
+            current = commit.parent_ids().next().map(|id| id.detach());
+        }
+
+        let mut expired: Vec<String> = latest_seen
+            .iter()
+            .filter_map(|(id, ts)| {
+                if *ts <= cutoff {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        expired.sort();
+
+        if expired.is_empty() {
+            return Ok(PruneStats {
+                scanned_sessions: latest_seen.len(),
+                expired_sessions: 0,
+                rewritten: false,
+            });
+        }
+
+        let base_tree_id = ops::commit_tree_id(&repo, tip)?;
+        let mut editor = repo.edit_tree(base_tree_id).map_err(gix_err)?;
+        for session_id in &expired {
+            let prefix = Self::session_prefix(session_id);
+            let hail_path = format!("{prefix}.hail.jsonl");
+            let meta_path = format!("{prefix}.meta.json");
+            editor.remove(&hail_path).map_err(gix_err)?;
+            editor.remove(&meta_path).map_err(gix_err)?;
+        }
+
+        let new_tree_id = editor.write().map_err(gix_err)?.detach();
+        let message = format!(
+            "retention-prune: keep_days={keep_days} expired={}",
+            expired.len()
+        );
+        let sig = ops::make_signature();
+        let commit = gix::objs::Commit {
+            message: message.clone().into(),
+            tree: new_tree_id,
+            author: sig.clone(),
+            committer: sig,
+            encoding: None,
+            parents: Vec::<ObjectId>::new().into(),
+            extra_headers: Default::default(),
+        };
+        let new_tip = repo.write_object(&commit).map_err(gix_err)?.detach();
+        ops::replace_ref_tip(&repo, SESSIONS_REF, tip, new_tip, &message)?;
+
+        info!(
+            keep_days,
+            expired_sessions = expired.len(),
+            old_tip = %tip,
+            new_tip = %new_tip,
+            "Pruned expired sessions on {SESSIONS_BRANCH}"
+        );
+
+        Ok(PruneStats {
+            scanned_sessions: latest_seen.len(),
+            expired_sessions: expired.len(),
+            rewritten: true,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -98,7 +214,7 @@ mod tests {
     use super::*;
     use crate::error::GitStorageError;
     use crate::test_utils::init_test_repo;
-    use crate::SESSIONS_BRANCH;
+    use crate::{ops, SESSIONS_BRANCH};
 
     #[test]
     fn test_session_prefix() {
@@ -150,5 +266,102 @@ mod tests {
             matches!(err, GitStorageError::NotARepo(_)),
             "expected NotARepo, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_prune_by_age_no_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        let storage = NativeGitStorage;
+        let stats = storage
+            .prune_by_age(tmp.path(), 30)
+            .expect("prune should work");
+        assert_eq!(stats, PruneStats::default());
+    }
+
+    #[test]
+    fn test_prune_by_age_rewrites_and_removes_expired_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        let storage = NativeGitStorage;
+        storage
+            .store(tmp.path(), "abc123-def456", b"{\"event\":\"one\"}\n", b"{}")
+            .expect("store should succeed");
+        storage
+            .store(tmp.path(), "ff0011-xyz", b"{\"event\":\"two\"}\n", b"{}")
+            .expect("store should succeed");
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let before_tip = ops::find_ref_tip(&repo, SESSIONS_BRANCH)
+            .unwrap()
+            .expect("sessions branch should exist")
+            .detach();
+
+        let stats = storage
+            .prune_by_age(tmp.path(), 0)
+            .expect("prune should work");
+        assert!(stats.rewritten);
+        assert_eq!(stats.expired_sessions, 2);
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let after_tip = ops::find_ref_tip(&repo, SESSIONS_BRANCH)
+            .unwrap()
+            .expect("sessions branch should exist")
+            .detach();
+        assert_ne!(before_tip, after_tip, "tip should be rewritten");
+
+        let commit = repo.find_commit(after_tip).unwrap();
+        assert_eq!(
+            commit.parent_ids().count(),
+            0,
+            "retention rewrite should produce orphan commit"
+        );
+
+        let output = std::process::Command::new("git")
+            .args(["ls-tree", "-r", SESSIONS_BRANCH])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !listing.contains(".hail.jsonl"),
+            "expected no retained session blobs after prune: {listing}"
+        );
+    }
+
+    #[test]
+    fn test_prune_by_age_keeps_recent_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        let storage = NativeGitStorage;
+        storage
+            .store(tmp.path(), "abc123-def456", b"{\"event\":\"one\"}\n", b"{}")
+            .expect("store should succeed");
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let before_tip = ops::find_ref_tip(&repo, SESSIONS_BRANCH)
+            .unwrap()
+            .expect("sessions branch should exist")
+            .detach();
+
+        let stats = storage
+            .prune_by_age(tmp.path(), 36500)
+            .expect("prune should work");
+        assert!(
+            !stats.rewritten,
+            "no prune should occur for very long retention"
+        );
+        assert_eq!(stats.expired_sessions, 0);
+        assert_eq!(stats.scanned_sessions, 1);
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let after_tip = ops::find_ref_tip(&repo, SESSIONS_BRANCH)
+            .unwrap()
+            .expect("sessions branch should exist")
+            .detach();
+        assert_eq!(before_tip, after_tip);
     }
 }

@@ -161,6 +161,11 @@ strip_env_vars = true
 
 [git_storage]
 method = "native"            # session storage backend: native | sqlite
+
+[git_storage.retention]
+enabled = false              # opt-in: periodically prune old git-native session blobs
+keep_days = 30               # retention window in days
+interval_secs = 86400        # prune interval (seconds)
 ```
 
 Legacy per-agent watcher toggles are still parsed for backward compatibility,

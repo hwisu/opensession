@@ -37,7 +37,7 @@ redundant_closure = "warn"
 single_match = "warn"
 
 [workspace.package]
-version = "0.2.10"
+version = "0.2.11"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/hwisu/opensession"
@@ -45,13 +45,13 @@ homepage = "https://opensession.io"
 authors = ["opensession.io contributors"]
 
 [workspace.dependencies]
-opensession-core = { version = "0.2.10", path = "crates/core" }
-opensession-runtime-config = { version = "0.2.10", path = "crates/runtime-config" }
-opensession-parsers = { version = "0.2.10", path = "crates/parsers" }
-opensession-api = { version = "0.2.10", path = "crates/api", default-features = false }
-opensession-api-client = { version = "0.2.10", path = "crates/api-client" }
-opensession-local-db = { version = "0.2.10", path = "crates/local-db" }
-opensession-git-native = { version = "0.2.10", path = "crates/git-native" }
+opensession-core = { version = "0.2.11", path = "crates/core" }
+opensession-runtime-config = { version = "0.2.11", path = "crates/runtime-config" }
+opensession-parsers = { version = "0.2.11", path = "crates/parsers" }
+opensession-api = { version = "0.2.11", path = "crates/api", default-features = false }
+opensession-api-client = { version = "0.2.11", path = "crates/api-client" }
+opensession-local-db = { version = "0.2.11", path = "crates/local-db" }
+opensession-git-native = { version = "0.2.11", path = "crates/git-native" }
 opensession-e2e = { version = "0.2.8", path = "crates/e2e" }
 
 serde = { version = "1", features = ["derive"] }

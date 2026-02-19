@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.11) - 2026-02-19
+
+### Other
+
+- test pushpush
+- *(release)* apply release-plz update
+- Fix TUI env-flag test flake and docs
+- Prune team surfaces and complete git-native runtime cleanup
+- *(release)* apply release-plz update
+- prune docker/team surfaces and align on git-native public sessions
+
 ## [0.2.10](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.10) - 2026-02-19
 
 ### Other

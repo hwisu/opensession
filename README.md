@@ -39,6 +39,14 @@ opensession      # all local sessions
 opensession .    # current git repo scope
 ```
 
+Optional startup behavior:
+
+```bash
+OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
+```
+
+When set to `0|false|off|no`, TUI skips full disk re-discovery at startup and relies on cached local DB sessions first.
+
 ## Runtime Profiles
 
 | Area | Server (Axum) | Worker (Wrangler) |

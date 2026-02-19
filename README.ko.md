@@ -39,6 +39,14 @@ opensession      # 전체 로컬 세션
 opensession .    # 현재 git 레포 범위
 ```
 
+선택적 시작 동작:
+
+```bash
+OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
+```
+
+`0|false|off|no`로 설정하면 TUI 시작 시 전체 디스크 재탐색을 건너뛰고, 로컬 DB 캐시 세션을 우선 사용합니다.
+
 ## 런타임 프로필
 
 | 항목 | Server (Axum) | Worker (Wrangler) |

@@ -47,6 +47,14 @@ opensession      # all local sessions
 opensession .    # current git repository scope
 ```
 
+Optional startup behavior:
+
+```bash
+OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
+```
+
+`0|false|off|no` disables full startup re-discovery and uses cached local DB sessions first.
+
 ## CLI Surface
 
 - `opensession session handoff`

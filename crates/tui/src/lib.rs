@@ -842,6 +842,41 @@ mod tests {
     use chrono::Utc;
     use opensession_core::trace::{Agent, Session, SessionContext};
     use serde_json::json;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarRestore {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var(key).ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            if let Some(ref previous) = self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn with_env_lock<T>(f: impl FnOnce() -> T) -> T {
+        let _lock = env_test_lock().lock().expect("env test lock poisoned");
+        f()
+    }
 
     fn make_opencode_session(session_id: &str, related_session_ids: Vec<&str>) -> Session {
         let mut session = Session::new(
@@ -933,34 +968,44 @@ mod tests {
     #[test]
     fn env_flag_enabled_defaults_false() {
         let key = "OPS_TUI_FLAG_TEST_FALSE";
-        std::env::remove_var(key);
-        assert!(!env_flag_enabled(key));
+        with_env_lock(|| {
+            let _restore = EnvVarRestore::capture(key);
+            std::env::remove_var(key);
+            assert!(!env_flag_enabled(key));
+        });
     }
 
     #[test]
     fn env_flag_enabled_accepts_true_values() {
         let key = "OPS_TUI_FLAG_TEST_TRUE";
-        std::env::set_var(key, "true");
-        assert!(env_flag_enabled(key));
-        std::env::set_var(key, "1");
-        assert!(env_flag_enabled(key));
-        std::env::remove_var(key);
+        with_env_lock(|| {
+            let _restore = EnvVarRestore::capture(key);
+            std::env::set_var(key, "true");
+            assert!(env_flag_enabled(key));
+            std::env::set_var(key, "1");
+            assert!(env_flag_enabled(key));
+        });
     }
 
     #[test]
     fn refresh_discovery_on_start_defaults_true() {
         let key = "OPS_TUI_REFRESH_DISCOVERY_ON_START";
-        std::env::remove_var(key);
-        assert!(refresh_discovery_on_start());
+        with_env_lock(|| {
+            let _restore = EnvVarRestore::capture(key);
+            std::env::remove_var(key);
+            assert!(refresh_discovery_on_start());
+        });
     }
 
     #[test]
     fn refresh_discovery_on_start_accepts_false_values() {
         let key = "OPS_TUI_REFRESH_DISCOVERY_ON_START";
-        std::env::set_var(key, "off");
-        assert!(!refresh_discovery_on_start());
-        std::env::set_var(key, "0");
-        assert!(!refresh_discovery_on_start());
-        std::env::remove_var(key);
+        with_env_lock(|| {
+            let _restore = EnvVarRestore::capture(key);
+            std::env::set_var(key, "off");
+            assert!(!refresh_discovery_on_start());
+            std::env::set_var(key, "0");
+            assert!(!refresh_discovery_on_start());
+        });
     }
 }

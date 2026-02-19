@@ -22,3 +22,8 @@ domains = ["detail-rendering", "task-lane-aggregation", "timeline-separators"]
 path = "src/ui.rs"
 owner = "tui-shell"
 domains = ["layout-chrome", "view-routing", "footer-shortcuts"]
+
+[[file]]
+path = "src/lib.rs"
+owner = "tui-runtime"
+domains = ["startup-bootstrap", "env-flag-behavior", "db-availability-gating"]

@@ -4688,20 +4688,9 @@ impl App {
         self.db_sessions.get(idx)
     }
 
-    fn source_path_for_session(
-        &self,
-        session_id: &str,
+    fn source_path_from_attrs(
         attrs: Option<&HashMap<String, serde_json::Value>>,
     ) -> Option<PathBuf> {
-        if let Some(db) = &self.db {
-            if let Ok(Some(path)) = db.get_session_source_path(session_id) {
-                let path = PathBuf::from(path);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-
         let attrs = attrs?;
         for key in ["source_path", "source_file", "session_path", "path"] {
             let maybe = attrs
@@ -4727,8 +4716,7 @@ impl App {
                         .source_path
                         .as_ref()
                         .map(PathBuf::from)
-                        .filter(|path| path.exists())
-                        .or_else(|| self.source_path_for_session(&row.id, None));
+                        .filter(|path| path.exists());
                     HandoffCandidate {
                         session_id: row.id.clone(),
                         title: row.title.clone().unwrap_or_else(|| row.id.clone()),
@@ -4764,10 +4752,7 @@ impl App {
                     session.events.len()
                 },
                 message_count: session.stats.message_count as usize,
-                source_path: self.source_path_for_session(
-                    &session.session_id,
-                    Some(&session.context.attributes),
-                ),
+                source_path: Self::source_path_from_attrs(Some(&session.context.attributes)),
             })
             .collect()
     }

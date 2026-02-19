@@ -20,12 +20,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let [picker_area, preview_area] =
         Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).areas(inner);
-    render_picker(frame, app, picker_area);
-    render_preview(frame, app, preview_area);
+    let candidates = app.handoff_candidates();
+    let selected_idx = selected_handoff_index(app, &candidates);
+    render_picker(frame, &candidates, selected_idx, picker_area);
+    render_preview(frame, &candidates, selected_idx, preview_area);
 }
 
-fn render_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let candidates = app.handoff_candidates();
+fn render_picker(
+    frame: &mut Frame,
+    candidates: &[HandoffCandidate],
+    selected_idx: Option<usize>,
+    area: Rect,
+) {
     if candidates.is_empty() {
         frame.render_widget(
             Paragraph::new("No handoff candidates in current scope.")
@@ -35,21 +41,18 @@ fn render_picker(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let selected_idx = app
-        .handoff_selected_session_id
-        .as_deref()
-        .and_then(|selected_id| {
-            candidates
-                .iter()
-                .position(|candidate| candidate.session_id == selected_id)
-        })
-        .unwrap_or(0);
+    let selected_idx = selected_idx.unwrap_or(0);
+    let max_items = visible_candidate_capacity(area);
+    let (start, end) = candidate_window(candidates.len(), selected_idx, max_items);
 
     let items: Vec<ListItem> = candidates
         .iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
         .enumerate()
         .map(|(idx, candidate)| {
-            let marker = if idx == selected_idx { ">" } else { " " };
+            let global_idx = start + idx;
+            let marker = if global_idx == selected_idx { ">" } else { " " };
             let title = truncate(candidate.title.as_str(), 44);
             let meta = format!(
                 "{} {} · {} msgs · {} ev",
@@ -66,10 +69,16 @@ fn render_picker(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(selected_idx));
+    state.select(Some(selected_idx.saturating_sub(start)));
+
+    let title = if candidates.len() > end.saturating_sub(start) {
+        format!(" Sessions {}-{} / {} ", start + 1, end, candidates.len())
+    } else {
+        " Sessions ".to_string()
+    };
 
     let list = List::new(items)
-        .block(Theme::block_dim().title(" Sessions "))
+        .block(Theme::block_dim().title(title))
         .highlight_style(
             Style::new()
                 .bg(Theme::BG_SURFACE)
@@ -80,8 +89,13 @@ fn render_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_preview(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(candidate) = app.selected_handoff_candidate() else {
+fn render_preview(
+    frame: &mut Frame,
+    candidates: &[HandoffCandidate],
+    selected_idx: Option<usize>,
+    area: Rect,
+) {
+    let Some(candidate) = selected_idx.and_then(|idx| candidates.get(idx)) else {
         frame.render_widget(
             Paragraph::new("Select a session in picker (j/k).")
                 .block(Theme::block_dim().title(" Preview ")),
@@ -109,6 +123,41 @@ fn render_preview(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(lines).block(Theme::block_dim().title(" Preview ")),
         area,
     );
+}
+
+fn selected_handoff_index(app: &App, candidates: &[HandoffCandidate]) -> Option<usize> {
+    if candidates.is_empty() {
+        return None;
+    }
+    if let Some(selected_id) = app.handoff_selected_session_id.as_deref() {
+        if let Some(index) = candidates
+            .iter()
+            .position(|candidate| candidate.session_id == selected_id)
+        {
+            return Some(index);
+        }
+    }
+    Some(0)
+}
+
+fn visible_candidate_capacity(area: Rect) -> usize {
+    let usable_rows = area.height.saturating_sub(2) as usize;
+    let per_item_rows = 2usize;
+    (usable_rows / per_item_rows).max(1)
+}
+
+fn candidate_window(total: usize, selected_idx: usize, max_items: usize) -> (usize, usize) {
+    if total == 0 {
+        return (0, 0);
+    }
+    let capped_items = max_items.max(1).min(total);
+    let mut start = selected_idx.saturating_sub(capped_items / 2);
+    let max_start = total.saturating_sub(capped_items);
+    if start > max_start {
+        start = max_start;
+    }
+    let end = (start + capped_items).min(total);
+    (start, end)
 }
 
 fn preview_lines(
@@ -227,7 +276,7 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base_handoff_command, shell_quote, truncate};
+    use super::{base_handoff_command, candidate_window, shell_quote, truncate};
 
     #[test]
     fn base_handoff_command_uses_last_without_path() {
@@ -254,5 +303,18 @@ mod tests {
     #[test]
     fn truncate_adds_ellipsis_for_long_values() {
         assert_eq!(truncate("abcdefghij", 6), "abc...");
+    }
+
+    #[test]
+    fn candidate_window_centers_selection_when_possible() {
+        assert_eq!(candidate_window(20, 10, 5), (8, 13));
+        assert_eq!(candidate_window(20, 1, 5), (0, 5));
+        assert_eq!(candidate_window(20, 19, 5), (15, 20));
+    }
+
+    #[test]
+    fn candidate_window_handles_small_total_and_zero() {
+        assert_eq!(candidate_window(3, 1, 10), (0, 3));
+        assert_eq!(candidate_window(0, 0, 5), (0, 0));
     }
 }

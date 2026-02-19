@@ -213,7 +213,7 @@ impl NativeGitStorage {
 mod tests {
     use super::*;
     use crate::error::GitStorageError;
-    use crate::test_utils::init_test_repo;
+    use crate::test_utils::{init_test_repo, run_git};
     use crate::{ops, SESSIONS_BRANCH};
 
     #[test]
@@ -242,11 +242,7 @@ mod tests {
         assert_eq!(rel_path, "v1/ab/abc123-def456.hail.jsonl");
 
         // Verify branch exists
-        let output = std::process::Command::new("git")
-            .args(["branch", "--list", SESSIONS_BRANCH])
-            .current_dir(tmp.path())
-            .output()
-            .unwrap();
+        let output = run_git(tmp.path(), &["branch", "--list", SESSIONS_BRANCH]);
         let branches = String::from_utf8_lossy(&output.stdout);
         assert!(
             branches.contains("opensession/sessions"),
@@ -319,11 +315,7 @@ mod tests {
             "retention rewrite should produce orphan commit"
         );
 
-        let output = std::process::Command::new("git")
-            .args(["ls-tree", "-r", SESSIONS_BRANCH])
-            .current_dir(tmp.path())
-            .output()
-            .unwrap();
+        let output = run_git(tmp.path(), &["ls-tree", "-r", SESSIONS_BRANCH]);
         let listing = String::from_utf8_lossy(&output.stdout);
         assert!(
             !listing.contains(".hail.jsonl"),

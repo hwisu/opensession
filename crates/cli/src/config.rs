@@ -235,7 +235,7 @@ pub fn show_config() -> Result<()> {
     println!(
         "  team_id = {}",
         if config.server.team_id.is_empty() {
-            "(not set)".to_string()
+            "(default: local)".to_string()
         } else {
             config.server.team_id.clone()
         }
@@ -277,6 +277,7 @@ pub fn set_config(
 
 /// Set team id quickly.
 pub fn set_team(team_id: String) -> Result<()> {
+    eprintln!("Note: team_id is optional. Empty value defaults uploads to `local` scope.");
     set_config(None, None, Some(team_id))
 }
 

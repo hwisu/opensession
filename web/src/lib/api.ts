@@ -8,14 +8,4 @@ export {
 	listSessions,
 	getSession,
 	uploadSession,
-	listTeams,
-	getTeam,
-	createTeam,
-	updateTeam,
-	listMembers,
-	addMember,
-	removeMember,
-	register,
-	getSettings,
-	regenerateApiKey
 } from '@opensession/ui';

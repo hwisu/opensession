@@ -17,20 +17,8 @@ impl ApiErr {
         Self(ServiceError::BadRequest(msg.into()))
     }
 
-    pub fn unauthorized(msg: impl Into<String>) -> Self {
-        Self(ServiceError::Unauthorized(msg.into()))
-    }
-
-    pub fn forbidden(msg: impl Into<String>) -> Self {
-        Self(ServiceError::Forbidden(msg.into()))
-    }
-
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self(ServiceError::NotFound(msg.into()))
-    }
-
-    pub fn conflict(msg: impl Into<String>) -> Self {
-        Self(ServiceError::Conflict(msg.into()))
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {

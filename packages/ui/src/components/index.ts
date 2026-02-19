@@ -1,7 +1,5 @@
 // Page-level shared components
 export { default as AppShell } from './AppShell.svelte';
-export { default as AuthCallbackPage } from './AuthCallbackPage.svelte';
-export { default as AuthGuideCard } from './AuthGuideCard.svelte';
 export { default as CodeBlockView } from './CodeBlockView.svelte';
 export { default as ContentBlockList } from './ContentBlockList.svelte';
 export { default as DiffView } from './DiffView.svelte';
@@ -10,18 +8,11 @@ export { default as DxLabPage } from './DxLabPage.svelte';
 export { default as EventView } from './EventView.svelte';
 export { default as ExpandableChip } from './ExpandableChip.svelte';
 export { default as HomePage } from './HomePage.svelte';
-export { default as InvitationsPage } from './InvitationsPage.svelte';
-export { default as LandingPage } from './LandingPage.svelte';
-export { default as LoginPage } from './LoginPage.svelte';
-export { default as RegisterPage } from './RegisterPage.svelte';
 export { default as SessionCard } from './SessionCard.svelte';
 export { default as SessionDetailPage } from './SessionDetailPage.svelte';
 export { default as SessionListPage } from './SessionListPage.svelte';
 export { default as SessionSidebar } from './SessionSidebar.svelte';
-export { default as SettingsPage } from './SettingsPage.svelte';
 export { default as TaskGroup } from './TaskGroup.svelte';
-export { default as TeamDetailPage } from './TeamDetailPage.svelte';
-export { default as TeamsListPage } from './TeamsListPage.svelte';
 export { default as TeamToolMeta } from './TeamToolMeta.svelte';
 export { default as ThemeToggle } from './ThemeToggle.svelte';
 export { default as ThreadMinimap } from './ThreadMinimap.svelte';

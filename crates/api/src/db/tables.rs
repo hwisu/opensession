@@ -47,6 +47,8 @@ pub enum Sessions {
     FilesRead,
     HasErrors,
     MaxActiveAgents,
+    SessionScore,
+    ScorePlugin,
 }
 
 #[derive(Iden)]

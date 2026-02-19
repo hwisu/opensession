@@ -3,22 +3,11 @@
 // API client
 export {
 	ApiError,
-	addMember,
 	clearApiKey,
-	createTeam,
 	getSession,
-	getSettings,
-	getTeam,
-	getTeamStats,
-	listMembers,
 	listSessions,
-	listTeams,
-	regenerateApiKey,
-	register,
-	removeMember,
 	setApiKey,
 	setBaseUrl,
-	updateTeam,
 	uploadSession,
 } from './api';
 // API types (auto-generated)
@@ -57,11 +46,6 @@ export type {
 	ContentBlock,
 	Event,
 	EventType,
-	HealthResponse,
-	ListMembersResponse,
-	ListTeamsResponse,
-	MemberResponse,
-	RegisterResponse,
 	Session,
 	SessionContext,
 	SessionDetail,
@@ -69,17 +53,7 @@ export type {
 	SessionListResponse,
 	SessionSummary,
 	Stats,
-	TeamDetailResponse,
-	TeamResponse,
-	TeamStatsResponse,
-	TeamStatsTotals,
 	ToolConfig,
-	ToolStats,
-	UploadResponse,
-	UserSettings,
-	UserSettingsResponse,
-	UserStats,
-	VerifyResponse,
 } from './types';
 export { formatDuration, formatTimestamp, getToolConfig, TOOL_CONFIGS } from './types';
 // Shared utilities

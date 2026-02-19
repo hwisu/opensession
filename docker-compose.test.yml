@@ -1,4 +1,0 @@
-services:
-  opensession:
-    environment:
-      - JWT_SECRET=e2e-test-secret-do-not-use-in-production

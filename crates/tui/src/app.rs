@@ -208,7 +208,7 @@ impl SettingsSection {
     pub fn panel_title(self) -> &'static str {
         match self {
             Self::Workspace => "Web Share (Public Git)",
-            Self::TeamShare => "Team Share (Docker Private)",
+            Self::TeamShare => "Team Share (Git Native)",
             Self::CaptureSync => "Capture Flow",
             Self::StoragePrivacy => "Storage & Privacy",
             Self::Account => "Account",
@@ -563,7 +563,7 @@ mod turn_extract_tests {
         );
         assert_eq!(
             SettingsSection::TeamShare.panel_title(),
-            "Team Share (Docker Private)"
+            "Team Share (Git Native)"
         );
     }
 
@@ -1545,8 +1545,8 @@ pub enum ServerStatus {
 pub enum ConnectionContext {
     /// No server configured — local-only usage.
     Local,
-    /// Connected to a local/Docker server.
-    Docker { url: String },
+    /// Connected to a local/self-hosted server.
+    Server { url: String },
     /// Connected to opensession.io (or cloud), personal mode.
     CloudPersonal,
     /// Connected to opensession.io (or cloud), team mode.
@@ -3934,7 +3934,7 @@ impl App {
             || url.contains("10.")
             || url.contains("172.16.");
         if is_local {
-            return ConnectionContext::Docker {
+            return ConnectionContext::Server {
                 url: config.server.url.clone(),
             };
         }

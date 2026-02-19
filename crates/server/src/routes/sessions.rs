@@ -12,11 +12,10 @@ use opensession_api::{
 };
 
 use opensession_core::extract;
+use opensession_core::scoring::SessionScoreRegistry;
 
 use crate::error::ApiErr;
-use crate::routes::auth::AuthUser;
 use crate::storage::{session_from_row, sq_execute, sq_query_map, sq_query_row, Db};
-use crate::AppConfig;
 
 const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalidate=60";
 
@@ -27,15 +26,10 @@ const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalid
 /// POST /api/sessions — upload a new session (requires team membership).
 pub async fn upload_session(
     State(db): State<Db>,
-    user: AuthUser,
     Json(req): Json<UploadRequest>,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiErr> {
     let session = &req.session;
-    let team_id = req.team_id.as_deref().unwrap_or("personal");
-
-    if !db.is_team_member(team_id, &user.user_id) {
-        return Err(ApiErr::forbidden("not a member of this team"));
-    }
+    let team_id = req.team_id.as_deref().unwrap_or("local");
 
     let body_jsonl = session.to_jsonl().map_err(|e| {
         tracing::error!("serialize session body: {e}");
@@ -58,13 +52,45 @@ pub async fn upload_session(
     };
 
     let meta = extract::extract_upload_metadata(session);
+    let score_registry = SessionScoreRegistry::default();
+    let requested_score_plugin = req
+        .score_plugin
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let env_score_plugin = std::env::var(opensession_api::deploy::ENV_SESSION_SCORE_PLUGIN)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let selected_score_plugin = requested_score_plugin
+        .or(env_score_plugin.as_deref())
+        .unwrap_or(opensession_core::scoring::DEFAULT_SCORE_PLUGIN);
+    let session_score = match score_registry.score_with(selected_score_plugin, session) {
+        Ok(result) => result,
+        Err(err) => {
+            if requested_score_plugin.is_some() {
+                return Err(ApiErr::bad_request(err.to_string()));
+            }
+            let fallback = score_registry.score_default(session).map_err(|score_err| {
+                tracing::error!("fallback score plugin failed: {score_err}");
+                ApiErr::internal("failed to compute session score")
+            })?;
+            tracing::warn!(
+                "score plugin '{}' unavailable; fallback to '{}': {}",
+                selected_score_plugin,
+                fallback.plugin,
+                err
+            );
+            fallback
+        }
+    };
 
     let conn = db.conn();
     sq_execute(
         &conn,
         db::sessions::insert(&db::sessions::InsertParams {
             id: &session_id,
-            user_id: &user.user_id,
+            user_id: "local",
             team_id,
             tool: &session.agent.tool,
             agent_provider: &session.agent.provider,
@@ -94,6 +120,8 @@ pub async fn upload_session(
             max_active_agents: saturating_i64(opensession_core::agent_metrics::max_active_agents(
                 session,
             ) as u64),
+            session_score: session_score.score,
+            score_plugin: &session_score.plugin,
         }),
     )
     .map_err(|e| {
@@ -137,6 +165,8 @@ pub async fn upload_session(
         Json(UploadResponse {
             id: session_id,
             url,
+            session_score: session_score.score,
+            score_plugin: session_score.plugin,
         }),
     ))
 }
@@ -148,17 +178,9 @@ pub async fn upload_session(
 /// GET /api/sessions — list sessions (public, paginated, filtered).
 pub async fn list_sessions(
     State(db): State<Db>,
-    State(config): State<AppConfig>,
     Query(q): Query<SessionListQuery>,
-    auth: Result<AuthUser, ApiErr>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, ApiErr> {
-    if !config.public_feed_enabled && auth.is_err() {
-        return Err(ApiErr::unauthorized(
-            "public feed disabled; authentication required",
-        ));
-    }
-
     let built = db::sessions::list(&q);
     let conn = db.conn();
 
@@ -183,8 +205,7 @@ pub async fn list_sessions(
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|cookie| cookie.contains("session="));
-    if config.public_feed_enabled && q.is_public_feed_cacheable(has_auth_header, has_session_cookie)
-    {
+    if q.is_public_feed_cacheable(has_auth_header, has_session_cookie) {
         resp.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static(PUBLIC_LIST_CACHE_CONTROL),
@@ -247,7 +268,6 @@ pub async fn get_session(
 /// DELETE /api/sessions/:id — delete a session (owner only).
 pub async fn delete_session(
     State(db): State<Db>,
-    auth: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<OkResponse>, ApiErr> {
     let conn = db.conn();
@@ -255,10 +275,7 @@ pub async fn delete_session(
     let summary: SessionSummary =
         sq_query_row(&conn, db::sessions::get_by_id(&id), session_from_row)
             .map_err(|_| ApiErr::not_found("session not found"))?;
-
-    if summary.user_id.as_deref() != Some(&auth.user_id) {
-        return Err(ApiErr::forbidden("not your session"));
-    }
+    let _ = summary;
 
     sq_execute(&conn, db::sessions::delete_links(&id)).map_err(ApiErr::from_db("delete links"))?;
     sq_execute(&conn, db::sessions::delete(&id)).map_err(ApiErr::from_db("delete session"))?;

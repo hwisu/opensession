@@ -12,7 +12,6 @@
 <AppShell
 	currentPath={$page.url.pathname}
 	appProfile={appProfile}
-	redirectGuestsToLanding={appProfile === 'worker'}
 	onNavigate={(path) => goto(path)}
 >
 	{@render children()}

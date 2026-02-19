@@ -538,12 +538,12 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         description: "Personal auth key used for public web share registration and uploads",
         dependency_hint: None,
     },
-    SettingItem::Header("Team Share (Docker Private)"),
+    SettingItem::Header("Team Share (Git Native)"),
     SettingItem::Field {
         field: SettingField::TeamId,
-        label: "Private Team ID",
-        description: "Docker-based private team scope with role-based access control (RBAC)",
-        dependency_hint: Some("Used only for Team Share targets"),
+        label: "Scope ID (Optional)",
+        description: "Optional git-native scope/group key for organizing shared uploads",
+        dependency_hint: Some("Defaults to local scope when empty"),
     },
     SettingItem::Header("Profile"),
     SettingItem::Field {
@@ -1434,11 +1434,11 @@ mod tests {
     }
 
     #[test]
-    fn team_share_section_has_docker_private_wording() {
+    fn team_share_section_uses_git_native_wording() {
         let items = section_items(SettingsGroup::TeamShare);
         assert!(items
             .iter()
-            .any(|item| matches!(item, SettingItem::Header("Team Share (Docker Private)"))));
+            .any(|item| matches!(item, SettingItem::Header("Team Share (Git Native)"))));
 
         let team_description = items.iter().find_map(|item| match item {
             SettingItem::Field {
@@ -1450,8 +1450,8 @@ mod tests {
         });
         let team_description = team_description.expect("TeamId field should exist in TeamShare");
         let lowered = team_description.to_ascii_lowercase();
-        assert!(lowered.contains("docker"));
-        assert!(lowered.contains("role-based"));
+        assert!(lowered.contains("git-native"));
+        assert!(lowered.contains("scope"));
     }
 
     #[test]

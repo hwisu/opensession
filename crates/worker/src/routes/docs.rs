@@ -8,7 +8,7 @@ const LLMS_TXT: &str = "\
 > Open-source platform for recording, sharing, and analyzing AI coding sessions.
 
 OpenSession captures Human-AI Interaction Logs (HAIL) from tools like Claude Code, \
-Cursor, and Codex, then provides a timeline viewer, team analytics, and search.
+Cursor, and Codex, then provides a timeline viewer and public-session search.
 
 ## Docs
 
@@ -18,19 +18,14 @@ Cursor, and Codex, then provides a timeline viewer, team analytics, and search.
 
 Base URL: `https://opensession.io/api`
 
-- `POST /api/auth/register` — Create account
-- `POST /api/auth/login` — Sign in
-- `POST /api/sessions` — Upload HAIL session
 - `GET /api/sessions` — List sessions
 - `GET /api/sessions/:id` — Get session detail
 - `GET /api/sessions/:id/raw` — Download raw HAIL JSONL
-- `GET /api/teams` — List teams
-- `GET /api/sync/pull` — Sync endpoint
 
 ## Open Source
 
 - [GitHub](https://github.com/hwisu/opensession)
-- Self-host: `docker run -p 3000:3000 ghcr.io/hwisu/opensession`
+- Local server (ingest/read): `cargo run -p opensession-server`
 - CLI: `cargo install opensession`
 ";
 

@@ -52,7 +52,7 @@ opensession-api = { version = "0.2.8", path = "crates/api", default-features = f
 opensession-api-client = { version = "0.2.8", path = "crates/api-client" }
 opensession-local-db = { version = "0.2.8", path = "crates/local-db" }
 opensession-git-native = { version = "0.2.8", path = "crates/git-native" }
-opensession-e2e = { version = "0.1.4", path = "crates/e2e" }
+opensession-e2e = { version = "0.2.8", path = "crates/e2e" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

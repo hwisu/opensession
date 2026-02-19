@@ -6,6 +6,9 @@ pub const ENV_PUBLIC_FEED_ENABLED: &str = "OPENSESSION_PUBLIC_FEED_ENABLED";
 /// Env var controlling whether team APIs are mounted on the Worker runtime.
 pub const ENV_TEAM_API_ENABLED: &str = "ENABLE_TEAM_API";
 
+/// Env var selecting the session score plugin used during upload.
+pub const ENV_SESSION_SCORE_PLUGIN: &str = "OPENSESSION_SESSION_SCORE_PLUGIN";
+
 /// Parse a human-friendly boolean env flag value.
 ///
 /// Accepted truthy values:

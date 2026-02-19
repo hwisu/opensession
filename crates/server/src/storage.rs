@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use opensession_api::db;
-use opensession_api::{SessionSummary, TeamResponse};
+use opensession_api::SessionSummary;
 
 /// Shared database state
 #[derive(Clone)]
@@ -145,18 +145,10 @@ pub fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSumm
         files_read: row.get(26)?,
         has_errors: row.get::<_, i64>(27).unwrap_or(0) != 0,
         max_active_agents: row.get(28).unwrap_or(1),
-    })
-}
-
-/// Map a `team_columns()` row into a `TeamResponse`.
-pub fn team_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamResponse> {
-    Ok(TeamResponse {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        description: row.get(2)?,
-        is_public: true,
-        created_by: row.get(4)?,
-        created_at: row.get(5)?,
+        session_score: row.get(29).unwrap_or(0),
+        score_plugin: row
+            .get::<_, String>(30)
+            .unwrap_or_else(|_| opensession_core::scoring::DEFAULT_SCORE_PLUGIN.to_string()),
     })
 }
 

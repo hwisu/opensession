@@ -1,11 +1,17 @@
 <script lang="ts">
-import { isAuthenticated, listSessions } from '../api';
+import { listSessions } from '../api';
 import { groupSessionsByAgentCount } from '../session-presentation';
 import type { SessionListItem, SortOrder, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import SessionCard from './SessionCard.svelte';
 
-const { onNavigate }: { onNavigate: (path: string) => void } = $props();
+const {
+	onNavigate,
+	uploadEnabled = true,
+}: {
+	onNavigate: (path: string) => void;
+	uploadEnabled?: boolean;
+} = $props();
 
 type ListLayout = 'single' | 'agent-columns';
 
@@ -22,7 +28,6 @@ let selectedIndex = $state(0);
 let listLayout = $state<ListLayout>('single');
 let renderLimit = $state(20);
 let searchInput: HTMLInputElement | undefined = $state();
-let authed = $state(false);
 let fetchRequestId = 0;
 
 const perPage = 20;
@@ -222,7 +227,6 @@ function focusSearchInput() {
 
 $effect(() => {
 	syncLayoutPreference();
-	authed = isAuthenticated();
 	fetchSessions(true);
 });
 
@@ -387,13 +391,6 @@ $effect(() => {
 		</div>
 	</div>
 
-	{#if !authed}
-		<div class="border-b border-border bg-bg-secondary px-3 py-2 text-xs text-text-secondary">
-			You are browsing public/local sessions. Sign in to upload, manage teams, and use inbox.
-			<button onclick={() => onNavigate('/login')} class="ml-2 text-accent hover:underline">Sign in</button>
-		</div>
-	{/if}
-
 	{#if error}
 		<div class="border-b border-error/30 bg-error/10 px-4 py-2 text-xs text-error">
 			{error}
@@ -408,18 +405,18 @@ $effect(() => {
 			{/if}
 		</div>
 
-		{#if sessions.length === 0 && !loading}
-			<div class="py-16 text-center">
-				<p class="text-sm text-text-muted">No sessions found</p>
-				<p class="mt-1 text-xs text-text-muted">
-					{#if authed}
-						<a href="/upload" class="text-accent hover:underline">Upload</a> a session to get started
-					{:else}
-						Sign in to upload sessions to your account or teams, or keep browsing public sessions.
-					{/if}
-				</p>
-			</div>
-		{/if}
+			{#if sessions.length === 0 && !loading}
+				<div class="py-16 text-center">
+					<p class="text-sm text-text-muted">No sessions found</p>
+					<p class="mt-1 text-xs text-text-muted">
+						{#if uploadEnabled}
+							<a href="/upload" class="text-accent hover:underline">Upload</a> a session to get started
+						{:else}
+							Public feed is read-only in this deployment profile.
+						{/if}
+					</p>
+				</div>
+			{/if}
 
 		{#if listLayout === 'single'}
 			<div>

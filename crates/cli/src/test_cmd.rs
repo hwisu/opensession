@@ -6,8 +6,8 @@ use opensession_e2e::{client::TestContext, runner};
 
 #[derive(Args)]
 pub struct TestArgs {
-    /// Target: docker, worker, or custom
-    #[arg(long, default_value = "docker")]
+    /// Target: server, worker, or custom
+    #[arg(long, default_value = "server")]
     pub target: String,
 
     /// Custom base URL (overrides --target)
@@ -17,47 +17,19 @@ pub struct TestArgs {
     /// Filter specs by substring
     #[arg(long)]
     pub filter: Option<String>,
-
-    /// Admin email (required for worker target)
-    #[arg(long)]
-    pub admin_email: Option<String>,
-
-    /// Admin password (required for worker target)
-    #[arg(long)]
-    pub admin_password: Option<String>,
 }
 
 pub async fn run_test(args: TestArgs) -> anyhow::Result<()> {
     let base_url = args.base_url.unwrap_or_else(|| match args.target.as_str() {
-        "docker" => "http://localhost:3000".into(),
+        "server" | "docker" => "http://localhost:3000".into(),
         "worker" => "https://opensession.io".into(),
         other => other.into(),
     });
 
     eprintln!("Running E2E tests against {base_url}");
 
-    let ctx = TestContext::new(base_url);
-    let include_docker_only = args.target != "worker";
-
-    match args.target.as_str() {
-        "worker" => {
-            let email = args
-                .admin_email
-                .or_else(|| std::env::var("E2E_ADMIN_EMAIL").ok())
-                .expect("--admin-email or E2E_ADMIN_EMAIL required for worker target");
-            let password = args
-                .admin_password
-                .or_else(|| std::env::var("E2E_ADMIN_PASSWORD").ok())
-                .expect("--admin-password or E2E_ADMIN_PASSWORD required for worker target");
-            ctx.setup_admin_with_credentials(&email, &password).await?;
-        }
-        _ => {
-            ctx.setup_admin().await?;
-        }
-    }
-
-    let ctx = Arc::new(ctx);
-    let suite = runner::run_all(ctx, args.filter.as_deref(), include_docker_only).await;
+    let ctx = Arc::new(TestContext::new(base_url));
+    let suite = runner::run_all(ctx, args.filter.as_deref()).await;
 
     for r in &suite.results {
         let icon = if r.passed { "PASS" } else { "FAIL" };

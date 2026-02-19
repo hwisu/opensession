@@ -1,9 +1,9 @@
-export type AppProfile = 'docker' | 'worker';
+export type AppProfile = 'server' | 'worker';
 
 function resolveProfile(value: string | undefined): AppProfile {
-	return value?.trim().toLowerCase() === 'worker' ? 'worker' : 'docker';
+	return value?.trim().toLowerCase() === 'worker' ? 'worker' : 'server';
 }
 
 export const appProfile: AppProfile = resolveProfile(import.meta.env.VITE_APP_PROFILE);
 export const isWorkerProfile = appProfile === 'worker';
-export const isDockerProfile = appProfile === 'docker';
+export const isServerProfile = appProfile === 'server';

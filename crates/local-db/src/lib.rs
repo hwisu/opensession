@@ -44,6 +44,10 @@ const REMOTE_MIGRATIONS: &[Migration] = &[
         "0008_teams_force_public",
         include_str!("../migrations/0008_teams_force_public.sql"),
     ),
+    (
+        "0009_session_score_plugin",
+        include_str!("../migrations/0009_session_score_plugin.sql"),
+    ),
 ];
 
 const LOCAL_MIGRATIONS: &[Migration] = &[

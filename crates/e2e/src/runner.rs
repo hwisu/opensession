@@ -35,12 +35,7 @@ impl TestSuite {
 /// Run all E2E specs in parallel.
 ///
 /// - `filter`: optional substring filter on spec names.
-/// - `include_docker_only`: include specs that only work against Docker (e.g. admin-gated team creation).
-pub async fn run_all(
-    ctx: Arc<crate::client::TestContext>,
-    filter: Option<&str>,
-    include_docker_only: bool,
-) -> TestSuite {
+pub async fn run_all(ctx: Arc<crate::client::TestContext>, filter: Option<&str>) -> TestSuite {
     let mut set = JoinSet::new();
 
     macro_rules! spawn_spec {
@@ -64,9 +59,6 @@ pub async fn run_all(
     }
 
     crate::for_each_spec!(spawn_spec);
-    if include_docker_only {
-        crate::for_each_docker_only_spec!(spawn_spec);
-    }
 
     let mut results = Vec::new();
     while let Some(result) = set.join_next().await {

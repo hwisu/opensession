@@ -170,6 +170,7 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
                         git_repo_name: None,
                         pr_number: None,
                         pr_url: None,
+                        score_plugin: None,
                     })
                     .await
                     .map_err(|e| format!("{e}"))?;

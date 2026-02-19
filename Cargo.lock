@@ -2486,6 +2486,7 @@ dependencies = [
  "libc",
  "opensession-api-client",
  "opensession-core",
+ "opensession-e2e",
  "opensession-git-native",
  "opensession-local-db",
  "opensession-parsers",

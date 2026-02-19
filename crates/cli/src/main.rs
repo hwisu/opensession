@@ -180,7 +180,7 @@ enum PublishAction {
 
 #[derive(Subcommand)]
 enum AccountAction {
-    /// Connect server/API key/team in one command
+    /// Connect server/API key in one command (team_id is optional)
     Connect {
         /// Set the server URL
         #[arg(long)]
@@ -190,13 +190,13 @@ enum AccountAction {
         #[arg(long)]
         api_key: Option<String>,
 
-        /// Set the team ID for uploads
+        /// Optional legacy team scope for uploads (defaults to local when unset)
         #[arg(long)]
         team_id: Option<String>,
     },
-    /// Set default team ID quickly
+    /// Set upload scope ID quickly (legacy; default is local)
     Team {
-        /// Team ID
+        /// Scope ID
         #[arg(long, short = 't')]
         id: String,
     },
@@ -239,7 +239,7 @@ impl Commands {
 
 fn suggestion_for_code(code: &ExitCode) -> Option<&'static str> {
     match code {
-        ExitCode::AuthError => Some("opensession account connect --api-key <key>"),
+        ExitCode::AuthError => Some("opensession account connect --server <url> [--api-key <key>]"),
         ExitCode::NoData => Some("opensession session handoff --last"),
         ExitCode::NetworkError => Some("opensession account status"),
         ExitCode::UsageError => Some("opensession --help"),

@@ -1,55 +1,26 @@
 <script lang="ts">
 import { onDestroy } from 'svelte';
-import { ApiError, isAuthenticated, listTeams, uploadSession } from '../api';
-import type { Session, TeamResponse } from '../types';
+import { uploadSession } from '../api';
+import type { Session } from '../types';
 import { formatDuration, getToolConfig } from '../types';
-import AuthGuideCard from './AuthGuideCard.svelte';
 
 const {
-	teamMode = 'dropdown',
 	onSuccess,
-	onNavigate = (path: string) => {
-		if (typeof window !== 'undefined') window.location.href = path;
-	},
 }: {
-	teamMode?: 'dropdown' | 'manual' | 'personal';
 	onSuccess: (id: string) => void;
-	onNavigate?: (path: string) => void;
 } = $props();
+
+const DEFAULT_TEAM_ID = 'local';
+const PASTE_PARSE_DEBOUNCE_MS = 180;
 
 let parsedSession = $state<Session | null>(null);
 let parseError = $state<string | null>(null);
 let uploading = $state(false);
 let uploadError = $state<string | null>(null);
-let unauthorized = $state(false);
 let rawJson = $state('');
 let dragover = $state(false);
 let dragDepth = $state(0);
 let parseTimer: ReturnType<typeof setTimeout> | null = null;
-
-const PASTE_PARSE_DEBOUNCE_MS = 180;
-
-// Team selection state
-let teams = $state<TeamResponse[]>([]);
-let selectedTeamId = $state('');
-let teamsLoading = $state(false);
-let manualTeamId = $state('');
-
-const effectiveTeamId = $derived.by(() => {
-	if (teamMode === 'dropdown') return selectedTeamId;
-	if (teamMode === 'manual') return manualTeamId;
-	return 'personal';
-});
-const uploadDescription = $derived(
-	teamMode === 'personal'
-		? 'Upload a HAIL session JSON file from your personal workspace'
-		: 'Upload a HAIL session JSON file to share with the community',
-);
-const authDescription = $derived(
-	teamMode === 'personal'
-		? 'Sign in first, then upload your session JSON.'
-		: 'Sign in first, then choose a target team and upload your session JSON.',
-);
 
 function parseJson(text: string) {
 	parseError = null;
@@ -68,7 +39,6 @@ function parseJson(text: string) {
 }
 
 function handleFileInput(e: globalThis.Event) {
-	if (unauthorized) return;
 	const input = e.target as HTMLInputElement;
 	const file = input.files?.[0];
 	if (!file) return;
@@ -88,7 +58,6 @@ function handleDrop(e: DragEvent) {
 	e.preventDefault();
 	if (dragover) dragover = false;
 	dragDepth = 0;
-	if (unauthorized) return;
 	const file = e.dataTransfer?.files[0];
 	if (!file) return;
 	const reader = new FileReader();
@@ -105,20 +74,17 @@ function handleDrop(e: DragEvent) {
 
 function handleDragEnter(e: DragEvent) {
 	e.preventDefault();
-	if (unauthorized) return;
 	dragDepth += 1;
 	if (!dragover) dragover = true;
 }
 
 function handleDragOver(e: DragEvent) {
 	e.preventDefault();
-	if (unauthorized) return;
 	if (!dragover) dragover = true;
 }
 
 function handleDragLeave(e: DragEvent) {
 	e.preventDefault();
-	if (unauthorized) return;
 	dragDepth = Math.max(0, dragDepth - 1);
 	if (dragDepth === 0 && dragover) {
 		dragover = false;
@@ -136,24 +102,19 @@ function scheduleParseFromTextarea() {
 }
 
 function handlePasteInput() {
-	if (unauthorized) return;
 	if (rawJson.trim()) {
 		scheduleParseFromTextarea();
 	}
 }
 
 async function handleUpload() {
-	if (!parsedSession || !effectiveTeamId) return;
+	if (!parsedSession) return;
 	uploading = true;
 	uploadError = null;
 	try {
-		const result = await uploadSession(parsedSession, effectiveTeamId);
+		const result = await uploadSession(parsedSession, DEFAULT_TEAM_ID);
 		onSuccess(result.id);
 	} catch (e) {
-		if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-			unauthorized = true;
-			return;
-		}
 		uploadError = e instanceof Error ? e.message : 'Upload failed';
 	} finally {
 		uploading = false;
@@ -161,29 +122,6 @@ async function handleUpload() {
 }
 
 const tool = $derived(parsedSession ? getToolConfig(parsedSession.agent.tool) : null);
-
-$effect(() => {
-	unauthorized = !isAuthenticated();
-	if (teamMode === 'dropdown') {
-		teamsLoading = true;
-		listTeams()
-			.then((res) => {
-				teams = res.teams;
-				if (teams.length > 0 && !selectedTeamId) {
-					selectedTeamId = teams[0].id;
-				}
-			})
-			.catch((e) => {
-				if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-					unauthorized = true;
-				}
-				teams = [];
-			})
-			.finally(() => {
-				teamsLoading = false;
-			});
-	}
-});
 
 onDestroy(() => {
 	if (parseTimer !== null) {
@@ -200,57 +138,8 @@ onDestroy(() => {
 <div class="mx-auto max-w-2xl">
 	<h1 class="mb-2 text-lg font-bold text-text-primary">Upload Session</h1>
 	<p class="mb-4 text-sm text-text-secondary">
-		{uploadDescription}
+		Upload a HAIL session JSON file into your local/public session stream.
 	</p>
-
-	{#if unauthorized}
-		<div class="mb-4">
-				<AuthGuideCard
-					title="Upload requires sign in"
-					description={authDescription}
-					{onNavigate}
-				/>
-			</div>
-		{/if}
-
-		{#if teamMode !== 'personal'}
-			<!-- Team selection (branching) -->
-			<div class="mb-3" class:opacity-50={unauthorized}>
-				<label class="mb-1 block text-xs text-text-secondary" for="team-select">
-					Team
-				</label>
-				{#if teamMode === 'dropdown'}
-					{#if teamsLoading}
-						<p class="text-xs text-text-muted">Loading teams...</p>
-					{:else if teams.length === 0}
-						<div class="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-							You need to be a member of a team to upload sessions.
-							<a href="/teams" class="underline">Create or join a team</a> first.
-						</div>
-					{:else}
-						<select
-							id="team-select"
-							bind:value={selectedTeamId}
-							disabled={unauthorized}
-							class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary outline-none focus:border-accent"
-						>
-							{#each teams as team}
-								<option value={team.id}>{team.name}</option>
-							{/each}
-						</select>
-					{/if}
-				{:else}
-					<input
-						id="team-select"
-						type="text"
-						bind:value={manualTeamId}
-						disabled={unauthorized}
-						placeholder="Enter team ID"
-						class="w-full border border-border bg-bg-secondary px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-					/>
-				{/if}
-			</div>
-		{/if}
 
 	<!-- Drop zone -->
 	<div
@@ -264,7 +153,6 @@ onDestroy(() => {
 		class="mb-3 flex cursor-pointer flex-col items-center justify-center border-2 border-dashed p-6 transition-colors {dragover
 			? 'border-accent bg-accent/5'
 			: 'border-border hover:border-border-light'}"
-		aria-disabled={unauthorized}
 	>
 		<p class="text-xs text-text-secondary">
 			Drag and drop a session JSON file here
@@ -277,7 +165,6 @@ onDestroy(() => {
 				type="file"
 				accept=".json"
 				class="hidden"
-				disabled={unauthorized}
 				onchange={handleFileInput}
 			/>
 		</label>
@@ -295,7 +182,6 @@ onDestroy(() => {
 			placeholder={'{"version": "hail-1.0.0", ...}'}
 			rows={6}
 			class="w-full border border-border bg-bg-secondary p-3 font-mono text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-			disabled={unauthorized}
 		></textarea>
 	</div>
 
@@ -347,7 +233,7 @@ onDestroy(() => {
 
 		<button
 			onclick={handleUpload}
-			disabled={unauthorized || uploading || !effectiveTeamId.trim()}
+			disabled={uploading}
 			class="w-full bg-accent px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-50"
 		>
 			{uploading ? 'Uploading...' : 'Upload Session'}

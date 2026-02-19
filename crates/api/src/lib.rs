@@ -324,6 +324,8 @@ pub struct UploadRequest {
     pub pr_number: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_plugin: Option<String>,
 }
 
 /// Returned on successful session upload — contains the new session ID and URL.
@@ -333,6 +335,10 @@ pub struct UploadRequest {
 pub struct UploadResponse {
     pub id: String,
     pub url: String,
+    #[serde(default)]
+    pub session_score: i64,
+    #[serde(default = "default_score_plugin")]
+    pub score_plugin: String,
 }
 
 /// Flat session summary returned by list/detail endpoints.
@@ -382,6 +388,10 @@ pub struct SessionSummary {
     pub has_errors: bool,
     #[serde(default = "default_max_active_agents")]
     pub max_active_agents: i64,
+    #[serde(default)]
+    pub session_score: i64,
+    #[serde(default = "default_score_plugin")]
+    pub score_plugin: String,
 }
 
 /// Paginated session listing returned by `GET /api/sessions`.
@@ -486,6 +496,10 @@ fn default_per_page() -> u32 {
 }
 fn default_max_active_agents() -> i64 {
     1
+}
+
+fn default_score_plugin() -> String {
+    opensession_core::scoring::DEFAULT_SCORE_PLUGIN.to_string()
 }
 
 /// Single session detail returned by `GET /api/sessions/:id`.

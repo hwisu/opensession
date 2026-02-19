@@ -56,7 +56,7 @@ impl Theme {
 
     // ── Badge backgrounds ────────────────────────────────────────────
     pub const BADGE_LOCAL: Color = Color::Rgb(100, 105, 120);
-    pub const BADGE_DOCKER: Color = Color::Rgb(80, 160, 240);
+    pub const BADGE_SERVER: Color = Color::Rgb(80, 160, 240);
     pub const BADGE_PERSONAL: Color = Color::Rgb(80, 200, 120);
     pub const BADGE_TEAM: Color = Color::Rgb(168, 85, 247);
 

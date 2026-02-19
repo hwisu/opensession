@@ -1,8 +1,6 @@
 <script lang="ts">
 import { tick } from 'svelte';
 import type { Snippet } from 'svelte';
-import { getSettings, isAuthenticated, listInvitations, verifyAuth } from '../api';
-import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
 type PaletteCommand = {
@@ -16,53 +14,29 @@ type PaletteCommand = {
 const {
 	currentPath,
 	children,
-	appProfile = 'docker',
-	redirectGuestsToLanding = false,
+	appProfile = 'server',
 	onNavigate = (path: string) => {
 		window.location.assign(path);
 	},
 }: {
 	currentPath: string;
 	children: Snippet;
-	appProfile?: 'docker' | 'worker';
-	redirectGuestsToLanding?: boolean;
+	appProfile?: 'server' | 'worker';
 	onNavigate?: (path: string) => void;
 } = $props();
 
-let user = $state<UserSettings | null>(null);
-let inboxCount = $state(0);
-let lastSettingsFetchAt = $state(0);
-let lastInboxFetchAt = $state(0);
 let paletteOpen = $state(false);
 let paletteQuery = $state('');
 let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
-let authGuardSeq = 0;
 
-const SETTINGS_REFRESH_INTERVAL_MS = 30_000;
-const INBOX_REFRESH_INTERVAL_MS = 30_000;
-const teamFeaturesEnabled = $derived(appProfile === 'docker');
+const uploadEnabled = $derived(appProfile !== 'worker');
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/');
 
-function isGuestAllowedPath(path: string): boolean {
-	return (
-		path === '/' ||
-		path === '/login' ||
-		path === '/register' ||
-		path === '/auth/callback' ||
-		path.startsWith('/docs') ||
-		path.startsWith('/dx')
-	);
-}
-
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/', label: 'Sessions' }];
-	if (user) {
-		if (teamFeaturesEnabled) {
-			links.push({ href: '/teams', label: 'Teams' });
-			links.push({ href: '/invitations', label: 'Inbox' });
-		}
+	if (uploadEnabled) {
 		links.push({ href: '/upload', label: 'Upload' });
 	}
 	links.push({ href: '/dx', label: 'DX' });
@@ -119,7 +93,7 @@ const allPaletteCommands = $derived.by(() => {
 		),
 	];
 
-	if (user) {
+	if (uploadEnabled) {
 		commands.push(
 			createPaletteCommand(
 				'go-upload',
@@ -127,48 +101,6 @@ const allPaletteCommands = $derived.by(() => {
 				'Upload a HAIL session file',
 				['upload', 'ingest', 'jsonl'],
 				() => onNavigate('/upload'),
-			),
-			createPaletteCommand(
-				'go-settings',
-				'Go to Settings',
-				'Open user settings and API key',
-				['settings', 'profile', 'api key'],
-				() => onNavigate('/settings'),
-			),
-		);
-		if (teamFeaturesEnabled) {
-			commands.push(
-				createPaletteCommand(
-					'go-teams',
-					'Go to Teams',
-					'Open team workspace list',
-					['teams', 'collaboration', 'members'],
-					() => onNavigate('/teams'),
-				),
-				createPaletteCommand(
-					'go-inbox',
-					'Go to Inbox',
-					'Review team invitations',
-					['inbox', 'invitation', 'invite'],
-					() => onNavigate('/invitations'),
-				),
-			);
-		}
-	} else {
-		commands.push(
-			createPaletteCommand(
-				'go-login',
-				'Go to Login',
-				'Sign in to access uploads and settings',
-				['login', 'signin', 'auth'],
-				() => onNavigate('/login'),
-			),
-			createPaletteCommand(
-				'go-register',
-				'Go to Register',
-				'Create a new account',
-				['register', 'signup', 'auth'],
-				() => onNavigate('/register'),
 			),
 		);
 	}
@@ -217,67 +149,6 @@ const visiblePaletteCommands = $derived.by(() => {
 });
 
 $effect(() => {
-	// Re-check auth/inbox on navigation with a short throttle window.
-	void currentPath;
-	const now = Date.now();
-	const hasStoredAuth = isAuthenticated();
-	const shouldCheckSettings = hasStoredAuth || user !== null;
-
-	if (!shouldCheckSettings) {
-		user = null;
-		inboxCount = 0;
-		return;
-	}
-
-	if (now - lastSettingsFetchAt >= SETTINGS_REFRESH_INTERVAL_MS) {
-		lastSettingsFetchAt = now;
-		getSettings()
-			.then((u) => {
-				user = u;
-			})
-			.catch(() => {
-				user = null;
-			});
-	}
-
-	const hasAuthContext = !!user || hasStoredAuth;
-	if (!hasAuthContext || !teamFeaturesEnabled) {
-		inboxCount = 0;
-		return;
-	}
-
-	if (now - lastInboxFetchAt >= INBOX_REFRESH_INTERVAL_MS) {
-		lastInboxFetchAt = now;
-		listInvitations()
-			.then((resp) => {
-				inboxCount = resp.invitations.length;
-			})
-			.catch(() => {
-				inboxCount = 0;
-			});
-	}
-});
-
-$effect(() => {
-	void currentPath;
-	const seq = ++authGuardSeq;
-	if (!redirectGuestsToLanding || isGuestAllowedPath(currentPath)) return;
-	let cancelled = false;
-	verifyAuth()
-		.then((ok) => {
-			if (cancelled || seq !== authGuardSeq || ok) return;
-			onNavigate('/');
-		})
-		.catch(() => {
-			if (cancelled || seq !== authGuardSeq) return;
-			onNavigate('/');
-		});
-	return () => {
-		cancelled = true;
-	};
-});
-
-$effect(() => {
 	void normalizedPaletteQuery;
 	paletteSelectionIndex = 0;
 });
@@ -295,7 +166,6 @@ $effect(() => {
 
 function isLinkActive(href: string): boolean {
 	if (href === '/') return currentPath === '/' || currentPath.startsWith('/session/');
-	if (href === '/teams') return currentPath === '/teams' || currentPath.startsWith('/teams/');
 	return currentPath === href;
 }
 
@@ -396,32 +266,8 @@ function handleGlobalKey(e: KeyboardEvent) {
 					class:text-accent={isLinkActive(link.href)}
 				>
 					{link.label}
-					{#if link.href === '/invitations' && inboxCount > 0}
-						<span class="ml-1 inline-block min-w-[1.25rem] rounded bg-accent px-1 text-center text-[10px] font-semibold text-white">
-							{inboxCount}
-						</span>
-					{/if}
 				</a>
 			{/each}
-			{#if user}
-				<a
-					href="/settings"
-					class="ml-1 flex items-center gap-1 px-2 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-					title={user.nickname}
-				>
-					{#if user.avatar_url}
-						<img src={user.avatar_url} alt="{user.nickname} avatar" class="h-5 w-5 rounded-full" />
-					{/if}
-					[{user.nickname}]
-				</a>
-			{:else}
-				<a
-					href="/login"
-					class="px-1.5 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3"
-				>
-					Login
-				</a>
-			{/if}
 		</div>
 	</nav>
 

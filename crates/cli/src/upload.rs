@@ -57,18 +57,19 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
         return upload_to_git(&session);
     }
 
-    // Server upload path
-    if config.server.api_key.is_empty() {
-        bail!("API key not configured. Run: opensession account connect --api-key <key>");
-    }
-    if config.server.team_id.is_empty() {
-        bail!("Team ID not configured. Run: opensession account team --id <team-id>");
-    }
-
+    // Server upload path (git-native default: local scope without auth/team setup).
+    let target_team_id = if config.server.team_id.trim().is_empty() {
+        "local".to_string()
+    } else {
+        config.server.team_id.clone()
+    };
     println!("Uploading to {}...", config.server.url);
+    println!("Target scope: {}", target_team_id);
 
     let mut client = ApiClient::new(&config.server.url, Duration::from_secs(60))?;
-    client.set_auth(config.server.api_key.clone());
+    if !config.server.api_key.trim().is_empty() {
+        client.set_auth(config.server.api_key.clone());
+    }
 
     let linked = if parent_ids.is_empty() {
         None
@@ -79,7 +80,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
     let resp = client
         .upload_session(&opensession_api_client::opensession_api::UploadRequest {
             session,
-            team_id: Some(config.server.team_id.clone()),
+            team_id: Some(target_team_id),
             body_url: None,
             linked_session_ids: linked,
             git_remote: None,
@@ -88,6 +89,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
             git_repo_name: None,
             pr_number: None,
             pr_url: None,
+            score_plugin: None,
         })
         .await?;
 

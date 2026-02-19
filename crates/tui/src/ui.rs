@@ -150,8 +150,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             // Connection context badge
             let (badge_text, badge_fg, badge_bg) = match &app.connection_ctx {
                 ConnectionContext::Local => ("LOCAL".to_string(), Color::Black, Theme::BADGE_LOCAL),
-                ConnectionContext::Docker { .. } => {
-                    ("DOCKER".to_string(), Color::Black, Theme::BADGE_DOCKER)
+                ConnectionContext::Server { .. } => {
+                    ("SERVER".to_string(), Color::Black, Theme::BADGE_SERVER)
                 }
                 ConnectionContext::CloudPersonal => {
                     ("PERSONAL".to_string(), Color::Black, Theme::BADGE_PERSONAL)

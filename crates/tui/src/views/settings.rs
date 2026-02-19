@@ -331,8 +331,8 @@ mod tests {
         app.settings_section = SettingsSection::TeamShare;
         let text = render_text(&app, 160, 40);
 
-        assert!(text.contains("Team Share = Docker-based private collaboration"));
-        assert!(text.contains("role permissions"));
+        assert!(text.contains("Team Share = git-native scoped collaboration key"));
+        assert!(text.contains("optional"));
     }
 
     #[test]
@@ -385,7 +385,7 @@ fn render_daemon_config(
         }
         SettingsGroup::TeamShare => {
             lines.push(Line::from(Span::styled(
-                "  Team Share = Docker-based private collaboration with role permissions",
+                "  Team Share = git-native scoped collaboration key (optional)",
                 Style::new().fg(Theme::TEXT_MUTED),
             )));
         }

@@ -1,24 +1,19 @@
 # Documentation
 
-OpenSession usage guide for the current runtime split:
-- Docker (Axum): team-focused deployment
-- Worker (Wrangler): personal-sharing deployment
+OpenSession is now optimized for a git-native workflow.
 
-## Profile Differences (Docker vs Worker)
+## Runtime Profiles
 
-| Area | Docker (Axum server) | Worker (Wrangler) |
-|------|-----------------------|-------------------|
-| Primary focus | Team collaboration | Personal sharing |
-| Home `/` when signed out | Session list (public feed) | Session list (public feed) |
-| Home `/` when signed in | Session list | Session list |
-| Team API (`/api/teams*`, `/api/invitations*`, `/api/sync/pull`) | Enabled | Disabled when `ENABLE_TEAM_API=false` |
-| Team UI (`/teams`, `/invitations`) | Enabled | Hidden/blocked |
-| Upload mode | Team-target upload | Personal upload (`team_id=personal`) |
+| Area | Server (Axum) | Worker (Wrangler) |
+|------|----------------|-------------------|
+| Primary focus | Read + upload sessions | Public session browsing |
+| Home `/` | Session list | Session list |
+| Upload UI `/upload` | Enabled | Disabled (read-only) |
+| Team/auth routes | Disabled | Disabled |
+| API surface | `/api/health`, `/api/sessions*` | `/api/health`, `/api/sessions*` |
 
-Repository defaults:
-- `docker-compose.yml`: `OPENSESSION_PUBLIC_FEED_ENABLED=true`
-- `wrangler.toml`: `ENABLE_TEAM_API=false`, `OPENSESSION_PUBLIC_FEED_ENABLED=true`
-- Web build profile: `VITE_APP_PROFILE=docker|worker`
+Build profile:
+- `VITE_APP_PROFILE=server|worker`
 
 ## Quick Start
 
@@ -34,10 +29,13 @@ cargo install opensession
 # Session handoff
 opensession session handoff --last
 
-# Publish local sessions
+# Upload one session
+opensession publish upload ./session.jsonl
+
+# Upload all discovered sessions
 opensession publish upload-all
 
-# Start daemon (watch + upload targets)
+# Start daemon (watch + upload)
 opensession daemon start --repo .
 ```
 
@@ -48,141 +46,52 @@ opensession      # all local sessions
 opensession .    # current git repository scope
 ```
 
-### See all available commands
-
-```bash
-opensession --help
-```
-
-## CLI Reference
-
-### Top-level
+## CLI Surface
 
 - `opensession session handoff`
 - `opensession publish upload`
 - `opensession publish upload-all`
 - `opensession daemon start|stop|status|health|select|show|stream-push`
-- `opensession account connect|team|show|status|verify`
+- `opensession account connect|show|status|verify|team`
 - `opensession docs completion`
 
-### `opensession session handoff`
-
-Generate handoff output for one or more sessions.
-
-```bash
-opensession session handoff --last
-opensession session handoff --claude HEAD
-opensession session handoff session1.jsonl session2.jsonl
-opensession session handoff --claude HEAD -o handoff.md
-```
-
-Supported output formats:
-- `text`
-- `markdown`
-- `json`
-- `jsonl`
-- `hail`
-- `stream` (NDJSON)
-
-Session references:
-- `HEAD` (latest)
-- `HEAD~N` (latest N merged)
-- `HEAD^N` (Nth most recent)
-- `<id>` (session ID prefix)
-- `<path>` (session file path)
-
-### `opensession publish upload` / `upload-all`
-
-```bash
-opensession publish upload ./session.jsonl
-opensession publish upload ./session.jsonl --parent abc123
-opensession publish upload ./session.jsonl --git
-opensession publish upload-all
-```
-
-### `opensession daemon`
-
-```bash
-opensession daemon start --repo .
-opensession daemon status
-opensession daemon health
-opensession daemon show
-opensession daemon select --repo .
-opensession daemon stop
-```
-
-Internal hook target (normally auto-invoked):
-
-```bash
-opensession daemon stream-push --agent claude-code
-```
-
-### `opensession account`
-
-```bash
-opensession account connect --server https://opensession.io --api-key osk_xxx --team-id my-team
-opensession account team --id my-team
-opensession account show
-opensession account status
-opensession account verify
-```
-
-### `opensession docs completion`
-
-```bash
-opensession docs completion bash >> ~/.bashrc
-opensession docs completion zsh >> ~/.zshrc
-opensession docs completion fish > ~/.config/fish/completions/opensession.fish
-```
+Notes:
+- `account team` is legacy/optional. When unset, uploads default to `local` scope.
+- `publish upload --git` stores sessions on `opensession/sessions` branch.
 
 ## Configuration
 
-Unified config file:
+Canonical config file:
 - `~/.config/opensession/opensession.toml`
 
 Local cache DB:
 - `~/.local/share/opensession/local.db`
 
-Notes:
-- Legacy global config fallbacks (`daemon.toml`, `config.toml`) are no longer used.
-- Use `opensession.toml` as the single canonical config.
-
 Example:
 
 ```toml
-[daemon]
-auto_publish = false         # managed by TUI "Daemon Capture" toggle
-publish_on = "manual"        # session_end | realtime | manual
-debounce_secs = 5
-
 [server]
-url = "https://opensession.io"
+url = "http://localhost:3000"
 api_key = ""
 
 [identity]
 nickname = "user"
-team_id = ""
+team_id = ""   # optional; empty => local scope
 
 [watchers]
 custom_paths = [
   "~/.claude/projects",
   "~/.codex/sessions",
-  "~/.local/share/opencode/storage/session",
-  "~/.cline/data/tasks",
-  "~/.local/share/amp/threads",
-  "~/.gemini/tmp",
-  "~/Library/Application Support/Cursor/User",
-  "~/.config/Cursor/User",
 ]
+
+[git_storage]
+method = "native"  # native | sqlite
 ```
 
-Legacy per-agent watcher toggles are still accepted when reading old files,
-but new writes only persist `watchers.custom_paths`.
-
-## Self-Hosting (Docker)
+## Self-Hosting (Server)
 
 ```bash
-docker compose up -d
+cargo run -p opensession-server
 # -> http://localhost:3000
 ```
 
@@ -190,53 +99,41 @@ Important environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JWT_SECRET` | *(required)* | JWT signing secret |
 | `OPENSESSION_DATA_DIR` | `data/` | SQLite + session body storage |
 | `OPENSESSION_WEB_DIR` | `web/build` | Static web directory |
-| `BASE_URL` | `http://localhost:3000` | Public URL (OAuth callback base) |
 | `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | `false` blocks anonymous `GET /api/sessions` |
+| `OPENSESSION_SESSION_SCORE_PLUGIN` | `heuristic_v1` | Session score plugin id |
 | `PORT` | `3000` | HTTP listen port |
+| `RUST_LOG` | `opensession_server=info,tower_http=info` | Log level |
 
-## Worker Deployment (Wrangler)
-
-`wrangler.toml` defaults for personal-sharing profile:
-- `ENABLE_TEAM_API=false`
-- `OPENSESSION_PUBLIC_FEED_ENABLED=true`
-- `BASE_URL=https://opensession.io` (example)
-
-Build profile should match deployment target:
-
-```bash
-VITE_APP_PROFILE=worker
-```
-
-## API Surface Summary
+## API Summary
 
 Always available:
-- `/api/health`
-- `/api/auth/*`
-- `/api/sessions*`
+- `GET /api/health`
+- `POST /api/sessions`
+- `GET /api/sessions`
+- `GET /api/sessions/{id}`
+- `GET /api/sessions/{id}/raw`
+- `DELETE /api/sessions/{id}`
 
-Docker-focused endpoints (team workflows):
-- `/api/teams*`
-- `/api/invitations*`
-- `/api/sync/pull`
+`GET /api/sessions` supports common query filters:
+- `search`
+- `tool`
+- `sort`
+- `time_range`
+- `risk_level`
+- `triage_status`
+- `policy_status`
+- `outcome_status`
 
-Worker with `ENABLE_TEAM_API=false`:
-- Team/invitation/sync-team routes are not registered (404)
+## Migration Parity
 
-## HAIL Format
+Remote migrations must stay byte-identical between:
+- `migrations/*.sql`
+- `crates/api/migrations/[0-9][0-9][0-9][0-9]_*.sql`
 
-HAIL is line-oriented JSON (`.jsonl`) for AI coding sessions.
+Validation:
 
-```jsonl
-{"v":"hail/0.1","tool":"claude-code","model":"opus-4","ts":"2025-01-01T00:00:00Z"}
-{"role":"human","content":"Fix the auth bug"}
-{"role":"agent","content":"I'll update...","tool_calls":[...]}
-{"type":"file_edit","path":"src/auth.rs","diff":"..."}
+```bash
+scripts/check-migration-parity.sh
 ```
-
-Why JSONL:
-- Streamable
-- Append-only friendly
-- Easy to process with `jq`, `grep`, `wc -l`

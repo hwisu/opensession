@@ -1,16 +1,10 @@
+use opensession_api::UploadRequest;
 use opensession_e2e::client::TestContext;
 async fn get_ctx() -> TestContext {
     let base_url = std::env::var("BASE_URL")
         .or_else(|_| std::env::var("OPENSESSION_BASE_URL"))
         .unwrap_or_else(|_| "https://opensession.io".into());
-    let ctx = TestContext::new(base_url);
-
-    let email = std::env::var("E2E_ADMIN_EMAIL").expect("E2E_ADMIN_EMAIL required");
-    let password = std::env::var("E2E_ADMIN_PASSWORD").expect("E2E_ADMIN_PASSWORD required");
-    ctx.setup_admin_with_credentials(&email, &password)
-        .await
-        .expect("admin login failed");
-    ctx
+    TestContext::new(base_url)
 }
 
 macro_rules! e2e_test {
@@ -26,17 +20,32 @@ macro_rules! e2e_test {
 opensession_e2e::for_each_spec!(e2e_test);
 
 #[tokio::test]
-async fn team_api_disabled_on_worker_profile() {
+async fn upload_route_is_disabled_in_worker_profile() {
     let ctx = get_ctx().await;
-    let admin = ctx.admin().expect("admin not initialized");
+    let session = opensession_e2e::fixtures::minimal_session();
     let resp = ctx
-        .get_authed("/teams", &admin.access_token)
+        .post_json(
+            "/sessions",
+            &UploadRequest {
+                session,
+                team_id: Some("local".to_string()),
+                body_url: None,
+                linked_session_ids: None,
+                git_remote: None,
+                git_branch: None,
+                git_commit: None,
+                git_repo_name: None,
+                pr_number: None,
+                pr_url: None,
+                score_plugin: None,
+            },
+        )
         .await
         .expect("request failed");
 
-    assert_eq!(
-        resp.status().as_u16(),
-        404,
-        "worker profile must not expose /api/teams when ENABLE_TEAM_API=false"
+    let status = resp.status().as_u16();
+    assert!(
+        status == 404 || status == 405,
+        "worker profile must reject upload route, got status {status}"
     );
 }

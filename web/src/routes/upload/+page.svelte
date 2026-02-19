@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { UploadPage } from '@opensession/ui/components';
 	import { goto } from '$app/navigation';
-	import { appProfile } from '$lib/profile';
+	import { isWorkerProfile } from '$lib/profile';
 </script>
 
-<UploadPage
-	teamMode={appProfile === 'worker' ? 'personal' : 'manual'}
-	onSuccess={(id) => goto(`/session/${id}`)}
-	onNavigate={(path) => goto(path)}
-/>
+{#if isWorkerProfile}
+	<div class="mx-auto max-w-2xl border border-border bg-bg-secondary p-6 text-sm text-text-secondary">
+		Worker profile is read-only. Upload is available on the self-hosted server profile.
+		<a href="/" class="ml-1 underline">Back to sessions</a>
+	</div>
+{:else}
+	<UploadPage onSuccess={(id) => goto(`/session/${id}`)} />
+{/if}

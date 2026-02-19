@@ -416,6 +416,7 @@ async fn upload_to_server(
         git_repo_name: None,
         pr_number: None,
         pr_url: None,
+        score_plugin: None,
     })?;
 
     let retry_cfg = RetryConfig {

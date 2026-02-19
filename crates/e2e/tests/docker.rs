@@ -1,11 +1,10 @@
+use opensession_api::UploadRequest;
 use opensession_e2e::client::TestContext;
 async fn get_ctx() -> TestContext {
     let base_url = std::env::var("BASE_URL")
         .or_else(|_| std::env::var("OPENSESSION_BASE_URL"))
         .unwrap_or_else(|_| "http://localhost:3000".into());
-    let ctx = TestContext::new(base_url);
-    ctx.setup_admin().await.expect("admin setup failed");
-    ctx
+    TestContext::new(base_url)
 }
 
 macro_rules! e2e_test {
@@ -19,20 +18,34 @@ macro_rules! e2e_test {
 }
 
 opensession_e2e::for_each_spec!(e2e_test);
-opensession_e2e::for_each_docker_only_spec!(e2e_test);
 
 #[tokio::test]
-async fn team_api_enabled_on_docker_profile() {
+async fn upload_route_is_available_on_server_profile() {
     let ctx = get_ctx().await;
-    let admin = ctx.admin().expect("admin not initialized");
+    let session = opensession_e2e::fixtures::minimal_session();
     let resp = ctx
-        .get_authed("/teams", &admin.access_token)
+        .post_json(
+            "/sessions",
+            &UploadRequest {
+                session,
+                team_id: Some("local".to_string()),
+                body_url: None,
+                linked_session_ids: None,
+                git_remote: None,
+                git_branch: None,
+                git_commit: None,
+                git_repo_name: None,
+                pr_number: None,
+                pr_url: None,
+                score_plugin: None,
+            },
+        )
         .await
         .expect("request failed");
 
-    assert_ne!(
+    assert_eq!(
         resp.status().as_u16(),
-        404,
-        "docker profile must expose /api/teams"
+        201,
+        "server profile must accept session upload"
     );
 }

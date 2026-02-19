@@ -3,6 +3,7 @@ pub mod extract;
 pub mod handoff;
 pub mod jsonl;
 pub mod sanitize;
+pub mod scoring;
 pub mod stats;
 pub mod trace;
 pub mod validate;

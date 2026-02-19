@@ -16,7 +16,7 @@ name = "opensession"
 path = "src/main.rs"
 
 [features]
-e2e = []
+e2e = ["dep:opensession-e2e"]
 
 [lints]
 workspace = true
@@ -28,6 +28,7 @@ opensession-parsers = { workspace = true }
 opensession-api-client = { workspace = true }
 opensession-local-db = { workspace = true }
 opensession-git-native = { workspace = true }
+opensession-e2e = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

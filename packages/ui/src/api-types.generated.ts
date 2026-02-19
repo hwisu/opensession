@@ -45,13 +45,13 @@ export interface RegenerateKeyResponse { api_key: string, }
 
 export interface OAuthLinkResponse { url: string, }
 
-export interface UploadResponse { id: string, url: string, }
+export interface UploadResponse { id: string, url: string, session_score: number, score_plugin: string, }
 
 export interface SessionSummary { id: string, user_id: string | null, nickname: string | null, team_id: string, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
 /**
  * Comma-separated tags string
  */
-tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, }
+tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
 
 export interface SessionListResponse { sessions: Array<SessionSummary>, total: number, page: number, per_page: number, }
 
@@ -69,7 +69,7 @@ export interface SessionDetail { team_name: string | null, linked_sessions?: Arr
 /**
  * Comma-separated tags string
  */
-tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, }
+tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
 
 export interface SessionLink { session_id: string, linked_session_id: string, link_type: LinkType, created_at: string, }
 

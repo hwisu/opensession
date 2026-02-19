@@ -1,13 +1,13 @@
 import { type Page, type APIRequestContext } from '@playwright/test';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const PROFILE_ENV = (process.env.E2E_APP_PROFILE || process.env.VITE_APP_PROFILE || 'docker')
+const PROFILE_ENV = (process.env.E2E_APP_PROFILE || process.env.VITE_APP_PROFILE || 'server')
 	.trim()
 	.toLowerCase();
 
-export type AppProfile = 'docker' | 'worker';
-export const appProfile: AppProfile = PROFILE_ENV === 'worker' ? 'worker' : 'docker';
-export const isDockerProfile = appProfile === 'docker';
+export type AppProfile = 'server' | 'worker';
+export const appProfile: AppProfile = PROFILE_ENV === 'worker' ? 'worker' : 'server';
+export const isServerProfile = appProfile === 'server';
 export const isWorkerProfile = appProfile === 'worker';
 
 export interface TestUser {

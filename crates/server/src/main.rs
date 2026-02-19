@@ -4,7 +4,7 @@ mod storage;
 
 use axum::{
     extract::{DefaultBodyLimit, FromRef},
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Router,
 };
 use std::path::PathBuf;
@@ -131,25 +131,6 @@ async fn main() -> anyhow::Result<()> {
     let api = Router::new()
         // Health
         .route("/health", get(routes::health::health))
-        // Auth (legacy)
-        .route("/register", post(routes::auth::register))
-        .route("/auth/verify", post(routes::auth::verify))
-        .route("/auth/me", get(routes::auth::me))
-        .route("/auth/regenerate-key", post(routes::auth::regenerate_key))
-        // Auth (email/password + JWT)
-        .route("/auth/register", post(routes::auth::auth_register))
-        .route("/auth/login", post(routes::auth::login))
-        .route("/auth/refresh", post(routes::auth::refresh))
-        .route("/auth/logout", post(routes::auth::logout))
-        .route("/auth/password", put(routes::auth::change_password))
-        // OAuth (generic — handles any provider)
-        .route("/auth/providers", get(routes::oauth::providers))
-        .route("/auth/oauth/{provider}", get(routes::oauth::redirect))
-        .route(
-            "/auth/oauth/{provider}/callback",
-            get(routes::oauth::callback),
-        )
-        .route("/auth/oauth/{provider}/link", post(routes::oauth::link))
         // Sessions
         .route("/sessions", post(routes::sessions::upload_session))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB for large sessions
@@ -158,57 +139,7 @@ async fn main() -> anyhow::Result<()> {
             "/sessions/{id}",
             get(routes::sessions::get_session).delete(routes::sessions::delete_session),
         )
-        .route("/sessions/{id}/raw", get(routes::sessions::get_session_raw))
-        // Teams
-        .route("/teams", post(routes::teams::create_team))
-        .route("/teams", get(routes::teams::list_my_teams))
-        .route("/teams/{id}/stats", get(routes::teams::team_stats))
-        .route("/teams/{id}", get(routes::teams::get_team))
-        .route("/teams/{id}", put(routes::teams::update_team))
-        .route(
-            "/teams/{id}/keys",
-            post(routes::teams::create_team_invite_key),
-        )
-        .route(
-            "/teams/{id}/keys",
-            get(routes::teams::list_team_invite_keys),
-        )
-        .route(
-            "/teams/{id}/keys/{key_id}",
-            delete(routes::teams::revoke_team_invite_key),
-        )
-        .route(
-            "/teams/join-with-key",
-            post(routes::teams::join_team_with_key),
-        )
-        // Sync
-        .route("/sync/pull", get(routes::sync::pull))
-        // Team members
-        .route("/teams/{id}/members", get(routes::teams::list_members))
-        .route("/teams/{id}/members", post(routes::teams::add_member))
-        .route(
-            "/teams/{id}/invitations",
-            get(routes::teams::list_team_invitations),
-        )
-        .route(
-            "/teams/{id}/invitations/{invitation_id}",
-            delete(routes::teams::cancel_team_invitation),
-        )
-        .route(
-            "/teams/{team_id}/members/{user_id}",
-            delete(routes::teams::remove_member),
-        )
-        // Invitations
-        .route("/teams/{id}/invite", post(routes::teams::invite_member))
-        .route("/invitations", get(routes::teams::list_invitations))
-        .route(
-            "/invitations/{id}/accept",
-            post(routes::teams::accept_invitation),
-        )
-        .route(
-            "/invitations/{id}/decline",
-            post(routes::teams::decline_invitation),
-        );
+        .route("/sessions/{id}/raw", get(routes::sessions::get_session_raw));
 
     // Build main router
     let mut app = Router::new()

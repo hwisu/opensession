@@ -3,7 +3,7 @@ use crate::app::{
     View, ViewMode,
 };
 use crate::theme::Theme;
-use crate::views::{help, modal, session_detail, session_list, settings, setup, tab_bar};
+use crate::views::{handoff, help, modal, session_detail, session_list, settings, setup, tab_bar};
 use opensession_core::trace::{ContentBlock, EventType, Session};
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph};
@@ -94,6 +94,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SessionList => session_list::render(frame, app, body_area),
         View::SessionDetail => session_detail::render(frame, app, body_area),
         View::Settings => settings::render(frame, app, body_area),
+        View::Handoff => handoff::render(frame, app, body_area),
         View::Help => {}  // rendered as overlay below
         View::Setup => {} // handled above
     }
@@ -123,7 +124,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn should_show_footer(app: &App) -> bool {
-    app.flash_message.is_some() || matches!(app.view, View::Settings)
+    app.flash_message.is_some() || matches!(app.view, View::Settings | View::Handoff)
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -323,6 +324,21 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let p = Paragraph::new(Line::from(spans));
             frame.render_widget(p, inner);
         }
+        View::Handoff => {
+            let block = Theme::block();
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            let line = Line::from(vec![
+                Span::styled(" Handoff ", Style::new().fg(Theme::TEXT_PRIMARY).bold()),
+                Span::styled("  ", Style::new()),
+                Span::styled(
+                    "execution-contract quick menu",
+                    Style::new().fg(Theme::TEXT_MUTED),
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(line), inner);
+        }
         _ => {}
     }
 }
@@ -344,6 +360,11 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     if matches!(app.view, View::Settings) {
         frame.render_widget(Paragraph::new(settings_footer_line(app)), area);
+        return;
+    }
+
+    if matches!(app.view, View::Handoff) {
+        frame.render_widget(Paragraph::new(handoff_footer_line()), area);
     }
 }
 
@@ -382,6 +403,21 @@ fn settings_footer_line(app: &App) -> Line<'static> {
             Span::styled("help", desc_style),
         ])
     }
+}
+
+fn handoff_footer_line() -> Line<'static> {
+    let key_style = Style::new().fg(Theme::TEXT_KEY).bold();
+    let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
+    Line::from(vec![
+        Span::styled(" 1/2/3 ", key_style),
+        Span::styled("tabs", desc_style),
+        Span::styled("  Enter ", key_style),
+        Span::styled("open selected session", desc_style),
+        Span::styled("  Esc ", key_style),
+        Span::styled("back", desc_style),
+        Span::styled("  ? ", key_style),
+        Span::styled("help", desc_style),
+    ])
 }
 
 fn render_focus_session_summary(frame: &mut Frame, app: &App, area: Rect) {
@@ -813,8 +849,8 @@ fn build_server_status_spans(info: &ServerInfo) -> Vec<Span<'_>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_server_status_spans, compact_line, event_first_text, latest_output_preview,
-        latest_prompt_preview, settings_footer_line, should_show_footer,
+        build_server_status_spans, compact_line, event_first_text, handoff_footer_line,
+        latest_output_preview, latest_prompt_preview, settings_footer_line, should_show_footer,
     };
     use crate::app::{App, ServerInfo, ServerStatus, View};
     use chrono::Utc;
@@ -993,6 +1029,9 @@ mod tests {
 
         app.view = View::Settings;
         assert!(should_show_footer(&app));
+
+        app.view = View::Handoff;
+        assert!(should_show_footer(&app));
     }
 
     #[test]
@@ -1020,5 +1059,14 @@ mod tests {
         assert!(text.contains("Esc"));
         assert!(text.contains("cancel"));
         assert!(!text.contains("[/]"));
+    }
+
+    #[test]
+    fn handoff_footer_line_shows_handoff_shortcuts() {
+        let text = spans_to_text(&handoff_footer_line().spans);
+        assert!(text.contains("1/2/3"));
+        assert!(text.contains("Enter"));
+        assert!(text.contains("Esc"));
+        assert!(text.contains("help"));
     }
 }

@@ -168,7 +168,7 @@ fn write_runtime_config(config: &DaemonConfig, auto_start: bool) -> Result<()> {
 pub fn load_config() -> Result<CliConfig> {
     let (runtime, auto_start, legacy_team_id_present) = load_runtime_config_from_disk()?;
     if legacy_team_id_present {
-        eprintln!("Warning: legacy team_id fields are ignored and can be removed from config.");
+        eprintln!("Warning: team_id fields are ignored and can be removed from config.");
     }
     Ok(CliConfig {
         server: ServerConfig {

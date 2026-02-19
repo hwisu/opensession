@@ -151,6 +151,7 @@ pub enum View {
     SessionDetail,
     Setup,
     Settings,
+    Handoff,
     Help,
 }
 
@@ -159,6 +160,7 @@ pub enum View {
 pub enum Tab {
     Sessions,
     Settings,
+    Handoff,
 }
 
 /// Settings sub-section.
@@ -539,6 +541,21 @@ mod turn_extract_tests {
             SettingsSection::Workspace.panel_title(),
             "Web Share (Public Git)"
         );
+    }
+
+    #[test]
+    fn global_tab_shortcut_opens_handoff_menu() {
+        let mut app = App::new(Vec::new());
+        assert_eq!(app.active_tab, Tab::Sessions);
+        assert_eq!(app.view, View::SessionList);
+
+        app.handle_key(KeyCode::Char('3'));
+        assert_eq!(app.active_tab, Tab::Handoff);
+        assert_eq!(app.view, View::Handoff);
+
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.active_tab, Tab::Sessions);
+        assert_eq!(app.view, View::SessionList);
     }
 
     #[test]
@@ -2080,6 +2097,10 @@ impl App {
                     self.switch_tab(Tab::Settings);
                     return false;
                 }
+                KeyCode::Char('3') => {
+                    self.switch_tab(Tab::Handoff);
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -2089,6 +2110,7 @@ impl App {
             View::SessionDetail => self.handle_detail_key(key),
             View::Setup => self.handle_setup_key(key),
             View::Settings => self.handle_settings_key(key),
+            View::Handoff => self.handle_handoff_key(key),
             View::Help => {
                 // Any key exits help
                 if self.focus_detail_view {
@@ -2160,6 +2182,9 @@ impl App {
                     self.profile_loading = true;
                     self.pending_command = Some(AsyncCommand::FetchProfile);
                 }
+            }
+            Tab::Handoff => {
+                self.view = View::Handoff;
             }
         }
     }
@@ -2939,6 +2964,20 @@ impl App {
                     }
                 }
             }
+        }
+        false
+    }
+
+    fn handle_handoff_key(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.switch_tab(Tab::Sessions);
+            }
+            KeyCode::Enter | KeyCode::Char('l') => {
+                self.switch_tab(Tab::Sessions);
+                self.enter_detail();
+            }
+            _ => {}
         }
         false
     }
@@ -6429,7 +6468,7 @@ impl App {
         self.update_detail_selection_anchor();
     }
 
-    fn resolve_selected_source_path(&self) -> Option<PathBuf> {
+    pub(crate) fn resolve_selected_source_path(&self) -> Option<PathBuf> {
         if let Some(row) = self.selected_db_session() {
             if let Some(path) = row.source_path.as_ref().map(PathBuf::from) {
                 if path.exists() {

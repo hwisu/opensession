@@ -7,6 +7,7 @@ pub fn render(frame: &mut Frame, active: &Tab, view: &View, area: Rect, _local_m
     let tabs = [
         (Tab::Sessions, "1:Sessions", "Sessions"),
         (Tab::Settings, "2:Settings", "Settings"),
+        (Tab::Handoff, "3:Handoff", "Handoff"),
     ];
 
     // In detail views, hide number prefixes since 1-6 keys are used for event filters
@@ -82,6 +83,7 @@ mod tests {
         let text = render_tab_text(Tab::Sessions, View::SessionList, false);
         assert!(text.contains("1:Sessions"));
         assert!(text.contains("2:Settings"));
+        assert!(text.contains("3:Handoff"));
     }
 
     #[test]
@@ -89,7 +91,9 @@ mod tests {
         let text = render_tab_text(Tab::Sessions, View::SessionDetail, false);
         assert!(text.contains("Sessions"));
         assert!(text.contains("Settings"));
+        assert!(text.contains("Handoff"));
         assert!(!text.contains("1:Sessions"));
         assert!(!text.contains("2:Settings"));
+        assert!(!text.contains("3:Handoff"));
     }
 }

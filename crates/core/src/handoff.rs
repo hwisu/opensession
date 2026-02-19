@@ -3,7 +3,7 @@
 //! This module provides programmatic extraction of session summaries for handoff
 //! between agent sessions. It supports both single-session and multi-session merge.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::extract::truncate_str;
 use crate::{Content, ContentBlock, Event, EventType, Session, SessionContext, Stats};
@@ -11,7 +11,7 @@ use crate::{Content, ContentBlock, Event, EventType, Session, SessionContext, St
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 /// A file change observed during a session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FileChange {
     pub path: String,
     /// "created" | "edited" | "deleted"
@@ -19,21 +19,74 @@ pub struct FileChange {
 }
 
 /// A shell command executed during a session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ShellCmd {
     pub command: String,
     pub exit_code: Option<i32>,
 }
 
 /// A user→agent conversation pair.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Conversation {
     pub user: String,
     pub agent: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct ExecutionContract {
+    pub done_definition: Vec<String>,
+    pub next_actions: Vec<String>,
+    pub ordered_commands: Vec<String>,
+    pub rollback_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollback_hint_missing_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct Uncertainty {
+    pub assumptions: Vec<String>,
+    pub open_questions: Vec<String>,
+    pub decision_required: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckRun {
+    pub command: String,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct Verification {
+    pub checks_run: Vec<CheckRun>,
+    pub checks_passed: Vec<String>,
+    pub checks_failed: Vec<String>,
+    pub required_checks_missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EvidenceRef {
+    pub id: String,
+    pub claim: String,
+    pub event_id: String,
+    pub timestamp: String,
+    pub source_type: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkPackage {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub depends_on: Vec<String>,
+    pub files: Vec<String>,
+    pub commands: Vec<String>,
+    pub evidence_refs: Vec<String>,
+}
+
 /// Summary extracted from a single session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct HandoffSummary {
     pub source_session_id: String,
     pub objective: String,
@@ -48,10 +101,15 @@ pub struct HandoffSummary {
     pub task_summaries: Vec<String>,
     pub key_conversations: Vec<Conversation>,
     pub user_messages: Vec<String>,
+    pub execution_contract: ExecutionContract,
+    pub uncertainty: Uncertainty,
+    pub verification: Verification,
+    pub evidence: Vec<EvidenceRef>,
+    pub work_packages: Vec<WorkPackage>,
 }
 
 /// Merged handoff from multiple sessions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MergedHandoff {
     pub source_session_ids: Vec<String>,
     pub summaries: Vec<HandoffSummary>,
@@ -79,6 +137,16 @@ impl HandoffSummary {
         let task_summaries = collect_task_summaries(&session.events);
         let user_messages = collect_user_messages(&session.events);
         let key_conversations = collect_conversation_pairs(&session.events);
+        let verification = collect_verification(&session.events);
+        let uncertainty = collect_uncertainty(session, &verification);
+        let execution_contract = build_execution_contract(
+            &task_summaries,
+            &verification,
+            &uncertainty,
+            &shell_commands,
+        );
+        let evidence = collect_evidence(session, &objective, &task_summaries, &uncertainty);
+        let work_packages = build_work_packages(&session.events, &evidence);
 
         HandoffSummary {
             source_session_id: session.session_id.clone(),
@@ -94,6 +162,11 @@ impl HandoffSummary {
             task_summaries,
             key_conversations,
             user_messages,
+            execution_contract,
+            uncertainty,
+            verification,
+            evidence,
+            work_packages,
         }
     }
 }
@@ -183,6 +256,554 @@ fn collect_errors(events: &[Event]) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+fn collect_verification(events: &[Event]) -> Verification {
+    let mut tool_result_by_call: HashMap<String, (&Event, bool)> = HashMap::new();
+    for event in events {
+        if let EventType::ToolResult { is_error, .. } = &event.event_type {
+            if let Some(call_id) = event.semantic_call_id() {
+                tool_result_by_call
+                    .entry(call_id.to_string())
+                    .or_insert((event, *is_error));
+            }
+        }
+    }
+
+    let mut checks_run = Vec::new();
+    for event in events {
+        let EventType::ShellCommand { command, exit_code } = &event.event_type else {
+            continue;
+        };
+
+        let (status, resolved_exit_code) = match exit_code {
+            Some(0) => ("passed".to_string(), Some(0)),
+            Some(code) => ("failed".to_string(), Some(*code)),
+            None => {
+                if let Some(call_id) = event.semantic_call_id() {
+                    if let Some((_, is_error)) = tool_result_by_call.get(call_id) {
+                        if *is_error {
+                            ("failed".to_string(), None)
+                        } else {
+                            ("passed".to_string(), None)
+                        }
+                    } else {
+                        ("unknown".to_string(), None)
+                    }
+                } else {
+                    ("unknown".to_string(), None)
+                }
+            }
+        };
+
+        checks_run.push(CheckRun {
+            command: collapse_whitespace(command),
+            status,
+            exit_code: resolved_exit_code,
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    let mut checks_passed: Vec<String> = checks_run
+        .iter()
+        .filter(|run| run.status == "passed")
+        .map(|run| run.command.clone())
+        .collect();
+    let mut checks_failed: Vec<String> = checks_run
+        .iter()
+        .filter(|run| run.status == "failed")
+        .map(|run| run.command.clone())
+        .collect();
+
+    dedupe_keep_order(&mut checks_passed);
+    dedupe_keep_order(&mut checks_failed);
+
+    let unresolved_failed = unresolved_failed_commands(&checks_run);
+    let mut required_checks_missing = unresolved_failed
+        .iter()
+        .map(|cmd| format!("Unresolved failed check: `{cmd}`"))
+        .collect::<Vec<_>>();
+
+    let has_modified_files = events.iter().any(|event| {
+        matches!(
+            event.event_type,
+            EventType::FileEdit { .. }
+                | EventType::FileCreate { .. }
+                | EventType::FileDelete { .. }
+        )
+    });
+    if has_modified_files && checks_run.is_empty() {
+        required_checks_missing
+            .push("No verification command found after file modifications.".to_string());
+    }
+
+    Verification {
+        checks_run,
+        checks_passed,
+        checks_failed,
+        required_checks_missing,
+    }
+}
+
+fn collect_uncertainty(session: &Session, verification: &Verification) -> Uncertainty {
+    let mut assumptions = Vec::new();
+    if extract_objective(session) == "(objective unavailable)" {
+        assumptions.push(
+            "Objective inferred as unavailable; downstream agent must restate objective."
+                .to_string(),
+        );
+    }
+
+    let open_questions = collect_open_questions(&session.events);
+
+    let mut decision_required = Vec::new();
+    for event in &session.events {
+        if let EventType::Custom { kind } = &event.event_type {
+            if kind == "turn_aborted" {
+                let reason = event
+                    .attr_str("reason")
+                    .map(String::from)
+                    .unwrap_or_else(|| "turn aborted".to_string());
+                decision_required.push(format!("Turn aborted: {reason}"));
+            }
+        }
+    }
+    for missing in &verification.required_checks_missing {
+        decision_required.push(missing.clone());
+    }
+    for question in &open_questions {
+        decision_required.push(format!("Resolve open question: {question}"));
+    }
+
+    dedupe_keep_order(&mut assumptions);
+    let mut open_questions = open_questions;
+    dedupe_keep_order(&mut open_questions);
+    dedupe_keep_order(&mut decision_required);
+
+    Uncertainty {
+        assumptions,
+        open_questions,
+        decision_required,
+    }
+}
+
+fn build_execution_contract(
+    task_summaries: &[String],
+    verification: &Verification,
+    uncertainty: &Uncertainty,
+    shell_commands: &[ShellCmd],
+) -> ExecutionContract {
+    let done_definition = task_summaries.to_vec();
+
+    let mut next_actions = unresolved_failed_commands(&verification.checks_run)
+        .into_iter()
+        .map(|cmd| format!("Fix and re-run `{cmd}` until the check passes."))
+        .collect::<Vec<_>>();
+    next_actions.extend(
+        uncertainty
+            .open_questions
+            .iter()
+            .map(|q| format!("Resolve open question: {q}")),
+    );
+
+    if done_definition.is_empty() && next_actions.is_empty() {
+        next_actions.push(
+            "Define completion criteria and run at least one verification command.".to_string(),
+        );
+    }
+    dedupe_keep_order(&mut next_actions);
+
+    let unresolved = unresolved_failed_commands(&verification.checks_run);
+    let mut ordered_commands = unresolved;
+    for cmd in shell_commands
+        .iter()
+        .map(|c| collapse_whitespace(&c.command))
+    {
+        if !ordered_commands.iter().any(|existing| existing == &cmd) {
+            ordered_commands.push(cmd);
+        }
+    }
+
+    let has_git_commit = shell_commands
+        .iter()
+        .any(|cmd| cmd.command.to_ascii_lowercase().contains("git commit"));
+    let (rollback_hint, rollback_hint_missing_reason) = if has_git_commit {
+        (
+            Some(
+                "Use `git revert <commit>` for committed changes, then re-run verification."
+                    .to_string(),
+            ),
+            None,
+        )
+    } else {
+        (
+            None,
+            Some("No committed change signal found in events.".to_string()),
+        )
+    };
+
+    ExecutionContract {
+        done_definition,
+        next_actions,
+        ordered_commands,
+        rollback_hint,
+        rollback_hint_missing_reason,
+    }
+}
+
+fn collect_evidence(
+    session: &Session,
+    objective: &str,
+    task_summaries: &[String],
+    uncertainty: &Uncertainty,
+) -> Vec<EvidenceRef> {
+    let mut evidence = Vec::new();
+    let mut next_id = 1usize;
+
+    if let Some(event) = find_objective_event(session) {
+        evidence.push(EvidenceRef {
+            id: format!("evidence-{next_id}"),
+            claim: format!("objective: {objective}"),
+            event_id: event.event_id.clone(),
+            timestamp: event.timestamp.to_rfc3339(),
+            source_type: event_source_type(event),
+        });
+        next_id += 1;
+    }
+
+    for summary in task_summaries {
+        if let Some(event) = find_task_summary_event(&session.events, summary) {
+            evidence.push(EvidenceRef {
+                id: format!("evidence-{next_id}"),
+                claim: format!("task_done: {summary}"),
+                event_id: event.event_id.clone(),
+                timestamp: event.timestamp.to_rfc3339(),
+                source_type: event_source_type(event),
+            });
+            next_id += 1;
+        }
+    }
+
+    for decision in &uncertainty.decision_required {
+        if let Some(event) = find_decision_event(&session.events, decision) {
+            evidence.push(EvidenceRef {
+                id: format!("evidence-{next_id}"),
+                claim: format!("decision_required: {decision}"),
+                event_id: event.event_id.clone(),
+                timestamp: event.timestamp.to_rfc3339(),
+                source_type: event_source_type(event),
+            });
+            next_id += 1;
+        }
+    }
+
+    evidence
+}
+
+fn build_work_packages(events: &[Event], evidence: &[EvidenceRef]) -> Vec<WorkPackage> {
+    #[derive(Default)]
+    struct WorkPackageAcc {
+        title: Option<String>,
+        status: String,
+        first_ts: Option<chrono::DateTime<chrono::Utc>>,
+        files: HashSet<String>,
+        commands: Vec<String>,
+        evidence_refs: Vec<String>,
+    }
+
+    let mut evidence_by_event: HashMap<&str, Vec<String>> = HashMap::new();
+    for ev in evidence {
+        evidence_by_event
+            .entry(ev.event_id.as_str())
+            .or_default()
+            .push(ev.id.clone());
+    }
+
+    let mut grouped: BTreeMap<String, WorkPackageAcc> = BTreeMap::new();
+    for event in events {
+        let key = package_key_for_event(event);
+        let acc = grouped
+            .entry(key.clone())
+            .or_insert_with(|| WorkPackageAcc {
+                status: "pending".to_string(),
+                ..Default::default()
+            });
+
+        if acc.first_ts.is_none() {
+            acc.first_ts = Some(event.timestamp);
+        }
+        if let Some(ids) = evidence_by_event.get(event.event_id.as_str()) {
+            acc.evidence_refs.extend(ids.clone());
+        }
+
+        match &event.event_type {
+            EventType::TaskStart { title } => {
+                if let Some(title) = title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                    acc.title = Some(title.to_string());
+                }
+                if acc.status != "completed" {
+                    acc.status = "in_progress".to_string();
+                }
+            }
+            EventType::TaskEnd { .. } => {
+                acc.status = "completed".to_string();
+            }
+            EventType::FileEdit { path, .. }
+            | EventType::FileCreate { path }
+            | EventType::FileDelete { path } => {
+                acc.files.insert(path.clone());
+            }
+            EventType::ShellCommand { command, .. } => {
+                acc.commands.push(collapse_whitespace(command));
+            }
+            _ => {}
+        }
+    }
+
+    let mut packages = grouped
+        .into_iter()
+        .map(|(id, mut acc)| {
+            dedupe_keep_order(&mut acc.commands);
+            dedupe_keep_order(&mut acc.evidence_refs);
+            let mut files: Vec<String> = acc.files.into_iter().collect();
+            files.sort();
+            WorkPackage {
+                title: acc.title.unwrap_or_else(|| {
+                    if id == "main" {
+                        "Main flow".to_string()
+                    } else {
+                        format!("Task {id}")
+                    }
+                }),
+                id,
+                status: acc.status,
+                depends_on: Vec::new(),
+                files,
+                commands: acc.commands,
+                evidence_refs: acc.evidence_refs,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    packages.sort_by(|a, b| a.id.cmp(&b.id));
+
+    for i in 0..packages.len() {
+        let cur_files: HashSet<&str> = packages[i].files.iter().map(String::as_str).collect();
+        if cur_files.is_empty() {
+            continue;
+        }
+        let mut dependency: Option<String> = None;
+        for j in (0..i).rev() {
+            let prev_files: HashSet<&str> = packages[j].files.iter().map(String::as_str).collect();
+            if !prev_files.is_empty() && !cur_files.is_disjoint(&prev_files) {
+                dependency = Some(packages[j].id.clone());
+                break;
+            }
+        }
+        if let Some(dep) = dependency {
+            packages[i].depends_on.push(dep);
+        }
+    }
+
+    packages
+}
+
+fn package_key_for_event(event: &Event) -> String {
+    if let Some(task_id) = event
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return task_id.to_string();
+    }
+    if let Some(group_id) = event.semantic_group_id() {
+        return group_id.to_string();
+    }
+    "main".to_string()
+}
+
+fn find_objective_event(session: &Session) -> Option<&Event> {
+    session
+        .events
+        .iter()
+        .find(|event| matches!(event.event_type, EventType::UserMessage))
+        .or_else(|| {
+            session.events.iter().find(|event| {
+                matches!(
+                    event.event_type,
+                    EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+                )
+            })
+        })
+}
+
+fn find_task_summary_event<'a>(events: &'a [Event], summary: &str) -> Option<&'a Event> {
+    let normalized_target = collapse_whitespace(summary);
+    events.iter().find(|event| {
+        let EventType::TaskEnd {
+            summary: Some(candidate),
+        } = &event.event_type
+        else {
+            return false;
+        };
+        collapse_whitespace(candidate) == normalized_target
+    })
+}
+
+fn find_decision_event<'a>(events: &'a [Event], decision: &str) -> Option<&'a Event> {
+    if decision.to_ascii_lowercase().contains("turn aborted") {
+        return events.iter().find(|event| {
+            matches!(
+                &event.event_type,
+                EventType::Custom { kind } if kind == "turn_aborted"
+            )
+        });
+    }
+    if decision.to_ascii_lowercase().contains("open question") {
+        return events
+            .iter()
+            .find(|event| event.attr_str("source") == Some("interactive_question"));
+    }
+    None
+}
+
+fn collect_open_questions(events: &[Event]) -> Vec<String> {
+    let mut question_meta: BTreeMap<String, String> = BTreeMap::new();
+    let mut asked_order = Vec::new();
+    let mut answered_ids = HashSet::new();
+
+    for event in events {
+        if event.attr_str("source") == Some("interactive_question") {
+            if let Some(items) = event
+                .attributes
+                .get("question_meta")
+                .and_then(|v| v.as_array())
+            {
+                for item in items {
+                    let Some(id) = item
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                    else {
+                        continue;
+                    };
+                    let text = item
+                        .get("question")
+                        .or_else(|| item.get("header"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or(id);
+                    if !question_meta.contains_key(id) {
+                        asked_order.push(id.to_string());
+                    }
+                    question_meta.insert(id.to_string(), text.to_string());
+                }
+            } else if let Some(ids) = event
+                .attributes
+                .get("question_ids")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(String::from)
+                        .collect::<Vec<_>>()
+                })
+            {
+                for id in ids {
+                    if !question_meta.contains_key(&id) {
+                        asked_order.push(id.clone());
+                    }
+                    question_meta.entry(id.clone()).or_insert(id);
+                }
+            }
+        }
+
+        if event.attr_str("source") == Some("interactive") {
+            if let Some(ids) = event
+                .attributes
+                .get("question_ids")
+                .and_then(|v| v.as_array())
+            {
+                for id in ids
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    answered_ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+
+    asked_order
+        .into_iter()
+        .filter(|id| !answered_ids.contains(id))
+        .map(|id| {
+            let text = question_meta
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| id.clone());
+            format!("{id}: {text}")
+        })
+        .collect()
+}
+
+fn unresolved_failed_commands(checks_run: &[CheckRun]) -> Vec<String> {
+    let mut unresolved = Vec::new();
+    for (idx, run) in checks_run.iter().enumerate() {
+        if run.status != "failed" {
+            continue;
+        }
+        let resolved = checks_run
+            .iter()
+            .skip(idx + 1)
+            .any(|later| later.command == run.command && later.status == "passed");
+        if !resolved {
+            unresolved.push(run.command.clone());
+        }
+    }
+    dedupe_keep_order(&mut unresolved);
+    unresolved
+}
+
+fn dedupe_keep_order(values: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
+fn event_source_type(event: &Event) -> String {
+    event
+        .source_raw_type()
+        .map(String::from)
+        .unwrap_or_else(|| match &event.event_type {
+            EventType::UserMessage => "UserMessage".to_string(),
+            EventType::AgentMessage => "AgentMessage".to_string(),
+            EventType::SystemMessage => "SystemMessage".to_string(),
+            EventType::Thinking => "Thinking".to_string(),
+            EventType::ToolCall { .. } => "ToolCall".to_string(),
+            EventType::ToolResult { .. } => "ToolResult".to_string(),
+            EventType::FileRead { .. } => "FileRead".to_string(),
+            EventType::CodeSearch { .. } => "CodeSearch".to_string(),
+            EventType::FileSearch { .. } => "FileSearch".to_string(),
+            EventType::FileEdit { .. } => "FileEdit".to_string(),
+            EventType::FileCreate { .. } => "FileCreate".to_string(),
+            EventType::FileDelete { .. } => "FileDelete".to_string(),
+            EventType::ShellCommand { .. } => "ShellCommand".to_string(),
+            EventType::ImageGenerate { .. } => "ImageGenerate".to_string(),
+            EventType::VideoGenerate { .. } => "VideoGenerate".to_string(),
+            EventType::AudioGenerate { .. } => "AudioGenerate".to_string(),
+            EventType::WebSearch { .. } => "WebSearch".to_string(),
+            EventType::WebFetch { .. } => "WebFetch".to_string(),
+            EventType::TaskStart { .. } => "TaskStart".to_string(),
+            EventType::TaskEnd { .. } => "TaskEnd".to_string(),
+            EventType::Custom { kind } => format!("Custom:{kind}"),
+        })
 }
 
 fn collect_task_summaries(events: &[Event]) -> Vec<String> {
@@ -306,7 +927,274 @@ pub fn merge_summaries(summaries: &[HandoffSummary]) -> MergedHandoff {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ValidationFinding {
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HandoffValidationReport {
+    pub session_id: String,
+    pub passed: bool,
+    pub findings: Vec<ValidationFinding>,
+}
+
+pub fn validate_handoff_summary(summary: &HandoffSummary) -> HandoffValidationReport {
+    let mut findings = Vec::new();
+
+    if summary.objective.trim().is_empty() || summary.objective == "(objective unavailable)" {
+        findings.push(ValidationFinding {
+            code: "objective_missing".to_string(),
+            severity: "warning".to_string(),
+            message: "Objective is unavailable.".to_string(),
+        });
+    }
+
+    let unresolved_failures = unresolved_failed_commands(&summary.verification.checks_run);
+    if !unresolved_failures.is_empty() && summary.execution_contract.next_actions.is_empty() {
+        findings.push(ValidationFinding {
+            code: "next_actions_missing".to_string(),
+            severity: "warning".to_string(),
+            message: "Unresolved failed checks exist but no next action was generated.".to_string(),
+        });
+    }
+
+    if !summary.files_modified.is_empty() && summary.verification.checks_run.is_empty() {
+        findings.push(ValidationFinding {
+            code: "verification_missing".to_string(),
+            severity: "warning".to_string(),
+            message: "Files were modified but no verification check was recorded.".to_string(),
+        });
+    }
+
+    if summary.evidence.is_empty() {
+        findings.push(ValidationFinding {
+            code: "evidence_missing".to_string(),
+            severity: "warning".to_string(),
+            message: "No evidence references were generated.".to_string(),
+        });
+    } else if !summary
+        .evidence
+        .iter()
+        .any(|ev| ev.claim.starts_with("objective:"))
+    {
+        findings.push(ValidationFinding {
+            code: "objective_evidence_missing".to_string(),
+            severity: "warning".to_string(),
+            message: "Objective exists but objective evidence is missing.".to_string(),
+        });
+    }
+
+    if has_work_package_cycle(&summary.work_packages) {
+        findings.push(ValidationFinding {
+            code: "work_package_cycle".to_string(),
+            severity: "error".to_string(),
+            message: "work_packages.depends_on contains a cycle.".to_string(),
+        });
+    }
+
+    HandoffValidationReport {
+        session_id: summary.source_session_id.clone(),
+        passed: findings.is_empty(),
+        findings,
+    }
+}
+
+pub fn validate_handoff_summaries(summaries: &[HandoffSummary]) -> Vec<HandoffValidationReport> {
+    summaries.iter().map(validate_handoff_summary).collect()
+}
+
+fn has_work_package_cycle(packages: &[WorkPackage]) -> bool {
+    let mut state: HashMap<&str, u8> = HashMap::new();
+    let deps: HashMap<&str, Vec<&str>> = packages
+        .iter()
+        .map(|wp| {
+            (
+                wp.id.as_str(),
+                wp.depends_on.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+
+    fn dfs<'a>(
+        node: &'a str,
+        state: &mut HashMap<&'a str, u8>,
+        deps: &HashMap<&'a str, Vec<&'a str>>,
+    ) -> bool {
+        match state.get(node).copied() {
+            Some(1) => return true,
+            Some(2) => return false,
+            _ => {}
+        }
+        state.insert(node, 1);
+        if let Some(children) = deps.get(node) {
+            for child in children {
+                if !deps.contains_key(child) {
+                    continue;
+                }
+                if dfs(child, state, deps) {
+                    return true;
+                }
+            }
+        }
+        state.insert(node, 2);
+        false
+    }
+
+    for node in deps.keys().copied() {
+        if dfs(node, &mut state, &deps) {
+            return true;
+        }
+    }
+    false
+}
+
 // ─── Markdown generation ─────────────────────────────────────────────────────
+
+/// Generate a v2 Markdown handoff document from a single session summary.
+pub fn generate_handoff_markdown_v2(summary: &HandoffSummary) -> String {
+    let mut md = String::new();
+    md.push_str("# Session Handoff\n\n");
+    append_v2_markdown_sections(&mut md, summary);
+    md
+}
+
+/// Generate a v2 Markdown handoff document from merged summaries.
+pub fn generate_merged_handoff_markdown_v2(merged: &MergedHandoff) -> String {
+    let mut md = String::new();
+    md.push_str("# Merged Session Handoff\n\n");
+    md.push_str(&format!(
+        "**Sessions:** {} | **Total Duration:** {}\n\n",
+        merged.source_session_ids.len(),
+        format_duration(merged.total_duration_seconds)
+    ));
+
+    for (idx, summary) in merged.summaries.iter().enumerate() {
+        md.push_str(&format!(
+            "---\n\n## Session {} — {}\n\n",
+            idx + 1,
+            summary.source_session_id
+        ));
+        append_v2_markdown_sections(&mut md, summary);
+        md.push('\n');
+    }
+
+    md
+}
+
+fn append_v2_markdown_sections(md: &mut String, summary: &HandoffSummary) {
+    md.push_str("## Objective\n");
+    md.push_str(&summary.objective);
+    md.push_str("\n\n");
+
+    md.push_str("## Current State\n");
+    md.push_str(&format!(
+        "- **Tool:** {} ({})\n- **Duration:** {}\n- **Messages:** {} | Tool calls: {} | Events: {}\n",
+        summary.tool,
+        summary.model,
+        format_duration(summary.duration_seconds),
+        summary.stats.message_count,
+        summary.stats.tool_call_count,
+        summary.stats.event_count
+    ));
+    if !summary.execution_contract.done_definition.is_empty() {
+        md.push_str("- **Done:**\n");
+        for done in &summary.execution_contract.done_definition {
+            md.push_str(&format!("  - {done}\n"));
+        }
+    }
+    md.push('\n');
+
+    md.push_str("## Next Actions (ordered)\n");
+    if summary.execution_contract.next_actions.is_empty() {
+        md.push_str("_(none)_\n");
+    } else {
+        for (idx, action) in summary.execution_contract.next_actions.iter().enumerate() {
+            md.push_str(&format!("{}. {}\n", idx + 1, action));
+        }
+    }
+    md.push('\n');
+
+    md.push_str("## Verification\n");
+    if summary.verification.checks_run.is_empty() {
+        md.push_str("- checks_run: _(none)_\n");
+    } else {
+        for check in &summary.verification.checks_run {
+            let code = check
+                .exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            md.push_str(&format!(
+                "- [{}] `{}` (exit: {}, event: {})\n",
+                check.status, check.command, code, check.event_id
+            ));
+        }
+    }
+    if !summary.verification.required_checks_missing.is_empty() {
+        md.push_str("- required_checks_missing:\n");
+        for item in &summary.verification.required_checks_missing {
+            md.push_str(&format!("  - {item}\n"));
+        }
+    }
+    md.push('\n');
+
+    md.push_str("## Blockers / Decisions\n");
+    if summary.uncertainty.decision_required.is_empty()
+        && summary.uncertainty.open_questions.is_empty()
+    {
+        md.push_str("_(none)_\n");
+    } else {
+        for item in &summary.uncertainty.decision_required {
+            md.push_str(&format!("- {item}\n"));
+        }
+        if !summary.uncertainty.open_questions.is_empty() {
+            md.push_str("- open_questions:\n");
+            for item in &summary.uncertainty.open_questions {
+                md.push_str(&format!("  - {item}\n"));
+            }
+        }
+    }
+    md.push('\n');
+
+    md.push_str("## Evidence Index\n");
+    if summary.evidence.is_empty() {
+        md.push_str("_(none)_\n");
+    } else {
+        for ev in &summary.evidence {
+            md.push_str(&format!(
+                "- `{}` {} ({}, {}, {})\n",
+                ev.id, ev.claim, ev.event_id, ev.source_type, ev.timestamp
+            ));
+        }
+    }
+    md.push('\n');
+
+    md.push_str("## Conversations\n");
+    if summary.key_conversations.is_empty() {
+        md.push_str("_(none)_\n");
+    } else {
+        for (idx, conv) in summary.key_conversations.iter().enumerate() {
+            md.push_str(&format!(
+                "### {}. User\n{}\n\n### {}. Agent\n{}\n\n",
+                idx + 1,
+                truncate_str(&conv.user, 300),
+                idx + 1,
+                truncate_str(&conv.agent, 300)
+            ));
+        }
+    }
+
+    md.push_str("## User Messages\n");
+    if summary.user_messages.is_empty() {
+        md.push_str("_(none)_\n");
+    } else {
+        for (idx, msg) in summary.user_messages.iter().enumerate() {
+            md.push_str(&format!("{}. {}\n", idx + 1, truncate_str(msg, 150)));
+        }
+    }
+}
 
 /// Generate a Markdown handoff document from a single session summary.
 pub fn generate_handoff_markdown(summary: &HandoffSummary) -> String {
@@ -1040,5 +1928,185 @@ mod tests {
         let jsonl = hail.to_jsonl().unwrap();
         let parsed = Session::from_jsonl(&jsonl).unwrap();
         assert_eq!(parsed.session_id, hail.session_id);
+    }
+
+    #[test]
+    fn test_generate_handoff_markdown_v2_section_order() {
+        let mut session = Session::new("v2-sections".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "Implement handoff v2"));
+        session.events.push(make_event(
+            EventType::FileEdit {
+                path: "crates/core/src/handoff.rs".to_string(),
+                diff: None,
+            },
+            "",
+        ));
+        session.events.push(make_event(
+            EventType::ShellCommand {
+                command: "cargo test".to_string(),
+                exit_code: Some(0),
+            },
+            "",
+        ));
+
+        let summary = HandoffSummary::from_session(&session);
+        let md = generate_handoff_markdown_v2(&summary);
+
+        let order = [
+            "## Objective",
+            "## Current State",
+            "## Next Actions (ordered)",
+            "## Verification",
+            "## Blockers / Decisions",
+            "## Evidence Index",
+            "## Conversations",
+            "## User Messages",
+        ];
+
+        let mut last_idx = 0usize;
+        for section in order {
+            let idx = md.find(section).unwrap();
+            assert!(
+                idx >= last_idx,
+                "section order mismatch for {section}: idx={idx}, last={last_idx}"
+            );
+            last_idx = idx;
+        }
+    }
+
+    #[test]
+    fn test_execution_contract_and_verification_from_failed_command() {
+        let mut session = Session::new("failed-check".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "Fix failing tests"));
+        session.events.push(make_event(
+            EventType::FileEdit {
+                path: "src/lib.rs".to_string(),
+                diff: None,
+            },
+            "",
+        ));
+        session.events.push(make_event(
+            EventType::ShellCommand {
+                command: "cargo test".to_string(),
+                exit_code: Some(1),
+            },
+            "",
+        ));
+
+        let summary = HandoffSummary::from_session(&session);
+        assert!(summary
+            .verification
+            .checks_failed
+            .contains(&"cargo test".to_string()));
+        assert!(summary
+            .execution_contract
+            .next_actions
+            .iter()
+            .any(|action| action.contains("cargo test")));
+        assert_eq!(
+            summary.execution_contract.ordered_commands.first(),
+            Some(&"cargo test".to_string())
+        );
+        assert!(summary.execution_contract.rollback_hint.is_none());
+        assert!(summary
+            .execution_contract
+            .rollback_hint_missing_reason
+            .is_some());
+    }
+
+    #[test]
+    fn test_validate_handoff_summary_flags_missing_objective() {
+        let session = Session::new("missing-objective".to_string(), make_agent());
+        let summary = HandoffSummary::from_session(&session);
+        let report = validate_handoff_summary(&summary);
+
+        assert!(!report.passed);
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.code == "objective_missing"));
+    }
+
+    #[test]
+    fn test_validate_handoff_summary_flags_cycle() {
+        let mut session = Session::new("cycle-case".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "test"));
+        let mut summary = HandoffSummary::from_session(&session);
+        summary.work_packages = vec![
+            WorkPackage {
+                id: "a".to_string(),
+                title: "A".to_string(),
+                status: "pending".to_string(),
+                depends_on: vec!["b".to_string()],
+                files: Vec::new(),
+                commands: Vec::new(),
+                evidence_refs: Vec::new(),
+            },
+            WorkPackage {
+                id: "b".to_string(),
+                title: "B".to_string(),
+                status: "pending".to_string(),
+                depends_on: vec!["a".to_string()],
+                files: Vec::new(),
+                commands: Vec::new(),
+                evidence_refs: Vec::new(),
+            },
+        ];
+
+        let report = validate_handoff_summary(&summary);
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.code == "work_package_cycle"));
+    }
+
+    #[test]
+    fn test_validate_handoff_summary_requires_next_actions_for_failed_checks() {
+        let mut session = Session::new("missing-next-action".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "test"));
+        let mut summary = HandoffSummary::from_session(&session);
+        summary.verification.checks_run = vec![CheckRun {
+            command: "cargo test".to_string(),
+            status: "failed".to_string(),
+            exit_code: Some(1),
+            event_id: "evt-1".to_string(),
+        }];
+        summary.execution_contract.next_actions.clear();
+
+        let report = validate_handoff_summary(&summary);
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.code == "next_actions_missing"));
+    }
+
+    #[test]
+    fn test_validate_handoff_summary_flags_missing_objective_evidence() {
+        let mut session = Session::new("missing-objective-evidence".to_string(), make_agent());
+        session
+            .events
+            .push(make_event(EventType::UserMessage, "keep objective"));
+        let mut summary = HandoffSummary::from_session(&session);
+        summary.evidence = vec![EvidenceRef {
+            id: "evidence-1".to_string(),
+            claim: "task_done: something".to_string(),
+            event_id: "evt".to_string(),
+            timestamp: "2026-02-01T00:00:00Z".to_string(),
+            source_type: "TaskEnd".to_string(),
+        }];
+
+        let report = validate_handoff_summary(&summary);
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.code == "objective_evidence_missing"));
     }
 }

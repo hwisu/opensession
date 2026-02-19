@@ -28,7 +28,6 @@ cargo install opensession
 
 opensession --help
 opensession session handoff --last
-opensession publish upload-all
 opensession daemon start --repo .
 ```
 
@@ -77,7 +76,7 @@ Single Cargo workspace with 12 crates:
 | `parsers` | Session file parsers for AI tools |
 | `api` | Shared API types, SQL builders, service logic |
 | `api-client` | HTTP client for server communication |
-| `local-db` | Local SQLite database layer |
+| `local-db` | Local SQLite index/cache layer (metadata, sync state, HEAD refs) |
 | `git-native` | Git operations via `gix` |
 | `server` | Axum HTTP server with SQLite storage |
 | `daemon` | Background file watcher and upload agent |
@@ -91,16 +90,75 @@ Single Cargo workspace with 12 crates:
 | Command | Description |
 |---------|-------------|
 | `opensession` / `opensession .` | Launch local interactive mode (all sessions / current repo scope) |
-| `opensession session handoff` | Generate handoff summary for next agent |
-| `opensession publish upload <file>` | Upload a session file |
-| `opensession publish upload-all` | Discover and upload all sessions |
-| `opensession publish upload <file> --git` | Store session in git-native branch (`opensession/sessions`) |
+| `opensession session handoff` | Generate v2 execution-contract handoff (`--validate`, `--strict`) |
+| `opensession publish upload <file> [--git]` | Publish one session (default: server, `--git`: `opensession/sessions` branch) |
 | `opensession daemon start\|stop\|status\|health` | Manage daemon lifecycle |
 | `opensession daemon select --repo ...` | Select watcher paths/repos |
 | `opensession daemon show` | Show daemon watcher targets |
 | `opensession account connect` | Set server URL/API key (optional) |
 | `opensession account status\|verify` | Check server connectivity |
 | `opensession docs completion <shell>` | Generate shell completions |
+
+## Handoff Usage (Verified)
+
+Commands verified locally in this repository:
+
+```bash
+# Handoff help
+cargo run -p opensession -- session handoff --help
+
+# v2 JSON + validation report (soft gate, exit 0)
+cargo run -p opensession -- session handoff --last --format json --validate
+
+# Strict validation gate (non-zero on findings)
+cargo run -p opensession -- session handoff --last --validate --strict
+
+# Machine-consumable stream envelope
+cargo run -p opensession -- session handoff --last --format stream --validate
+```
+
+Source CLI examples (session creation) and matching handoff commands:
+
+| Source CLI | Example command | Handoff command |
+|---|---|---|
+| Claude Code | `claude -c` or `claude -p "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --claude HEAD --validate` |
+| Codex CLI | `codex exec "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "codex HEAD" --validate` |
+| OpenCode | `opencode run "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "opencode HEAD" --validate` |
+| Gemini CLI | `gemini -p "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --gemini HEAD --validate` |
+| Amp CLI | `amp -x "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "amp HEAD" --validate` |
+
+Reference tips:
+- Replace `HEAD` with `HEAD~N` to target older sessions.
+- `--tool "<name> <ref>"` works for tool families without dedicated flags.
+
+Behavior summary:
+- `--validate`: prints human + JSON validation report, exits `0`.
+- `--validate --strict`: exits non-zero when findings exist.
+- default schema is v2 execution-contract output.
+
+## Worker Local Dev (Wrangler, Verified)
+
+```bash
+wrangler --version
+wrangler dev --help
+
+# basic local run
+wrangler dev --ip 127.0.0.1 --port 8788
+
+# preserve local D1/R2 state between runs
+wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state
+
+# run on Cloudflare edge (remote resources)
+wrangler dev --remote
+
+# debug logs
+wrangler dev --ip 127.0.0.1 --port 8788 --log-level debug
+```
+
+Notes:
+- `wrangler dev` uses `sh build.sh` in this repo and serves the Worker locally.
+- Local bindings (D1/R2/assets/env vars) are attached from `wrangler.toml`.
+- `--remote` requires Cloudflare auth and can hit real remote resources.
 
 ## Configuration
 
@@ -109,6 +167,15 @@ Canonical config file:
 
 Local cache DB:
 - `~/.local/share/opensession/local.db`
+- Used as local index/cache (session metadata, sync status, timeline cache), not canonical session body storage.
+
+## Local-DB Scope
+
+- `local-db` is used for local index/cache concerns:
+  - `log`, `stats`, `HEAD~N` resolution
+  - sync state and TUI cache load
+- default operating path:
+  - v2 handoff schema + git-native workflow
 
 Example:
 
@@ -157,7 +224,7 @@ Important environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENSESSION_DATA_DIR` | `data/` | SQLite DB and session storage |
+| `OPENSESSION_DATA_DIR` | `data/` | Server SQLite DB and blob storage |
 | `OPENSESSION_WEB_DIR` | `web/build` | Static frontend files |
 | `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | `false` blocks anonymous `GET /api/sessions` |
 | `OPENSESSION_SESSION_SCORE_PLUGIN` | `heuristic_v1` | Session score plugin (`heuristic_v1`, `zero_v1`, custom) |

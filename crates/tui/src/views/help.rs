@@ -29,8 +29,8 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let mut lines = vec![
         Line::from(Span::styled("── Global ──", header_style)),
         Line::from(vec![
-            Span::styled("  1/2       ", key_style),
-            Span::styled("Switch tabs (Sessions/Settings)", desc_style),
+            Span::styled("  1/2/3     ", key_style),
+            Span::styled("Switch tabs (Sessions/Settings/Handoff)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  ?         ", key_style),
@@ -84,7 +84,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  f         ", key_style),
-            Span::styled("Cycle tool filter (DB view, legacy)", desc_style),
+            Span::styled("Cycle tool filter (DB view)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  d         ", key_style),

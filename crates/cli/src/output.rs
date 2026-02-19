@@ -2,8 +2,8 @@ use std::io::Write;
 
 use anyhow::Result;
 use opensession_core::handoff::{
-    generate_handoff_hail, generate_handoff_markdown, generate_merged_handoff_markdown,
-    merge_summaries, HandoffSummary,
+    generate_handoff_hail, generate_handoff_markdown_v2, generate_merged_handoff_markdown_v2,
+    merge_summaries, HandoffSummary, HandoffValidationReport,
 };
 use opensession_core::Session;
 
@@ -88,11 +88,25 @@ impl CliDiagnostic {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct RenderOptions<'a> {
+    pub validation_reports: Option<&'a [HandoffValidationReport]>,
+}
+
 /// Render sessions in the specified format.
 pub fn render_output(
     sessions: &[Session],
     format: &OutputFormat,
     writer: &mut dyn Write,
+) -> Result<()> {
+    render_output_with_options(sessions, format, writer, &RenderOptions::default())
+}
+
+pub fn render_output_with_options(
+    sessions: &[Session],
+    format: &OutputFormat,
+    writer: &mut dyn Write,
+    options: &RenderOptions<'_>,
 ) -> Result<()> {
     // Hail format operates directly on sessions, not summaries
     if matches!(format, OutputFormat::Hail) {
@@ -114,27 +128,35 @@ pub fn render_output(
     match format {
         OutputFormat::Text | OutputFormat::Markdown => {
             let md = if summaries.len() == 1 {
-                generate_handoff_markdown(&summaries[0])
+                generate_handoff_markdown_v2(&summaries[0])
             } else {
                 let merged = merge_summaries(&summaries);
-                generate_merged_handoff_markdown(&merged)
+                generate_merged_handoff_markdown_v2(&merged)
             };
             write!(writer, "{md}")?;
         }
         OutputFormat::Jsonl => {
             for summary in &summaries {
-                let json = serde_json::to_string(&summary_to_json(summary))?;
+                let report = find_validation_report(summary, options.validation_reports);
+                let json = serde_json::to_string(&summary_to_json_v2(summary, report))?;
                 writeln!(writer, "{json}")?;
             }
         }
         OutputFormat::Json => {
-            let values: Vec<serde_json::Value> = summaries.iter().map(summary_to_json).collect();
+            let values: Vec<serde_json::Value> = summaries
+                .iter()
+                .map(|summary| {
+                    let report = find_validation_report(summary, options.validation_reports);
+                    summary_to_json_v2(summary, report)
+                })
+                .collect();
             let json = serde_json::to_string_pretty(&values)?;
             write!(writer, "{json}")?;
         }
         OutputFormat::Stream => {
             for summary in &summaries {
-                let data = summary_to_json(summary);
+                let report = find_validation_report(summary, options.validation_reports);
+                let data = summary_to_json_v2(summary, report);
                 let envelope =
                     OutputEnvelope::new("session_summary", &format_summary_message(summary), data);
                 let json = serde_json::to_string(&envelope)?;
@@ -157,8 +179,11 @@ fn format_summary_message(s: &HandoffSummary) -> String {
     format!("{} session ({duration}, {tok_str})", s.tool)
 }
 
-fn summary_to_json(s: &HandoffSummary) -> serde_json::Value {
-    serde_json::json!({
+fn summary_to_json_v2(
+    s: &HandoffSummary,
+    validation: Option<&HandoffValidationReport>,
+) -> serde_json::Value {
+    let mut json = serde_json::json!({
         "session_id": s.source_session_id,
         "tool": s.tool,
         "model": s.model,
@@ -175,9 +200,30 @@ fn summary_to_json(s: &HandoffSummary) -> serde_json::Value {
             serde_json::json!({"path": f.path, "action": f.action})
         }).collect::<Vec<_>>(),
         "files_read": s.files_read,
-        "errors": s.errors,
-        "task_summaries": s.task_summaries,
+        "key_conversations": s.key_conversations.iter().map(|conv| {
+            serde_json::json!({"user": conv.user, "agent": conv.agent})
+        }).collect::<Vec<_>>(),
         "user_messages": s.user_messages,
+        "execution_contract": serde_json::to_value(&s.execution_contract).unwrap_or(serde_json::Value::Null),
+        "uncertainty": serde_json::to_value(&s.uncertainty).unwrap_or(serde_json::Value::Null),
+        "verification": serde_json::to_value(&s.verification).unwrap_or(serde_json::Value::Null),
+        "evidence": serde_json::to_value(&s.evidence).unwrap_or(serde_json::Value::Null),
+        "work_packages": serde_json::to_value(&s.work_packages).unwrap_or(serde_json::Value::Null),
+    });
+    if let Some(validation) = validation {
+        json["validation"] = serde_json::to_value(validation).unwrap_or(serde_json::Value::Null);
+    }
+    json
+}
+
+fn find_validation_report<'a>(
+    summary: &HandoffSummary,
+    reports: Option<&'a [HandoffValidationReport]>,
+) -> Option<&'a HandoffValidationReport> {
+    reports.and_then(|items| {
+        items
+            .iter()
+            .find(|report| report.session_id == summary.source_session_id)
     })
 }
 
@@ -357,19 +403,24 @@ mod tests {
     // ── summary_to_json tests ───────────────────────────────────────────
 
     #[test]
-    fn test_summary_to_json_populated() {
+    fn test_summary_to_json_v2_populated() {
         let session = make_test_session();
         let summary = HandoffSummary::from_session(&session);
-        let json = summary_to_json(&summary);
+        let json = summary_to_json_v2(&summary, None);
         assert_eq!(json["session_id"], "test-session-1");
         assert_eq!(json["tool"], "claude-code");
         assert_eq!(json["model"], "claude-opus-4-6");
         assert!(json["stats"]["message_count"].as_u64().is_some());
         assert!(json["files_modified"].as_array().is_some());
+        assert!(json.get("execution_contract").is_some());
+        assert!(json.get("verification").is_some());
+        assert!(json.get("task_summaries").is_none());
+        assert!(json.get("errors").is_none());
+        assert!(json.get("shell_commands").is_none());
     }
 
     #[test]
-    fn test_summary_to_json_empty_collections() {
+    fn test_summary_to_json_v2_empty_collections() {
         use opensession_core::{Agent, Session};
         let session = Session::new(
             "empty-1".to_string(),
@@ -381,10 +432,20 @@ mod tests {
             },
         );
         let summary = HandoffSummary::from_session(&session);
-        let json = summary_to_json(&summary);
-        assert!(json["errors"].as_array().unwrap().is_empty());
+        let json = summary_to_json_v2(&summary, None);
         assert!(json["files_modified"].as_array().unwrap().is_empty());
         assert!(json["files_read"].as_array().unwrap().is_empty());
+        assert!(json["verification"]["checks_run"].as_array().is_some());
+    }
+
+    #[test]
+    fn test_render_output_default_markdown_is_v2() {
+        let session = make_test_session();
+        let mut buf = Vec::new();
+        render_output(&[session], &OutputFormat::Markdown, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("## Next Actions (ordered)"));
+        assert!(output.contains("## Evidence Index"));
     }
 
     // ── format_summary_message tests ────────────────────────────────────

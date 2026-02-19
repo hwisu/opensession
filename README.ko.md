@@ -28,7 +28,6 @@ cargo install opensession
 
 opensession --help
 opensession session handoff --last
-opensession publish upload-all
 opensession daemon start --repo .
 ```
 
@@ -77,7 +76,7 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 | `parsers` | AI 도구 세션 파서 |
 | `api` | 공용 API 타입, SQL 빌더, 서비스 로직 |
 | `api-client` | 서버 통신용 HTTP 클라이언트 |
-| `local-db` | 로컬 SQLite 레이어 |
+| `local-db` | 로컬 SQLite 인덱스/캐시 레이어(메타데이터, sync 상태, HEAD 참조) |
 | `git-native` | `gix` 기반 Git 연산 |
 | `server` | Axum HTTP 서버 + SQLite 저장소 |
 | `daemon` | 백그라운드 감시/업로드 에이전트 |
@@ -91,16 +90,75 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 | 명령어 | 설명 |
 |--------|------|
 | `opensession` / `opensession .` | 로컬 인터랙티브 모드 실행 |
-| `opensession session handoff` | 다음 에이전트용 핸드오프 요약 생성 |
-| `opensession publish upload <file>` | 세션 파일 업로드 |
-| `opensession publish upload-all` | 모든 세션 탐색 후 업로드 |
-| `opensession publish upload <file> --git` | git-native 브랜치(`opensession/sessions`)에 저장 |
+| `opensession session handoff` | v2 실행 계약 핸드오프 생성 (`--validate`, `--strict`) |
+| `opensession publish upload <file> [--git]` | 단일 세션 퍼블리시 (기본: 서버, `--git`: `opensession/sessions` 브랜치) |
 | `opensession daemon start\|stop\|status\|health` | 데몬 실행/중지/상태 |
 | `opensession daemon select --repo ...` | 감시 경로/레포 선택 |
 | `opensession daemon show` | 현재 감시 대상 확인 |
 | `opensession account connect` | 서버 URL/API 키 설정(선택) |
 | `opensession account status\|verify` | 서버 연결 상태 확인 |
 | `opensession docs completion <shell>` | 쉘 자동완성 생성 |
+
+## Handoff 사용법 (실행 검증 완료)
+
+이 레포에서 아래 명령을 실제로 실행해 확인했습니다.
+
+```bash
+# handoff 도움말
+cargo run -p opensession -- session handoff --help
+
+# v2 JSON + validation 리포트 (소프트 게이트, exit 0)
+cargo run -p opensession -- session handoff --last --format json --validate
+
+# strict validation 게이트 (위반 시 non-zero)
+cargo run -p opensession -- session handoff --last --validate --strict
+
+# 머신 소비용 stream envelope
+cargo run -p opensession -- session handoff --last --format stream --validate
+```
+
+CLI 종류별 예시(세션 생성)와 대응 handoff 명령:
+
+| 소스 CLI | 예시 명령 | handoff 명령 |
+|---|---|---|
+| Claude Code | `claude -c` 또는 `claude -p "실패 테스트를 고치고 회귀 테스트를 추가해줘"` | `cargo run -p opensession -- session handoff --claude HEAD --validate` |
+| Codex CLI | `codex exec "실패 테스트를 고치고 회귀 테스트를 추가해줘"` | `cargo run -p opensession -- session handoff --tool "codex HEAD" --validate` |
+| OpenCode | `opencode run "실패 테스트를 고치고 회귀 테스트를 추가해줘"` | `cargo run -p opensession -- session handoff --tool "opencode HEAD" --validate` |
+| Gemini CLI | `gemini -p "실패 테스트를 고치고 회귀 테스트를 추가해줘"` | `cargo run -p opensession -- session handoff --gemini HEAD --validate` |
+| Amp CLI | `amp -x "실패 테스트를 고치고 회귀 테스트를 추가해줘"` | `cargo run -p opensession -- session handoff --tool "amp HEAD" --validate` |
+
+참고:
+- 최신 세션이 아니라 이전 세션이면 `HEAD` 대신 `HEAD~N`을 사용하세요.
+- 전용 플래그가 없는 도구군은 `--tool "<name> <ref>"` 형식을 사용합니다.
+
+동작 요약:
+- `--validate`: 사람이 읽는 리포트 + JSON 리포트를 출력하고 종료코드 `0`.
+- `--validate --strict`: 위반이 있으면 non-zero 종료.
+- 기본 스키마는 v2 실행 계약 출력입니다.
+
+## Worker 로컬 개발 (Wrangler, 실행 검증 완료)
+
+```bash
+wrangler --version
+wrangler dev --help
+
+# 기본 로컬 실행
+wrangler dev --ip 127.0.0.1 --port 8788
+
+# 로컬 D1/R2 상태 유지
+wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state
+
+# Cloudflare 엣지 원격 실행
+wrangler dev --remote
+
+# 디버그 로그
+wrangler dev --ip 127.0.0.1 --port 8788 --log-level debug
+```
+
+메모:
+- `wrangler dev`는 이 레포의 `sh build.sh`를 호출해 Worker를 로컬 서빙합니다.
+- `wrangler.toml` 기준으로 D1/R2/assets/env 바인딩이 로컬에 연결됩니다.
+- `--remote`는 Cloudflare 로그인/권한이 필요하고 실제 원격 리소스에 접근할 수 있습니다.
 
 ## 설정
 
@@ -109,6 +167,15 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 
 로컬 캐시 DB:
 - `~/.local/share/opensession/local.db`
+- 세션 본문의 정본 저장소가 아니라 로컬 인덱스/캐시(메타데이터, sync 상태, 타임라인 캐시)로 사용됩니다.
+
+## local-db 범주
+
+- `local-db`는 로컬 인덱스/캐시 용도로 사용됩니다:
+  - `log`, `stats`, `HEAD~N` 해석
+  - sync 상태 및 TUI 캐시 초기 로드
+- 기본 운영 경로:
+  - v2 handoff 스키마 + git-native 워크플로
 
 예시:
 
@@ -157,7 +224,7 @@ cargo run -p opensession-server
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `OPENSESSION_DATA_DIR` | `data/` | SQLite DB 및 세션 저장 경로 |
+| `OPENSESSION_DATA_DIR` | `data/` | 서버 SQLite DB 및 blob 저장 경로 |
 | `OPENSESSION_WEB_DIR` | `web/build` | 정적 프론트엔드 경로 |
 | `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | `false`이면 익명 `GET /api/sessions` 차단 |
 | `OPENSESSION_SESSION_SCORE_PLUGIN` | `heuristic_v1` | 세션 점수 플러그인 (`heuristic_v1`, `zero_v1`, custom) |

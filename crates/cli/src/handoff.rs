@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use dialoguer::Select;
+use opensession_core::handoff::{
+    validate_handoff_summaries, HandoffSummary, HandoffValidationReport,
+};
 use opensession_core::Session;
 use opensession_parsers::discover::discover_sessions;
 use opensession_parsers::{all_parsers, SessionParser};
@@ -17,6 +20,8 @@ pub async fn run_handoff(
     claude: Option<&str>,
     gemini: Option<&str>,
     tool_refs: &[String],
+    validate: bool,
+    strict: bool,
 ) -> Result<()> {
     let sessions = resolve_sessions(files, last, claude, gemini, tool_refs)?;
 
@@ -28,7 +33,27 @@ pub async fn run_handoff(
     let output_format = format;
 
     let mut result = Vec::new();
-    crate::output::render_output(&sessions, &output_format, &mut result)?;
+    let validation_enabled = validate || strict;
+    if validation_enabled {
+        let summaries: Vec<HandoffSummary> =
+            sessions.iter().map(HandoffSummary::from_session).collect();
+        let reports = validate_handoff_summaries(&summaries);
+        print_validation_reports(&reports)?;
+        let has_findings = reports.iter().any(|report| !report.passed);
+        if strict && has_findings {
+            bail!("Handoff validation failed in strict mode.");
+        }
+        crate::output::render_output_with_options(
+            &sessions,
+            &output_format,
+            &mut result,
+            &crate::output::RenderOptions {
+                validation_reports: Some(&reports),
+            },
+        )?;
+    } else {
+        crate::output::render_output(&sessions, &output_format, &mut result)?;
+    }
     let result_str = String::from_utf8(result)?;
 
     let final_result = result_str;
@@ -41,6 +66,36 @@ pub async fn run_handoff(
         print!("{final_result}");
     }
 
+    Ok(())
+}
+
+fn print_validation_reports(reports: &[HandoffValidationReport]) -> Result<()> {
+    let passed = reports.iter().filter(|report| report.passed).count();
+    eprintln!("Handoff validation: {passed}/{} passed", reports.len());
+
+    for report in reports {
+        if report.findings.is_empty() {
+            continue;
+        }
+        eprintln!(
+            "- [{}] {} finding(s)",
+            report.session_id,
+            report.findings.len()
+        );
+        for finding in &report.findings {
+            eprintln!(
+                "  - [{}] {}: {}",
+                finding.severity, finding.code, finding.message
+            );
+        }
+    }
+
+    let machine = serde_json::json!({
+        "version": "0.1",
+        "type": "handoff_validation",
+        "reports": reports,
+    });
+    eprintln!("{}", serde_json::to_string(&machine)?);
     Ok(())
 }
 

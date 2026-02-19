@@ -5,9 +5,9 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 const SESSION_STORAGE_METHOD_DETAILS: [&str; 3] = [
-    "· Git-Native (Branch Based) — Store session snapshots as local git branch objects",
-    "· SQLite                    — Store session snapshots in local SQLite storage",
-    "· WARNING                   — SQLite session data can grow local disk usage quickly",
+    "· Git-Native (Branch Based) — Store canonical session snapshots as local git branch objects",
+    "· SQLite                    — Keep local index/cache metadata for fast local queries",
+    "· NOTE                      — SQLite is an index/cache layer, not canonical body storage",
 ];
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -311,7 +311,7 @@ mod tests {
         assert!(details.iter().any(|line| line.contains("sqlite")));
         assert!(details
             .iter()
-            .any(|line| line.contains("sqlite") && line.contains("warning")));
+            .any(|line| line.contains("index/cache") && line.contains("not canonical")));
         assert!(details.iter().all(|line| !line.contains("platform api")));
     }
 

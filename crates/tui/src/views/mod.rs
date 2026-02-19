@@ -1,3 +1,4 @@
+pub mod handoff;
 pub mod help;
 pub mod modal;
 pub mod session_detail;

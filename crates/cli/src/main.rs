@@ -156,6 +156,14 @@ enum SessionAction {
         /// Generic tool session reference (e.g. "amp HEAD~2")
         #[arg(long)]
         tool: Vec<String>,
+
+        /// Validate handoff quality and print a validation report.
+        #[arg(long)]
+        validate: bool,
+
+        /// Treat validation findings as hard failures (non-zero exit).
+        #[arg(long)]
+        strict: bool,
     },
 }
 
@@ -241,10 +249,6 @@ fn suggestion_for_code(code: &ExitCode) -> Option<&'static str> {
 enum DaemonAction {
     /// Start the background daemon (optionally update watch targets first)
     Start {
-        /// Deprecated. Agent selection is now path-based and always supports all parsers.
-        #[arg(long)]
-        agent: Vec<String>,
-
         /// Repo directories to watch/upload
         #[arg(long)]
         repo: Vec<PathBuf>,
@@ -257,10 +261,6 @@ enum DaemonAction {
     Health,
     /// Update daemon watch targets (paths) without starting daemon
     Select {
-        /// Deprecated. Agent selection is now path-based and always supports all parsers.
-        #[arg(long)]
-        agent: Vec<String>,
-
         /// Repo directories to watch/upload
         #[arg(long)]
         repo: Vec<PathBuf>,
@@ -382,6 +382,8 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
             claude,
             gemini,
             tool,
+            validate,
+            strict,
         } => {
             let format = format.unwrap_or_else(default_handoff_format_for_output);
             let force_last =
@@ -394,6 +396,8 @@ async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
                 claude.as_deref(),
                 gemini.as_deref(),
                 &tool,
+                validate,
+                strict,
             )
             .await
         }
@@ -771,9 +775,9 @@ async fn run_publish_action(action: PublishAction) -> anyhow::Result<()> {
 
 async fn run_daemon_action(action: DaemonAction) -> anyhow::Result<()> {
     match action {
-        DaemonAction::Start { agent, repo } => {
-            if !agent.is_empty() || !repo.is_empty() {
-                update_daemon_targets(&agent, &repo)?;
+        DaemonAction::Start { repo } => {
+            if !repo.is_empty() {
+                update_daemon_targets(&repo)?;
             }
             ensure_enabled_stream_hooks()?;
             daemon_ctl::daemon_start()
@@ -781,11 +785,11 @@ async fn run_daemon_action(action: DaemonAction) -> anyhow::Result<()> {
         DaemonAction::Stop => daemon_ctl::daemon_stop(),
         DaemonAction::Status => daemon_ctl::daemon_status(),
         DaemonAction::Health => run_daemon_health().await,
-        DaemonAction::Select { agent, repo } => {
-            if agent.is_empty() && repo.is_empty() {
+        DaemonAction::Select { repo } => {
+            if repo.is_empty() {
                 bail!("No changes requested. Use --repo.");
             }
-            update_daemon_targets(&agent, &repo)?;
+            update_daemon_targets(&repo)?;
             print_daemon_targets()
         }
         DaemonAction::Show => print_daemon_targets(),
@@ -818,13 +822,7 @@ fn run_docs_action(action: DocsAction) -> anyhow::Result<()> {
     }
 }
 
-fn update_daemon_targets(agent_flags: &[String], repo_flags: &[PathBuf]) -> anyhow::Result<()> {
-    if !agent_flags.is_empty() {
-        eprintln!(
-            "Note: --agent is deprecated and ignored. All supported agents are watched via configured paths."
-        );
-    }
-
+fn update_daemon_targets(repo_flags: &[PathBuf]) -> anyhow::Result<()> {
     let current_repos = config::daemon_watch_paths()?;
 
     let next_repos = if repo_flags.is_empty() {

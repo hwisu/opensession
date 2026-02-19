@@ -29,11 +29,8 @@ cargo install opensession
 # Session handoff
 opensession session handoff --last
 
-# Upload one session
-opensession publish upload ./session.jsonl
-
-# Upload all discovered sessions
-opensession publish upload-all
+# Publish one session (default: server, --git: opensession/sessions branch)
+opensession publish upload ./session.jsonl --git
 
 # Start daemon (watch + upload)
 opensession daemon start --repo .
@@ -57,14 +54,74 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 ## CLI Surface
 
 - `opensession session handoff`
+- `opensession session handoff --validate`
+- `opensession session handoff --strict`
 - `opensession publish upload`
-- `opensession publish upload-all`
 - `opensession daemon start|stop|status|health|select|show|stream-push`
 - `opensession account connect|show|status|verify`
 - `opensession docs completion`
 
 Notes:
 - `publish upload --git` stores sessions on `opensession/sessions` branch.
+
+## Handoff Commands (Verified)
+
+```bash
+# Help
+cargo run -p opensession -- session handoff --help
+
+# v2 + soft validation gate (exit 0)
+cargo run -p opensession -- session handoff --last --format json --validate
+
+# strict validation gate (non-zero on findings)
+cargo run -p opensession -- session handoff --last --validate --strict
+
+# stream envelope output
+cargo run -p opensession -- session handoff --last --format stream --validate
+```
+
+CLI-by-CLI examples:
+
+| Source CLI | Example command | Handoff command |
+|---|---|---|
+| Claude Code | `claude -c` or `claude -p "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --claude HEAD --validate` |
+| Codex CLI | `codex exec "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "codex HEAD" --validate` |
+| OpenCode | `opencode run "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "opencode HEAD" --validate` |
+| Gemini CLI | `gemini -p "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --gemini HEAD --validate` |
+| Amp CLI | `amp -x "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "amp HEAD" --validate` |
+
+Tips:
+- Use `HEAD~N` instead of `HEAD` for older sessions.
+- `--tool "<name> <ref>"` is for tool families without dedicated flags.
+
+Semantics:
+- `--validate`: report-only, exit `0`.
+- `--validate --strict`: non-zero on findings.
+- default schema is v2.
+
+## Worker Local Dev (Wrangler, Verified)
+
+```bash
+wrangler --version
+wrangler dev --help
+
+# basic local run
+wrangler dev --ip 127.0.0.1 --port 8788
+
+# preserve local D1/R2 state between runs
+wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state
+
+# run on Cloudflare edge
+wrangler dev --remote
+
+# debug logs
+wrangler dev --ip 127.0.0.1 --port 8788 --log-level debug
+```
+
+Notes:
+- `wrangler dev` runs `sh build.sh` in this repo.
+- Local D1/R2/assets/env bindings are loaded from `wrangler.toml`.
+- `--remote` requires Cloudflare auth and can hit live remote resources.
 
 ## Configuration
 
@@ -73,6 +130,14 @@ Canonical config file:
 
 Local cache DB:
 - `~/.local/share/opensession/local.db`
+- Used as local index/cache (session metadata, sync status, timeline cache), not canonical session body storage.
+
+## Local-DB Scope
+
+- local index/cache responsibilities:
+  - `log`, `stats`, `HEAD~N`, sync status, TUI cache load
+- default path:
+  - v2 handoff output + git-native workflow
 
 Example:
 
@@ -105,7 +170,7 @@ Important environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENSESSION_DATA_DIR` | `data/` | SQLite + session body storage |
+| `OPENSESSION_DATA_DIR` | `data/` | Server SQLite DB + blob storage |
 | `OPENSESSION_WEB_DIR` | `web/build` | Static web directory |
 | `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | `false` blocks anonymous `GET /api/sessions` |
 | `OPENSESSION_SESSION_SCORE_PLUGIN` | `heuristic_v1` | Session score plugin id |

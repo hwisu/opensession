@@ -13,7 +13,7 @@ use git::GitContext;
 
 type Migration = (&'static str, &'static str);
 
-// Keep local cache schema aligned with remote/session schema migrations.
+// Keep local index/cache schema aligned with remote/session schema migrations.
 const REMOTE_MIGRATIONS: &[Migration] = &[
     ("0001_schema", include_str!("../migrations/0001_schema.sql")),
     (
@@ -65,7 +65,7 @@ const LOCAL_MIGRATIONS: &[Migration] = &[
     ),
 ];
 
-/// A local session row stored in the local SQLite database.
+/// A local session row stored in the local SQLite index/cache database.
 #[derive(Debug, Clone)]
 pub struct LocalSessionRow {
     pub id: String,
@@ -113,7 +113,7 @@ pub struct CommitLink {
     pub created_at: String,
 }
 
-/// A cached timeline summary row stored in local DB.
+/// A cached timeline summary row stored in the local index/cache DB.
 #[derive(Debug, Clone)]
 pub struct TimelineSummaryCacheRow {
     pub lookup_key: String,
@@ -288,7 +288,7 @@ pub enum LocalTimeRange {
     All,
 }
 
-/// Minimal remote session payload needed for local cache upsert.
+/// Minimal remote session payload needed for local index/cache upsert.
 #[derive(Debug, Clone)]
 pub struct RemoteSessionSummary {
     pub id: String,
@@ -357,7 +357,8 @@ FROM sessions s \
 LEFT JOIN session_sync ss ON ss.session_id = s.id \
 LEFT JOIN users u ON u.id = s.user_id";
 
-/// Local SQLite database shared by TUI and Daemon.
+/// Local SQLite index/cache shared by TUI and Daemon.
+/// This is not the source of truth for canonical session bodies.
 /// Thread-safe: wraps the connection in a Mutex so it can be shared via `Arc<LocalDb>`.
 pub struct LocalDb {
     conn: Mutex<Connection>,
@@ -432,6 +433,8 @@ impl LocalDb {
         let max_active_agents = opensession_core::agent_metrics::max_active_agents(session) as i64;
 
         let conn = self.conn();
+        // NOTE: `body_storage_key` is a deprecated compatibility column kept
+        // for legacy schema parity during migration.
         conn.execute(
             "INSERT INTO sessions \
              (id, team_id, tool, agent_provider, agent_model, \
@@ -498,6 +501,8 @@ impl LocalDb {
 
     pub fn upsert_remote_session(&self, summary: &RemoteSessionSummary) -> Result<()> {
         let conn = self.conn();
+        // NOTE: `body_storage_key` is a deprecated compatibility column kept
+        // for legacy schema parity during migration.
         conn.execute(
             "INSERT INTO sessions \
              (id, user_id, team_id, tool, agent_provider, agent_model, \
@@ -1013,7 +1018,7 @@ impl LocalDb {
         Ok(false)
     }
 
-    // ── Body cache ─────────────────────────────────────────────────────
+    // ── Body cache (legacy compatibility) ──────────────────────────────
 
     pub fn cache_body(&self, session_id: &str, body: &[u8]) -> Result<()> {
         self.conn().execute(
@@ -1319,7 +1324,7 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
     let conn = Connection::open(path).with_context(|| format!("open db {}", path.display()))?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
-    // Disable FK constraints for local DB (it's a cache, not source of truth)
+    // Disable FK constraints for local DB (index/cache, not source of truth)
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
 
     apply_local_migrations(&conn)?;
@@ -1443,6 +1448,7 @@ const REQUIRED_SESSION_COLUMNS: &[(&str, &str)] = &[
     ("duration_seconds", "INTEGER DEFAULT 0"),
     ("total_input_tokens", "INTEGER DEFAULT 0"),
     ("total_output_tokens", "INTEGER DEFAULT 0"),
+    // Deprecated compatibility column from pre git-native body storage.
     ("body_storage_key", "TEXT DEFAULT ''"),
     ("body_url", "TEXT"),
     ("git_remote", "TEXT"),

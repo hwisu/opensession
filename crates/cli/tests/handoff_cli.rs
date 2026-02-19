@@ -22,6 +22,13 @@ fn create_codex_session(home: &Path, rel: &str) -> PathBuf {
     path
 }
 
+fn create_codex_assistant_only_session(home: &Path, rel: &str) -> PathBuf {
+    let path = home.join(".codex").join("sessions").join(rel);
+    let body = r#"{"type":"assistant","uuid":"a1","sessionId":"handoff-cli-test","timestamp":"2026-02-14T00:00:02Z","message":{"role":"assistant","model":"gpt-4.1","content":[{"type":"text","text":"assistant only output"}]}}"#;
+    write_file(&path, body);
+    path
+}
+
 fn run(home: &Path, args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
     cmd.args(args).env("HOME", home).env("NO_COLOR", "1");
@@ -52,6 +59,7 @@ fn handoff_help_hides_llm_flags() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("--summarize"));
     assert!(!stdout.contains("--ai"));
+    assert!(!stdout.contains("--legacy-schema"));
 }
 
 #[test]
@@ -119,4 +127,90 @@ fn handoff_defaults_to_json_and_last_when_piped() {
     let arr = parsed.as_array().expect("json array");
     assert_eq!(arr.len(), 1);
     assert!(arr[0].get("session_id").is_some());
+}
+
+#[test]
+fn handoff_validate_reports_but_exits_zero() {
+    let tmp = make_home();
+    let home = tmp.path();
+    let session = create_codex_assistant_only_session(home, "2026/02/14/handoff-validate.jsonl");
+
+    let output = run(
+        home,
+        &[
+            "session",
+            "handoff",
+            session.to_str().expect("session path"),
+            "--format",
+            "json",
+            "--validate",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "validate should be soft-pass: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Handoff validation:"));
+    assert!(stderr.contains("\"type\":\"handoff_validation\""));
+}
+
+#[test]
+fn handoff_strict_fails_on_validation_findings() {
+    let tmp = make_home();
+    let home = tmp.path();
+    let session = create_codex_assistant_only_session(home, "2026/02/14/handoff-strict.jsonl");
+
+    let output = run(
+        home,
+        &[
+            "session",
+            "handoff",
+            session.to_str().expect("session path"),
+            "--strict",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "strict should fail on findings, stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"type\":\"handoff_validation\""));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("strict mode"));
+}
+
+#[test]
+fn handoff_json_shape_is_v2() {
+    let tmp = make_home();
+    let home = tmp.path();
+    let session = create_codex_session(home, "2026/02/14/handoff-v2-shape.jsonl");
+
+    let output_v2 = run(
+        home,
+        &[
+            "session",
+            "handoff",
+            session.to_str().expect("session path"),
+            "--format",
+            "json",
+        ],
+    );
+    assert!(
+        output_v2.status.success(),
+        "v2 handoff failed: {}",
+        String::from_utf8_lossy(&output_v2.stderr)
+    );
+    let parsed_v2: Value = serde_json::from_slice(&output_v2.stdout).expect("v2 json output");
+    let arr_v2 = parsed_v2.as_array().expect("v2 json array");
+    assert_eq!(arr_v2.len(), 1);
+    let v2 = &arr_v2[0];
+    assert!(v2.get("execution_contract").is_some());
+    assert!(v2.get("task_summaries").is_none());
+    assert!(v2.get("errors").is_none());
+    assert!(v2.get("shell_commands").is_none());
 }

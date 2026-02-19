@@ -699,8 +699,8 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
     SettingItem::Field {
         field: SettingField::GitStorageMethod,
         label: "Storage Method",
-        description: "Session storage backend: git-native(branch based) · sqlite(local database)",
-        dependency_hint: Some("SQLite mode may grow quickly with large session bodies"),
+        description: "Session capture backend: git-native(canonical) · sqlite(local index/cache)",
+        dependency_hint: Some("SQLite mode is a local index/cache for fast query and browsing"),
     },
     SettingItem::Header("Privacy"),
     SettingItem::Field {
@@ -1361,7 +1361,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrate_summary_window_v2_converts_legacy_default_once() {
+    fn migrate_summary_window_v2_converts_old_default_once() {
         let mut cfg = DaemonConfig::default();
         cfg.daemon.summary_event_window = 8;
         cfg.daemon.summary_window_migrated_v2 = false;
@@ -1376,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_summary_window_v2_marks_non_legacy_without_overwrite() {
+    fn migrate_summary_window_v2_marks_existing_value_without_overwrite() {
         let mut cfg = DaemonConfig::default();
         cfg.daemon.summary_event_window = 5;
         cfg.daemon.summary_window_migrated_v2 = false;
@@ -1450,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn git_storage_method_set_value_accepts_legacy_aliases() {
+    fn git_storage_method_set_value_accepts_compat_aliases() {
         let mut cfg = DaemonConfig::default();
 
         SettingField::GitStorageMethod.set_value(&mut cfg, "none");

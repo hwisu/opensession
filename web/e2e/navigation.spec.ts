@@ -6,8 +6,8 @@ test.describe('Navigation', () => {
 		await page.goto('/');
 		const nav = page.locator('nav');
 		await expect(nav.getByText('Sessions')).toBeVisible();
-		await expect(nav.getByText('DX')).toBeVisible();
 		await expect(nav.getByText('Docs')).toBeVisible();
+		await expect(nav.getByText('DX')).toHaveCount(0);
 		await expect(nav.getByText('Inbox')).toHaveCount(0);
 		await expect(nav.getByText('Teams')).toHaveCount(0);
 		await expect(nav.getByText('Upload')).toHaveCount(0);
@@ -29,7 +29,7 @@ test.describe('Navigation', () => {
 		await expect(footer.getByText('opensession.io')).toBeVisible();
 	});
 
-	test('command palette opens and navigates to DX lab', async ({ page }) => {
+	test('command palette opens and navigates to docs', async ({ page }) => {
 		await page.goto('/');
 		await expect(page.locator('[data-testid="shortcut-footer"]')).toBeVisible();
 		await page.evaluate(() => {
@@ -45,9 +45,9 @@ test.describe('Navigation', () => {
 		await expect(palette).toBeVisible();
 		const input = page.locator('[data-testid="command-palette-input"]');
 		await expect(input).toBeFocused();
-		await input.fill('dx lab');
+		await input.fill('docs');
 		await page.keyboard.press('Enter');
-		await expect(page).toHaveURL(/\/dx/);
+		await expect(page).toHaveURL(/\/docs/);
 	});
 
 	test('session detail footer shows in-session shortcut hints', async ({ page, request }) => {

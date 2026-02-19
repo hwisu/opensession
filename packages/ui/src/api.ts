@@ -290,8 +290,19 @@ export async function authLogout(): Promise<void> {
 export async function getAuthProviders(): Promise<AuthProvidersResponse> {
 	const url = `${getBaseUrl()}/api/auth/providers`;
 	const res = await fetch(url);
-	if (!res.ok) return { email_password: true, oauth: [] };
+	if (!res.ok) return { email_password: false, oauth: [] };
 	return res.json();
+}
+
+export async function isAuthApiAvailable(): Promise<boolean> {
+	const url = `${getBaseUrl()}/api/auth/providers`;
+	try {
+		const res = await fetch(url);
+		if (res.status === 404 || res.status === 405) return false;
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export function getOAuthUrl(provider: string): string {

@@ -2,12 +2,18 @@
 	import { RegisterPage } from '@opensession/ui/components';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { appProfile } from '$lib/profile';
+	import { isAuthApiAvailable } from '$lib/api';
 
 	onMount(() => {
-		if (appProfile === 'worker') {
-			void goto('/');
-		}
+		let cancelled = false;
+		void isAuthApiAvailable().then((enabled) => {
+			if (!enabled && !cancelled) {
+				void goto('/');
+			}
+		});
+		return () => {
+			cancelled = true;
+		};
 	});
 </script>
 

@@ -5,6 +5,7 @@ export {
 	clearApiKey,
 	setBaseUrl,
 	ApiError,
+	isAuthApiAvailable,
 	isAuthenticated,
 	verifyAuth,
 	authLogin,

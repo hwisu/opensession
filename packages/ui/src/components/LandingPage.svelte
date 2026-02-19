@@ -65,7 +65,7 @@ const highlights = [
 				{/each}
 			</ul>
 			<div class="mt-4 border-t border-border pt-3 text-[11px] text-text-muted">
-				Browse docs and DX tools without login. Sign in to upload and manage private workflows.
+				Browse docs without login. Sign in to upload and manage private workflows.
 			</div>
 		</div>
 	</section>

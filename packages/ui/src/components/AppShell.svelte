@@ -1,7 +1,7 @@
 <script lang="ts">
 import { tick } from 'svelte';
 import type { Snippet } from 'svelte';
-import { authLogout, getSettings, isAuthenticated, verifyAuth } from '../api';
+import { authLogout, getSettings, isAuthApiAvailable, isAuthenticated, verifyAuth } from '../api';
 import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
@@ -33,9 +33,9 @@ let paletteQuery = $state('');
 let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
 let authGuardSeq = 0;
+let authEnabled = $state(false);
 
-const authEnabled = $derived(appProfile === 'server');
-const uploadEnabled = $derived(appProfile !== 'worker');
+const uploadEnabled = $derived(authEnabled);
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/');
 
@@ -45,8 +45,7 @@ function isGuestAllowedPath(path: string): boolean {
 		path === '/login' ||
 		path === '/register' ||
 		path === '/auth/callback' ||
-		path.startsWith('/docs') ||
-		path.startsWith('/dx')
+		path.startsWith('/docs')
 	);
 }
 
@@ -55,9 +54,27 @@ const navLinks = $derived.by(() => {
 	if (uploadEnabled && user) {
 		links.push({ href: '/upload', label: 'Upload' });
 	}
-	links.push({ href: '/dx', label: 'DX' });
 	links.push({ href: '/docs', label: 'Docs' });
 	return links;
+});
+
+$effect(() => {
+	void appProfile;
+	authEnabled = appProfile === 'server';
+	let cancelled = false;
+	isAuthApiAvailable()
+		.then((available) => {
+			if (cancelled) return;
+			authEnabled = available;
+		})
+		.catch(() => {
+			if (cancelled) return;
+			authEnabled = appProfile === 'server';
+		});
+
+	return () => {
+		cancelled = true;
+	};
 });
 
 const shortcutHints = $derived.by(() => {
@@ -153,13 +170,6 @@ const allPaletteCommands = $derived.by(() => {
 			'Open product and API documentation',
 			['docs', 'documentation', 'guide'],
 			() => onNavigate('/docs'),
-		),
-		createPaletteCommand(
-			'go-dx',
-			'Go to DX Lab',
-			'Open parser playground and conformance dashboard',
-			['dx', 'playground', 'conformance', 'parser'],
-			() => onNavigate('/dx'),
 		),
 	];
 

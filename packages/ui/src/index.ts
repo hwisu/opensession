@@ -12,6 +12,7 @@ export {
 	getSession,
 	getSettings,
 	handleAuthCallback,
+	isAuthApiAvailable,
 	isAuthenticated,
 	listSessions,
 	setApiKey,

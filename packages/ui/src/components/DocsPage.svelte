@@ -50,7 +50,6 @@ onMount(() => {
 	<div class="mb-4 flex flex-wrap items-center gap-2 border border-border bg-bg-secondary px-3 py-2 text-xs text-text-secondary">
 		<span class="font-semibold text-text-primary">Quick Links</span>
 		<button onclick={() => onNavigate('/')} class="text-accent hover:underline">Sessions</button>
-		<button onclick={() => onNavigate('/dx')} class="text-accent hover:underline">DX Lab</button>
 		{#if showUploadLink}
 			<button onclick={() => onNavigate('/upload')} class="text-accent hover:underline">Upload</button>
 		{/if}

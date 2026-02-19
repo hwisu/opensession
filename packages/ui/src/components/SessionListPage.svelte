@@ -1,7 +1,7 @@
 <script lang="ts">
 import { listSessions } from '../api';
 import { groupSessionsByAgentCount } from '../session-presentation';
-import type { SessionListItem, SortOrder, TimeRange } from '../types';
+import type { SessionSummary, SortOrder, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import SessionCard from './SessionCard.svelte';
 
@@ -15,7 +15,7 @@ const {
 
 type ListLayout = 'single' | 'agent-columns';
 
-let sessions = $state<SessionListItem[]>([]);
+let sessions = $state<SessionSummary[]>([]);
 let total = $state(0);
 let loading = $state(false);
 let error = $state<string | null>(null);
@@ -39,7 +39,7 @@ type SessionListCacheEntry = {
 	query: string;
 	created_at: number;
 	total: number;
-	sessions: SessionListItem[];
+	sessions: SessionSummary[];
 };
 
 const hasMore = $derived(currentPage * perPage < total);

@@ -271,6 +271,12 @@ enum DaemonAction {
     },
     /// Show current daemon watch targets
     Show,
+    /// Install stream-write hook manually for an agent
+    EnableHook {
+        /// Agent name (default: "claude-code")
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+    },
     /// Stream new events from a local session file (hook target)
     StreamPush {
         /// Agent name (e.g. "claude-code")
@@ -800,7 +806,6 @@ async fn run_daemon_action(action: DaemonAction) -> anyhow::Result<()> {
             if !repo.is_empty() {
                 update_daemon_targets(&repo)?;
             }
-            ensure_enabled_stream_hooks()?;
             daemon_ctl::daemon_start()
         }
         DaemonAction::Stop => daemon_ctl::daemon_stop(),
@@ -814,6 +819,7 @@ async fn run_daemon_action(action: DaemonAction) -> anyhow::Result<()> {
             print_daemon_targets()
         }
         DaemonAction::Show => print_daemon_targets(),
+        DaemonAction::EnableHook { agent } => stream_push::enable_stream_write(&agent),
         DaemonAction::StreamPush { agent } => stream_push::run_stream_push(&agent),
     }
 }
@@ -893,13 +899,6 @@ fn print_daemon_targets() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn ensure_enabled_stream_hooks() -> anyhow::Result<()> {
-    if let Err(err) = stream_push::enable_stream_write("claude-code") {
-        eprintln!("Warning: failed to install claude-code stream hook: {err}");
-    }
-    Ok(())
-}
-
 /// Run daemon health check from CLI
 async fn run_daemon_health() -> anyhow::Result<()> {
     // Check daemon status
@@ -919,8 +918,9 @@ async fn run_daemon_health() -> anyhow::Result<()> {
 mod tests {
     use super::{
         is_internal_turn_summary_text, is_probably_session_uuid,
-        should_hide_internal_summary_session, SessionVisibility,
+        should_hide_internal_summary_session, Cli, Commands, DaemonAction, SessionVisibility,
     };
+    use clap::Parser;
     use std::{fs, path::Path};
 
     fn visibility<'a>(
@@ -1058,6 +1058,23 @@ mod tests {
             0,
             0
         )));
+    }
+
+    #[test]
+    fn daemon_enable_hook_subcommand_parses() {
+        let cli = Cli::parse_from([
+            "opensession",
+            "daemon",
+            "enable-hook",
+            "--agent",
+            "claude-code",
+        ]);
+        match cli.command {
+            Some(Commands::Daemon {
+                action: DaemonAction::EnableHook { agent },
+            }) => assert_eq!(agent, "claude-code"),
+            _ => panic!("unexpected command parse result"),
+        }
     }
 
     #[test]

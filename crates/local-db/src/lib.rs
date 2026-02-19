@@ -48,6 +48,10 @@ const REMOTE_MIGRATIONS: &[Migration] = &[
         "0009_session_score_plugin",
         include_str!("../migrations/0009_session_score_plugin.sql"),
     ),
+    (
+        "0010_api_keys_issuance",
+        include_str!("../migrations/0010_api_keys_issuance.sql"),
+    ),
 ];
 
 const LOCAL_MIGRATIONS: &[Migration] = &[
@@ -388,7 +392,7 @@ impl LocalDb {
                 }
 
                 // Local DB is a cache. If schema migration cannot safely reconcile
-                // a legacy/corrupted file, rotate it out and recreate with latest schema.
+                // an incompatible/corrupted file, rotate it out and recreate latest schema.
                 rotate_legacy_db(path)?;
 
                 let conn = open_connection_with_latest_schema(path)
@@ -433,8 +437,8 @@ impl LocalDb {
         let max_active_agents = opensession_core::agent_metrics::max_active_agents(session) as i64;
 
         let conn = self.conn();
-        // NOTE: `body_storage_key` is a deprecated compatibility column kept
-        // for legacy schema parity during migration.
+        // NOTE: `body_storage_key` is kept only for migration/schema parity.
+        // Runtime lookup uses canonical body URLs and local body cache tables.
         conn.execute(
             "INSERT INTO sessions \
              (id, team_id, tool, agent_provider, agent_model, \
@@ -501,8 +505,8 @@ impl LocalDb {
 
     pub fn upsert_remote_session(&self, summary: &RemoteSessionSummary) -> Result<()> {
         let conn = self.conn();
-        // NOTE: `body_storage_key` is a deprecated compatibility column kept
-        // for legacy schema parity during migration.
+        // NOTE: `body_storage_key` is kept only for migration/schema parity.
+        // Runtime lookup uses canonical body URLs and local body cache tables.
         conn.execute(
             "INSERT INTO sessions \
              (id, user_id, team_id, tool, agent_provider, agent_model, \
@@ -1018,7 +1022,7 @@ impl LocalDb {
         Ok(false)
     }
 
-    // ── Body cache (legacy compatibility) ──────────────────────────────
+    // ── Body cache (local read acceleration) ───────────────────────────
 
     pub fn cache_body(&self, session_id: &str, body: &[u8]) -> Result<()> {
         self.conn().execute(
@@ -1318,7 +1322,7 @@ impl LocalDb {
     }
 }
 
-// ── Legacy schema backfill ─────────────────────────────────────────────
+// ── Schema backfill for existing local DB files ───────────────────────
 
 fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
     let conn = Connection::open(path).with_context(|| format!("open db {}", path.display()))?;
@@ -1329,7 +1333,7 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
 
     apply_local_migrations(&conn)?;
 
-    // Backfill missing columns for legacy local DBs where `sessions` already
+    // Backfill missing columns for existing local DB files where `sessions`
     // existed before newer fields were introduced.
     ensure_sessions_columns(&conn)?;
     validate_local_schema(&conn)?;
@@ -1417,7 +1421,7 @@ fn rotate_legacy_db(path: &PathBuf) -> Result<()> {
     let backup_path = path.with_file_name(backup_name);
     std::fs::rename(path, &backup_path).with_context(|| {
         format!(
-            "rotate legacy db {} -> {}",
+            "rotate local db backup {} -> {}",
             path.display(),
             backup_path.display()
         )
@@ -1448,7 +1452,7 @@ const REQUIRED_SESSION_COLUMNS: &[(&str, &str)] = &[
     ("duration_seconds", "INTEGER DEFAULT 0"),
     ("total_input_tokens", "INTEGER DEFAULT 0"),
     ("total_output_tokens", "INTEGER DEFAULT 0"),
-    // Deprecated compatibility column from pre git-native body storage.
+    // Migration-only compatibility column from pre git-native body storage.
     ("body_storage_key", "TEXT DEFAULT ''"),
     ("body_url", "TEXT"),
     ("git_remote", "TEXT"),
@@ -1478,7 +1482,7 @@ fn ensure_sessions_columns(conn: &Connection) -> Result<()> {
         }
         let sql = format!("ALTER TABLE sessions ADD COLUMN {name} {decl};");
         conn.execute_batch(&sql)
-            .with_context(|| format!("add legacy sessions column '{name}'"))?;
+            .with_context(|| format!("add sessions column '{name}'"))?;
     }
 
     Ok(())

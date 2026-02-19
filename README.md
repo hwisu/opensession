@@ -29,6 +29,7 @@ cargo install opensession
 opensession --help
 opensession session handoff --last
 opensession daemon start --repo .
+opensession daemon enable-hook --agent claude-code
 ```
 
 Manual local browsing mode (TUI):
@@ -45,6 +46,12 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 ```
 
 When set to `0|false|off|no`, TUI skips full disk re-discovery at startup and relies on cached local DB sessions first.
+
+TUI/Web Share auth uses personal API keys (not email login inside TUI setup):
+```bash
+opensession account connect --server https://opensession.io --api-key <issued_key>
+```
+Issue the key from your web settings page (`/settings`); it is shown once at issuance.
 
 ## Runtime Capabilities
 
@@ -93,6 +100,7 @@ Single Cargo workspace with 12 crates:
 | `opensession session handoff` | Generate v2 execution-contract handoff (`--validate`, `--strict`) |
 | `opensession publish upload <file> [--git]` | Publish one session (default: server, `--git`: `opensession/sessions` branch) |
 | `opensession daemon start\|stop\|status\|health` | Manage daemon lifecycle |
+| `opensession daemon enable-hook --agent <name>` | Install stream-write hook manually |
 | `opensession daemon select --repo ...` | Select watcher paths/repos |
 | `opensession daemon show` | Show daemon watcher targets |
 | `opensession account connect` | Set server URL/API key (optional) |
@@ -179,6 +187,10 @@ Notes:
 
 ## Configuration
 
+Daemon hook policy:
+- `opensession daemon start` does not auto-install tool hooks.
+- Install hook explicitly when needed: `opensession daemon enable-hook --agent claude-code`.
+
 Canonical config file:
 - `~/.config/opensession/opensession.toml`
 
@@ -223,12 +235,15 @@ custom_paths = [
 | POST | `/api/auth/refresh` | Refresh access token |
 | POST | `/api/auth/logout` | Revoke refresh token |
 | POST | `/api/auth/verify` | Verify access token |
-| GET | `/api/auth/me` | Current user profile |
+| GET | `/api/auth/me` | Current user profile (no API key field) |
+| POST | `/api/auth/api-keys/issue` | Issue a new personal API key (shown once) |
 | POST | `/api/sessions` | Upload HAIL session (auth required) |
 | GET | `/api/sessions` | List sessions |
 | GET | `/api/sessions/{id}` | Get session detail |
 | GET | `/api/sessions/{id}/raw` | Download raw HAIL JSONL |
 | DELETE | `/api/sessions/{id}` | Delete session |
+
+API keys are visible only in the issue response and are not returned by `GET /api/auth/me`.
 
 ## Self-Hosted Server
 

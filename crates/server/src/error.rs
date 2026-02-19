@@ -9,7 +9,7 @@ use std::fmt;
 /// Thin Axum adapter around the shared [`ServiceError`] type.
 ///
 /// Keeps the same convenience constructors so route code doesn't change.
-/// Produces `{"error": "<message>"}` JSON responses.
+/// Produces `{"code":"...","message":"..."}` JSON responses.
 pub struct ApiErr(ServiceError);
 
 impl ApiErr {

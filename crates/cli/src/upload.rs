@@ -139,7 +139,7 @@ fn upload_to_git(session: &opensession_core::Session) -> Result<()> {
         repo_root.display()
     );
 
-    let hail_jsonl = serde_json::to_vec(session)?;
+    let hail_jsonl = session_to_hail_jsonl_bytes(session)?;
     let meta_json = serde_json::to_string_pretty(&serde_json::json!({
         "session_id": session.session_id,
         "title": session.context.title,
@@ -158,4 +158,53 @@ fn upload_to_git(session: &opensession_core::Session) -> Result<()> {
     println!("Session ID: {}", session.session_id);
 
     Ok(())
+}
+
+fn session_to_hail_jsonl_bytes(session: &opensession_core::Session) -> Result<Vec<u8>> {
+    session
+        .to_jsonl()
+        .map(|jsonl| jsonl.into_bytes())
+        .map_err(|e| anyhow::anyhow!("failed to serialize HAIL JSONL body: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_to_hail_jsonl_bytes;
+    use chrono::Utc;
+    use opensession_core::{Agent, Content, Event, EventType, Session};
+
+    #[test]
+    fn git_upload_body_uses_hail_jsonl_lines() {
+        let mut session = Session::new(
+            "s-cli-upload".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus-4-6".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        session.events.push(Event {
+            event_id: "e1".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::UserMessage,
+            task_id: None,
+            content: Content::text("hello"),
+            duration_ms: None,
+            attributes: Default::default(),
+        });
+        session.recompute_stats();
+
+        let body = session_to_hail_jsonl_bytes(&session).expect("serialize session as HAIL JSONL");
+        let text = String::from_utf8(body).expect("HAIL JSONL body should be UTF-8");
+        let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(lines.len(), 3, "expected header/event/stats JSONL lines");
+
+        let header: serde_json::Value = serde_json::from_str(lines[0]).expect("valid header JSON");
+        assert_eq!(header["type"], "header");
+        let event: serde_json::Value = serde_json::from_str(lines[1]).expect("valid event JSON");
+        assert_eq!(event["type"], "event");
+        let stats: serde_json::Value = serde_json::from_str(lines[2]).expect("valid stats JSON");
+        assert_eq!(stats["type"], "stats");
+    }
 }

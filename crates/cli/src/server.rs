@@ -27,7 +27,7 @@ pub async fn run_status() -> Result<()> {
 /// Verify API key authentication
 pub async fn run_verify() -> Result<()> {
     let config = load_config()?;
-    if config.server.api_key.is_empty() {
+    if config.server.api_key.trim().is_empty() {
         bail!("API key not configured. Run: opensession account connect --api-key <key>");
     }
 

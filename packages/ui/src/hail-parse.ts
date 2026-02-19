@@ -15,12 +15,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isSessionLike(value: unknown): value is Session {
 	if (!isRecord(value)) return false;
 	return (
-		typeof value.version === 'string'
-		&& typeof value.session_id === 'string'
-		&& isRecord(value.agent)
-		&& isRecord(value.context)
-		&& Array.isArray(value.events)
-		&& isRecord(value.stats)
+		typeof value.version === 'string' &&
+		typeof value.session_id === 'string' &&
+		isRecord(value.agent) &&
+		isRecord(value.context) &&
+		Array.isArray(value.events) &&
+		isRecord(value.stats)
 	);
 }
 

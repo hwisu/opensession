@@ -216,15 +216,6 @@ impl Default for PrivacySettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatcherSettings {
-    /// Deprecated agent toggles kept for backward-compatible config parsing.
-    #[serde(default = "default_true", skip_serializing)]
-    pub claude_code: bool,
-    /// Deprecated agent toggles kept for backward-compatible config parsing.
-    #[serde(default = "default_true", skip_serializing)]
-    pub opencode: bool,
-    /// Deprecated agent toggles kept for backward-compatible config parsing.
-    #[serde(default = "default_true", skip_serializing)]
-    pub cursor: bool,
     #[serde(default = "default_watch_paths")]
     pub custom_paths: Vec<String>,
 }
@@ -232,9 +223,6 @@ pub struct WatcherSettings {
 impl Default for WatcherSettings {
     fn default() -> Self {
         Self {
-            claude_code: true,
-            opencode: true,
-            cursor: true,
             custom_paths: default_watch_paths(),
         }
     }
@@ -397,7 +385,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn apply_compat_fallbacks_populates_legacy_fields() {
+    fn apply_compat_fallbacks_populates_missing_fields() {
         let mut cfg = DaemonConfig::default();
         cfg.git_storage.method = GitStorageMethod::Unknown;
         cfg.watchers.custom_paths.clear();
@@ -416,17 +404,17 @@ mod tests {
     }
 
     #[test]
-    fn git_storage_method_legacy_aliases_are_accepted() {
-        let legacy_none: DaemonConfig = toml::from_str(
+    fn git_storage_method_compat_aliases_are_accepted() {
+        let compat_none: DaemonConfig = toml::from_str(
             r#"
 [git_storage]
 method = "none"
 "#,
         )
         .expect("parse toml");
-        assert_eq!(legacy_none.git_storage.method, GitStorageMethod::Sqlite);
+        assert_eq!(compat_none.git_storage.method, GitStorageMethod::Sqlite);
 
-        let legacy_platform_api: DaemonConfig = toml::from_str(
+        let compat_platform_api: DaemonConfig = toml::from_str(
             r#"
 [git_storage]
 method = "platform_api"
@@ -434,7 +422,7 @@ method = "platform_api"
         )
         .expect("parse toml");
         assert_eq!(
-            legacy_platform_api.git_storage.method,
+            compat_platform_api.git_storage.method,
             GitStorageMethod::Native
         );
     }
@@ -460,7 +448,26 @@ method = "native"
     }
 
     #[test]
-    fn legacy_watcher_flags_are_not_serialized() {
+    fn unknown_watcher_flags_are_ignored() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[watchers]
+claude_code = false
+opencode = false
+cursor = false
+custom_paths = ["~/.codex/sessions"]
+"#,
+        )
+        .expect("parse watcher config");
+
+        assert_eq!(
+            cfg.watchers.custom_paths,
+            vec!["~/.codex/sessions".to_string()]
+        );
+    }
+
+    #[test]
+    fn watcher_settings_serialize_only_current_fields() {
         let cfg = DaemonConfig::default();
         let encoded = toml::to_string(&cfg).expect("serialize config");
 

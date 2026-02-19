@@ -29,6 +29,7 @@ cargo install opensession
 opensession --help
 opensession session handoff --last
 opensession daemon start --repo .
+opensession daemon enable-hook --agent claude-code
 ```
 
 수동 로컬 탐색 모드(TUI):
@@ -45,6 +46,12 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 ```
 
 `0|false|off|no`로 설정하면 TUI 시작 시 전체 디스크 재탐색을 건너뛰고, 로컬 DB 캐시 세션을 우선 사용합니다.
+
+TUI/Web Share 인증은 개인 API 키 기준입니다(TUI 내부 이메일 로그인 경로 없음):
+```bash
+opensession account connect --server https://opensession.io --api-key <issued_key>
+```
+키는 웹 설정 페이지(`/settings`)에서 발급하며, 발급 응답에서 1회만 표시됩니다.
 
 ## 런타임 기능
 
@@ -93,6 +100,7 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 | `opensession session handoff` | v2 실행 계약 핸드오프 생성 (`--validate`, `--strict`) |
 | `opensession publish upload <file> [--git]` | 단일 세션 퍼블리시 (기본: 서버, `--git`: `opensession/sessions` 브랜치) |
 | `opensession daemon start\|stop\|status\|health` | 데몬 실행/중지/상태 |
+| `opensession daemon enable-hook --agent <name>` | 스트림 훅 수동 설치 |
 | `opensession daemon select --repo ...` | 감시 경로/레포 선택 |
 | `opensession daemon show` | 현재 감시 대상 확인 |
 | `opensession account connect` | 서버 URL/API 키 설정(선택) |
@@ -179,6 +187,10 @@ wrangler dev --ip 127.0.0.1 --port 8788 --log-level debug
 
 ## 설정
 
+데몬 훅 정책:
+- `opensession daemon start`는 자동으로 훅을 설치하지 않습니다.
+- 필요 시 명시적으로 설치합니다: `opensession daemon enable-hook --agent claude-code`.
+
 표준 설정 파일:
 - `~/.config/opensession/opensession.toml`
 
@@ -223,12 +235,15 @@ custom_paths = [
 | POST | `/api/auth/refresh` | 액세스 토큰 갱신 |
 | POST | `/api/auth/logout` | 리프레시 토큰 무효화 |
 | POST | `/api/auth/verify` | 액세스 토큰 검증 |
-| GET | `/api/auth/me` | 현재 사용자 프로필 |
+| GET | `/api/auth/me` | 현재 사용자 프로필(API 키 미포함) |
+| POST | `/api/auth/api-keys/issue` | 개인 API 키 신규 발급(응답에서 1회만 노출) |
 | POST | `/api/sessions` | HAIL 세션 업로드 (인증 필요) |
 | GET | `/api/sessions` | 세션 목록 조회 |
 | GET | `/api/sessions/{id}` | 세션 상세 조회 |
 | GET | `/api/sessions/{id}/raw` | 원본 HAIL JSONL 다운로드 |
 | DELETE | `/api/sessions/{id}` | 세션 삭제 |
+
+API 키는 발급 응답에서만 확인할 수 있으며 `GET /api/auth/me`로는 다시 조회되지 않습니다.
 
 ## 셀프 호스팅 서버
 

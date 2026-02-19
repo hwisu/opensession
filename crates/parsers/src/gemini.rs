@@ -144,9 +144,6 @@ struct GeminiTokens {
 #[derive(Debug, Default)]
 struct ParsedLegacyContent {
     texts: Vec<String>,
-    thinkings: Vec<String>,
-    tool_calls: Vec<(String, Option<serde_json::Value>)>,
-    tool_results: Vec<(String, Option<serde_json::Value>)>,
     schema_variant: &'static str,
 }
 
@@ -167,46 +164,6 @@ fn parse_legacy_part(parsed: &mut ParsedLegacyContent, part: &serde_json::Value)
             parsed.texts.push(trimmed.to_string());
         }
     }
-
-    if let Some(thinking) = obj.get("thinking").and_then(|v| v.as_str()) {
-        let trimmed = thinking.trim();
-        if !trimmed.is_empty() {
-            parsed.thinkings.push(trimmed.to_string());
-        }
-    }
-
-    if let Some(call) = obj.get("functionCall").or_else(|| obj.get("function_call")) {
-        if let Some(call_obj) = call.as_object() {
-            let name = call_obj
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let args = call_obj
-                .get("args")
-                .cloned()
-                .or_else(|| call_obj.get("arguments").cloned());
-            parsed.tool_calls.push((name, args));
-        }
-    }
-
-    if let Some(resp) = obj
-        .get("functionResponse")
-        .or_else(|| obj.get("function_response"))
-    {
-        if let Some(resp_obj) = resp.as_object() {
-            let name = resp_obj
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let response = resp_obj
-                .get("response")
-                .cloned()
-                .or_else(|| resp_obj.get("result").cloned());
-            parsed.tool_results.push((name, response));
-        }
-    }
 }
 
 fn parse_legacy_content(content: Option<&GeminiMessageContent>) -> ParsedLegacyContent {
@@ -218,7 +175,6 @@ fn parse_legacy_content(content: Option<&GeminiMessageContent>) -> ParsedLegacyC
         GeminiMessageContent::Text(text) => ParsedLegacyContent {
             texts: vec![text.clone()],
             schema_variant: "text",
-            ..ParsedLegacyContent::default()
         },
         GeminiMessageContent::Part(part) => {
             let mut parsed = ParsedLegacyContent {
@@ -401,37 +357,6 @@ fn parse_json(path: &Path) -> Result<Session> {
                         attributes: base_attrs.clone(),
                     });
                 }
-
-                for (idx, (name, response)) in parsed.tool_results.iter().enumerate() {
-                    event_counter += 1;
-                    let call_id = msg.id.as_deref().map(|id| format!("{id}-call-{}", idx + 1));
-                    let mut attrs = base_attrs.clone();
-                    attach_semantic_attrs(
-                        &mut attrs,
-                        msg.id.as_deref(),
-                        call_id.as_deref(),
-                        Some(infer_tool_kind(name)),
-                    );
-                    let result_content = match response {
-                        Some(v) => Content {
-                            blocks: vec![ContentBlock::Json { data: v.clone() }],
-                        },
-                        None => Content::empty(),
-                    };
-                    events.push(Event {
-                        event_id: format!("gemini-{}", event_counter),
-                        timestamp: ts,
-                        event_type: EventType::ToolResult {
-                            name: name.clone(),
-                            is_error: false,
-                            call_id,
-                        },
-                        task_id: None,
-                        content: result_content,
-                        duration_ms: None,
-                        attributes: attrs,
-                    });
-                }
             }
             "gemini" => {
                 set_first(&mut model_name, msg.model.clone());
@@ -471,19 +396,6 @@ fn parse_json(path: &Path) -> Result<Session> {
                             attributes: base_attrs.clone(),
                         });
                     }
-                }
-
-                for thinking in &parsed.thinkings {
-                    event_counter += 1;
-                    events.push(Event {
-                        event_id: format!("gemini-{}", event_counter),
-                        timestamp: ts,
-                        event_type: EventType::Thinking,
-                        task_id: None,
-                        content: Content::text(thinking),
-                        duration_ms: None,
-                        attributes: base_attrs.clone(),
-                    });
                 }
 
                 if !msg.tool_calls.is_empty() {
@@ -544,64 +456,6 @@ fn parse_json(path: &Path) -> Result<Session> {
                             content: result_content,
                             duration_ms: None,
                             attributes: result_attrs,
-                        });
-                    }
-                } else {
-                    for (idx, (name, args)) in parsed.tool_calls.iter().enumerate() {
-                        event_counter += 1;
-                        let call_id = msg.id.as_deref().map(|id| format!("{id}-call-{}", idx + 1));
-                        let mut attrs = base_attrs.clone();
-                        attach_semantic_attrs(
-                            &mut attrs,
-                            msg.id.as_deref(),
-                            call_id.as_deref(),
-                            Some(infer_tool_kind(name)),
-                        );
-                        let call_content = match args {
-                            Some(v) => Content {
-                                blocks: vec![ContentBlock::Json { data: v.clone() }],
-                            },
-                            None => Content::empty(),
-                        };
-                        events.push(Event {
-                            event_id: format!("gemini-{}", event_counter),
-                            timestamp: ts,
-                            event_type: EventType::ToolCall { name: name.clone() },
-                            task_id: None,
-                            content: call_content,
-                            duration_ms: None,
-                            attributes: attrs,
-                        });
-                    }
-
-                    for (idx, (name, response)) in parsed.tool_results.iter().enumerate() {
-                        event_counter += 1;
-                        let call_id = msg.id.as_deref().map(|id| format!("{id}-call-{}", idx + 1));
-                        let mut attrs = base_attrs.clone();
-                        attach_semantic_attrs(
-                            &mut attrs,
-                            msg.id.as_deref(),
-                            call_id.as_deref(),
-                            Some(infer_tool_kind(name)),
-                        );
-                        let result_content = match response {
-                            Some(v) => Content {
-                                blocks: vec![ContentBlock::Json { data: v.clone() }],
-                            },
-                            None => Content::empty(),
-                        };
-                        events.push(Event {
-                            event_id: format!("gemini-{}", event_counter),
-                            timestamp: ts,
-                            event_type: EventType::ToolResult {
-                                name: name.clone(),
-                                is_error: false,
-                                call_id,
-                            },
-                            task_id: None,
-                            content: result_content,
-                            duration_ms: None,
-                            attributes: attrs,
                         });
                     }
                 }
@@ -1259,8 +1113,7 @@ mod tests {
         }));
         let parsed = parse_legacy_content(Some(&content));
         assert_eq!(parsed.schema_variant, "part");
-        assert_eq!(parsed.tool_calls.len(), 1);
-        assert_eq!(parsed.tool_calls[0].0, "read_file");
+        assert!(parsed.texts.is_empty());
     }
 
     #[test]

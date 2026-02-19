@@ -1,4 +1,4 @@
-use crate::app::{App, SetupMode, SetupScenario, SetupStep};
+use crate::app::{App, SetupScenario, SetupStep};
 use crate::config::SettingField;
 use crate::theme::Theme;
 use ratatui::prelude::*;
@@ -16,9 +16,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let [title_area, tab_area, form_area, hint_area] = Layout::vertical([
+    let [title_area, form_area, hint_area] = Layout::vertical([
         Constraint::Length(5),
-        Constraint::Length(1),
         Constraint::Length(14),
         Constraint::Fill(1),
     ])
@@ -42,68 +41,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     .block(title_block);
     frame.render_widget(title, title_area);
 
-    // ── Tab bar ──────────────────────────────────────────────────────
-    let apikey_style = if app.setup_mode == SetupMode::ApiKey {
-        Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold()
-    } else {
-        Style::new().fg(Theme::TEXT_SECONDARY)
-    };
-    let login_style = if app.setup_mode == SetupMode::Login {
-        Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold()
-    } else {
-        Style::new().fg(Theme::TEXT_SECONDARY)
-    };
-    let tab_line = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(" API/Account ", apikey_style),
-        Span::raw("  "),
-        Span::styled(" Email Login ", login_style),
-        Span::raw("  "),
-        Span::styled("(Tab to switch)", Style::new().fg(Color::DarkGray)),
-    ]);
-    frame.render_widget(Paragraph::new(tab_line), tab_area);
-
     // ── Form ─────────────────────────────────────────────────────────
-    match app.setup_mode {
-        SetupMode::ApiKey => render_apikey_form(frame, app, form_area),
-        SetupMode::Login => render_login_form(frame, app, form_area),
-    }
+    render_apikey_form(frame, app, form_area);
 
     // ── Hints ─────────────────────────────────────────────────────────
     let key_style = Style::new().fg(Theme::TEXT_KEY);
     let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
     let mut hint_lines = vec![Line::raw("")];
 
-    match app.setup_mode {
-        SetupMode::ApiKey => {
-            hint_lines.push(Line::from(vec![
-                Span::styled(" j/k ", key_style),
-                Span::styled("navigate  ", desc_style),
-                Span::styled("Enter ", key_style),
-                Span::styled("edit  ", desc_style),
-                Span::styled("s ", key_style),
-                Span::styled("save+continue  ", desc_style),
-                Span::styled("Tab ", key_style),
-                Span::styled("switch  ", desc_style),
-                Span::styled("Esc ", key_style),
-                Span::styled("skip", desc_style),
-            ]));
-        }
-        SetupMode::Login => {
-            hint_lines.push(Line::from(vec![
-                Span::styled(" j/k ", key_style),
-                Span::styled("navigate  ", desc_style),
-                Span::styled("Enter ", key_style),
-                Span::styled("edit  ", desc_style),
-                Span::styled("l ", key_style),
-                Span::styled("login  ", desc_style),
-                Span::styled("Tab ", key_style),
-                Span::styled("switch  ", desc_style),
-                Span::styled("Esc ", key_style),
-                Span::styled("skip", desc_style),
-            ]));
-        }
-    }
+    hint_lines.push(Line::from(vec![
+        Span::styled(" j/k ", key_style),
+        Span::styled("navigate  ", desc_style),
+        Span::styled("Enter ", key_style),
+        Span::styled("edit  ", desc_style),
+        Span::styled("s ", key_style),
+        Span::styled("save+continue  ", desc_style),
+        Span::styled("Esc ", key_style),
+        Span::styled("skip", desc_style),
+    ]));
 
     hint_lines.push(Line::raw(""));
     hint_lines.push(Line::from(Span::styled(
@@ -116,6 +71,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
     hint_lines.push(Line::from(Span::styled(
         format!("Personal API key: {settings_url}"),
+        Style::new().fg(Theme::TEXT_HINT),
+    )));
+    hint_lines.push(Line::from(Span::styled(
+        "Issue a personal API key in web settings, then paste it here.",
         Style::new().fg(Theme::TEXT_HINT),
     )));
     if app.setup_scenario == Some(SetupScenario::Public) {
@@ -319,106 +278,10 @@ fn render_apikey_form(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(form_paragraph, inner);
 }
 
-fn render_login_form(frame: &mut Frame, app: &App, area: Rect) {
-    let form_block = Theme::block_dim()
-        .title(" Email Login ")
-        .padding(ratatui::widgets::Padding::new(2, 2, 0, 0));
-    let inner = form_block.inner(area);
-    frame.render_widget(form_block, area);
-
-    let login = &app.login_state;
-    let fields: [(&str, &str, bool); 2] = [
-        ("Email", &login.email, false),
-        ("Password", &login.password, true),
-    ];
-
-    let mut lines = Vec::new();
-    for (i, (label, value, is_password)) in fields.iter().enumerate() {
-        let is_selected = i == login.field_index;
-        let is_editing = is_selected && login.editing;
-
-        let pointer = if is_selected { ">" } else { " " };
-        let pointer_style = if is_selected {
-            Style::new().fg(Color::Cyan).bold()
-        } else {
-            Style::new().fg(Color::DarkGray)
-        };
-
-        let label_style = if is_selected {
-            Style::new().fg(Theme::TEXT_PRIMARY).bold()
-        } else {
-            Style::new().fg(Theme::TEXT_SECONDARY)
-        };
-
-        let display_value = if is_editing {
-            if *is_password {
-                format!("{}|", "*".repeat(app.edit_buffer.len()))
-            } else {
-                format!("{}|", app.edit_buffer)
-            }
-        } else if value.is_empty() {
-            "(not set)".to_string()
-        } else if *is_password {
-            "*".repeat(value.len())
-        } else {
-            value.to_string()
-        };
-
-        let value_style = if is_editing {
-            Style::new().fg(Theme::ACCENT_YELLOW)
-        } else if is_selected {
-            Style::new().fg(Theme::TEXT_PRIMARY)
-        } else {
-            Style::new().fg(Theme::FIELD_VALUE)
-        };
-
-        // Label line
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", pointer), pointer_style),
-            Span::styled(format!("{:<14}", label), label_style),
-        ]));
-
-        // Value line
-        let bg = if is_selected {
-            Style::new().bg(Theme::BG_SURFACE)
-        } else {
-            Style::new()
-        };
-        lines.push(
-            Line::from(vec![
-                Span::raw("     "),
-                Span::styled(display_value, value_style),
-            ])
-            .style(bg),
-        );
-
-        lines.push(Line::raw(""));
-    }
-
-    // Status message
-    if let Some(ref status) = login.status {
-        lines.push(Line::raw(""));
-        let color = if login.loading {
-            Theme::ACCENT_BLUE
-        } else if status.starts_with("Error") || status.starts_with("Failed") {
-            Theme::ACCENT_RED
-        } else {
-            Theme::ACCENT_GREEN
-        };
-        lines.push(Line::from(Span::styled(
-            format!("  {status}"),
-            Style::new().fg(color),
-        )));
-    }
-
-    let form_paragraph = Paragraph::new(lines);
-    frame.render_widget(form_paragraph, inner);
-}
-
 #[cfg(test)]
 mod tests {
     use super::render;
-    use crate::app::{App, FlashLevel, SetupMode, SetupScenario, SetupStep};
+    use crate::app::{App, FlashLevel, SetupScenario, SetupStep};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::Terminal;
@@ -458,20 +321,19 @@ mod tests {
     fn apikey_setup_renders_required_fields() {
         let mut app = App::new(vec![]);
         app.setup_step = SetupStep::Configure;
-        app.setup_mode = SetupMode::ApiKey;
         app.setup_scenario = Some(SetupScenario::Public);
 
         let text = render_text(&app, 120, 40);
-        assert!(text.contains("API/Account"));
         assert!(text.contains("Server URL"));
         assert!(text.contains("Handle"));
+        assert!(text.contains("Issue a personal API key in web settings"));
+        assert!(!text.contains("Email Login"));
     }
 
     #[test]
     fn apikey_public_scenario_shows_git_hint() {
         let mut app = App::new(vec![]);
         app.setup_step = SetupStep::Configure;
-        app.setup_mode = SetupMode::ApiKey;
         app.setup_scenario = Some(SetupScenario::Public);
 
         let text = render_text(&app, 120, 40);
@@ -479,37 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn login_mode_masks_saved_password_value() {
-        let mut app = App::new(vec![]);
-        app.setup_step = SetupStep::Configure;
-        app.setup_mode = SetupMode::Login;
-        app.login_state.password = "secret".to_string();
-
-        let text = render_text(&app, 120, 40);
-        assert!(text.contains("Password"));
-        assert!(text.contains("******"));
-        assert!(!text.contains("secret"));
-    }
-
-    #[test]
-    fn login_mode_masks_edit_buffer_while_editing_password() {
-        let mut app = App::new(vec![]);
-        app.setup_step = SetupStep::Configure;
-        app.setup_mode = SetupMode::Login;
-        app.login_state.field_index = 1;
-        app.login_state.editing = true;
-        app.edit_buffer = "abcd".to_string();
-
-        let text = render_text(&app, 120, 40);
-        assert!(text.contains("****|"));
-        assert!(!text.contains("abcd|"));
-    }
-
-    #[test]
     fn configure_step_renders_flash_message() {
         let mut app = App::new(vec![]);
         app.setup_step = SetupStep::Configure;
-        app.setup_mode = SetupMode::ApiKey;
         app.flash_message = Some(("saved successfully".to_string(), FlashLevel::Success));
 
         let text = render_text(&app, 120, 40);

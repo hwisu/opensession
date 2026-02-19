@@ -517,7 +517,6 @@ impl SettingItem {
 pub enum SettingsGroup {
     Workspace,
     CaptureSync,
-    TimelineIntelligence,
     StoragePrivacy,
 }
 
@@ -946,7 +945,8 @@ impl SettingField {
                 set_calendar_display_mode(next);
             }
             Self::GitStorageMethod => {
-                let next = match git_storage_mode() {
+                let current = GitStorageMode::from_core(config.git_storage.method.clone());
+                let next = match current {
                     GitStorageMode::Native => GitStorageMode::Sqlite,
                     GitStorageMode::Sqlite => GitStorageMode::Native,
                 };
@@ -1308,7 +1308,7 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
         | SettingField::SummaryOpenAiCompatApiKeyHeader
         | SettingField::SummaryEventWindow
         | SettingField::SummaryDebounceMs
-        | SettingField::SummaryMaxInflight => SettingsGroup::TimelineIntelligence,
+        | SettingField::SummaryMaxInflight => SettingsGroup::CaptureSync,
 
         SettingField::GitStorageMethod | SettingField::StripPaths | SettingField::StripEnvVars => {
             SettingsGroup::StoragePrivacy
@@ -1403,6 +1403,13 @@ mod tests {
     fn detail_auto_expand_setting_is_visible_in_capture_sync_section() {
         let capture_fields = selectable_fields(SettingsGroup::CaptureSync);
         assert!(capture_fields.contains(&SettingField::DetailAutoExpandSelectedEvent));
+    }
+
+    #[test]
+    fn summary_settings_are_grouped_into_capture_sync_section() {
+        let capture_fields = selectable_fields(SettingsGroup::CaptureSync);
+        assert!(capture_fields.contains(&SettingField::SummaryEnabled));
+        assert!(capture_fields.contains(&SettingField::SummaryMaxInflight));
     }
 
     #[test]

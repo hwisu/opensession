@@ -15,6 +15,20 @@ pub enum Users {
 }
 
 #[derive(Iden)]
+pub enum ApiKeys {
+    Table,
+    Id,
+    UserId,
+    KeyHash,
+    KeyPrefix,
+    Status,
+    CreatedAt,
+    GraceUntil,
+    RevokedAt,
+    LastUsedAt,
+}
+
+#[derive(Iden)]
 pub enum Sessions {
     Table,
     Id,

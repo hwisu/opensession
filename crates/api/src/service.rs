@@ -44,9 +44,39 @@ pub fn validate_nickname(nickname: &str) -> Result<String, ServiceError> {
 
 // ─── API Key Generation ─────────────────────────────────────────────────────
 
+/// Grace period for old API keys after issuing a new key.
+pub const API_KEY_GRACE_DAYS: i64 = 7;
+
 /// Generate a new API key with the `osk_` prefix.
 pub fn generate_api_key() -> String {
     format!("osk_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Build a non-secret placeholder stored in `users.api_key`.
+///
+/// `users.api_key` remains in schema for migration safety, but it must never
+/// store a usable secret.
+pub fn generate_api_key_placeholder(user_id: &str) -> String {
+    format!("stub:{user_id}")
+}
+
+/// Hash an API key for persistent storage and lookup.
+pub fn hash_api_key(api_key: &str) -> String {
+    crate::crypto::hash_token(api_key)
+}
+
+/// Prefix used for operator-facing key previews.
+pub fn key_prefix(api_key: &str) -> String {
+    api_key.chars().take(12).collect()
+}
+
+/// Compute grace deadline in SQLite datetime format.
+pub fn grace_until_sqlite(now_unix: u64) -> Result<String, ServiceError> {
+    let base = chrono::DateTime::from_timestamp(now_unix as i64, 0)
+        .ok_or_else(|| ServiceError::Internal("invalid timestamp".into()))?;
+    Ok((base + chrono::Duration::days(API_KEY_GRACE_DAYS))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string())
 }
 
 /// Validate and normalize a team name. Returns the trimmed name.

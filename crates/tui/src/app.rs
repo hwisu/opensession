@@ -159,8 +159,8 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Sessions,
-    Settings,
     Handoff,
+    Settings,
 }
 
 /// Settings sub-section.
@@ -238,13 +238,6 @@ pub struct PasswordForm {
     pub editing: bool,
 }
 
-/// Setup sub-mode: API key entry vs email/password login.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetupMode {
-    ApiKey,
-    Login,
-}
-
 /// Setup flow step: choose scenario first, then configure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupStep {
@@ -263,26 +256,19 @@ impl SetupScenario {
     pub const ALL: [Self; 2] = [Self::Local, Self::Public];
 }
 
-/// State for the email/password login form.
-#[derive(Default)]
-pub struct LoginState {
-    pub field_index: usize, // 0=email, 1=password
-    pub email: String,
-    pub password: String,
-    pub editing: bool,
-    pub status: Option<String>,
-    pub loading: bool,
-}
-
 /// Active event type filter options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventFilter {
-    Messages,
-    ToolCalls,
-    Thinking,
-    FileOps,
-    Shell,
     All,
+    User,
+    Agent,
+    Think,
+    Tools,
+    Files,
+    Shell,
+    Task,
+    Web,
+    Other,
 }
 
 /// Flash message severity level.
@@ -318,6 +304,17 @@ pub struct Turn<'a> {
     pub anchor_source_index: usize,
     pub user_events: Vec<&'a Event>,
     pub agent_events: Vec<&'a Event>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HandoffCandidate {
+    pub session_id: String,
+    pub title: String,
+    pub tool: String,
+    pub model: String,
+    pub event_count: usize,
+    pub message_count: usize,
+    pub source_path: Option<PathBuf>,
 }
 
 fn is_infra_warning_user_message(event: &Event) -> bool {
@@ -549,13 +546,29 @@ mod turn_extract_tests {
         assert_eq!(app.active_tab, Tab::Sessions);
         assert_eq!(app.view, View::SessionList);
 
-        app.handle_key(KeyCode::Char('3'));
+        app.handle_key(KeyCode::Char('2'));
         assert_eq!(app.active_tab, Tab::Handoff);
         assert_eq!(app.view, View::Handoff);
 
         app.handle_key(KeyCode::Esc);
         assert_eq!(app.active_tab, Tab::Sessions);
         assert_eq!(app.view, View::SessionList);
+    }
+
+    #[test]
+    fn global_tab_shortcut_three_opens_settings() {
+        let mut app = App::new(Vec::new());
+        app.handle_key(KeyCode::Char('3'));
+        assert_eq!(app.active_tab, Tab::Settings);
+        assert_eq!(app.view, View::Settings);
+    }
+
+    #[test]
+    fn uuid_heuristic_detects_session_like_identifier() {
+        assert!(App::is_probably_session_uuid(
+            "019c5c24-597c-7ca3-a005-aef3c8f1ecfd"
+        ));
+        assert!(!App::is_probably_session_uuid("session-abc"));
     }
 
     #[test]
@@ -1193,12 +1206,36 @@ mod turn_extract_tests {
 
         assert!(app.event_filters.contains(&EventFilter::All));
         app.handle_detail_key(KeyCode::Char('3'));
-        assert!(app.event_filters.contains(&EventFilter::ToolCalls));
+        assert!(app.event_filters.contains(&EventFilter::Agent));
         assert!(!app.event_filters.contains(&EventFilter::All));
+
+        app.handle_detail_key(KeyCode::Char('9'));
+        assert!(app.event_filters.contains(&EventFilter::Web));
+
+        app.handle_detail_key(KeyCode::Char('0'));
+        assert!(app.event_filters.contains(&EventFilter::Other));
 
         app.handle_detail_key(KeyCode::Char('1'));
         assert!(app.event_filters.contains(&EventFilter::All));
         assert_eq!(app.event_filters.len(), 1);
+    }
+
+    #[test]
+    fn turn_numeric_keys_toggle_event_filters_to_nine() {
+        let session = make_live_session("turn-filter-toggle-turn", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_view_mode = DetailViewMode::Turn;
+
+        app.handle_turn_key(KeyCode::Char('8'));
+        assert!(app.event_filters.contains(&EventFilter::Task));
+        assert!(!app.event_filters.contains(&EventFilter::All));
+
+        app.handle_turn_key(KeyCode::Char('9'));
+        assert!(app.event_filters.contains(&EventFilter::Web));
+
+        app.handle_turn_key(KeyCode::Char('0'));
+        assert!(app.event_filters.contains(&EventFilter::Other));
     }
 
     #[test]
@@ -1215,6 +1252,122 @@ mod turn_extract_tests {
 
         app.handle_detail_key(KeyCode::Char('d'));
         assert!(!app.expanded_diff_events.contains(&2));
+    }
+
+    #[test]
+    fn matches_event_filter_uses_expanded_bucket_mapping() {
+        let mut app = App::new(Vec::new());
+
+        app.event_filters = HashSet::from([EventFilter::User]);
+        assert!(app.matches_event_filter(&EventType::UserMessage));
+        assert!(app.matches_event_filter(&EventType::SystemMessage));
+        assert!(!app.matches_event_filter(&EventType::AgentMessage));
+
+        app.event_filters = HashSet::from([EventFilter::Agent]);
+        assert!(app.matches_event_filter(&EventType::AgentMessage));
+        assert!(!app.matches_event_filter(&EventType::UserMessage));
+
+        app.event_filters = HashSet::from([EventFilter::Think]);
+        assert!(app.matches_event_filter(&EventType::Thinking));
+
+        app.event_filters = HashSet::from([EventFilter::Tools]);
+        assert!(app.matches_event_filter(&EventType::ToolCall {
+            name: "x".to_string()
+        }));
+        assert!(app.matches_event_filter(&EventType::ToolResult {
+            name: "x".to_string(),
+            is_error: false,
+            call_id: None
+        }));
+
+        app.event_filters = HashSet::from([EventFilter::Files]);
+        assert!(app.matches_event_filter(&EventType::FileRead {
+            path: "a".to_string()
+        }));
+        assert!(app.matches_event_filter(&EventType::CodeSearch {
+            query: "q".to_string()
+        }));
+
+        app.event_filters = HashSet::from([EventFilter::Shell]);
+        assert!(app.matches_event_filter(&EventType::ShellCommand {
+            command: "echo hi".to_string(),
+            exit_code: Some(0)
+        }));
+
+        app.event_filters = HashSet::from([EventFilter::Task]);
+        assert!(app.matches_event_filter(&EventType::TaskStart { title: None }));
+        assert!(app.matches_event_filter(&EventType::TaskEnd { summary: None }));
+
+        app.event_filters = HashSet::from([EventFilter::Web]);
+        assert!(app.matches_event_filter(&EventType::WebSearch {
+            query: "rust".to_string()
+        }));
+        assert!(app.matches_event_filter(&EventType::WebFetch {
+            url: "https://example.com".to_string()
+        }));
+        assert!(!app.matches_event_filter(&EventType::Custom {
+            kind: "x".to_string()
+        }));
+
+        app.event_filters = HashSet::from([EventFilter::Other]);
+        assert!(app.matches_event_filter(&EventType::Custom {
+            kind: "x".to_string()
+        }));
+        assert!(app.matches_event_filter(&EventType::ImageGenerate {
+            prompt: "draw".to_string()
+        }));
+    }
+
+    #[test]
+    fn apply_discovered_sessions_keeps_selected_session_when_present() {
+        let sessions = vec![
+            make_live_session("session-a", 2),
+            make_live_session("session-b", 2),
+            make_live_session("session-c", 2),
+        ];
+        let mut app = App::new(sessions);
+        assert!(app.select_session_by_id("session-c"));
+
+        let next = vec![
+            make_live_session("session-z", 2),
+            make_live_session("session-c", 3),
+            make_live_session("session-q", 2),
+        ];
+        app.apply_discovered_sessions(next);
+
+        let selected_id = app
+            .selected_session()
+            .map(|session| session.session_id.clone());
+        assert_eq!(selected_id.as_deref(), Some("session-c"));
+    }
+
+    #[test]
+    fn handoff_tab_supports_picker_navigation_and_enter() {
+        let sessions = vec![
+            make_live_session("handoff-a", 2),
+            make_live_session("handoff-b", 2),
+        ];
+        let mut app = App::new(sessions);
+        app.handle_key(KeyCode::Char('2'));
+        assert_eq!(app.view, View::Handoff);
+        let before = app
+            .selected_handoff_candidate()
+            .map(|candidate| candidate.session_id)
+            .expect("initial handoff candidate");
+
+        app.handle_key(KeyCode::Char('j'));
+        let selected_after = app
+            .selected_handoff_candidate()
+            .map(|candidate| candidate.session_id)
+            .expect("moved handoff candidate");
+        assert_ne!(selected_after, before);
+
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.view, View::SessionDetail);
+        let selected_id = app
+            .selected_session()
+            .map(|session| session.session_id.clone());
+        assert_eq!(selected_id.as_deref(), Some(selected_after.as_str()));
     }
 
     #[test]
@@ -1675,12 +1828,10 @@ pub struct App {
     /// Timeline preset slots that currently have saved values.
     pub timeline_preset_slots_filled: Vec<u8>,
 
-    // ── Setup login ──────────────────────────────────────────────
+    // ── Setup ────────────────────────────────────────────────────
     pub setup_step: SetupStep,
     pub setup_scenario_index: usize,
     pub setup_scenario: Option<SetupScenario>,
-    pub setup_mode: SetupMode,
-    pub login_state: LoginState,
 
     // ── Upload popup / Modal ────────────────────────────────────
     pub upload_popup: Option<UploadPopup>,
@@ -1688,6 +1839,7 @@ pub struct App {
 
     // ── Tab navigation ───────────────────────────────────────────
     pub active_tab: Tab,
+    pub handoff_selected_session_id: Option<String>,
     pub pending_command: Option<AsyncCommand>,
 
     // ── Profile / Account (Settings enhancement) ─────────────────
@@ -1993,11 +2145,10 @@ impl App {
             setup_step: SetupStep::Scenario,
             setup_scenario_index: 0,
             setup_scenario: None,
-            setup_mode: SetupMode::ApiKey,
-            login_state: LoginState::default(),
             upload_popup: None,
             modal: None,
             active_tab: Tab::Sessions,
+            handoff_selected_session_id: None,
             pending_command: None,
             settings_section: SettingsSection::Workspace,
             profile: None,
@@ -2021,20 +2172,91 @@ impl App {
             return true;
         }
 
-        session
+        if session
+            .context
+            .description
+            .as_deref()
+            .is_some_and(Self::is_internal_summary_title)
+        {
+            return true;
+        }
+
+        if session
             .events
             .iter()
             .any(Self::is_internal_summary_user_event)
+        {
+            return true;
+        }
+
+        false
     }
 
     fn is_internal_summary_row(row: &LocalSessionRow) -> bool {
-        row.title
+        let display_title = row.title.as_deref().unwrap_or(row.id.as_str());
+        if row
+            .title
             .as_deref()
             .is_some_and(Self::is_internal_summary_title)
             || row
                 .description
                 .as_deref()
                 .is_some_and(Self::is_internal_summary_title)
+            || (row.message_count <= 2 && Self::is_probably_session_uuid(display_title))
+        {
+            return true;
+        }
+
+        let title_blank = row
+            .title
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty());
+        let description_blank = row
+            .description
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty());
+
+        if row.tool == "codex"
+            && title_blank
+            && description_blank
+            && row.user_message_count <= 0
+            && row.message_count <= 0
+            && row.task_count <= 1
+            && row.event_count <= 2
+        {
+            return true;
+        }
+
+        if row.tool == "claude-code"
+            && display_title
+                .trim()
+                .to_ascii_lowercase()
+                .starts_with("rollout-")
+            && row.user_message_count <= 0
+            && row.message_count <= 0
+        {
+            return true;
+        }
+
+        false
+    }
+
+    pub(crate) fn is_probably_session_uuid(value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.len() != 36 {
+            return false;
+        }
+        for (idx, ch) in trimmed.chars().enumerate() {
+            let is_dash_slot = matches!(idx, 8 | 13 | 18 | 23);
+            if is_dash_slot {
+                if ch != '-' {
+                    return false;
+                }
+            } else if !ch.is_ascii_hexdigit() {
+                return false;
+            }
+        }
+        true
     }
 
     /// Returns true if the app should quit.
@@ -2094,11 +2316,11 @@ impl App {
                     return false;
                 }
                 KeyCode::Char('2') => {
-                    self.switch_tab(Tab::Settings);
+                    self.switch_tab(Tab::Handoff);
                     return false;
                 }
                 KeyCode::Char('3') => {
-                    self.switch_tab(Tab::Handoff);
+                    self.switch_tab(Tab::Settings);
                     return false;
                 }
                 _ => {}
@@ -2170,6 +2392,13 @@ impl App {
                 self.view = View::SessionList;
                 self.apply_session_view_mode(ViewMode::Local);
             }
+            Tab::Handoff => {
+                self.view = View::Handoff;
+                self.handoff_selected_session_id = self
+                    .selected_session()
+                    .map(|session| session.session_id.clone())
+                    .or_else(|| self.selected_db_session().map(|row| row.id.clone()));
+            }
             Tab::Settings => {
                 self.view = View::Settings;
                 self.settings_index = 0;
@@ -2182,9 +2411,6 @@ impl App {
                     self.profile_loading = true;
                     self.pending_command = Some(AsyncCommand::FetchProfile);
                 }
-            }
-            Tab::Handoff => {
-                self.view = View::Handoff;
             }
         }
     }
@@ -2443,7 +2669,7 @@ impl App {
             }
             KeyCode::Char('R') => self.open_repo_picker(),
             KeyCode::Char('f') => {
-                // Legacy alias in DB multi-column view.
+                // Compatibility alias in DB multi-column view.
                 self.cycle_tool_filter();
             }
             KeyCode::Tab => {
@@ -2487,11 +2713,15 @@ impl App {
             KeyCode::Char('n') => self.jump_to_next_same_type(),
             KeyCode::Char('N') => self.jump_to_prev_same_type(),
             KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
-            KeyCode::Char('2') => self.toggle_event_filter(EventFilter::Messages),
-            KeyCode::Char('3') => self.toggle_event_filter(EventFilter::ToolCalls),
-            KeyCode::Char('4') => self.toggle_event_filter(EventFilter::Thinking),
-            KeyCode::Char('5') => self.toggle_event_filter(EventFilter::FileOps),
-            KeyCode::Char('6') => self.toggle_event_filter(EventFilter::Shell),
+            KeyCode::Char('2') => self.toggle_event_filter(EventFilter::User),
+            KeyCode::Char('3') => self.toggle_event_filter(EventFilter::Agent),
+            KeyCode::Char('4') => self.toggle_event_filter(EventFilter::Think),
+            KeyCode::Char('5') => self.toggle_event_filter(EventFilter::Tools),
+            KeyCode::Char('6') => self.toggle_event_filter(EventFilter::Files),
+            KeyCode::Char('7') => self.toggle_event_filter(EventFilter::Shell),
+            KeyCode::Char('8') => self.toggle_event_filter(EventFilter::Task),
+            KeyCode::Char('9') => self.toggle_event_filter(EventFilter::Web),
+            KeyCode::Char('0') => self.toggle_event_filter(EventFilter::Other),
             _ => {}
         }
         self.update_detail_selection_anchor();
@@ -2504,10 +2734,7 @@ impl App {
         if self.setup_step == SetupStep::Scenario {
             return self.handle_setup_scenario_key(key);
         }
-        match self.setup_mode {
-            SetupMode::ApiKey => self.handle_setup_apikey_key(key),
-            SetupMode::Login => self.handle_setup_login_key(key),
-        }
+        self.handle_setup_apikey_key(key)
     }
 
     fn handle_setup_scenario_key(&mut self, key: KeyCode) -> bool {
@@ -2534,7 +2761,6 @@ impl App {
                         }
                         SetupScenario::Public => {
                             self.setup_step = SetupStep::Configure;
-                            self.setup_mode = SetupMode::ApiKey;
                             self.settings_index = 0;
                             self.editing_field = false;
                             self.edit_buffer.clear();
@@ -2638,88 +2864,6 @@ impl App {
                 self.save_config();
                 self.view = View::SessionList;
                 self.active_tab = Tab::Sessions;
-            }
-            KeyCode::Tab => {
-                self.setup_mode = SetupMode::Login;
-                self.settings_index = 0;
-                self.editing_field = false;
-                self.edit_buffer.clear();
-            }
-            _ => {}
-        }
-        false
-    }
-
-    fn handle_setup_login_key(&mut self, key: KeyCode) -> bool {
-        if self.login_state.loading {
-            return false; // block input while loading
-        }
-
-        if self.login_state.editing {
-            match key {
-                KeyCode::Esc => {
-                    self.login_state.editing = false;
-                }
-                KeyCode::Enter => {
-                    // Save the edit buffer into the appropriate field
-                    match self.login_state.field_index {
-                        0 => self.login_state.email = self.edit_buffer.clone(),
-                        1 => self.login_state.password = self.edit_buffer.clone(),
-                        _ => {}
-                    }
-                    self.login_state.editing = false;
-                    self.edit_buffer.clear();
-                }
-                KeyCode::Backspace => {
-                    self.edit_buffer.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.edit_buffer.push(c);
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        match key {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.view = View::SessionList;
-                self.active_tab = Tab::Sessions;
-                if !self.startup_status.config_exists {
-                    self.flash_info(
-                        "You can configure this later in Settings > Web Share (~/.config/opensession/opensession.toml)",
-                    );
-                }
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.login_state.field_index < 1 {
-                    self.login_state.field_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.login_state.field_index = self.login_state.field_index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                // Enter edit mode for current field
-                self.edit_buffer = match self.login_state.field_index {
-                    0 => self.login_state.email.clone(),
-                    1 => self.login_state.password.clone(),
-                    _ => String::new(),
-                };
-                self.login_state.editing = true;
-            }
-            KeyCode::Char('l') => {
-                // Trigger login
-                if !self.login_state.email.is_empty() && !self.login_state.password.is_empty() {
-                    self.login_state.loading = true;
-                    self.login_state.status = Some("Logging in...".to_string());
-                }
-            }
-            KeyCode::Tab => {
-                self.setup_mode = SetupMode::ApiKey;
-                self.settings_index = 0;
-                self.editing_field = false;
-                self.edit_buffer.clear();
             }
             _ => {}
         }
@@ -2973,9 +3117,17 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.switch_tab(Tab::Sessions);
             }
+            KeyCode::Char('j') | KeyCode::Down => self.move_handoff_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_handoff_selection(-1),
             KeyCode::Enter | KeyCode::Char('l') => {
-                self.switch_tab(Tab::Sessions);
-                self.enter_detail();
+                if let Some(candidate) = self.selected_handoff_candidate() {
+                    let target_session_id = candidate.session_id.clone();
+                    self.switch_tab(Tab::Sessions);
+                    let _ = self.select_session_by_id(&target_session_id);
+                    self.enter_detail();
+                } else {
+                    self.flash_info("No handoff candidate in current scope");
+                }
             }
             _ => {}
         }
@@ -3318,22 +3470,6 @@ impl App {
 
     pub fn apply_command_result(&mut self, result: CommandResult) {
         match result {
-            CommandResult::Login(Ok((api_key, nickname))) => {
-                self.daemon_config.server.api_key = api_key;
-                self.daemon_config.identity.nickname = nickname;
-                self.config_dirty = true;
-                self.save_config();
-                self.connection_ctx = Self::derive_connection_ctx(&self.daemon_config);
-                self.login_state.loading = false;
-                self.login_state.status = Some("Login successful!".to_string());
-                self.view = View::SessionList;
-                self.active_tab = Tab::Sessions;
-            }
-            CommandResult::Login(Err(e)) => {
-                self.login_state.loading = false;
-                self.login_state.status = Some(format!("Error: {e}"));
-            }
-
             CommandResult::UploadTeams(Ok(teams)) => {
                 let allows_public = self.selected_session_allows_public();
                 if let Some(ref mut popup) = self.upload_popup {
@@ -4220,11 +4356,15 @@ impl App {
             }
             KeyCode::Char('p') => self.toggle_turn_prompt_expanded(),
             KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
-            KeyCode::Char('2') => self.toggle_event_filter(EventFilter::Messages),
-            KeyCode::Char('3') => self.toggle_event_filter(EventFilter::ToolCalls),
-            KeyCode::Char('4') => self.toggle_event_filter(EventFilter::Thinking),
-            KeyCode::Char('5') => self.toggle_event_filter(EventFilter::FileOps),
-            KeyCode::Char('6') => self.toggle_event_filter(EventFilter::Shell),
+            KeyCode::Char('2') => self.toggle_event_filter(EventFilter::User),
+            KeyCode::Char('3') => self.toggle_event_filter(EventFilter::Agent),
+            KeyCode::Char('4') => self.toggle_event_filter(EventFilter::Think),
+            KeyCode::Char('5') => self.toggle_event_filter(EventFilter::Tools),
+            KeyCode::Char('6') => self.toggle_event_filter(EventFilter::Files),
+            KeyCode::Char('7') => self.toggle_event_filter(EventFilter::Shell),
+            KeyCode::Char('8') => self.toggle_event_filter(EventFilter::Task),
+            KeyCode::Char('9') => self.toggle_event_filter(EventFilter::Web),
+            KeyCode::Char('0') => self.toggle_event_filter(EventFilter::Other),
             _ => {}
         }
         false
@@ -4482,6 +4622,203 @@ impl App {
         self.db_sessions.get(idx)
     }
 
+    fn source_path_for_session(
+        &self,
+        session_id: &str,
+        attrs: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Option<PathBuf> {
+        if let Some(db) = &self.db {
+            if let Ok(Some(path)) = db.get_session_source_path(session_id) {
+                let path = PathBuf::from(path);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+
+        let attrs = attrs?;
+        for key in ["source_path", "source_file", "session_path", "path"] {
+            let maybe = attrs
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .filter(|path| path.exists());
+            if let Some(path) = maybe {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    pub fn handoff_candidates(&self) -> Vec<HandoffCandidate> {
+        if self.is_db_view() {
+            return self
+                .db_sessions
+                .iter()
+                .filter(|row| !Self::is_internal_summary_row(row))
+                .map(|row| {
+                    let source_path = row
+                        .source_path
+                        .as_ref()
+                        .map(PathBuf::from)
+                        .filter(|path| path.exists())
+                        .or_else(|| self.source_path_for_session(&row.id, None));
+                    HandoffCandidate {
+                        session_id: row.id.clone(),
+                        title: row.title.clone().unwrap_or_else(|| row.id.clone()),
+                        tool: row.tool.clone(),
+                        model: row
+                            .agent_model
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        event_count: row.event_count.max(0) as usize,
+                        message_count: row.message_count.max(0) as usize,
+                        source_path,
+                    }
+                })
+                .collect();
+        }
+
+        self.filtered_sessions
+            .iter()
+            .filter_map(|idx| self.sessions.get(*idx))
+            .filter(|session| !Self::is_internal_summary_session(session))
+            .map(|session| HandoffCandidate {
+                session_id: session.session_id.clone(),
+                title: session
+                    .context
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| session.session_id.clone()),
+                tool: session.agent.tool.clone(),
+                model: session.agent.model.clone(),
+                event_count: if session.events.is_empty() {
+                    session.stats.event_count as usize
+                } else {
+                    session.events.len()
+                },
+                message_count: session.stats.message_count as usize,
+                source_path: self.source_path_for_session(
+                    &session.session_id,
+                    Some(&session.context.attributes),
+                ),
+            })
+            .collect()
+    }
+
+    pub fn selected_handoff_candidate(&self) -> Option<HandoffCandidate> {
+        let candidates = self.handoff_candidates();
+        let index = self.handoff_selected_index_for(&candidates)?;
+        candidates.get(index).cloned()
+    }
+
+    fn handoff_selected_index_for(&self, candidates: &[HandoffCandidate]) -> Option<usize> {
+        if candidates.is_empty() {
+            return None;
+        }
+        if let Some(selected_id) = self.handoff_selected_session_id.as_deref() {
+            if let Some(index) = candidates
+                .iter()
+                .position(|candidate| candidate.session_id == selected_id)
+            {
+                return Some(index);
+            }
+        }
+        Some(0)
+    }
+
+    fn move_handoff_selection(&mut self, step: isize) {
+        let candidates = self.handoff_candidates();
+        if candidates.is_empty() {
+            self.handoff_selected_session_id = None;
+            return;
+        }
+        let current = self.handoff_selected_index_for(&candidates).unwrap_or(0) as isize;
+        let max = candidates.len().saturating_sub(1) as isize;
+        let next = (current + step).clamp(0, max) as usize;
+        self.handoff_selected_session_id = Some(candidates[next].session_id.clone());
+    }
+
+    fn select_session_by_id(&mut self, session_id: &str) -> bool {
+        if self.is_db_view() {
+            if let Some(index) = self.db_sessions.iter().position(|row| row.id == session_id) {
+                self.list_state.select(Some(index));
+                return true;
+            }
+            return false;
+        }
+
+        let Some(abs_index) = self.filtered_sessions.iter().position(|idx| {
+            self.sessions
+                .get(*idx)
+                .is_some_and(|session| session.session_id == session_id)
+        }) else {
+            return false;
+        };
+
+        let per_page = self.per_page.max(1);
+        self.page = abs_index / per_page;
+        self.list_state.select(Some(abs_index % per_page));
+        true
+    }
+
+    pub fn apply_discovered_sessions(&mut self, sessions: Vec<Session>) {
+        let selected_session_id = self
+            .selected_session()
+            .map(|session| session.session_id.clone());
+        let selected_local_abs = if self.is_db_view() {
+            None
+        } else {
+            self.list_state
+                .selected()
+                .map(|selected| self.page.saturating_mul(self.per_page.max(1)) + selected)
+        };
+
+        self.sessions = sessions
+            .into_iter()
+            .filter(|session| !Self::is_internal_summary_session(session))
+            .collect();
+        self.rebuild_session_agent_metrics();
+        self.filtered_sessions = (0..self.sessions.len()).collect();
+        self.rebuild_available_tools();
+        if self.list_layout == ListLayout::ByUser {
+            self.rebuild_columns();
+        }
+
+        if self.sessions.is_empty() {
+            self.list_state.select(None);
+            self.handoff_selected_session_id = None;
+            return;
+        }
+
+        if let Some(session_id) = selected_session_id {
+            if self.select_session_by_id(&session_id) {
+                self.handoff_selected_session_id = Some(session_id);
+                return;
+            }
+        }
+
+        if !self.is_db_view() {
+            if let Some(abs_index) =
+                selected_local_abs.filter(|idx| *idx < self.filtered_sessions.len())
+            {
+                let per_page = self.per_page.max(1);
+                self.page = abs_index / per_page;
+                self.list_state.select(Some(abs_index % per_page));
+            } else {
+                self.page = 0;
+                self.list_state.select(Some(0));
+            }
+            self.handoff_selected_session_id = self
+                .selected_session()
+                .map(|session| session.session_id.clone());
+        }
+
+        if self.view == View::SessionDetail {
+            self.remap_detail_selection_by_event_id();
+        }
+    }
+
     /// Check if the selected session's repo allows public upload.
     /// Returns `false` only if the repo has `.opensession/config.toml` with `allow_public = false`.
     pub fn selected_session_allows_public(&self) -> bool {
@@ -4526,16 +4863,19 @@ impl App {
         for f in &self.event_filters {
             let matches = match f {
                 EventFilter::All => true,
-                EventFilter::Messages => matches!(
-                    event_type,
-                    EventType::UserMessage | EventType::AgentMessage | EventType::SystemMessage
-                ),
-                EventFilter::ToolCalls => matches!(
+                EventFilter::User => {
+                    matches!(
+                        event_type,
+                        EventType::UserMessage | EventType::SystemMessage
+                    )
+                }
+                EventFilter::Agent => matches!(event_type, EventType::AgentMessage),
+                EventFilter::Think => matches!(event_type, EventType::Thinking),
+                EventFilter::Tools => matches!(
                     event_type,
                     EventType::ToolCall { .. } | EventType::ToolResult { .. }
                 ),
-                EventFilter::Thinking => matches!(event_type, EventType::Thinking),
-                EventFilter::FileOps => matches!(
+                EventFilter::Files => matches!(
                     event_type,
                     EventType::FileEdit { .. }
                         | EventType::FileCreate { .. }
@@ -4545,6 +4885,21 @@ impl App {
                         | EventType::FileSearch { .. }
                 ),
                 EventFilter::Shell => matches!(event_type, EventType::ShellCommand { .. }),
+                EventFilter::Task => matches!(
+                    event_type,
+                    EventType::TaskStart { .. } | EventType::TaskEnd { .. }
+                ),
+                EventFilter::Web => matches!(
+                    event_type,
+                    EventType::WebSearch { .. } | EventType::WebFetch { .. }
+                ),
+                EventFilter::Other => matches!(
+                    event_type,
+                    EventType::Custom { .. }
+                        | EventType::ImageGenerate { .. }
+                        | EventType::VideoGenerate { .. }
+                        | EventType::AudioGenerate { .. }
+                ),
             };
             if matches {
                 return true;

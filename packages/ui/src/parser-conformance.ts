@@ -27,9 +27,7 @@ export const PARSER_CONFORMANCE_ROWS: ParserConformanceRow[] = [
 			'response_item and event_msg dedupe stability',
 		],
 		lastVerifiedAt: '2026-02-16',
-		references: [
-			{ label: 'openai/codex', url: 'https://github.com/openai/codex' },
-		],
+		references: [{ label: 'openai/codex', url: 'https://github.com/openai/codex' }],
 	},
 	{
 		tool: 'Claude Code',
@@ -87,9 +85,7 @@ export const PARSER_CONFORMANCE_ROWS: ParserConformanceRow[] = [
 			'tool call lifecycle pairing',
 		],
 		lastVerifiedAt: '2026-02-16',
-		references: [
-			{ label: 'opencode-ai/opencode', url: 'https://github.com/opencode-ai/opencode' },
-		],
+		references: [{ label: 'opencode-ai/opencode', url: 'https://github.com/opencode-ai/opencode' }],
 	},
 ];
 

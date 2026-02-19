@@ -72,6 +72,25 @@ test.describe('Authentication', () => {
 		expect(tokens.refresh).toBeNull();
 	});
 
+	test('api key alone does not count as logged-in web session', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+
+		await page.goto('/');
+		await page.evaluate((apiKey) => {
+			localStorage.removeItem('opensession_access_token');
+			localStorage.removeItem('opensession_refresh_token');
+			localStorage.removeItem('opensession_token_expiry');
+			localStorage.setItem('opensession_api_key', apiKey);
+		}, 'osk_test_only_key');
+
+		await page.goto('/');
+		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).toBeVisible();
+		await expect(page.locator('#session-search')).toHaveCount(0);
+		await expect(page.locator('nav').getByText('Login')).toBeVisible();
+		await expect(page.locator('nav').getByText('Logout')).toHaveCount(0);
+	});
+
 	test('docs page accessible without auth', async ({ page }) => {
 		await page.goto('/docs');
 		await expect(page.locator('main')).toBeVisible();

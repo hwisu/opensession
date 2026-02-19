@@ -8,15 +8,6 @@ pub type Built = (String, sea_query::Values);
 
 // ── User lookups ───────────────────────────────────────────────────────────
 
-/// Find user by API key.
-pub fn get_by_api_key(api_key: &str) -> Built {
-    Query::select()
-        .columns([Users::Id, Users::Nickname, Users::Email])
-        .from(Users::Table)
-        .and_where(Expr::col(Users::ApiKey).eq(api_key))
-        .build(SqliteQueryBuilder)
-}
-
 /// Find user by id.
 pub fn get_by_id(user_id: &str) -> Built {
     Query::select()
@@ -64,7 +55,7 @@ pub fn get_by_nickname(nickname: &str) -> Built {
 pub fn insert_with_email(
     id: &str,
     nickname: &str,
-    api_key: &str,
+    api_key_placeholder: &str,
     email: &str,
     password_hash: &str,
     password_salt: &str,
@@ -82,7 +73,7 @@ pub fn insert_with_email(
         .values_panic([
             id.into(),
             nickname.into(),
-            api_key.into(),
+            api_key_placeholder.into(),
             email.into(),
             password_hash.into(),
             password_salt.into(),
@@ -90,24 +81,20 @@ pub fn insert_with_email(
         .build(SqliteQueryBuilder)
 }
 
-/// Insert user (legacy, no email).
-pub fn insert(id: &str, nickname: &str, api_key: &str) -> Built {
-    Query::insert()
-        .into_table(Users::Table)
-        .columns([Users::Id, Users::Nickname, Users::ApiKey])
-        .values_panic([id.into(), nickname.into(), api_key.into()])
-        .build(SqliteQueryBuilder)
-}
-
 /// Insert user from OAuth (no password).
-pub fn insert_oauth(id: &str, nickname: &str, api_key: &str, email: Option<&str>) -> Built {
+pub fn insert_oauth(
+    id: &str,
+    nickname: &str,
+    api_key_placeholder: &str,
+    email: Option<&str>,
+) -> Built {
     Query::insert()
         .into_table(Users::Table)
         .columns([Users::Id, Users::Nickname, Users::ApiKey, Users::Email])
         .values_panic([
             id.into(),
             nickname.into(),
-            api_key.into(),
+            api_key_placeholder.into(),
             email.map(|s| s.to_string()).into(),
         ])
         .build(SqliteQueryBuilder)
@@ -154,10 +141,10 @@ pub fn get_password_fields(user_id: &str) -> Built {
         .build(SqliteQueryBuilder)
 }
 
-/// Get user API key and created_at (for settings).
+/// Get user created_at (for settings).
 pub fn get_settings_fields(user_id: &str) -> Built {
     Query::select()
-        .columns([Users::ApiKey, Users::CreatedAt])
+        .column(Users::CreatedAt)
         .from(Users::Table)
         .and_where(Expr::col(Users::Id).eq(user_id))
         .build(SqliteQueryBuilder)

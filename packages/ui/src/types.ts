@@ -95,7 +95,6 @@ export type {
 	LinkedProvider,
 	LinkType,
 	OAuthProviderInfo,
-	RegisterResponse,
 	SessionDetail,
 	SessionLink,
 	SessionListResponse,
@@ -106,9 +105,6 @@ export type {
 	UserSettingsResponse,
 	VerifyResponse,
 } from './api-types.generated';
-
-// Convenience alias for backward compatibility
-export type SessionListItem = import('./api-types.generated').SessionSummary;
 
 // ─── UI-only types (not from server) ─────────────────────────────────────────
 

@@ -44,6 +44,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0009_session_score_plugin",
         include_str!("../../migrations/0009_session_score_plugin.sql"),
     ),
+    (
+        "0010_api_keys_issuance",
+        include_str!("../../migrations/0010_api_keys_issuance.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).
@@ -56,5 +60,9 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
     (
         "local_0002_drop_unused_local_sessions",
         include_str!("../../migrations/local_0002_drop_unused_local_sessions.sql"),
+    ),
+    (
+        "local_0003_timeline_summary_cache",
+        include_str!("../../migrations/local_0003_timeline_summary_cache.sql"),
     ),
 ];

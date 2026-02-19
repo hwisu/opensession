@@ -1,7 +1,7 @@
 <script lang="ts">
 import { truncate } from '../event-helpers';
 import { getSessionActorLabel, getSessionModelLabel } from '../session-presentation';
-import type { SessionListItem } from '../types';
+import type { SessionSummary } from '../types';
 import { formatDuration, formatTimestamp, getToolConfig } from '../types';
 import { stripTags } from '../utils';
 
@@ -10,7 +10,7 @@ const {
 	selected = false,
 	compact = false,
 }: {
-	session: SessionListItem;
+	session: SessionSummary;
 	selected?: boolean;
 	compact?: boolean;
 } = $props();

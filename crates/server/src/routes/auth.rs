@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use opensession_api::{
     crypto, db as dbq, oauth, service, service::AuthToken, AuthRegisterRequest, AuthTokenResponse,
-    ChangePasswordRequest, LoginRequest, LogoutRequest, OkResponse, RefreshRequest,
-    RegenerateKeyResponse, RegisterRequest, RegisterResponse, UserSettingsResponse, VerifyResponse,
+    ChangePasswordRequest, IssueApiKeyResponse, LoginRequest, LogoutRequest, OkResponse,
+    RefreshRequest, UserSettingsResponse, VerifyResponse,
 };
 
 use crate::error::ApiErr;
@@ -22,7 +22,7 @@ use crate::AppConfig;
 /// Authenticated user extracted from `Authorization: Bearer <token>`.
 ///
 /// Priority:
-/// 1. `osk_` prefix → API key DB lookup (legacy)
+/// 1. `osk_` prefix → API key hash DB lookup
 /// 2. Otherwise → JWT verify → user_id DB lookup
 pub struct AuthUser {
     pub user_id: String,
@@ -59,13 +59,18 @@ where
         let conn = db.conn();
         match resolved {
             AuthToken::ApiKey(key) => {
-                sq_query_row(&conn, dbq::users::get_by_api_key(&key), |row| {
-                    Ok(AuthUser {
-                        user_id: row.get(0)?,
-                        nickname: row.get(1)?,
-                        email: row.get(2)?,
-                    })
-                })
+                let key_hash = service::hash_api_key(&key);
+                sq_query_row(
+                    &conn,
+                    dbq::api_keys::get_user_by_valid_key_hash(&key_hash),
+                    |row| {
+                        Ok(AuthUser {
+                            user_id: row.get(0)?,
+                            nickname: row.get(1)?,
+                            email: row.get(2)?,
+                        })
+                    },
+                )
                 .map_err(|_| ApiErr::unauthorized("invalid API key"))
             }
             AuthToken::Jwt(user_id) => {
@@ -122,44 +127,6 @@ fn issue_tokens(
 }
 
 // ---------------------------------------------------------------------------
-// Register (legacy, CLI-compatible)
-// ---------------------------------------------------------------------------
-
-pub async fn register(
-    State(db): State<Db>,
-    Json(req): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<RegisterResponse>), ApiErr> {
-    let nickname = service::validate_nickname(&req.nickname).map_err(ApiErr::from)?;
-
-    let user_id = Uuid::new_v4().to_string();
-    let api_key = service::generate_api_key();
-
-    let conn = db.conn();
-
-    let result = sq_execute(&conn, dbq::users::insert(&user_id, &nickname, &api_key));
-
-    match result {
-        Ok(_) => Ok((
-            StatusCode::CREATED,
-            Json(RegisterResponse {
-                user_id,
-                nickname,
-                api_key,
-            }),
-        )),
-        Err(rusqlite::Error::SqliteFailure(err, _))
-            if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-        {
-            Err(ApiErr::conflict("nickname already taken"))
-        }
-        Err(e) => {
-            tracing::error!("register error: {e}");
-            Err(ApiErr::internal("internal server error"))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Email/password auth
 // ---------------------------------------------------------------------------
 
@@ -188,7 +155,7 @@ pub async fn auth_register(
     }
 
     let user_id = Uuid::new_v4().to_string();
-    let api_key = service::generate_api_key();
+    let api_key_placeholder = service::generate_api_key_placeholder(&user_id);
     let (password_hash, password_salt) =
         crypto::hash_password(&req.password).map_err(ApiErr::from)?;
 
@@ -199,7 +166,7 @@ pub async fn auth_register(
             dbq::users::insert_with_email(
                 &user_id,
                 &nickname,
-                &api_key,
+                &api_key_placeholder,
                 &email,
                 &password_hash,
                 &password_salt,
@@ -401,44 +368,53 @@ pub async fn me(
         })
         .map_err(ApiErr::from_db("me query oauth"))?;
 
-    // Legacy: first GitHub provider's username
-    let github_username = providers
-        .iter()
-        .find(|p| p.provider == "github")
-        .map(|p| p.provider_username.clone());
-
-    let (api_key, created_at): (String, String) = sq_query_row(
+    let created_at: String = sq_query_row(
         &conn,
         dbq::users::get_settings_fields(&user.user_id),
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| row.get(0),
     )
     .unwrap_or_default();
 
     Ok(Json(UserSettingsResponse {
         user_id: user.user_id,
         nickname: user.nickname,
-        api_key,
         created_at,
         email,
         avatar_url,
         oauth_providers: providers,
-        github_username,
     }))
 }
 
 // ---------------------------------------------------------------------------
-// Regenerate API key
+// Issue API key
 // ---------------------------------------------------------------------------
 
-/// POST /api/auth/regenerate-key — generate a new API key (invalidates the old one).
-pub async fn regenerate_key(
+/// POST /api/auth/api-keys/issue — issue a new API key.
+///
+/// The new key is visible only in this response.
+/// Previously active keys are moved to grace mode for a limited period.
+pub async fn issue_api_key(
     State(db): State<Db>,
     user: AuthUser,
-) -> Result<Json<RegenerateKeyResponse>, ApiErr> {
+) -> Result<Json<IssueApiKeyResponse>, ApiErr> {
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    let grace_until = service::grace_until_sqlite(now).map_err(ApiErr::from)?;
     let new_key = service::generate_api_key();
-    let conn = db.conn();
-    sq_execute(&conn, dbq::users::update_api_key(&user.user_id, &new_key))
-        .map_err(ApiErr::from_db("regenerate key error"))?;
+    let key_hash = service::hash_api_key(&new_key);
+    let key_prefix = service::key_prefix(&new_key);
+    let key_id = Uuid::new_v4().to_string();
 
-    Ok(Json(RegenerateKeyResponse { api_key: new_key }))
+    let conn = db.conn();
+    sq_execute(
+        &conn,
+        dbq::api_keys::move_active_to_grace(&user.user_id, &grace_until),
+    )
+    .map_err(ApiErr::from_db("issue api key move old keys"))?;
+    sq_execute(
+        &conn,
+        dbq::api_keys::insert_active(&key_id, &user.user_id, &key_hash, &key_prefix),
+    )
+    .map_err(ApiErr::from_db("issue api key insert"))?;
+
+    Ok(Json(IssueApiKeyResponse { api_key: new_key }))
 }

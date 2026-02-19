@@ -123,14 +123,6 @@ pub fn saturating_i64(v: u64) -> i64 {
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
-/// Legacy register (nickname-only). Kept for backward compatibility with CLI.
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct RegisterRequest {
-    pub nickname: String,
-}
-
 /// Email + password registration.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -187,16 +179,6 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
-/// Returned on successful legacy register (nickname-only, CLI-compatible).
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export))]
-pub struct RegisterResponse {
-    pub user_id: String,
-    pub nickname: String,
-    pub api_key: String,
-}
-
 /// Returned by `POST /api/auth/verify` — confirms token validity.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -213,16 +195,12 @@ pub struct VerifyResponse {
 pub struct UserSettingsResponse {
     pub user_id: String,
     pub nickname: String,
-    pub api_key: String,
     pub created_at: String,
     pub email: Option<String>,
     pub avatar_url: Option<String>,
-    /// Linked OAuth providers (generic — replaces github_username)
+    /// Linked OAuth providers.
     #[serde(default)]
     pub oauth_providers: Vec<oauth::LinkedProvider>,
-    /// Legacy: GitHub username (populated from oauth_providers for backward compat)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_username: Option<String>,
 }
 
 /// Generic success response for operations that don't return data.
@@ -233,11 +211,11 @@ pub struct OkResponse {
     pub ok: bool,
 }
 
-/// Response for API key regeneration.
+/// Response for API key issuance. The key is visible only at issuance time.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
-pub struct RegenerateKeyResponse {
+pub struct IssueApiKeyResponse {
     pub api_key: String,
 }
 
@@ -537,6 +515,18 @@ impl ServiceError {
         }
     }
 
+    /// Stable machine-readable error code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::BadRequest(_) => "bad_request",
+            Self::Unauthorized(_) => "unauthorized",
+            Self::Forbidden(_) => "forbidden",
+            Self::NotFound(_) => "not_found",
+            Self::Conflict(_) => "conflict",
+            Self::Internal(_) => "internal",
+        }
+    }
+
     /// The error message.
     pub fn message(&self) -> &str {
         match self {
@@ -563,20 +553,22 @@ impl std::fmt::Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
-// ─── Error (legacy JSON shape) ──────────────────────────────────────────────
+// ─── Error ───────────────────────────────────────────────────────────────────
 
-/// Legacy JSON error shape `{ "error": "..." }` returned by all error responses.
+/// API error payload.
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
 pub struct ApiError {
-    pub error: String,
+    pub code: String,
+    pub message: String,
 }
 
 impl From<&ServiceError> for ApiError {
     fn from(e: &ServiceError) -> Self {
         Self {
-            error: e.message().to_string(),
+            code: e.code().to_string(),
+            message: e.message().to_string(),
         }
     }
 }
@@ -637,18 +629,16 @@ mod tests {
             TimeRange,
             LinkType,
             // Auth
-            RegisterRequest,
             AuthRegisterRequest,
             LoginRequest,
             AuthTokenResponse,
             RefreshRequest,
             LogoutRequest,
             ChangePasswordRequest,
-            RegisterResponse,
             VerifyResponse,
             UserSettingsResponse,
             OkResponse,
-            RegenerateKeyResponse,
+            IssueApiKeyResponse,
             OAuthLinkResponse,
             // Sessions
             UploadResponse,

@@ -7,7 +7,6 @@ export interface TestUser {
 	nickname: string;
 	access_token: string;
 	refresh_token: string;
-	api_key: string;
 }
 
 export interface ApiCapabilities {
@@ -59,12 +58,7 @@ export async function getAdmin(request: APIRequestContext): Promise<TestUser> {
 		tokens = await loginResp.json();
 	}
 
-	const meResp = await request.get(`${BASE_URL}/api/auth/me`, {
-		headers: { Authorization: `Bearer ${tokens.access_token}` },
-	});
-	const me: { api_key: string } = await meResp.json();
-
-	_admin = { ...tokens, ...me };
+	_admin = tokens;
 	return _admin;
 }
 
@@ -86,12 +80,7 @@ export async function registerUser(request: APIRequestContext): Promise<TestUser
 	const tokens: { user_id: string; nickname: string; access_token: string; refresh_token: string } =
 		await regResp.json();
 
-	const meResp = await request.get(`${BASE_URL}/api/auth/me`, {
-		headers: { Authorization: `Bearer ${tokens.access_token}` },
-	});
-	const me: { api_key: string } = await meResp.json();
-
-	return { ...tokens, ...me };
+	return tokens;
 }
 
 /**

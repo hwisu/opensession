@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use opensession_api::{
-    ChangePasswordRequest, LoginRequest, RegenerateKeyResponse, SessionListQuery,
-    SessionListResponse, UploadRequest, UserSettingsResponse,
+    ChangePasswordRequest, IssueApiKeyResponse, SessionListQuery, SessionListResponse,
+    UploadRequest, UserSettingsResponse,
 };
 
 use crate::app::TeamInfo;
@@ -10,12 +10,6 @@ use crate::config::DaemonConfig;
 
 /// Commands that require async I/O (network calls).
 pub enum AsyncCommand {
-    // ── Auth ──────────────────────────────────────────────────────────
-    Login {
-        email: String,
-        password: String,
-    },
-
     // ── Upload flow (existing) ────────────────────────────────────────
     FetchUploadTeams,
     UploadSession {
@@ -44,16 +38,13 @@ pub enum AsyncCommand {
 
 /// Results returned by async commands.
 pub enum CommandResult {
-    // Auth
-    Login(Result<(String, String), String>), // (api_key, nickname)
-
     // Upload flow
     UploadTeams(Result<Vec<TeamInfo>, String>),
     UploadDone(Result<(String, String), (String, String)>), // Ok((target_name, url)) or Err((target_name, error))
 
     // Profile / Account
     Profile(Result<UserSettingsResponse, String>),
-    ApiKey(Result<RegenerateKeyResponse, String>),
+    ApiKey(Result<IssueApiKeyResponse, String>),
 
     // Server Sessions
     ServerSessions(Result<SessionListResponse, String>),
@@ -75,28 +66,6 @@ fn make_client(config: &DaemonConfig) -> Result<opensession_api_client::ApiClien
 
 pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult {
     match cmd {
-        // ── Login ─────────────────────────────────────────────────────
-        AsyncCommand::Login { email, password } => {
-            let result = async {
-                let mut client = opensession_api_client::ApiClient::new(
-                    &config.server.url,
-                    Duration::from_secs(10),
-                )
-                .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
-
-                let tokens = client
-                    .login(&LoginRequest { email, password })
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-
-                client.set_auth(tokens.access_token);
-                let user = client.me().await.map_err(|e| format!("{e}"))?;
-                Ok((user.api_key, user.nickname))
-            }
-            .await;
-            CommandResult::Login(result)
-        }
-
         // ── Upload flow ───────────────────────────────────────────────
         AsyncCommand::FetchUploadTeams => {
             let result = async {
@@ -175,7 +144,7 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
         AsyncCommand::RegenerateApiKey => {
             let result = async {
                 let client = make_client(config)?;
-                client.regenerate_key().await.map_err(|e| format!("{e}"))
+                client.issue_api_key().await.map_err(|e| format!("{e}"))
             }
             .await;
             CommandResult::ApiKey(result)

@@ -132,11 +132,10 @@ async fn main() -> anyhow::Result<()> {
         // Health
         .route("/health", get(routes::health::health))
         .route("/capabilities", get(routes::capabilities::capabilities))
-        // Auth (legacy)
-        .route("/register", post(routes::auth::register))
+        // Auth
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))
-        .route("/auth/regenerate-key", post(routes::auth::regenerate_key))
+        .route("/auth/api-keys/issue", post(routes::auth::issue_api_key))
         // Auth (email/password + JWT)
         .route("/auth/register", post(routes::auth::auth_register))
         .route("/auth/login", post(routes::auth::login))

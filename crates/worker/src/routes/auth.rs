@@ -3,8 +3,8 @@ use opensession_api::{
     oauth::{self, AuthProvidersResponse, OAuthProviderConfig, OAuthProviderInfo},
     service,
     service::AuthToken,
-    AuthRegisterRequest, AuthTokenResponse, LoginRequest, LogoutRequest, OkResponse,
-    RefreshRequest, UserSettingsResponse, VerifyResponse,
+    AuthRegisterRequest, AuthTokenResponse, IssueApiKeyResponse, LoginRequest, LogoutRequest,
+    OkResponse, RefreshRequest, UserSettingsResponse, VerifyResponse,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -49,8 +49,18 @@ struct RefreshRow {
 
 #[derive(Debug, Deserialize)]
 struct SettingsRow {
-    api_key: String,
     created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyApiKeyRow {
+    id: String,
+    api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MigrationMarkerRow {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,11 +155,89 @@ async fn d1_run(
     Ok(())
 }
 
+async fn ensure_api_key_backfill(d1: &D1Database) -> ServiceResult<()> {
+    const MARKER: &str = "0010_api_keys_hash_backfill_runtime";
+    d1_run(
+        d1,
+        (
+            "CREATE TABLE IF NOT EXISTS _runtime_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"
+            .to_string(),
+            sea_query::Values(vec![]),
+        ),
+        "create runtime migrations table",
+    )
+    .await?;
+
+    let marker_row: Option<MigrationMarkerRow> = d1_first(
+        d1,
+        (
+            "SELECT name FROM _runtime_migrations WHERE name = ? LIMIT 1".to_string(),
+            sea_query::Values(vec![MARKER.into()]),
+        ),
+        "check api key backfill marker",
+    )
+    .await?;
+    if marker_row.as_ref().is_some_and(|row| row.name == MARKER) {
+        return Ok(());
+    }
+
+    let legacy_rows: Vec<LegacyApiKeyRow> = d1_all(
+        d1,
+        (
+            "SELECT id, api_key FROM users
+             WHERE api_key IS NOT NULL
+               AND TRIM(api_key) <> ''
+               AND api_key NOT LIKE 'stub:%'
+               AND api_key NOT LIKE 'migrated:%'"
+                .to_string(),
+            sea_query::Values(vec![]),
+        ),
+        "load legacy api keys",
+    )
+    .await?;
+
+    for legacy in legacy_rows {
+        let key_id = Uuid::new_v4().to_string();
+        let key_hash = service::hash_api_key(&legacy.api_key);
+        let key_prefix = service::key_prefix(&legacy.api_key);
+
+        d1_run(
+            d1,
+            dbq::api_keys::insert_active_if_missing(&key_id, &legacy.id, &key_hash, &key_prefix),
+            "insert backfilled api key",
+        )
+        .await?;
+        d1_run(
+            d1,
+            dbq::users::update_api_key(&legacy.id, &service::generate_api_key_placeholder(&legacy.id)),
+            "replace legacy users.api_key with placeholder",
+        )
+        .await?;
+    }
+
+    d1_run(
+        d1,
+        (
+            "INSERT OR IGNORE INTO _runtime_migrations (name) VALUES (?)".to_string(),
+            sea_query::Values(vec![MARKER.into()]),
+        ),
+        "record api key backfill marker",
+    )
+    .await?;
+
+    Ok(())
+}
+
 async fn authenticate(
     req: &Request,
     d1: &D1Database,
     config: &WorkerConfig,
 ) -> ServiceResult<AuthUser> {
+    ensure_api_key_backfill(d1).await?;
+
     let token = req
         .headers()
         .get("Authorization")
@@ -168,8 +256,13 @@ async fn authenticate(
     let resolved = service::resolve_auth_token(&token, &config.jwt_secret, now_unix())?;
     match resolved {
         AuthToken::ApiKey(key) => {
-            let row: Option<UserRow> =
-                d1_first(d1, dbq::users::get_by_api_key(&key), "lookup user by api key").await?;
+            let key_hash = service::hash_api_key(&key);
+            let row: Option<UserRow> = d1_first(
+                d1,
+                dbq::api_keys::get_user_by_valid_key_hash(&key_hash),
+                "lookup user by api key hash",
+            )
+            .await?;
             let row = row.ok_or_else(|| {
                 opensession_api::ServiceError::Unauthorized("invalid API key".into())
             })?;
@@ -351,12 +444,12 @@ pub async fn auth_register(mut req: Request, ctx: RouteContext<()>) -> Result<Re
         }
 
         let user_id = Uuid::new_v4().to_string();
-        let api_key = service::generate_api_key();
+        let api_key_placeholder = service::generate_api_key_placeholder(&user_id);
         let (password_hash, password_salt) = crypto::hash_password(&req.password)?;
         let insert = dbq::users::insert_with_email(
             &user_id,
             &nickname,
-            &api_key,
+            &api_key_placeholder,
             &email,
             &password_hash,
             &password_salt,
@@ -577,11 +670,6 @@ pub async fn me(req: Request, ctx: RouteContext<()>) -> Result<Response> {
             })
             .collect::<Vec<_>>();
 
-        let github_username = oauth_providers
-            .iter()
-            .find(|provider| provider.provider == "github")
-            .map(|provider| provider.provider_username.clone());
-
         let avatar_url = identities
             .iter()
             .filter_map(|identity| identity.avatar_url.clone())
@@ -590,13 +678,50 @@ pub async fn me(req: Request, ctx: RouteContext<()>) -> Result<Response> {
         Ok(UserSettingsResponse {
             user_id: user.user_id,
             nickname: user.nickname,
-            api_key: settings.api_key,
             created_at: settings.created_at,
             email: user.email,
             avatar_url,
             oauth_providers,
-            github_username,
         })
+    }
+    .await;
+
+    match result {
+        Ok(body) => json_response(&body, 200),
+        Err(err) => err.into_err_response(),
+    }
+}
+
+pub async fn issue_api_key(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let config = WorkerConfig::from_env(&ctx.env);
+    let d1 = match storage::get_d1(&ctx.env) {
+        Ok(db) => db,
+        Err(err) => return service_internal("load d1 binding", err).into_err_response(),
+    };
+
+    let result: ServiceResult<IssueApiKeyResponse> = async {
+        let user = authenticate(&req, &d1, &config).await?;
+        let now = now_unix();
+        let grace_until = service::grace_until_sqlite(now)?;
+        let key = service::generate_api_key();
+        let key_hash = service::hash_api_key(&key);
+        let key_prefix = service::key_prefix(&key);
+        let key_id = Uuid::new_v4().to_string();
+
+        d1_run(
+            &d1,
+            dbq::api_keys::move_active_to_grace(&user.user_id, &grace_until),
+            "move active keys to grace",
+        )
+        .await?;
+        d1_run(
+            &d1,
+            dbq::api_keys::insert_active(&key_id, &user.user_id, &key_hash, &key_prefix),
+            "insert active api key",
+        )
+        .await?;
+
+        Ok(IssueApiKeyResponse { api_key: key })
     }
     .await;
 
@@ -821,14 +946,14 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
             } else {
                 let user_id = Uuid::new_v4().to_string();
                 let nickname = user_info.username.clone();
-                let api_key = service::generate_api_key();
+                let api_key_placeholder = service::generate_api_key_placeholder(&user_id);
 
                 d1_run(
                     &d1,
                     dbq::users::insert_oauth(
                         &user_id,
                         &nickname,
-                        &api_key,
+                        &api_key_placeholder,
                         user_info.email.as_deref(),
                     ),
                     "insert oauth user",

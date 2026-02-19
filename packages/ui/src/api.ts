@@ -1,3 +1,4 @@
+import { parseHailJsonl } from './hail-parse';
 import type {
 	AuthProvidersResponse,
 	AuthTokenResponse,
@@ -6,7 +7,6 @@ import type {
 	SessionListResponse,
 	UserSettings,
 } from './types';
-import { parseHailJsonl } from './hail-parse';
 
 function getBaseUrl(): string {
 	if (typeof window !== 'undefined') {
@@ -15,13 +15,6 @@ function getBaseUrl(): string {
 		return window.location.origin;
 	}
 	return '';
-}
-
-function getApiKey(): string | null {
-	if (typeof window !== 'undefined') {
-		return localStorage.getItem('opensession_api_key');
-	}
-	return null;
 }
 
 function getAccessToken(): string | null {
@@ -44,12 +37,6 @@ function getTokenExpiry(): number {
 		if (!v) return 0;
 		const parsed = parseInt(v, 10);
 		if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-		// Backward compatibility: older clients may have stored millisecond timestamps.
-		if (parsed > 10_000_000_000) {
-			const normalized = Math.floor(parsed / 1000);
-			localStorage.setItem('opensession_token_expiry', String(normalized));
-			return normalized;
-		}
 		return parsed;
 	}
 	return 0;
@@ -70,25 +57,16 @@ function clearTokens() {
 	localStorage.removeItem('opensession_token_expiry');
 }
 
-export function setApiKey(key: string) {
-	localStorage.setItem('opensession_api_key', key);
-}
-
-export function clearApiKey() {
-	localStorage.removeItem('opensession_api_key');
-}
-
 export function setBaseUrl(url: string) {
 	localStorage.setItem('opensession_api_url', url);
 }
 
 export function isAuthenticated(): boolean {
-	return !!(getAccessToken() || getApiKey());
+	// UI login state is token-session based; API keys are treated as request credentials only.
+	return !!getAccessToken();
 }
 
 export async function verifyAuth(): Promise<boolean> {
-	if (getApiKey()) return true;
-
 	const token = getAccessToken();
 	if (!token) return false;
 
@@ -118,10 +96,6 @@ async function getAuthHeader(): Promise<string | null> {
 		}
 		if (token) return `Bearer ${token}`;
 	}
-
-	const apiKey = getApiKey();
-	if (apiKey) return `Bearer ${apiKey}`;
-
 	return null;
 }
 
@@ -130,7 +104,17 @@ export class ApiError extends Error {
 		public status: number,
 		public body: string,
 	) {
-		const msg = body.trimStart().startsWith('<') ? `Server returned ${status}` : body.slice(0, 200);
+		let msg = body.trimStart().startsWith('<') ? `Server returned ${status}` : body.slice(0, 200);
+		if (!body.trimStart().startsWith('<')) {
+			try {
+				const parsed = JSON.parse(body) as { message?: unknown };
+				if (typeof parsed.message === 'string' && parsed.message.trim()) {
+					msg = parsed.message.trim();
+				}
+			} catch {
+				// ignore non-json error bodies
+			}
+		}
 		super(msg);
 	}
 }
@@ -294,7 +278,6 @@ export async function authLogout(): Promise<void> {
 		}
 	}
 	clearTokens();
-	clearApiKey();
 }
 
 export async function getAuthProviders(): Promise<AuthProvidersResponse> {
@@ -311,39 +294,10 @@ export async function getApiCapabilities(): Promise<CapabilitiesResponse> {
 		if (res.ok) {
 			return res.json();
 		}
-		if (res.status === 404 || res.status === 405) {
-			return { auth_enabled: false, upload_enabled: false };
-		}
 	} catch {
-		// fall through to legacy probe
+		// ignore and fall through
 	}
-
-	// Legacy fallback for deployments that haven't added /api/capabilities yet.
-	const authEnabled = await (async () => {
-		try {
-			const res = await fetch(`${getBaseUrl()}/api/auth/providers`);
-			if (res.status === 404 || res.status === 405) return false;
-			return res.ok;
-		} catch {
-			return false;
-		}
-	})();
-
-	const uploadEnabled = await (async () => {
-		try {
-			const res = await fetch(`${getBaseUrl()}/api/sessions`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: '{}',
-			});
-			// 400/401/403 imply the route exists; 404/405 imply disabled.
-			return !(res.status === 404 || res.status === 405);
-		} catch {
-			return false;
-		}
-	})();
-
-	return { auth_enabled: authEnabled, upload_enabled: uploadEnabled };
+	return { auth_enabled: false, upload_enabled: false };
 }
 
 export async function isAuthApiAvailable(): Promise<boolean> {

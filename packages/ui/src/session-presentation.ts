@@ -1,4 +1,4 @@
-import type { SessionListItem } from './types';
+import type { SessionSummary } from './types';
 
 const GROUP_COLORS = [
 	'var(--color-text-secondary)',
@@ -14,7 +14,7 @@ function normalizedText(value: string | null | undefined): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
-export function getSessionModelLabel(session: SessionListItem): string {
+export function getSessionModelLabel(session: SessionSummary): string {
 	const model = normalizedText(session.agent_model);
 	if (model && model.toLowerCase() !== 'unknown') {
 		return model;
@@ -25,7 +25,7 @@ export function getSessionModelLabel(session: SessionListItem): string {
 	return '-';
 }
 
-export function getSessionActorLabel(session: SessionListItem): string | null {
+export function getSessionActorLabel(session: SessionSummary): string | null {
 	const nickname = normalizedText(session.nickname);
 	if (nickname) {
 		return `@${nickname}`;
@@ -37,7 +37,7 @@ export function getSessionActorLabel(session: SessionListItem): string | null {
 	return `id:${userId.slice(0, 10)}`;
 }
 
-export function getSessionActiveAgentCount(session: SessionListItem): number {
+export function getSessionActiveAgentCount(session: SessionSummary): number {
 	const raw = Number(session.max_active_agents ?? 1);
 	if (!Number.isFinite(raw)) return 1;
 	return Math.max(1, Math.trunc(raw));
@@ -51,11 +51,11 @@ export interface SessionAgentGroup {
 	count: number;
 	label: string;
 	color: string;
-	sessions: SessionListItem[];
+	sessions: SessionSummary[];
 }
 
-export function groupSessionsByAgentCount(sessions: SessionListItem[]): SessionAgentGroup[] {
-	const grouped = new Map<number, SessionListItem[]>();
+export function groupSessionsByAgentCount(sessions: SessionSummary[]): SessionAgentGroup[] {
+	const grouped = new Map<number, SessionSummary[]>();
 	for (const session of sessions) {
 		const count = getSessionActiveAgentCount(session);
 		const bucket = grouped.get(count);

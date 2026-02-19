@@ -9,7 +9,7 @@ use opensession_parsers::{all_parsers, is_auxiliary_session_path, SessionParser}
 /// Discover all local sessions and upload them to the server.
 pub async fn run_upload_all() -> Result<()> {
     let config = load_config()?;
-    if config.server.api_key.is_empty() {
+    if config.server.api_key.trim().is_empty() {
         bail!("API key not configured. Run: opensession account connect --api-key <key>");
     }
 

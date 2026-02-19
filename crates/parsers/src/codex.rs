@@ -647,49 +647,6 @@ fn process_item_with_options(
     };
 
     match item_type {
-        "user" | "assistant" => {
-            let message = item.get("message").unwrap_or(item);
-            let role = message
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or(item_type);
-            let text = extract_message_text_blocks(message.get("content"));
-            if text.is_empty() {
-                return;
-            }
-            if role == "user"
-                && filter_injected_user_text
-                && looks_like_injected_codex_user_text(&text)
-            {
-                return;
-            }
-
-            let event_type = match role {
-                "user" => EventType::UserMessage,
-                "assistant" => EventType::AgentMessage,
-                _ => return,
-            };
-
-            if role == "user" {
-                set_first(first_user_text, Some(text.clone()));
-            }
-
-            if matches!(event_type, EventType::UserMessage) {
-                let source = if filter_injected_user_text {
-                    Some("response_fallback")
-                } else {
-                    None
-                };
-                push_user_message_event(events, counter, ts, &text, source);
-            } else {
-                let source = if filter_injected_user_text {
-                    Some("response_fallback")
-                } else {
-                    None
-                };
-                push_agent_message_event(events, counter, ts, &text, source);
-            }
-        }
         "message" => {
             let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("");
             let text = extract_message_text_blocks(item.get("content"));
@@ -2137,44 +2094,6 @@ provider = "anthropic"
         );
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event_type, EventType::AgentMessage));
-    }
-
-    #[test]
-    fn test_legacy_user_and_assistant_records() {
-        let user_line = r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"legacy user prompt"}}"#;
-        let assistant_line = r#"{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"legacy assistant response"}]}}"#;
-        let mut events = Vec::new();
-        let mut counter = 0u64;
-        let mut first_text = None;
-        let mut last_fn = "unknown".to_string();
-        let mut call_map = HashMap::new();
-        let ts = Utc::now();
-
-        let user: serde_json::Value = serde_json::from_str(user_line).unwrap();
-        process_item(
-            &user,
-            ts,
-            &mut events,
-            &mut counter,
-            &mut first_text,
-            &mut last_fn,
-            &mut call_map,
-        );
-        let assistant: serde_json::Value = serde_json::from_str(assistant_line).unwrap();
-        process_item(
-            &assistant,
-            ts,
-            &mut events,
-            &mut counter,
-            &mut first_text,
-            &mut last_fn,
-            &mut call_map,
-        );
-
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0].event_type, EventType::UserMessage));
-        assert!(matches!(events[1].event_type, EventType::AgentMessage));
-        assert_eq!(first_text.as_deref(), Some("legacy user prompt"));
     }
 
     #[test]

@@ -58,6 +58,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .post_async("/api/auth/refresh", routes::auth::refresh)
         .post_async("/api/auth/logout", routes::auth::logout)
         .post_async("/api/auth/verify", routes::auth::verify)
+        .post_async("/api/auth/api-keys/issue", routes::auth::issue_api_key)
         .get_async("/api/auth/me", routes::auth::me)
         .get_async("/api/auth/oauth/:provider", routes::auth::oauth_redirect)
         .get_async(

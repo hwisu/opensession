@@ -1,6 +1,6 @@
 <script lang="ts">
-import { tick } from 'svelte';
 import type { Snippet } from 'svelte';
+import { tick } from 'svelte';
 import {
 	ApiError,
 	authLogout,
@@ -88,7 +88,14 @@ const shortcutHints = $derived.by(() => {
 		return ['Cmd/Ctrl+K palette', 'j/k scroll', '1-5 filters', '/ search', 'n/p match', 'Esc back'];
 	}
 	if (isSessionList) {
-		return ['Cmd/Ctrl+K palette', 'j/k navigate', 'Enter open', '/ search', 't/o/r cycle', 'l layout'];
+		return [
+			'Cmd/Ctrl+K palette',
+			'j/k navigate',
+			'Enter open',
+			'/ search',
+			't/o/r cycle',
+			'l layout',
+		];
 	}
 	return ['Cmd/Ctrl+K palette', 'Esc back'];
 });

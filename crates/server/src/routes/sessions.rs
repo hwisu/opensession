@@ -21,6 +21,30 @@ use crate::AppConfig;
 
 const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalidate=60";
 
+#[derive(Debug, PartialEq, Eq)]
+enum RawBodySource {
+    LocalStorage(String),
+    RedirectUrl(String),
+}
+
+fn resolve_raw_body_source(
+    body_storage_key: String,
+    body_url: Option<String>,
+) -> Result<RawBodySource, ApiErr> {
+    if let Some(url) = body_url.map(|v| v.trim().to_string()) {
+        if !url.is_empty() {
+            return Ok(RawBodySource::RedirectUrl(url));
+        }
+    }
+
+    let key = body_storage_key.trim().to_string();
+    if key.is_empty() {
+        return Err(ApiErr::not_found("session body not found"));
+    }
+
+    Ok(RawBodySource::LocalStorage(key))
+}
+
 // ---------------------------------------------------------------------------
 // Upload session
 // ---------------------------------------------------------------------------
@@ -306,34 +330,47 @@ pub async fn get_session_raw(
 ) -> Result<axum::response::Response, ApiErr> {
     let conn = db.conn();
 
-    let storage_key: String =
-        sq_query_row(&conn, db::sessions::get_storage_info(&id), |row| row.get(0))
-            .map_err(|_| ApiErr::not_found("session not found"))?;
+    let (body_storage_key, body_url): (String, Option<String>) =
+        sq_query_row(&conn, db::sessions::get_storage_info(&id), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|_| ApiErr::not_found("session not found"))?;
 
     drop(conn);
 
-    let body = db.read_body(&storage_key).map_err(|e| {
-        tracing::error!("read body: {e}");
-        ApiErr::internal("failed to read session body")
-    })?;
+    match resolve_raw_body_source(body_storage_key, body_url)? {
+        RawBodySource::RedirectUrl(url) => {
+            let location = HeaderValue::from_str(&url)
+                .map_err(|_| ApiErr::internal("invalid session body URL"))?;
+            let mut response = StatusCode::FOUND.into_response();
+            response.headers_mut().insert(header::LOCATION, location);
+            Ok(response)
+        }
+        RawBodySource::LocalStorage(storage_key) => {
+            let body = db.read_body(&storage_key).map_err(|e| {
+                tracing::error!("read body: {e}");
+                ApiErr::internal("failed to read session body")
+            })?;
 
-    Ok((
-        StatusCode::OK,
-        [
-            (axum::http::header::CONTENT_TYPE, "application/jsonl"),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                "attachment; filename=\"session.hail.jsonl\"",
-            ),
-        ],
-        body,
-    )
-        .into_response())
+            Ok((
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/jsonl"),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        "attachment; filename=\"session.hail.jsonl\"",
+                    ),
+                ],
+                body,
+            )
+                .into_response())
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::can_access_session_list;
+    use super::{can_access_session_list, resolve_raw_body_source, RawBodySource};
 
     #[test]
     fn session_list_access_rules_follow_public_feed_flag() {
@@ -341,5 +378,40 @@ mod tests {
         assert!(can_access_session_list(true, true));
         assert!(can_access_session_list(false, true));
         assert!(!can_access_session_list(false, false));
+    }
+
+    #[test]
+    fn raw_body_source_prefers_redirect_when_body_url_present() {
+        let source = match resolve_raw_body_source(
+            "".to_string(),
+            Some("https://example.com/a".to_string()),
+        ) {
+            Ok(source) => source,
+            Err(_) => panic!("body_url should resolve to redirect"),
+        };
+        match source {
+            RawBodySource::RedirectUrl(url) => assert_eq!(url, "https://example.com/a"),
+            RawBodySource::LocalStorage(_) => panic!("expected redirect source"),
+        }
+    }
+
+    #[test]
+    fn raw_body_source_uses_storage_key_when_no_body_url() {
+        let source = match resolve_raw_body_source("abc.hail.jsonl".to_string(), None) {
+            Ok(source) => source,
+            Err(_) => panic!("storage key should resolve to local storage"),
+        };
+        match source {
+            RawBodySource::LocalStorage(key) => assert_eq!(key, "abc.hail.jsonl"),
+            RawBodySource::RedirectUrl(_) => panic!("expected local storage source"),
+        }
+    }
+
+    #[test]
+    fn raw_body_source_rejects_empty_storage_and_body_url() {
+        let err = resolve_raw_body_source("".to_string(), Some("   ".to_string()))
+            .expect_err("empty storage/body_url should fail");
+        let response = axum::response::IntoResponse::into_response(err);
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 }

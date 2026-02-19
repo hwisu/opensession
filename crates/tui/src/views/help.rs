@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("── Global ──", header_style)),
         Line::from(vec![
             Span::styled("  1/2/3     ", key_style),
-            Span::styled("Switch tabs (Sessions/Settings/Handoff)", desc_style),
+            Span::styled("Switch tabs (Sessions/Handoff/Settings)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  ?         ", key_style),
@@ -121,16 +121,29 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Toggle file diff preview for selected event", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  1-6       ", key_style),
-            Span::styled("Filter: All/Msgs/Tools/Think/Files/Shell", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  view      ", key_style),
-            Span::styled("Event detail rows are always expanded", desc_style),
+            Span::styled("  0-9       ", key_style),
+            Span::styled(
+                "Filter: All/User/Agent/Think/Tools/Files/Shell/Task/Web/Other",
+                desc_style,
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Esc/q     ", key_style),
             Span::styled("Back to session list", desc_style),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled("── Handoff ──", header_style)),
+        Line::from(vec![
+            Span::styled("  j/k       ", key_style),
+            Span::styled("Move selected session in picker", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter     ", key_style),
+            Span::styled("Open selected session detail", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc/q     ", key_style),
+            Span::styled("Back to sessions", desc_style),
         ]),
         Line::raw(""),
         Line::from(Span::styled("── Settings ──", header_style)),

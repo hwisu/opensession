@@ -64,18 +64,22 @@ fn build_session_meta_json(session: &Session) -> Vec<u8> {
     .into_bytes()
 }
 
-/// Resolve the effective publish mode, collapsing the deprecated `auto_publish` flag.
+fn session_to_hail_jsonl_bytes(session: &Session) -> Option<Vec<u8>> {
+    match session.to_jsonl() {
+        Ok(jsonl) => Some(jsonl.into_bytes()),
+        Err(e) => {
+            warn!(
+                "Failed to serialize session {} to HAIL JSONL: {}",
+                session.session_id, e
+            );
+            None
+        }
+    }
+}
+
+/// Resolve the effective publish mode from canonical runtime config.
 fn resolve_publish_mode(settings: &DaemonSettings) -> PublishMode {
-    if settings.auto_publish {
-        return settings.publish_on.clone();
-    }
-    if settings.publish_on != PublishMode::Manual {
-        warn!(
-            "auto_publish=false is deprecated, treating as publish_on=manual. \
-             Please update your config to use publish_on = \"manual\" instead."
-        );
-    }
-    PublishMode::Manual
+    settings.publish_on.clone()
 }
 
 /// Resolve retention schedule for git-native session pruning.
@@ -363,7 +367,7 @@ fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<String> {
     let cwd = session_cwd(session)?;
     let repo_root = crate::config::find_repo_root(cwd)?;
 
-    let hail_jsonl = serde_json::to_vec(session).ok()?;
+    let hail_jsonl = session_to_hail_jsonl_bytes(session)?;
     let meta_json = build_session_meta_json(session);
 
     let storage = opensession_git_native::NativeGitStorage;
@@ -540,6 +544,33 @@ mod tests {
     }
 
     #[test]
+    fn test_session_to_hail_jsonl_bytes_uses_header_event_stats_lines() {
+        let mut session = make_session_with_attrs(HashMap::new());
+        session.events.push(opensession_core::Event {
+            event_id: "e1".into(),
+            timestamp: Utc::now(),
+            event_type: opensession_core::EventType::UserMessage,
+            task_id: None,
+            content: opensession_core::Content::text("hello"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+        session.recompute_stats();
+
+        let body = session_to_hail_jsonl_bytes(&session).expect("serialize HAIL JSONL");
+        let text = String::from_utf8(body).expect("jsonl must be utf-8");
+        let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(lines.len(), 3, "expected header/event/stats lines");
+
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["type"], "header");
+        let event: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(event["type"], "event");
+        let stats: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(stats["type"], "stats");
+    }
+
+    #[test]
     fn test_resolve_publish_mode_auto_publish_true() {
         let settings = DaemonSettings {
             auto_publish: true,
@@ -560,13 +591,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_publish_mode_auto_publish_false_non_manual_becomes_manual() {
+    fn test_resolve_publish_mode_uses_publish_on_even_when_auto_publish_false() {
         let settings = DaemonSettings {
             auto_publish: false,
             publish_on: PublishMode::Realtime,
             ..Default::default()
         };
-        assert_eq!(resolve_publish_mode(&settings), PublishMode::Manual);
+        assert_eq!(resolve_publish_mode(&settings), PublishMode::Realtime);
     }
 
     #[test]

@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
-use opensession_api::db;
 use opensession_api::SessionSummary;
+use opensession_api::{db, service};
 
 /// Shared database state
 #[derive(Clone)]
@@ -188,5 +189,54 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         }
     }
 
+    backfill_api_keys(conn)?;
+
+    Ok(())
+}
+
+fn backfill_api_keys(conn: &Connection) -> Result<()> {
+    let marker = "0010_api_keys_hash_backfill_runtime";
+    let already_applied: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM _migrations WHERE name = ?1",
+            [marker],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if already_applied {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, api_key FROM users
+         WHERE api_key IS NOT NULL
+           AND TRIM(api_key) <> ''
+           AND api_key NOT LIKE 'stub:%'
+           AND api_key NOT LIKE 'migrated:%'",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let user_id: String = row.get(0)?;
+        let api_key: String = row.get(1)?;
+        Ok((user_id, api_key))
+    })?;
+
+    for row in rows {
+        let (user_id, api_key) = row?;
+        let key_id = Uuid::new_v4().to_string();
+        let key_hash = service::hash_api_key(&api_key);
+        let key_prefix = service::key_prefix(&api_key);
+
+        conn.execute(
+            "INSERT OR IGNORE INTO api_keys (id, user_id, key_hash, key_prefix, status)
+             VALUES (?1, ?2, ?3, ?4, 'active')",
+            rusqlite::params![key_id, user_id, key_hash, key_prefix],
+        )?;
+        conn.execute(
+            "UPDATE users SET api_key = ?1 WHERE id = ?2",
+            rusqlite::params![service::generate_api_key_placeholder(&user_id), user_id],
+        )?;
+    }
+
+    conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [marker])?;
     Ok(())
 }

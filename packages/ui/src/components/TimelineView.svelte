@@ -1,82 +1,83 @@
 <script lang="ts">
-	import type { Event } from '../types';
-	import { isBoilerplateEvent, isToolError, pairToolCallResults } from '../event-helpers';
-	import EventView from './EventView.svelte';
-	import ThreadMinimap from './ThreadMinimap.svelte';
+import { isBoilerplateEvent, isToolError, pairToolCallResults } from '../event-helpers';
+import type { Event } from '../types';
+import EventView from './EventView.svelte';
+import ThreadMinimap from './ThreadMinimap.svelte';
 
-	const { events }: { events: Event[] } = $props();
+const { events }: { events: Event[] } = $props();
 
-	type TimelineItem = { event: Event; pairedResult?: Event; resultOk?: boolean };
+type TimelineItem = { event: Event; pairedResult?: Event; resultOk?: boolean };
 
-	let viewMode = $state<'timeline' | 'messages'>('timeline');
+let viewMode = $state<'timeline' | 'messages'>('timeline');
 
-	const filters = $state({
-		messages: true,
-		toolCalls: true,
-		thinking: true,
-		fileOps: true,
-		shell: true,
-	});
+const filters = $state({
+	messages: true,
+	toolCalls: true,
+	thinking: true,
+	fileOps: true,
+	shell: true,
+});
 
-	const filterCategories: { key: keyof typeof filters; label: string }[] = [
-		{ key: 'messages', label: 'Messages' },
-		{ key: 'toolCalls', label: 'Tool Calls' },
-		{ key: 'thinking', label: 'Thinking' },
-		{ key: 'fileOps', label: 'File Ops' },
-		{ key: 'shell', label: 'Shell' },
-	];
+const filterCategories: { key: keyof typeof filters; label: string }[] = [
+	{ key: 'messages', label: 'Messages' },
+	{ key: 'toolCalls', label: 'Tool Calls' },
+	{ key: 'thinking', label: 'Thinking' },
+	{ key: 'fileOps', label: 'File Ops' },
+	{ key: 'shell', label: 'Shell' },
+];
 
-	function matchesFilter(eventTypeName: string): boolean {
-		if (['UserMessage', 'AgentMessage', 'SystemMessage'].includes(eventTypeName)) return filters.messages;
-		if (['ToolCall', 'ToolResult'].includes(eventTypeName)) return filters.toolCalls;
-		if (eventTypeName === 'Thinking') return filters.thinking;
-		if (
-			['FileRead', 'FileEdit', 'FileCreate', 'FileDelete', 'FileSearch', 'CodeSearch'].includes(
-				eventTypeName,
-			)
+function matchesFilter(eventTypeName: string): boolean {
+	if (['UserMessage', 'AgentMessage', 'SystemMessage'].includes(eventTypeName))
+		return filters.messages;
+	if (['ToolCall', 'ToolResult'].includes(eventTypeName)) return filters.toolCalls;
+	if (eventTypeName === 'Thinking') return filters.thinking;
+	if (
+		['FileRead', 'FileEdit', 'FileCreate', 'FileDelete', 'FileSearch', 'CodeSearch'].includes(
+			eventTypeName,
 		)
-			return filters.fileOps;
-		if (eventTypeName === 'ShellCommand') return filters.shell;
-		return true;
-	}
+	)
+		return filters.fileOps;
+	if (eventTypeName === 'ShellCommand') return filters.shell;
+	return true;
+}
 
-	function getRoleGroup(event: Event): 'user' | 'agent' {
-		if (event.event_type.type === 'UserMessage') return 'user';
-		return 'agent';
-	}
+function getRoleGroup(event: Event): 'user' | 'agent' {
+	if (event.event_type.type === 'UserMessage') return 'user';
+	return 'agent';
+}
 
-	const timeline = $derived.by((): TimelineItem[] => {
-		if (viewMode === 'messages') {
-			return events
-				.filter((event) => ['UserMessage', 'AgentMessage'].includes(event.event_type.type))
-				.map((event) => ({ event }));
-		}
-		const filtered = events.filter(
-			(event) => matchesFilter(event.event_type.type) && !isBoilerplateEvent(event),
-		);
-		const pairs = pairToolCallResults(filtered);
-		return filtered.map((event, idx) => {
-			const paired = pairs.get(idx);
-			return {
-				event,
-				pairedResult: paired,
-				resultOk: paired ? !isToolError(paired.event_type) : false,
-			};
-		});
+const timeline = $derived.by((): TimelineItem[] => {
+	if (viewMode === 'messages') {
+		return events
+			.filter((event) => ['UserMessage', 'AgentMessage'].includes(event.event_type.type))
+			.map((event) => ({ event }));
+	}
+	const filtered = events.filter(
+		(event) => matchesFilter(event.event_type.type) && !isBoilerplateEvent(event),
+	);
+	const pairs = pairToolCallResults(filtered);
+	return filtered.map((event, idx) => {
+		const paired = pairs.get(idx);
+		return {
+			event,
+			pairedResult: paired,
+			resultOk: paired ? !isToolError(paired.event_type) : false,
+		};
 	});
+});
 
-	const userMessageCount = $derived(events.filter((e) => e.event_type.type === 'UserMessage').length);
+const userMessageCount = $derived(events.filter((e) => e.event_type.type === 'UserMessage').length);
 
-	function handleFilterKeydown(e: KeyboardEvent) {
-		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-		if (viewMode !== 'timeline') return;
-		const num = parseInt(e.key, 10);
-		if (num >= 1 && num <= filterCategories.length) {
-			e.preventDefault();
-			const cat = filterCategories[num - 1];
-			filters[cat.key] = !filters[cat.key];
-		}
+function handleFilterKeydown(e: KeyboardEvent) {
+	if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+	if (viewMode !== 'timeline') return;
+	const num = parseInt(e.key, 10);
+	if (num >= 1 && num <= filterCategories.length) {
+		e.preventDefault();
+		const cat = filterCategories[num - 1];
+		filters[cat.key] = !filters[cat.key];
 	}
+}
 </script>
 
 <svelte:window onkeydown={handleFilterKeydown} />

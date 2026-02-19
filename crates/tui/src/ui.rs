@@ -1,9 +1,10 @@
 use crate::app::{
-    App, ConnectionContext, EventFilter, FlashLevel, ServerStatus, SettingsSection, UploadPhase,
-    View, ViewMode,
+    extract_visible_turns, App, ConnectionContext, DetailViewMode, EventFilter, FlashLevel,
+    ServerStatus, SettingsSection, UploadPhase, View, ViewMode,
 };
 use crate::theme::Theme;
 use crate::views::{handoff, help, modal, session_detail, session_list, settings, setup, tab_bar};
+use chrono::Duration as ChronoDuration;
 use opensession_core::trace::{ContentBlock, EventType, Session};
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph};
@@ -124,7 +125,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn should_show_footer(app: &App) -> bool {
-    app.flash_message.is_some() || matches!(app.view, View::Settings | View::Handoff)
+    app.flash_message.is_some()
+        || matches!(
+            app.view,
+            View::SessionList | View::SessionDetail | View::Settings | View::Handoff
+        )
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -249,37 +254,36 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::SessionDetail => {
-            let filters = [
-                ("1:All", EventFilter::All),
-                ("2:Msgs", EventFilter::Messages),
-                ("3:Tools", EventFilter::ToolCalls),
-                ("4:Think", EventFilter::Thinking),
-                ("5:Files", EventFilter::FileOps),
-                ("6:Shell", EventFilter::Shell),
-            ];
-
-            let mut spans = vec![Span::styled(" ", Style::new())];
-            for (label, filter) in &filters {
-                let active = app.event_filters.contains(filter);
-                let style = if active {
-                    Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold()
-                } else {
-                    Style::new().fg(Theme::TEXT_MUTED)
-                };
-                spans.push(Span::styled(format!(" {} ", label), style));
-                spans.push(Span::styled(" ", Style::new()));
-            }
-            spans.push(Span::styled(
-                "   d ",
-                Style::new().fg(Theme::TEXT_KEY).bold(),
-            ));
-            spans.push(Span::styled("diff", Style::new().fg(Theme::TEXT_KEY_DESC)));
-            spans.push(Span::styled(
-                "  always expanded",
-                Style::new().fg(Theme::TEXT_MUTED),
-            ));
-
-            let line = Line::from(spans);
+            let mode = match app.detail_view_mode {
+                DetailViewMode::Linear => "linear",
+                DetailViewMode::Turn => "turn",
+            };
+            let filter_label = active_filter_label(app);
+            let line = Line::from(vec![
+                Span::styled(
+                    " Session Detail ",
+                    Style::new().fg(Theme::TEXT_PRIMARY).bold(),
+                ),
+                Span::styled(" ", Style::new()),
+                Span::styled(
+                    format!("mode:{mode}"),
+                    Style::new().fg(Theme::ACCENT_BLUE).bold(),
+                ),
+                Span::styled("  ", Style::new()),
+                Span::styled(
+                    format!("filter:{filter_label}"),
+                    Style::new().fg(Theme::TEXT_SECONDARY),
+                ),
+                Span::styled("  ", Style::new()),
+                Span::styled(
+                    format!(
+                        "live:{} follow:{}",
+                        if app.live_mode { "ON" } else { "OFF" },
+                        app.detail_follow_status_label()
+                    ),
+                    Style::new().fg(Theme::TEXT_MUTED),
+                ),
+            ]);
             let p = Paragraph::new(line).block(Theme::block());
             frame.render_widget(p, area);
         }
@@ -333,7 +337,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" Handoff ", Style::new().fg(Theme::TEXT_PRIMARY).bold()),
                 Span::styled("  ", Style::new()),
                 Span::styled(
-                    "execution-contract quick menu",
+                    "session picker + execution-contract preview",
                     Style::new().fg(Theme::TEXT_MUTED),
                 ),
             ]);
@@ -363,8 +367,157 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    if matches!(app.view, View::SessionList) {
+        frame.render_widget(
+            Paragraph::new(session_list_footer_line(app, area.width)),
+            area,
+        );
+        return;
+    }
+
+    if matches!(app.view, View::SessionDetail) {
+        frame.render_widget(
+            Paragraph::new(session_detail_footer_line(app, area.width)),
+            area,
+        );
+        return;
+    }
+
     if matches!(app.view, View::Handoff) {
-        frame.render_widget(Paragraph::new(handoff_footer_line()), area);
+        frame.render_widget(Paragraph::new(handoff_footer_line(area.width)), area);
+    }
+}
+
+fn active_filter_label(app: &App) -> String {
+    if app.event_filters.contains(&EventFilter::All) {
+        return "All".to_string();
+    }
+    let mut labels = Vec::new();
+    let filters = [
+        ("User", EventFilter::User),
+        ("Agent", EventFilter::Agent),
+        ("Think", EventFilter::Think),
+        ("Tools", EventFilter::Tools),
+        ("Files", EventFilter::Files),
+        ("Shell", EventFilter::Shell),
+        ("Task", EventFilter::Task),
+        ("Web", EventFilter::Web),
+        ("Other", EventFilter::Other),
+    ];
+    for (label, filter) in filters {
+        if app.event_filters.contains(&filter) {
+            labels.push(label);
+        }
+    }
+    if labels.is_empty() {
+        "All".to_string()
+    } else {
+        labels.join("+")
+    }
+}
+
+fn fit_footer_segments(mut segments: Vec<String>, width: u16) -> String {
+    if segments.is_empty() {
+        return String::new();
+    }
+    let max_width = width.max(1) as usize;
+    loop {
+        let line = segments.join("  |  ");
+        if line.chars().count() <= max_width || segments.len() <= 1 {
+            return line;
+        }
+        segments.pop();
+    }
+}
+
+fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
+    let mut segments = vec![
+        format!("sessions {}/{}", app.page_count(), app.session_count()),
+        format!("page {}/{}", app.page + 1, app.total_pages()),
+        "j/k move".to_string(),
+        "Enter open".to_string(),
+        "/ search".to_string(),
+        "m layout".to_string(),
+        "t tool".to_string(),
+        "r range".to_string(),
+        "R repo".to_string(),
+        "1/2/3 tabs".to_string(),
+        "? help".to_string(),
+    ];
+    if app.total_pages() > 1 {
+        segments.insert(2, "PgUp/PgDn page".to_string());
+    }
+    let line = fit_footer_segments(segments, width);
+    Line::from(Span::styled(
+        format!(" {line}"),
+        Style::new().fg(Theme::TEXT_KEY_DESC),
+    ))
+}
+
+fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
+    let mut segments = Vec::new();
+    if let Some(session) = app.selected_session() {
+        let visible = app.get_visible_events(session);
+        let event_total = visible.len();
+        if event_total > 0 {
+            let selected_index = app.detail_event_index.min(event_total - 1);
+            let event_idx = selected_index + 1;
+            segments.push(format!("event {event_idx}/{event_total}"));
+
+            let turns = extract_visible_turns(&visible);
+            if !turns.is_empty() {
+                let turn_idx = match app.detail_view_mode {
+                    DetailViewMode::Turn => app.turn_index.min(turns.len() - 1) + 1,
+                    DetailViewMode::Linear => turns
+                        .iter()
+                        .position(|turn| {
+                            selected_index >= turn.start_display_index
+                                && selected_index <= turn.end_display_index
+                        })
+                        .map(|idx| idx + 1)
+                        .unwrap_or(1),
+                };
+                segments.push(format!("turn {turn_idx}/{}", turns.len()));
+            }
+
+            if let Some(selected_event) = visible.get(event_idx - 1).map(|row| row.event()) {
+                let baseline = session
+                    .events
+                    .first()
+                    .map(|event| event.timestamp)
+                    .unwrap_or(session.context.created_at);
+                let elapsed = selected_event.timestamp.signed_duration_since(baseline);
+                segments.push(format!("elapsed {}", format_elapsed_compact(elapsed)));
+            }
+        }
+    }
+
+    segments.push(format!("live {}", if app.live_mode { "ON" } else { "OFF" }));
+    segments.push(format!("follow {}", app.detail_follow_status_label()));
+    segments.push("j/k nav".to_string());
+    segments.push("h/l scroll".to_string());
+    segments.push("0-9 filter".to_string());
+    segments.push("d diff toggle".to_string());
+    segments.push("? help".to_string());
+
+    let line = fit_footer_segments(segments, width);
+    Line::from(Span::styled(
+        format!(" {line}"),
+        Style::new().fg(Theme::TEXT_KEY_DESC),
+    ))
+}
+
+fn format_elapsed_compact(elapsed: ChronoDuration) -> String {
+    let total = elapsed.num_seconds().max(0);
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 
@@ -405,18 +558,21 @@ fn settings_footer_line(app: &App) -> Line<'static> {
     }
 }
 
-fn handoff_footer_line() -> Line<'static> {
-    let key_style = Style::new().fg(Theme::TEXT_KEY).bold();
+fn handoff_footer_line(width: u16) -> Line<'static> {
     let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
+    let line = fit_footer_segments(
+        vec![
+            "1/2/3 tabs".to_string(),
+            "j/k move".to_string(),
+            "Enter open detail".to_string(),
+            "Esc back".to_string(),
+            "? help".to_string(),
+        ],
+        width,
+    );
     Line::from(vec![
-        Span::styled(" 1/2/3 ", key_style),
-        Span::styled("tabs", desc_style),
-        Span::styled("  Enter ", key_style),
-        Span::styled("open selected session", desc_style),
-        Span::styled("  Esc ", key_style),
-        Span::styled("back", desc_style),
-        Span::styled("  ? ", key_style),
-        Span::styled("help", desc_style),
+        Span::styled(" ", desc_style),
+        Span::styled(line, desc_style),
     ])
 }
 
@@ -850,11 +1006,15 @@ fn build_server_status_spans(info: &ServerInfo) -> Vec<Span<'_>> {
 mod tests {
     use super::{
         build_server_status_spans, compact_line, event_first_text, handoff_footer_line,
-        latest_output_preview, latest_prompt_preview, settings_footer_line, should_show_footer,
+        latest_output_preview, latest_prompt_preview, render, session_detail_footer_line,
+        settings_footer_line, should_show_footer,
     };
     use crate::app::{App, ServerInfo, ServerStatus, View};
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
     use std::collections::HashMap;
 
     fn make_event(event_type: EventType, text: &str) -> Event {
@@ -890,6 +1050,18 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
     }
 
     #[test]
@@ -1023,9 +1195,15 @@ mod tests {
     }
 
     #[test]
-    fn settings_view_shows_footer_without_flash_message() {
+    fn footer_is_visible_in_main_views_without_flash_message() {
         let mut app = App::new(Vec::new());
-        assert!(!should_show_footer(&app));
+        assert!(should_show_footer(&app));
+
+        app.view = View::SessionList;
+        assert!(should_show_footer(&app));
+
+        app.view = View::SessionDetail;
+        assert!(should_show_footer(&app));
 
         app.view = View::Settings;
         assert!(should_show_footer(&app));
@@ -1063,10 +1241,49 @@ mod tests {
 
     #[test]
     fn handoff_footer_line_shows_handoff_shortcuts() {
-        let text = spans_to_text(&handoff_footer_line().spans);
+        let text = spans_to_text(&handoff_footer_line(160).spans);
         assert!(text.contains("1/2/3"));
+        assert!(text.contains("j/k"));
         assert!(text.contains("Enter"));
         assert!(text.contains("Esc"));
         assert!(text.contains("help"));
+    }
+
+    #[test]
+    fn detail_footer_line_includes_event_turn_elapsed_and_filters() {
+        let mut session = make_session(vec![
+            make_event(EventType::UserMessage, "prompt"),
+            make_event(EventType::AgentMessage, "answer"),
+        ]);
+        session.context.created_at = Utc::now() - chrono::Duration::seconds(90);
+
+        let mut app = App::new(vec![session]);
+        app.view = View::SessionDetail;
+        app.enter_detail_for_startup();
+        app.detail_event_index = 1;
+
+        let text = spans_to_text(&session_detail_footer_line(&app, 300).spans);
+        assert!(text.contains("event"));
+        assert!(text.contains("turn"));
+        assert!(text.contains("elapsed"));
+        assert!(text.contains("0-9 filter"));
+        assert!(text.contains("d diff toggle"));
+    }
+
+    #[test]
+    fn detail_header_no_longer_mentions_always_expanded() {
+        let session = make_session(vec![make_event(EventType::UserMessage, "prompt")]);
+        let mut app = App::new(vec![session]);
+        app.enter_detail_for_startup();
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render(frame, &mut app);
+            })
+            .expect("draw");
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(!text.contains("always expanded"));
     }
 }

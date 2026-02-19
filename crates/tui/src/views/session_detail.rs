@@ -1053,33 +1053,92 @@ fn collect_content_preview_rows(
     for block in &event.content.blocks {
         match block {
             ContentBlock::Text { text } => {
+                let mut in_fence = false;
                 for line in text.lines() {
                     let trimmed = line.trim();
-                    if trimmed.is_empty() || is_low_signal_text_line(trimmed) {
+                    let trimmed_start = line.trim_start();
+                    let is_fence =
+                        trimmed_start.starts_with("```") || trimmed_start.starts_with("~~~");
+                    let is_heading = !in_fence && trimmed_start.starts_with('#');
+                    let is_quote = !in_fence && trimmed_start.starts_with('>');
+                    let is_list = !in_fence && looks_like_markdown_list_item(trimmed_start);
+                    let markdown_signal = in_fence || is_fence || is_heading || is_quote || is_list;
+
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if !markdown_signal && is_low_signal_text_line(trimmed) {
                         continue;
                     }
                     if summary_hint
                         .is_some_and(|summary| detail_line_matches_summary(trimmed, summary))
                     {
+                        if is_fence {
+                            in_fence = !in_fence;
+                        }
                         continue;
                     }
-                    let compact = compact_text_snippet(trimmed, 4000);
+                    let canonical = if is_fence {
+                        strip_markdown_fence_marker(trimmed_start)
+                    } else if in_fence {
+                        trimmed
+                    } else if is_heading {
+                        strip_markdown_heading_marker(trimmed_start)
+                    } else if is_list {
+                        strip_markdown_list_marker(trimmed_start)
+                    } else if is_quote {
+                        strip_markdown_quote_marker(trimmed_start)
+                    } else {
+                        trimmed
+                    };
+                    let compact = compact_text_snippet(canonical, 4000);
                     if compact.is_empty() {
+                        if is_fence {
+                            in_fence = !in_fence;
+                        }
                         continue;
                     }
                     if !seen.insert(normalize_preview_line(&compact)) {
+                        if is_fence {
+                            in_fence = !in_fence;
+                        }
                         continue;
                     }
-                    rows.push((
-                        format!("· {compact}"),
-                        Style::new().fg(Theme::TEXT_SECONDARY),
-                    ));
+                    let (prefix, style) = if is_fence {
+                        ("``` ", Style::new().fg(Theme::ACCENT_PURPLE))
+                    } else if in_fence {
+                        ("| ", Style::new().fg(Theme::ACCENT_GREEN))
+                    } else if is_heading {
+                        ("# ", Style::new().fg(Theme::ACCENT_BLUE).bold())
+                    } else if is_list {
+                        ("* ", Style::new().fg(Theme::ACCENT_CYAN))
+                    } else if is_quote {
+                        ("> ", Style::new().fg(Theme::TEXT_MUTED).italic())
+                    } else {
+                        ("· ", Style::new().fg(Theme::TEXT_SECONDARY))
+                    };
+                    rows.push((format!("{prefix}{compact}"), style));
+                    if rows.len() >= max_lines {
+                        return rows;
+                    }
+                    if is_fence {
+                        in_fence = !in_fence;
+                    }
+                }
+            }
+            ContentBlock::Code { code, language, .. } => {
+                let language = language
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("plain");
+                let label = format!("[code:{language}]");
+                if seen.insert(normalize_preview_line(&label)) {
+                    rows.push((label, Style::new().fg(Theme::ACCENT_PURPLE).bold()));
                     if rows.len() >= max_lines {
                         return rows;
                     }
                 }
-            }
-            ContentBlock::Code { code, .. } => {
                 for line in code.lines() {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
@@ -1097,10 +1156,7 @@ fn collect_content_preview_rows(
                     if !seen.insert(normalize_preview_line(&compact)) {
                         continue;
                     }
-                    rows.push((
-                        format!("· {compact}"),
-                        Style::new().fg(Theme::TEXT_SECONDARY),
-                    ));
+                    rows.push((format!("| {compact}"), Style::new().fg(Theme::ACCENT_GREEN)));
                     if rows.len() >= max_lines {
                         return rows;
                     }
@@ -1132,6 +1188,87 @@ fn collect_content_preview_rows(
         }
     }
     rows
+}
+
+fn looks_like_markdown_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        return true;
+    }
+    let mut seen_digit = false;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_digit() {
+            seen_digit = true;
+            continue;
+        }
+        if seen_digit && matches!(ch, '.' | ')') {
+            return true;
+        }
+        break;
+    }
+    false
+}
+
+fn strip_markdown_heading_marker(line: &str) -> &str {
+    let stripped = line.trim_start().trim_start_matches('#').trim_start();
+    if stripped.is_empty() {
+        line.trim()
+    } else {
+        stripped
+    }
+}
+
+fn strip_markdown_quote_marker(line: &str) -> &str {
+    let stripped = line.trim_start().trim_start_matches('>').trim_start();
+    if stripped.is_empty() {
+        line.trim()
+    } else {
+        stripped
+    }
+}
+
+fn strip_markdown_fence_marker(line: &str) -> &str {
+    let stripped = line
+        .trim_start()
+        .trim_start_matches('`')
+        .trim_start_matches('~')
+        .trim_start();
+    if stripped.is_empty() {
+        line.trim()
+    } else {
+        stripped
+    }
+}
+
+fn strip_markdown_list_marker(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+    {
+        return rest.trim_start();
+    }
+
+    let mut index = 0usize;
+    let chars: Vec<char> = trimmed.chars().collect();
+    while index < chars.len() && chars[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index > 0 && index < chars.len() && matches!(chars[index], '.' | ')') {
+        let mut byte_index = index + 1;
+        let bytes = trimmed.as_bytes();
+        while byte_index < bytes.len() && bytes[byte_index].is_ascii_whitespace() {
+            byte_index += 1;
+        }
+        return trimmed
+            .get(byte_index..)
+            .map(str::trim_start)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(trimmed);
+    }
+
+    trimmed
 }
 
 fn normalize_preview_line(text: &str) -> String {
@@ -2088,7 +2225,7 @@ fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], c
 mod tests {
     use super::*;
     use chrono::{Duration, TimeZone, Utc};
-    use opensession_core::trace::{Content, Event, EventType};
+    use opensession_core::trace::{Content, ContentBlock, Event, EventType};
 
     fn make_event(event_type: EventType, text: &str) -> Event {
         Event {
@@ -2182,6 +2319,64 @@ mod tests {
         ));
         assert!(is_low_signal_text_line("added 65 packages in 1s"));
         assert!(is_low_signal_text_line("=== Running frontend checks ==="));
+    }
+
+    #[test]
+    fn content_preview_applies_markdown_line_markers() {
+        let event = Event {
+            event_id: "markdown-preview".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content {
+                blocks: vec![ContentBlock::Text {
+                    text: "# Heading\n- item\n> quote\n```rust\nlet x = 1;\n```\nplain".to_string(),
+                }],
+            },
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        };
+
+        let rows = collect_content_preview_rows(&event, 12, None, false);
+        let rendered = rows
+            .iter()
+            .map(|(text, _)| text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("# Heading"));
+        assert!(rendered.contains("* item"));
+        assert!(rendered.contains("> quote"));
+        assert!(rendered.contains("``` rust"));
+        assert!(rendered.contains("| let x = 1;"));
+    }
+
+    #[test]
+    fn content_preview_highlights_code_blocks_with_language_header() {
+        let event = Event {
+            event_id: "code-preview".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            task_id: None,
+            content: Content {
+                blocks: vec![ContentBlock::Code {
+                    code: "fn main() {\n    println!(\"hi\");\n}".to_string(),
+                    language: Some("rust".to_string()),
+                    start_line: None,
+                }],
+            },
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        };
+
+        let rows = collect_content_preview_rows(&event, 6, None, false);
+        assert!(rows
+            .first()
+            .is_some_and(|(text, _)| text.starts_with("[code:rust]")));
+        assert!(rows.iter().any(|(text, _)| text.starts_with("| fn main()")));
     }
 
     #[test]

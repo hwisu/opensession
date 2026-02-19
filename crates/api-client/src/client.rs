@@ -37,7 +37,12 @@ impl ApiClient {
     }
 
     pub fn set_auth(&mut self, token: String) {
-        self.auth_token = Some(token);
+        let normalized = token.trim();
+        if normalized.is_empty() {
+            self.auth_token = None;
+            return;
+        }
+        self.auth_token = Some(normalized.to_string());
     }
 
     pub fn auth_token(&self) -> Option<&str> {
@@ -148,11 +153,11 @@ impl ApiClient {
         parse_response(resp).await
     }
 
-    pub async fn regenerate_key(&self) -> Result<RegenerateKeyResponse> {
+    pub async fn issue_api_key(&self) -> Result<IssueApiKeyResponse> {
         let token = self.token_or_bail()?;
         let resp = self
             .client
-            .post(self.url("/auth/regenerate-key"))
+            .post(self.url("/auth/api-keys/issue"))
             .bearer_auth(token)
             .send()
             .await?;
@@ -317,4 +322,31 @@ async fn parse_response<T: serde::de::DeserializeOwned>(resp: reqwest::Response)
         bail!("{status}: {body}");
     }
     Ok(resp.json().await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiClient;
+    use std::time::Duration;
+
+    #[test]
+    fn set_auth_trims_surrounding_whitespace() {
+        let mut client = ApiClient::new("https://example.com", Duration::from_secs(1))
+            .expect("client should construct");
+
+        client.set_auth("  osk_test_token  ".to_string());
+        assert_eq!(client.auth_token(), Some("osk_test_token"));
+    }
+
+    #[test]
+    fn set_auth_clears_auth_for_blank_tokens() {
+        let mut client = ApiClient::new("https://example.com", Duration::from_secs(1))
+            .expect("client should construct");
+
+        client.set_auth("osk_test_token".to_string());
+        assert_eq!(client.auth_token(), Some("osk_test_token"));
+
+        client.set_auth("   ".to_string());
+        assert_eq!(client.auth_token(), None);
+    }
 }

@@ -119,8 +119,31 @@ async fn worker_auth_register_login_me_refresh_logout_flow() {
     );
     let me_body: serde_json::Value = me_resp.json().await.expect("invalid me response");
     assert!(
-        me_body.get("api_key").and_then(|v| v.as_str()).is_some(),
-        "me response must include api_key"
+        me_body.get("api_key").is_none(),
+        "me response must not include api_key"
+    );
+
+    let issue_key_resp = client
+        .post(ctx.url("/auth/api-keys/issue"))
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .expect("issue api key request failed");
+    assert_eq!(
+        issue_key_resp.status().as_u16(),
+        200,
+        "api key issue endpoint must succeed in worker profile"
+    );
+    let issue_key_body: serde_json::Value = issue_key_resp
+        .json()
+        .await
+        .expect("invalid issue api key response");
+    let issued_api_key = issue_key_body["api_key"]
+        .as_str()
+        .expect("missing api_key in issue response");
+    assert!(
+        issued_api_key.starts_with("osk_"),
+        "issued api key must have osk_ prefix"
     );
 
     let refresh_resp = client

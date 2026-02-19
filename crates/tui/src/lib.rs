@@ -430,16 +430,7 @@ fn event_loop(
         while let Ok(ev) = bg_rx.try_recv() {
             match ev {
                 BgEvent::SessionsLoaded(sessions) => {
-                    app.sessions = sessions
-                        .into_iter()
-                        .filter(|session| !App::is_internal_summary_session(session))
-                        .collect();
-                    app.rebuild_session_agent_metrics();
-                    app.filtered_sessions = (0..app.sessions.len()).collect();
-                    app.rebuild_available_tools();
-                    if !app.sessions.is_empty() {
-                        app.list_state.select(Some(0));
-                    }
+                    app.apply_discovered_sessions(sessions);
                     app.loading_sessions = false;
                 }
                 BgEvent::DbReady { repos, count } => {
@@ -473,14 +464,6 @@ fn event_loop(
         }
 
         // ── Handle upload popup async ops ────────────────────────────
-        // Login (triggered from Setup view)
-        if app.login_state.loading {
-            app.pending_command = Some(async_ops::AsyncCommand::Login {
-                email: app.login_state.email.clone(),
-                password: app.login_state.password.clone(),
-            });
-        }
-
         // Fetch teams for upload popup
         if let Some(ref popup) = app.upload_popup {
             if matches!(popup.phase, UploadPhase::FetchingTeams) {

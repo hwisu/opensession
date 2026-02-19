@@ -326,8 +326,6 @@ mod tests {
         assert_eq!(parsed.daemon.max_retries, 3);
         assert_eq!(parsed.daemon.health_check_interval_secs, 300);
         assert_eq!(parsed.daemon.realtime_debounce_ms, 500);
-        assert!(parsed.watchers.claude_code);
-        assert!(parsed.watchers.cursor);
         assert!(!parsed.watchers.custom_paths.is_empty());
     }
 

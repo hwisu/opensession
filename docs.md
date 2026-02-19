@@ -51,6 +51,12 @@ OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
 
 `0|false|off|no` disables full startup re-discovery and uses cached local DB sessions first.
 
+TUI/Web Share auth uses personal API keys (no in-TUI email-login setup path):
+```bash
+opensession account connect --server https://opensession.io --api-key <issued_key>
+```
+Issue the key from web `/settings`; it is visible only in the issuance response.
+
 ## CLI Surface
 
 - `opensession session handoff`
@@ -205,12 +211,15 @@ Always available:
 - `POST /api/auth/refresh` (when `JWT_SECRET` is configured)
 - `POST /api/auth/logout` (when `JWT_SECRET` is configured)
 - `POST /api/auth/verify` (when `JWT_SECRET` is configured)
-- `GET /api/auth/me` (when `JWT_SECRET` is configured)
+- `GET /api/auth/me` (when `JWT_SECRET` is configured, no API key field)
+- `POST /api/auth/api-keys/issue` (when `JWT_SECRET` is configured, key shown once)
 - `POST /api/sessions` (server profile, auth required)
 - `GET /api/sessions`
 - `GET /api/sessions/{id}`
 - `GET /api/sessions/{id}/raw`
 - `DELETE /api/sessions/{id}`
+
+API keys are intentionally non-retrievable after issuance; `GET /api/auth/me` returns profile only.
 
 `GET /api/sessions` supports common query filters:
 - `search`

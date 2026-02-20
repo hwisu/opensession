@@ -1607,7 +1607,7 @@ mod tests {
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute(
-                "INSERT INTO sessions (id, team_id, tool, created_at) VALUES (?1, 'personal', 'claude-code', ?2)",
+                "INSERT INTO sessions (id, team_id, tool, created_at, body_storage_key) VALUES (?1, 'personal', 'claude-code', ?2, '')",
                 params!["rollout-repair", "2026-02-20T00:00:00Z"],
             )
             .unwrap();

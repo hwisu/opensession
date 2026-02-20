@@ -540,6 +540,37 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn question_toggles_help_overlay_without_leaving_current_view() {
+        let mut app = App::new(Vec::new());
+        app.view = View::Handoff;
+        app.active_tab = Tab::Handoff;
+
+        app.handle_key(KeyCode::Char('?'));
+        assert!(app.help_overlay_open);
+        assert_eq!(app.view, View::Handoff);
+        assert_eq!(app.active_tab, Tab::Handoff);
+
+        app.handle_key(KeyCode::Char('?'));
+        assert!(!app.help_overlay_open);
+        assert_eq!(app.view, View::Handoff);
+        assert_eq!(app.active_tab, Tab::Handoff);
+    }
+
+    #[test]
+    fn help_overlay_closes_on_next_key_without_triggering_action() {
+        let mut app = App::new(Vec::new());
+        app.help_overlay_open = true;
+        app.view = View::SessionList;
+        app.list_state.select(Some(0));
+        let before = app.list_state.selected();
+
+        app.handle_key(KeyCode::Char('j'));
+
+        assert!(!app.help_overlay_open);
+        assert_eq!(app.list_state.selected(), before);
+    }
+
+    #[test]
     fn extract_turns_ignores_control_messages() {
         let events = vec![
             make_event(
@@ -918,6 +949,35 @@ mod turn_extract_tests {
 
         app.handle_key(KeyCode::Tab);
 
+        assert_eq!(app.view_mode, ViewMode::Repo("alpha/repo".to_string()));
+    }
+
+    #[test]
+    fn list_backtab_cycles_repo_view_in_reverse_order() {
+        let mut app = App::new(vec![]);
+        app.repos = vec!["alpha/repo".to_string(), "beta/repo".to_string()];
+        app.view = View::SessionList;
+        app.view_mode = ViewMode::Local;
+
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.view_mode, ViewMode::Repo("beta/repo".to_string()));
+
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.view_mode, ViewMode::Repo("alpha/repo".to_string()));
+
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.view_mode, ViewMode::Local);
+    }
+
+    #[test]
+    fn multi_column_backtab_cycles_repo_view_in_reverse_order() {
+        let mut app = App::new(vec![]);
+        app.repos = vec!["alpha/repo".to_string(), "beta/repo".to_string()];
+        app.list_layout = ListLayout::ByUser;
+        app.view_mode = ViewMode::Repo("beta/repo".to_string());
+        app.repo_index = 1;
+
+        app.handle_list_key(KeyCode::BackTab);
         assert_eq!(app.view_mode, ViewMode::Repo("alpha/repo".to_string()));
     }
 
@@ -1886,6 +1946,7 @@ pub struct App {
     // ── Upload popup / Modal ────────────────────────────────────
     pub upload_popup: Option<UploadPopup>,
     pub modal: Option<Modal>,
+    pub help_overlay_open: bool,
 
     // ── Tab navigation ───────────────────────────────────────────
     pub active_tab: Tab,
@@ -2059,6 +2120,7 @@ impl App {
             setup_scenario: None,
             upload_popup: None,
             modal: None,
+            help_overlay_open: false,
             active_tab: Tab::Sessions,
             handoff_selected_session_id: None,
             handoff_selected_session_ids: Vec::new(),
@@ -2104,23 +2166,18 @@ impl App {
             && !self.searching
             && !matches!(self.view, View::Setup)
         {
-            if self.view == View::Help {
-                if self.focus_detail_view {
-                    self.view = View::SessionDetail;
-                } else {
-                    self.view = View::SessionList;
-                    self.active_tab = Tab::Sessions;
-                }
-            } else {
-                self.view = View::Help;
-            }
+            self.help_overlay_open = !self.help_overlay_open;
+            return false;
+        }
+
+        // Help is modal-like: consume the next key to close and keep current context.
+        if self.help_overlay_open {
+            self.help_overlay_open = false;
             return false;
         }
 
         // Global tab switching (only when not in detail/setup/editing/searching)
-        if !matches!(self.view, View::SessionDetail | View::Setup | View::Help)
-            && !self.editing_field
-        {
+        if !matches!(self.view, View::SessionDetail | View::Setup) && !self.editing_field {
             match key {
                 KeyCode::Char('1') => {
                     self.switch_tab(Tab::Sessions);
@@ -2378,6 +2435,9 @@ impl App {
             KeyCode::Tab => {
                 self.cycle_view_mode();
             }
+            KeyCode::BackTab => {
+                self.cycle_view_mode_reverse();
+            }
             KeyCode::Char('m') => self.toggle_list_layout(),
             KeyCode::Char('a') => {
                 self.cycle_tool_filter();
@@ -2510,6 +2570,9 @@ impl App {
             }
             KeyCode::Tab => {
                 self.cycle_view_mode();
+            }
+            KeyCode::BackTab => {
+                self.cycle_view_mode_reverse();
             }
             _ => {}
         }
@@ -3345,14 +3408,28 @@ impl App {
                 }
             }
         };
-        self.view_mode = next;
-        self.tool_filter = None;
-        self.page = 0;
-        self.apply_filter();
-        self.rebuild_available_tools();
-        if self.list_layout == ListLayout::ByUser {
-            self.rebuild_columns();
-        }
+        self.apply_session_view_mode(next);
+    }
+
+    fn cycle_view_mode_reverse(&mut self) {
+        let prev = match &self.view_mode {
+            ViewMode::Local => {
+                if self.repos.is_empty() {
+                    return;
+                }
+                self.repo_index = self.repos.len().saturating_sub(1);
+                ViewMode::Repo(self.repos[self.repo_index].clone())
+            }
+            ViewMode::Repo(_) => {
+                if self.repo_index > 0 {
+                    self.repo_index -= 1;
+                    ViewMode::Repo(self.repos[self.repo_index].clone())
+                } else {
+                    ViewMode::Local
+                }
+            }
+        };
+        self.apply_session_view_mode(prev);
     }
 
     /// Toggle between Single and agent-count multi-column list layout.
@@ -3443,6 +3520,7 @@ impl App {
                 git_repo_name: Some(repo.clone()),
                 tool: self.tool_filter.clone(),
                 search,
+                exclude_low_signal: true,
                 sort: LocalSortOrder::Recent,
                 time_range: self.local_session_time_range(),
                 ..Default::default()
@@ -3578,6 +3656,7 @@ impl App {
                     git_repo_name: Some(repo),
                     tool: None,
                     search,
+                    exclude_low_signal: true,
                     sort: LocalSortOrder::Recent,
                     time_range: self.local_session_time_range(),
                     ..Default::default()

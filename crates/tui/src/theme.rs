@@ -55,7 +55,6 @@ impl Theme {
     pub const TAG_COLOR: Color = Color::Rgb(100, 120, 160);
 
     // ── Badge backgrounds ────────────────────────────────────────────
-    pub const BADGE_LOCAL: Color = Color::Rgb(100, 105, 120);
     pub const BADGE_SERVER: Color = Color::Rgb(80, 160, 240);
     pub const BADGE_PERSONAL: Color = Color::Rgb(80, 200, 120);
 

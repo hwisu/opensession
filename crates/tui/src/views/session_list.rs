@@ -907,16 +907,16 @@ fn is_live_row(row: &LocalSessionRow) -> bool {
         }
     }
 
-    parse_datetime_utc(&row.created_at).is_some_and(is_live_timestamp)
+    false
 }
 
 fn is_live_local_session(session: &opensession_core::trace::Session) -> bool {
-    let latest_known = session
+    if session
         .events
         .last()
-        .map(|event| event.timestamp)
-        .unwrap_or(session.context.updated_at);
-    if is_live_timestamp(latest_known) {
+        .map(|event| is_live_timestamp(event.timestamp))
+        .unwrap_or(false)
+    {
         return true;
     }
 
@@ -1096,6 +1096,15 @@ mod tests {
     }
 
     #[test]
+    fn live_row_does_not_use_recent_created_at_without_source_path() {
+        let mut row = sample_row();
+        row.created_at = Utc::now().to_rfc3339();
+        row.source_path = None;
+
+        assert!(!is_live_row(&row));
+    }
+
+    #[test]
     fn local_session_live_uses_recent_source_event_timestamp() {
         let unique = format!(
             "ops-live-row-path-{}",
@@ -1144,6 +1153,50 @@ mod tests {
 
         std::fs::remove_file(&source_path).ok();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn local_session_live_uses_recent_event_timestamp_without_source_path() {
+        let mut session = Session::new(
+            "live-by-event".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let now = Utc::now();
+        session.context.created_at = now - ChronoDuration::hours(12);
+        session.context.updated_at = now;
+        session.events.push(Event {
+            event_id: "e1".to_string(),
+            timestamp: now,
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content::text("recent"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+
+        assert!(is_live_local_session(&session));
+    }
+
+    #[test]
+    fn local_session_live_does_not_use_recent_updated_at_without_events_or_source_path() {
+        let mut session = Session::new(
+            "not-live-no-events".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        session.context.created_at = Utc::now() - ChronoDuration::hours(12);
+        session.context.updated_at = Utc::now();
+
+        assert!(!is_live_local_session(&session));
     }
 
     #[test]

@@ -257,7 +257,9 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
                         }
                     }
                     "token_count" => {
-                        if let Some((input_tokens, output_tokens)) = extract_token_counts(payload) {
+                        let sampled = extract_token_counts(payload);
+                        let cumulative = extract_total_token_counts(payload);
+                        if sampled.is_some() || cumulative.is_some() {
                             event_counter += 1;
                             let mut attributes = HashMap::new();
                             attach_source_attrs(
@@ -265,17 +267,33 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
                                 Some("codex-desktop-v1"),
                                 Some("event_msg:token_count"),
                             );
-                            if let Some(input_tokens) = input_tokens {
-                                attributes.insert(
-                                    "input_tokens".to_string(),
-                                    serde_json::Value::Number(input_tokens.into()),
-                                );
+                            if let Some((input_tokens, output_tokens)) = sampled {
+                                if let Some(input_tokens) = input_tokens {
+                                    attributes.insert(
+                                        "input_tokens".to_string(),
+                                        serde_json::Value::Number(input_tokens.into()),
+                                    );
+                                }
+                                if let Some(output_tokens) = output_tokens {
+                                    attributes.insert(
+                                        "output_tokens".to_string(),
+                                        serde_json::Value::Number(output_tokens.into()),
+                                    );
+                                }
                             }
-                            if let Some(output_tokens) = output_tokens {
-                                attributes.insert(
-                                    "output_tokens".to_string(),
-                                    serde_json::Value::Number(output_tokens.into()),
-                                );
+                            if let Some((input_total_tokens, output_total_tokens)) = cumulative {
+                                if let Some(input_total_tokens) = input_total_tokens {
+                                    attributes.insert(
+                                        "input_tokens_total".to_string(),
+                                        serde_json::Value::Number(input_total_tokens.into()),
+                                    );
+                                }
+                                if let Some(output_total_tokens) = output_total_tokens {
+                                    attributes.insert(
+                                        "output_tokens_total".to_string(),
+                                        serde_json::Value::Number(output_total_tokens.into()),
+                                    );
+                                }
                             }
                             events.push(Event {
                                 event_id: format!("codex-{}", event_counter),
@@ -729,14 +747,18 @@ fn process_item_with_options(
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
+            let custom_input = item.get("input").and_then(|v| v.as_str()).unwrap_or("");
             // function_call: arguments is a JSON string
             // custom_tool_call: input is a raw string (patch content, etc.)
-            let args_str = item
-                .get("arguments")
-                .and_then(|v| v.as_str())
-                .unwrap_or("{}");
-            let args: serde_json::Value =
-                serde_json::from_str(args_str).unwrap_or(serde_json::Value::Null);
+            let args: serde_json::Value = if item_type == "custom_tool_call" {
+                serde_json::json!({ "input": custom_input })
+            } else {
+                let args_str = item
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}");
+                serde_json::from_str(args_str).unwrap_or(serde_json::Value::Null)
+            };
 
             let call_id = item
                 .get("call_id")
@@ -754,8 +776,7 @@ fn process_item_with_options(
             let event_type = classify_codex_function(&name, &args);
             let content = if item_type == "custom_tool_call" {
                 // Custom tools store input as raw text (e.g. patch content)
-                let input = item.get("input").and_then(|v| v.as_str()).unwrap_or("");
-                Content::text(input)
+                Content::text(custom_input)
             } else {
                 codex_function_content(&name, &args)
             };
@@ -1640,6 +1661,59 @@ fn extract_token_counts(payload: &serde_json::Value) -> Option<(Option<u64>, Opt
     }
 }
 
+fn extract_total_token_counts(payload: &serde_json::Value) -> Option<(Option<u64>, Option<u64>)> {
+    let pick = |v: &serde_json::Value, keys: &[&str]| -> Option<u64> {
+        for key in keys {
+            if let Some(num) = v.get(*key).and_then(|value| value.as_u64()) {
+                return Some(num);
+            }
+            if let Some(num) = v
+                .get(*key)
+                .and_then(|value| value.as_i64())
+                .filter(|value| *value >= 0)
+                .map(|value| value as u64)
+            {
+                return Some(num);
+            }
+        }
+        None
+    };
+
+    let total_usage = payload.get("info").and_then(|info| {
+        info.get("total_token_usage")
+            .or_else(|| info.get("totalTokenUsage"))
+    })?;
+
+    let input = pick(
+        total_usage,
+        &[
+            "input_tokens",
+            "prompt_tokens",
+            "inputTokens",
+            "promptTokens",
+            "token_input",
+            "tokenInput",
+        ],
+    );
+    let output = pick(
+        total_usage,
+        &[
+            "output_tokens",
+            "completion_tokens",
+            "outputTokens",
+            "completionTokens",
+            "token_output",
+            "tokenOutput",
+        ],
+    );
+
+    if input.is_none() && output.is_none() {
+        None
+    } else {
+        Some((input, output))
+    }
+}
+
 /// Parse the output string from function_call_output.
 /// Format: `{"output":"command output\n","metadata":{"exit_code":0,"duration_seconds":0.5}}`
 /// Returns (text, is_error, duration_ms).
@@ -1897,8 +1971,54 @@ fn extract_shell_command(args: &serde_json::Value) -> String {
     String::new()
 }
 
+fn normalize_codex_function_name(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+fn extract_patch_target_path(args: &serde_json::Value) -> Option<String> {
+    if let Some(path) = args
+        .get("path")
+        .or_else(|| args.get("file"))
+        .or_else(|| args.get("file_path"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return Some(path.to_string());
+    }
+
+    for key in ["input", "patch"] {
+        if let Some(path) = args
+            .get(key)
+            .and_then(|v| v.as_str())
+            .and_then(extract_patch_target_path_from_text)
+        {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn extract_patch_target_path_from_text(input: &str) -> Option<String> {
+    const PREFIXES: [&str; 3] = ["*** Update File:", "*** Add File:", "*** Delete File:"];
+    for line in input.lines() {
+        let trimmed = line.trim();
+        for prefix in PREFIXES {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let path = rest.trim().trim_matches('"').trim_matches('\'').trim();
+                if !path.is_empty() {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn classify_codex_function(name: &str, args: &serde_json::Value) -> EventType {
-    match name {
+    let normalized_name = normalize_codex_function_name(name);
+    match normalized_name {
         "exec_command" | "shell" => {
             let cmd = extract_shell_command(args);
             EventType::ShellCommand {
@@ -1910,12 +2030,7 @@ fn classify_codex_function(name: &str, args: &serde_json::Value) -> EventType {
             name: "write_stdin".to_string(),
         },
         "apply_diff" | "apply_patch" => {
-            let path = args
-                .get("path")
-                .or_else(|| args.get("file"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let path = extract_patch_target_path(args).unwrap_or_else(|| "unknown".to_string());
             EventType::FileEdit { path, diff: None }
         }
         "create_file" | "write_file" => {
@@ -1937,13 +2052,13 @@ fn classify_codex_function(name: &str, args: &serde_json::Value) -> EventType {
             EventType::FileRead { path }
         }
         _ => EventType::ToolCall {
-            name: name.to_string(),
+            name: normalized_name.to_string(),
         },
     }
 }
 
 fn codex_function_content(name: &str, args: &serde_json::Value) -> Content {
-    match name {
+    match normalize_codex_function_name(name) {
         "exec_command" | "shell" => {
             let cmd = extract_shell_command(args);
             Content {
@@ -2325,6 +2440,18 @@ provider = "anthropic"
     }
 
     #[test]
+    fn test_classify_apply_patch_uses_path_from_patch_input() {
+        let args = serde_json::json!({
+            "input": "*** Begin Patch\n*** Update File: crates/tui/src/ui.rs\n@@\n- old\n+ new\n*** End Patch\n"
+        });
+        let et = classify_codex_function("functions.apply_patch", &args);
+        assert!(matches!(
+            et,
+            EventType::FileEdit { path, diff: None } if path == "crates/tui/src/ui.rs"
+        ));
+    }
+
+    #[test]
     fn test_desktop_format_response_item() {
         // Desktop wraps entries in response_item with payload
         let lines = [
@@ -2496,6 +2623,57 @@ provider = "anthropic"
                 .get("output_tokens")
                 .and_then(|v| v.as_u64()),
             Some(13)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_token_count_event_msg_includes_cumulative_totals() {
+        let lines = [
+            r#"{"timestamp":"2026-02-14T13:13:00.097Z","type":"session_meta","payload":{"id":"desktop-token-count-total","timestamp":"2026-02-14T13:13:00.075Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.101.0"}}"#,
+            r#"{"timestamp":"2026-02-14T13:13:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":34,"output_tokens":13},"total_token_usage":{"input_tokens":340,"output_tokens":130}},"turn_id":"turn-total"}}"#,
+        ];
+        let dir = std::env::temp_dir().join("codex_desktop_token_count_total_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        let token_event = session.events.iter().find(|event| {
+            matches!(
+                event.event_type,
+                EventType::Custom { ref kind } if kind == "token_count"
+            )
+        });
+        assert!(token_event.is_some());
+        let token_event = token_event.unwrap();
+        assert_eq!(
+            token_event
+                .attributes
+                .get("input_tokens")
+                .and_then(|v| v.as_u64()),
+            Some(34)
+        );
+        assert_eq!(
+            token_event
+                .attributes
+                .get("output_tokens")
+                .and_then(|v| v.as_u64()),
+            Some(13)
+        );
+        assert_eq!(
+            token_event
+                .attributes
+                .get("input_tokens_total")
+                .and_then(|v| v.as_u64()),
+            Some(340)
+        );
+        assert_eq!(
+            token_event
+                .attributes
+                .get("output_tokens_total")
+                .and_then(|v| v.as_u64()),
+            Some(130)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

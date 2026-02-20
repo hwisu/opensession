@@ -1008,11 +1008,15 @@ fn push_wrapped_detail_rows<'a>(
         Style::new()
     };
     let detail_width = layout.center.saturating_sub(4).max(1);
-    for row in wrap_display_width(text, detail_width) {
+    for (index, row) in wrap_display_width(text, detail_width)
+        .into_iter()
+        .enumerate()
+    {
+        let row_prefix = if index == 0 { "  " } else { "    " };
         lines.push(stream_row_line(
             layout,
             "",
-            &format!("  └ {row}"),
+            &format!("{row_prefix}{row}"),
             "",
             (
                 Style::new().fg(Theme::TEXT_MUTED),
@@ -1072,6 +1076,7 @@ fn collect_content_preview_rows(
     summary_hint: Option<&str>,
     show_diff: bool,
 ) -> Vec<(String, Style)> {
+    const DETAIL_PREVIEW_MAX_CHARS: usize = 100;
     let mut rows = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     if let EventType::FileEdit {
@@ -1089,7 +1094,7 @@ fn collect_content_preview_rows(
             } else {
                 Style::new().fg(Theme::TEXT_MUTED)
             };
-            let compact = compact_text_snippet(line, 4000);
+            let compact = compact_text_snippet(line, DETAIL_PREVIEW_MAX_CHARS);
             if compact.is_empty() {
                 continue;
             }
@@ -1103,6 +1108,24 @@ fn collect_content_preview_rows(
     for block in &event.content.blocks {
         match block {
             ContentBlock::Text { text } => {
+                let remaining = max_lines.saturating_sub(rows.len());
+                if let Some(grouped_rows) = collect_grouped_file_reference_rows(text, remaining) {
+                    for (text, style) in grouped_rows {
+                        let compact = compact_text_snippet(&text, DETAIL_PREVIEW_MAX_CHARS);
+                        if compact.is_empty() {
+                            continue;
+                        }
+                        if !seen.insert(normalize_preview_line(&compact)) {
+                            continue;
+                        }
+                        rows.push((compact, style));
+                        if rows.len() >= max_lines {
+                            return rows;
+                        }
+                    }
+                    continue;
+                }
+
                 let mut in_fence = false;
                 for line in text.lines() {
                     let trimmed = line.trim();
@@ -1142,7 +1165,7 @@ fn collect_content_preview_rows(
                         trimmed
                     };
                     let canonical = strip_inline_markdown_markers(canonical);
-                    let compact = compact_text_snippet(&canonical, 4000);
+                    let compact = compact_text_snippet(&canonical, DETAIL_PREVIEW_MAX_CHARS);
                     if compact.is_empty() {
                         if is_fence {
                             in_fence = !in_fence;
@@ -1162,11 +1185,11 @@ fn collect_content_preview_rows(
                     } else if is_heading {
                         ("# ", Style::new().fg(Theme::ACCENT_BLUE).bold())
                     } else if is_list {
-                        ("* ", Style::new().fg(Theme::ACCENT_CYAN))
+                        ("- ", Style::new().fg(Theme::ACCENT_CYAN))
                     } else if is_quote {
                         ("> ", Style::new().fg(Theme::TEXT_MUTED).italic())
                     } else {
-                        ("· ", Style::new().fg(Theme::TEXT_SECONDARY))
+                        ("- ", Style::new().fg(Theme::TEXT_SECONDARY))
                     };
                     rows.push((format!("{prefix}{compact}"), style));
                     if rows.len() >= max_lines {
@@ -1200,7 +1223,7 @@ fn collect_content_preview_rows(
                     {
                         continue;
                     }
-                    let compact = compact_text_snippet(trimmed, 4000);
+                    let compact = compact_text_snippet(trimmed, DETAIL_PREVIEW_MAX_CHARS);
                     if compact.is_empty() {
                         continue;
                     }
@@ -1218,7 +1241,7 @@ fn collect_content_preview_rows(
                     if !summary_hint
                         .is_some_and(|summary| detail_line_matches_summary(&hint, summary))
                     {
-                        let compact = compact_text_snippet(&hint, 4000);
+                        let compact = compact_text_snippet(&hint, DETAIL_PREVIEW_MAX_CHARS);
                         if compact.is_empty() {
                             continue;
                         }
@@ -1226,7 +1249,7 @@ fn collect_content_preview_rows(
                             continue;
                         }
                         rows.push((
-                            format!("· {compact}"),
+                            format!("- {compact}"),
                             Style::new().fg(Theme::TEXT_SECONDARY),
                         ));
                         if rows.len() >= max_lines {
@@ -1239,6 +1262,197 @@ fn collect_content_preview_rows(
         }
     }
     rows
+}
+
+#[derive(Debug, Clone)]
+struct FileReferenceLine {
+    path: String,
+    line_number: Option<usize>,
+    message: String,
+}
+
+fn collect_grouped_file_reference_rows(
+    text: &str,
+    max_lines: usize,
+) -> Option<Vec<(String, Style)>> {
+    if max_lines == 0 {
+        return None;
+    }
+
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+
+    for line in text.lines() {
+        let Some(entry) = parse_file_reference_line(line) else {
+            continue;
+        };
+
+        let label = display_path_label(&entry.path);
+        let detail = match entry.line_number {
+            Some(line_number) => format!("L{line_number}: {}", entry.message),
+            None => entry.message,
+        };
+        let detail_normalized = normalize_preview_line(&detail);
+        if detail_normalized.is_empty() {
+            continue;
+        }
+
+        if let Some((_, details)) = groups.iter_mut().find(|(path, _)| path == &label) {
+            if details
+                .iter()
+                .all(|existing| normalize_preview_line(existing) != detail_normalized)
+            {
+                details.push(detail);
+            }
+        } else {
+            groups.push((label, vec![detail]));
+        }
+    }
+
+    let unique_details = groups
+        .iter()
+        .map(|(_, details)| details.len())
+        .sum::<usize>();
+    if unique_details < 2 {
+        return None;
+    }
+
+    let mut rows = Vec::new();
+    for (path, details) in groups {
+        if rows.len() >= max_lines {
+            break;
+        }
+        rows.push((path, Style::new().fg(Theme::ACCENT_BLUE).bold()));
+        for detail in details {
+            if rows.len() >= max_lines {
+                break;
+            }
+            rows.push((
+                format!("- {detail}"),
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ));
+        }
+    }
+
+    if rows.is_empty() {
+        None
+    } else {
+        Some(rows)
+    }
+}
+
+fn parse_file_reference_line(line: &str) -> Option<FileReferenceLine> {
+    let mut candidate = strip_detail_leading_marker(line.trim());
+    candidate = trim_wrapping_quotes(candidate);
+    if candidate.is_empty() {
+        return None;
+    }
+
+    let split_at = candidate.find(':')?;
+    let (path_raw, tail_raw) = candidate.split_at(split_at);
+    let path = path_raw.trim();
+    if !looks_like_file_path(path) {
+        return None;
+    }
+
+    let mut tail = tail_raw.trim_start_matches(':').trim_start();
+    let mut line_number = None;
+
+    let digit_len = tail.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_len > 0 {
+        let parsed = tail
+            .get(..digit_len)
+            .and_then(|digits| digits.parse::<usize>().ok());
+        let rest = tail.get(digit_len..).unwrap_or("").trim_start();
+        if rest.is_empty()
+            || rest.starts_with(':')
+            || rest.starts_with('-')
+            || rest.starts_with('"')
+            || rest.starts_with('\'')
+        {
+            line_number = parsed;
+            tail = rest
+                .trim_start_matches(':')
+                .trim_start()
+                .trim_start_matches('-')
+                .trim_start();
+        }
+    }
+
+    tail = strip_detail_leading_marker(tail);
+    tail = trim_wrapping_quotes(tail);
+    let message = compact_text_snippet(tail, 100);
+    if message.is_empty() || is_low_signal_text_line(&message) {
+        return None;
+    }
+
+    Some(FileReferenceLine {
+        path: path.to_string(),
+        line_number,
+        message,
+    })
+}
+
+fn strip_detail_leading_marker(line: &str) -> &str {
+    let mut current = line.trim_start();
+    loop {
+        let next = if let Some(rest) = current.strip_prefix("└") {
+            Some(rest)
+        } else if let Some(rest) = current.strip_prefix("├") {
+            Some(rest)
+        } else if let Some(rest) = current.strip_prefix("│") {
+            Some(rest)
+        } else if let Some(rest) = current.strip_prefix("·") {
+            Some(rest)
+        } else if let Some(rest) = current.strip_prefix("•") {
+            Some(rest)
+        } else if let Some(rest) = current.strip_prefix("- ") {
+            Some(rest)
+        } else if let Some(rest) = current.strip_prefix("* ") {
+            Some(rest)
+        } else {
+            current.strip_prefix(". ")
+        };
+
+        if let Some(rest) = next {
+            current = rest.trim_start();
+            continue;
+        }
+        break;
+    }
+    current
+}
+
+fn trim_wrapping_quotes(text: &str) -> &str {
+    let trimmed = text.trim();
+    if trimmed.len() >= 2 {
+        let quoted = (trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\''));
+        if quoted {
+            return trimmed
+                .get(1..trimmed.len().saturating_sub(1))
+                .map(str::trim)
+                .unwrap_or(trimmed);
+        }
+    }
+    trimmed
+}
+
+fn looks_like_file_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return false;
+    }
+
+    let normalized = trimmed.replace('\\', "/");
+    if !normalized.contains('/') {
+        return false;
+    }
+    let last = normalized.rsplit('/').next().unwrap_or("");
+    !last.is_empty() && (last.contains('.') || normalized.contains('[') || normalized.contains(']'))
 }
 
 fn looks_like_markdown_list_item(line: &str) -> bool {
@@ -2538,10 +2752,50 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("# Heading"));
-        assert!(rendered.contains("* item"));
+        assert!(rendered.contains("- item"));
         assert!(rendered.contains("> quote"));
         assert!(rendered.contains("``` rust"));
         assert!(rendered.contains("| let x = 1;"));
+    }
+
+    #[test]
+    fn content_preview_groups_file_reference_lines_by_path() {
+        let event = Event {
+            event_id: "grouped-file-preview".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolResult {
+                name: "exec_command".to_string(),
+                is_error: false,
+                call_id: None,
+            },
+            task_id: None,
+            content: Content::text(
+                "app/collection/tests/test_extr_qna_download_prepare_and_files_api.py:11:- ACTUAL_ROOT를 temp_path로 고정\n\
+                 app/collection/tests/test_extr_qna_download_prepare_and_files_api.py:56: ACTUAL_ROOT/PROC_ROOT를 테스트 임시 디렉토리로 고정\n\
+                 app/collection/tests/test_extr_qna_logset_upload_api.py:62: ACTUAL_ROOT/PROC_ROOT를 테스트 임시 디렉토리로 고정",
+            ),
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        };
+
+        let rows = collect_content_preview_rows(&event, 12, None, false);
+        let rendered_rows = rows
+            .iter()
+            .map(|(text, _)| text.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered_rows
+                .iter()
+                .filter(|row| row.contains("tests/test_extr_qna_download_prepare_and_files_api.py"))
+                .count(),
+            1
+        );
+        assert!(rendered_rows.iter().any(|row| row.contains("- L11:")));
+        assert!(rendered_rows.iter().any(|row| row.contains("- L56:")));
+        assert!(rendered_rows
+            .iter()
+            .any(|row| row.contains("tests/test_extr_qna_logset_upload_api.py")));
     }
 
     #[test]
@@ -2678,7 +2932,7 @@ mod tests {
     }
 
     #[test]
-    fn append_event_detail_rows_adds_hierarchical_detail_prefix() {
+    fn append_event_detail_rows_uses_simple_list_prefix_without_tree_glyph() {
         let event = make_event(EventType::AgentMessage, "first line\nsecond line");
         let display = DisplayEvent::Single {
             event: &event,
@@ -2709,7 +2963,8 @@ mod tests {
             .map(Line::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("└"));
+        assert!(rendered.contains("- first line"));
+        assert!(!rendered.contains("└"));
     }
 
     #[test]

@@ -40,6 +40,8 @@ struct StatsAcc {
     task_ids: std::collections::HashSet<String>,
     total_input_tokens: u64,
     total_output_tokens: u64,
+    total_input_tokens_cumulative: Option<u64>,
+    total_output_tokens_cumulative: Option<u64>,
     changed_files: std::collections::HashSet<String>,
     lines_added: u64,
     lines_removed: u64,
@@ -92,6 +94,20 @@ impl StatsAcc {
         if let Some(v) = event.attributes.get("output_tokens") {
             self.total_output_tokens += v.as_u64().unwrap_or(0);
         }
+        if let Some(v) = event.attributes.get("input_tokens_total") {
+            let value = v.as_u64().unwrap_or(0);
+            self.total_input_tokens_cumulative = Some(
+                self.total_input_tokens_cumulative
+                    .map_or(value, |existing| existing.max(value)),
+            );
+        }
+        if let Some(v) = event.attributes.get("output_tokens_total") {
+            let value = v.as_u64().unwrap_or(0);
+            self.total_output_tokens_cumulative = Some(
+                self.total_output_tokens_cumulative
+                    .map_or(value, |existing| existing.max(value)),
+            );
+        }
         self
     }
 
@@ -108,8 +124,12 @@ impl StatsAcc {
             tool_call_count: self.tool_call_count,
             task_count: self.task_ids.len() as u64,
             duration_seconds,
-            total_input_tokens: self.total_input_tokens,
-            total_output_tokens: self.total_output_tokens,
+            total_input_tokens: self
+                .total_input_tokens_cumulative
+                .unwrap_or(self.total_input_tokens),
+            total_output_tokens: self
+                .total_output_tokens_cumulative
+                .unwrap_or(self.total_output_tokens),
             user_message_count: self.user_message_count,
             files_changed: self.changed_files.len() as u64,
             lines_added: self.lines_added,
@@ -604,6 +624,112 @@ mod tests {
         session.recompute_stats();
         assert_eq!(session.stats.message_count, 2);
         assert_eq!(session.stats.user_message_count, 1);
+    }
+
+    #[test]
+    fn test_recompute_stats_prefers_cumulative_token_totals_when_present() {
+        let mut session = Session::new(
+            "test-token-totals".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+
+        let ts = Utc::now();
+        let mut first_attrs = HashMap::new();
+        first_attrs.insert(
+            "input_tokens".to_string(),
+            serde_json::Value::Number(100u64.into()),
+        );
+        first_attrs.insert(
+            "output_tokens".to_string(),
+            serde_json::Value::Number(20u64.into()),
+        );
+        first_attrs.insert(
+            "input_tokens_total".to_string(),
+            serde_json::Value::Number(120u64.into()),
+        );
+        first_attrs.insert(
+            "output_tokens_total".to_string(),
+            serde_json::Value::Number(25u64.into()),
+        );
+        session.events.push(Event {
+            event_id: "tok-1".to_string(),
+            timestamp: ts,
+            event_type: EventType::Custom {
+                kind: "token_count".to_string(),
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: first_attrs,
+        });
+
+        let mut second_attrs = HashMap::new();
+        second_attrs.insert(
+            "input_tokens".to_string(),
+            serde_json::Value::Number(90u64.into()),
+        );
+        second_attrs.insert(
+            "output_tokens".to_string(),
+            serde_json::Value::Number(15u64.into()),
+        );
+        second_attrs.insert(
+            "input_tokens_total".to_string(),
+            serde_json::Value::Number(220u64.into()),
+        );
+        second_attrs.insert(
+            "output_tokens_total".to_string(),
+            serde_json::Value::Number(40u64.into()),
+        );
+        session.events.push(Event {
+            event_id: "tok-2".to_string(),
+            timestamp: ts,
+            event_type: EventType::Custom {
+                kind: "token_count".to_string(),
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: second_attrs,
+        });
+
+        let mut stale_total_attrs = HashMap::new();
+        stale_total_attrs.insert(
+            "input_tokens".to_string(),
+            serde_json::Value::Number(90u64.into()),
+        );
+        stale_total_attrs.insert(
+            "output_tokens".to_string(),
+            serde_json::Value::Number(15u64.into()),
+        );
+        stale_total_attrs.insert(
+            "input_tokens_total".to_string(),
+            serde_json::Value::Number(210u64.into()),
+        );
+        stale_total_attrs.insert(
+            "output_tokens_total".to_string(),
+            serde_json::Value::Number(39u64.into()),
+        );
+        session.events.push(Event {
+            event_id: "tok-3".to_string(),
+            timestamp: ts,
+            event_type: EventType::Custom {
+                kind: "token_count".to_string(),
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: stale_total_attrs,
+        });
+
+        session.recompute_stats();
+
+        assert_eq!(session.stats.total_input_tokens, 220);
+        assert_eq!(session.stats.total_output_tokens, 40);
     }
 
     #[test]

@@ -17,3 +17,8 @@ domains = ["layout-chrome", "view-routing", "footer-shortcuts"]
 path = "src/views/session_list.rs"
 owner = "tui-list-view"
 domains = ["session-list-rendering", "live-badge-logic", "list-metadata-formatting"]
+
+[[file]]
+path = "src/lib.rs"
+owner = "tui-bootstrap"
+domains = ["startup-bootstrap", "cached-session-hydration", "discovery-orchestration"]

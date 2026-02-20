@@ -48,6 +48,8 @@ pub(crate) struct RawConversationEntry {
     #[serde(default)]
     pub(crate) cwd: Option<String>,
     #[serde(default)]
+    pub(crate) git_branch: Option<String>,
+    #[serde(default)]
     pub(crate) version: Option<String>,
     #[allow(dead_code)]
     #[serde(default)]
@@ -80,6 +82,8 @@ pub(crate) struct RawSystemEntry {
     #[serde(default)]
     pub(crate) cwd: Option<String>,
     #[serde(default)]
+    pub(crate) git_branch: Option<String>,
+    #[serde(default)]
     pub(crate) version: Option<String>,
 }
 
@@ -100,6 +104,8 @@ pub(crate) struct RawProgressEntry {
     pub(crate) parent_tool_use_id: Option<String>,
     #[serde(default)]
     pub(crate) cwd: Option<String>,
+    #[serde(default)]
+    pub(crate) git_branch: Option<String>,
     #[serde(default)]
     pub(crate) version: Option<String>,
 }
@@ -227,6 +233,7 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
     let mut tool_version: Option<String> = None;
     let mut session_id: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut git_branch: Option<String> = None;
     let mut first_user_text: Option<String> = None;
     let mut all_cwds: Vec<String> = Vec::new();
 
@@ -260,12 +267,14 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
                 set_first(&mut session_id, system.session_id.clone());
                 set_first(&mut tool_version, system.version.clone());
                 set_first(&mut cwd, system.cwd.clone());
+                set_first(&mut git_branch, system.git_branch.clone());
                 events.push(system_entry_to_event(&system, &events));
             }
             RawEntry::Progress(progress) => {
                 set_first(&mut session_id, progress.session_id.clone());
                 set_first(&mut tool_version, progress.version.clone());
                 set_first(&mut cwd, progress.cwd.clone());
+                set_first(&mut git_branch, progress.git_branch.clone());
                 events.push(progress_entry_to_event(&progress, &events));
             }
             RawEntry::QueueOperation(queue_op) => {
@@ -280,6 +289,7 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
                 set_first(&mut session_id, conv.session_id.clone());
                 set_first(&mut tool_version, conv.version.clone());
                 set_first(&mut cwd, conv.cwd.clone());
+                set_first(&mut git_branch, conv.git_branch.clone());
                 // Collect all unique cwds for multi-repo tracking
                 if let Some(ref c) = conv.cwd {
                     if !all_cwds.contains(c) {
@@ -320,6 +330,7 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
                 set_first(&mut session_id, conv.session_id.clone());
                 set_first(&mut tool_version, conv.version.clone());
                 set_first(&mut model_name, conv.message.model.clone());
+                set_first(&mut git_branch, conv.git_branch.clone());
                 if let Some(ref c) = conv.cwd {
                     if !all_cwds.contains(c) {
                         all_cwds.push(c.clone());
@@ -365,6 +376,12 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
     );
     if let Some(ref dir) = cwd {
         attributes.insert("cwd".to_string(), serde_json::Value::String(dir.clone()));
+    }
+    if let Some(ref branch) = git_branch {
+        attributes.insert(
+            "git_branch".to_string(),
+            serde_json::Value::String(branch.clone()),
+        );
     }
     if all_cwds.len() > 1 {
         attributes.insert(
@@ -662,6 +679,7 @@ fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
     let mut tool_version: Option<String> = None;
     let mut session_id: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut git_branch: Option<String> = None;
     let mut tool_use_info: HashMap<String, ToolUseInfo> = HashMap::new();
 
     for line_result in reader.lines() {
@@ -684,12 +702,14 @@ fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
                 set_first(&mut session_id, system.session_id.clone());
                 set_first(&mut tool_version, system.version.clone());
                 set_first(&mut cwd, system.cwd.clone());
+                set_first(&mut git_branch, system.git_branch.clone());
                 events.push(system_entry_to_event(&system, &events));
             }
             RawEntry::Progress(progress) => {
                 set_first(&mut session_id, progress.session_id.clone());
                 set_first(&mut tool_version, progress.version.clone());
                 set_first(&mut cwd, progress.cwd.clone());
+                set_first(&mut git_branch, progress.git_branch.clone());
                 events.push(progress_entry_to_event(&progress, &events));
             }
             RawEntry::QueueOperation(queue_op) => {
@@ -704,6 +724,7 @@ fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
                 set_first(&mut session_id, conv.session_id.clone());
                 set_first(&mut tool_version, conv.version.clone());
                 set_first(&mut cwd, conv.cwd.clone());
+                set_first(&mut git_branch, conv.git_branch.clone());
                 if let Ok(ts) = parse_timestamp(&conv.timestamp) {
                     process_user_entry(&conv, ts, &mut events, &tool_use_info);
                 }
@@ -712,6 +733,7 @@ fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
                 set_first(&mut session_id, conv.session_id.clone());
                 set_first(&mut tool_version, conv.version.clone());
                 set_first(&mut model_name, conv.message.model.clone());
+                set_first(&mut git_branch, conv.git_branch.clone());
                 if let Ok(ts) = parse_timestamp(&conv.timestamp) {
                     process_assistant_entry(&conv, ts, &mut events, &mut tool_use_info);
                 }
@@ -762,6 +784,12 @@ fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
         attributes.insert(
             "parent_session_id".to_string(),
             serde_json::Value::String(parent_session_id.clone()),
+        );
+    }
+    if let Some(branch) = git_branch.as_ref() {
+        attributes.insert(
+            "git_branch".to_string(),
+            serde_json::Value::String(branch.clone()),
         );
     }
 
@@ -1322,6 +1350,7 @@ pub(super) fn parse_lines_impl(lines: &[String]) -> ParsedLines {
     let mut tool_version: Option<String> = None;
     let mut session_id: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut git_branch: Option<String> = None;
     let mut first_user_text: Option<String> = None;
     let mut all_cwds: Vec<String> = Vec::new();
     let mut tool_use_info: HashMap<String, ToolUseInfo> = HashMap::new();
@@ -1342,12 +1371,14 @@ pub(super) fn parse_lines_impl(lines: &[String]) -> ParsedLines {
                 set_first(&mut session_id, system.session_id.clone());
                 set_first(&mut tool_version, system.version.clone());
                 set_first(&mut cwd, system.cwd.clone());
+                set_first(&mut git_branch, system.git_branch.clone());
                 events.push(system_entry_to_event(&system, &events));
             }
             RawEntry::Progress(progress) => {
                 set_first(&mut session_id, progress.session_id.clone());
                 set_first(&mut tool_version, progress.version.clone());
                 set_first(&mut cwd, progress.cwd.clone());
+                set_first(&mut git_branch, progress.git_branch.clone());
                 events.push(progress_entry_to_event(&progress, &events));
             }
             RawEntry::QueueOperation(queue_op) => {
@@ -1362,6 +1393,7 @@ pub(super) fn parse_lines_impl(lines: &[String]) -> ParsedLines {
                 set_first(&mut session_id, conv.session_id.clone());
                 set_first(&mut tool_version, conv.version.clone());
                 set_first(&mut cwd, conv.cwd.clone());
+                set_first(&mut git_branch, conv.git_branch.clone());
                 if let Some(ref c) = conv.cwd {
                     if !all_cwds.contains(c) {
                         all_cwds.push(c.clone());
@@ -1401,6 +1433,7 @@ pub(super) fn parse_lines_impl(lines: &[String]) -> ParsedLines {
                 set_first(&mut session_id, conv.session_id.clone());
                 set_first(&mut tool_version, conv.version.clone());
                 set_first(&mut model_name, conv.message.model.clone());
+                set_first(&mut git_branch, conv.git_branch.clone());
                 if let Some(ref c) = conv.cwd {
                     if !all_cwds.contains(c) {
                         all_cwds.push(c.clone());
@@ -1430,6 +1463,12 @@ pub(super) fn parse_lines_impl(lines: &[String]) -> ParsedLines {
         let mut attributes = HashMap::new();
         if let Some(ref dir) = cwd {
             attributes.insert("cwd".to_string(), serde_json::Value::String(dir.clone()));
+        }
+        if let Some(ref branch) = git_branch {
+            attributes.insert(
+                "git_branch".to_string(),
+                serde_json::Value::String(branch.clone()),
+            );
         }
         if all_cwds.len() > 1 {
             attributes.insert(
@@ -1564,6 +1603,7 @@ mod tests {
                 "uuid": "sys-1",
                 "sessionId": "s1",
                 "timestamp": "2026-01-01T00:00:00Z",
+                "gitBranch": "feature/session-branch",
                 "subtype": "local_command",
                 "content": "<command-name>/usage</command-name>"
             })
@@ -1621,6 +1661,14 @@ mod tests {
         assert!(seen_raw_types.contains_key("progress"));
         assert!(seen_raw_types.contains_key("queue-operation"));
         assert!(seen_raw_types.contains_key("summary"));
+        let context = parsed.context.expect("context from parsed lines");
+        assert_eq!(
+            context
+                .attributes
+                .get("git_branch")
+                .and_then(|value| value.as_str()),
+            Some("feature/session-branch")
+        );
     }
 
     #[test]

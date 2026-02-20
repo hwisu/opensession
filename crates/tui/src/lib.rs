@@ -250,6 +250,23 @@ fn parse_cached_tags(tags: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+fn parse_cached_modified_files_count(raw_files_modified: Option<&str>) -> u64 {
+    let Some(raw) = raw_files_modified.map(str::trim).filter(|v| !v.is_empty()) else {
+        return 0;
+    };
+    if let Ok(files) = serde_json::from_str::<Vec<String>>(raw) {
+        return files
+            .iter()
+            .map(|file| file.trim())
+            .filter(|file| !file.is_empty())
+            .count() as u64;
+    }
+    raw.split(',')
+        .map(|part| part.trim().trim_matches('"').trim_matches('\''))
+        .filter(|file| !file.is_empty())
+        .count() as u64
+}
+
 fn session_from_cached_row(row: &LocalSessionRow) -> Session {
     let created_at = parse_cached_datetime(&row.created_at);
     let mut session = Session::new(
@@ -336,7 +353,7 @@ fn session_from_cached_row(row: &LocalSessionRow) -> Session {
         total_input_tokens: row.total_input_tokens.max(0) as u64,
         total_output_tokens: row.total_output_tokens.max(0) as u64,
         user_message_count: row.user_message_count.max(0) as u64,
-        files_changed: 0,
+        files_changed: parse_cached_modified_files_count(row.files_modified.as_deref()),
         lines_added: 0,
         lines_removed: 0,
     };
@@ -728,10 +745,11 @@ fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session,
 mod tests {
     use super::{
         ensure_session_source_path, env_flag_enabled, filter_visible_discovered_sessions,
-        refresh_discovery_on_start,
+        parse_cached_modified_files_count, refresh_discovery_on_start, session_from_cached_row,
     };
     use chrono::Utc;
     use opensession_core::trace::{Agent, Session, SessionContext};
+    use opensession_local_db::LocalSessionRow;
     use serde_json::json;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
@@ -806,6 +824,45 @@ mod tests {
         session
     }
 
+    fn make_cached_row(files_modified: Option<&str>) -> LocalSessionRow {
+        LocalSessionRow {
+            id: "cached-1".to_string(),
+            source_path: Some("/tmp/session.jsonl".to_string()),
+            sync_status: "local_only".to_string(),
+            last_synced_at: None,
+            user_id: None,
+            nickname: None,
+            team_id: None,
+            tool: "codex".to_string(),
+            agent_provider: Some("openai".to_string()),
+            agent_model: Some("gpt-5".to_string()),
+            title: Some("cached".to_string()),
+            description: None,
+            tags: None,
+            created_at: "2026-02-20T00:00:00Z".to_string(),
+            uploaded_at: None,
+            message_count: 1,
+            user_message_count: 1,
+            task_count: 0,
+            event_count: 2,
+            duration_seconds: 3,
+            total_input_tokens: 11,
+            total_output_tokens: 7,
+            git_remote: None,
+            git_branch: None,
+            git_commit: None,
+            git_repo_name: None,
+            pr_number: None,
+            pr_url: None,
+            working_directory: Some("/tmp".to_string()),
+            files_modified: files_modified.map(ToOwned::to_owned),
+            files_read: None,
+            has_errors: false,
+            max_active_agents: 1,
+            is_auxiliary: false,
+        }
+    }
+
     #[test]
     fn opencode_child_session_is_hidden_in_discovery_list() {
         let child = make_opencode_session("ses_child", vec!["ses_parent"]);
@@ -863,6 +920,19 @@ mod tests {
             .iter()
             .any(|session| session.session_id == "summary"));
         assert!(visible.iter().any(|session| session.session_id == "normal"));
+    }
+
+    #[test]
+    fn parse_cached_modified_files_count_supports_json_arrays() {
+        let count = parse_cached_modified_files_count(Some("[\"a.rs\",\"b.rs\",\"c.rs\"]"));
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn session_from_cached_row_uses_files_modified_count() {
+        let row = make_cached_row(Some("[\"src/a.rs\",\"src/b.rs\"]"));
+        let session = session_from_cached_row(&row);
+        assert_eq!(session.stats.files_changed, 2);
     }
 
     #[test]

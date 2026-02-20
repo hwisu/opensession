@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use git::GitContext;
+use git::{normalize_repo_name, GitContext};
 
 /// A local session row stored in the local SQLite index/cache database.
 #[derive(Debug, Clone)]
@@ -150,6 +150,86 @@ fn normalize_tool_for_source_path(current_tool: &str, source_path: Option<&str>)
         .to_string()
 }
 
+fn normalize_non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn json_object_string(value: &Value, keys: &[&str]) -> Option<String> {
+    let obj = value.as_object()?;
+    for key in keys {
+        if let Some(found) = obj.get(*key).and_then(Value::as_str) {
+            let normalized = found.trim();
+            if !normalized.is_empty() {
+                return Some(normalized.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn git_context_from_session_attributes(session: &Session) -> GitContext {
+    let attrs = &session.context.attributes;
+
+    let mut remote = normalize_non_empty(attrs.get("git_remote").and_then(Value::as_str));
+    let mut branch = normalize_non_empty(attrs.get("git_branch").and_then(Value::as_str));
+    let mut commit = normalize_non_empty(attrs.get("git_commit").and_then(Value::as_str));
+    let mut repo_name = normalize_non_empty(attrs.get("git_repo_name").and_then(Value::as_str));
+
+    if let Some(git_value) = attrs.get("git") {
+        if remote.is_none() {
+            remote = json_object_string(
+                git_value,
+                &["remote", "repository_url", "repo_url", "origin", "url"],
+            );
+        }
+        if branch.is_none() {
+            branch = json_object_string(
+                git_value,
+                &["branch", "git_branch", "current_branch", "ref", "head"],
+            );
+        }
+        if commit.is_none() {
+            commit = json_object_string(git_value, &["commit", "commit_hash", "sha", "git_commit"]);
+        }
+        if repo_name.is_none() {
+            repo_name = json_object_string(git_value, &["repo_name", "repository", "repo", "name"]);
+        }
+    }
+
+    if repo_name.is_none() {
+        repo_name = remote
+            .as_deref()
+            .and_then(normalize_repo_name)
+            .map(ToOwned::to_owned);
+    }
+
+    GitContext {
+        remote,
+        branch,
+        commit,
+        repo_name,
+    }
+}
+
+fn git_context_has_any_field(git: &GitContext) -> bool {
+    git.remote.is_some() || git.branch.is_some() || git.commit.is_some() || git.repo_name.is_some()
+}
+
+fn merge_git_context(preferred: &GitContext, fallback: &GitContext) -> GitContext {
+    GitContext {
+        remote: preferred.remote.clone().or_else(|| fallback.remote.clone()),
+        branch: preferred.branch.clone().or_else(|| fallback.branch.clone()),
+        commit: preferred.commit.clone().or_else(|| fallback.commit.clone()),
+        repo_name: preferred
+            .repo_name
+            .clone()
+            .or_else(|| fallback.repo_name.clone()),
+    }
+}
+
 /// Filter for listing sessions from the local DB.
 #[derive(Debug, Clone)]
 pub struct LocalSessionFilter {
@@ -157,6 +237,7 @@ pub struct LocalSessionFilter {
     pub sync_status: Option<String>,
     pub git_repo_name: Option<String>,
     pub search: Option<String>,
+    pub exclude_low_signal: bool,
     pub tool: Option<String>,
     pub sort: LocalSortOrder,
     pub time_range: LocalTimeRange,
@@ -171,6 +252,7 @@ impl Default for LocalSessionFilter {
             sync_status: None,
             git_repo_name: None,
             search: None,
+            exclude_low_signal: false,
             tool: None,
             sort: LocalSortOrder::Recent,
             time_range: LocalTimeRange::All,
@@ -340,6 +422,9 @@ impl LocalDb {
         let max_active_agents = opensession_core::agent_metrics::max_active_agents(session) as i64;
         let normalized_tool =
             normalize_tool_for_source_path(&session.agent.tool, Some(source_path));
+        let git_from_session = git_context_from_session_attributes(session);
+        let has_session_git = git_context_has_any_field(&git_from_session);
+        let merged_git = merge_git_context(&git_from_session, git);
 
         let conn = self.conn();
         // NOTE: `body_storage_key` is kept only for migration/schema parity.
@@ -363,8 +448,10 @@ impl LocalDb {
               event_count=excluded.event_count, duration_seconds=excluded.duration_seconds, \
               total_input_tokens=excluded.total_input_tokens, \
               total_output_tokens=excluded.total_output_tokens, \
-              git_remote=excluded.git_remote, git_branch=excluded.git_branch, \
-              git_commit=excluded.git_commit, git_repo_name=excluded.git_repo_name, \
+              git_remote=CASE WHEN ?26=1 THEN excluded.git_remote ELSE COALESCE(git_remote, excluded.git_remote) END, \
+              git_branch=CASE WHEN ?26=1 THEN excluded.git_branch ELSE COALESCE(git_branch, excluded.git_branch) END, \
+              git_commit=CASE WHEN ?26=1 THEN excluded.git_commit ELSE COALESCE(git_commit, excluded.git_commit) END, \
+              git_repo_name=CASE WHEN ?26=1 THEN excluded.git_repo_name ELSE COALESCE(git_repo_name, excluded.git_repo_name) END, \
               working_directory=excluded.working_directory, \
               files_modified=excluded.files_modified, files_read=excluded.files_read, \
               has_errors=excluded.has_errors, \
@@ -386,16 +473,17 @@ impl LocalDb {
                 session.stats.duration_seconds as i64,
                 session.stats.total_input_tokens as i64,
                 session.stats.total_output_tokens as i64,
-                &git.remote,
-                &git.branch,
-                &git.commit,
-                &git.repo_name,
+                &merged_git.remote,
+                &merged_git.branch,
+                &merged_git.commit,
+                &merged_git.repo_name,
                 &cwd,
                 &files_modified,
                 &files_read,
                 has_errors,
                 max_active_agents,
                 is_auxiliary as i64,
+                has_session_git as i64,
             ],
         )?;
 
@@ -529,6 +617,17 @@ impl LocalDb {
             param_values.push(Box::new(like.clone()));
             param_values.push(Box::new(like));
             idx += 3;
+        }
+
+        if filter.exclude_low_signal {
+            where_clauses.push(
+                "NOT (COALESCE(s.message_count, 0) = 0 \
+                  AND COALESCE(s.user_message_count, 0) = 0 \
+                  AND COALESCE(s.task_count, 0) = 0 \
+                  AND COALESCE(s.event_count, 0) <= 2 \
+                  AND (s.title IS NULL OR TRIM(s.title) = ''))"
+                    .to_string(),
+            );
         }
 
         let interval = match filter.time_range {
@@ -1564,6 +1663,105 @@ mod tests {
     }
 
     #[test]
+    fn test_upsert_local_session_preserves_existing_git_when_session_has_no_git_metadata() {
+        let db = test_db();
+        let mut session = Session::new(
+            "preserve-git".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.event_count = 1;
+
+        let first_git = crate::git::GitContext {
+            remote: Some("https://github.com/acme/repo.git".to_string()),
+            branch: Some("feature/original".to_string()),
+            commit: Some("1111111".to_string()),
+            repo_name: Some("acme/repo".to_string()),
+        };
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.codex/sessions/2026/02/20/preserve-git.jsonl",
+            &first_git,
+        )
+        .unwrap();
+
+        let second_git = crate::git::GitContext {
+            remote: Some("https://github.com/acme/repo.git".to_string()),
+            branch: Some("feature/current-head".to_string()),
+            commit: Some("2222222".to_string()),
+            repo_name: Some("acme/repo".to_string()),
+        };
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.codex/sessions/2026/02/20/preserve-git.jsonl",
+            &second_git,
+        )
+        .unwrap();
+
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.id == "preserve-git")
+            .expect("row exists");
+        assert_eq!(row.git_branch.as_deref(), Some("feature/original"));
+        assert_eq!(row.git_commit.as_deref(), Some("1111111"));
+    }
+
+    #[test]
+    fn test_upsert_local_session_prefers_git_branch_from_session_attributes() {
+        let db = test_db();
+        let mut session = Session::new(
+            "session-git-branch".to_string(),
+            opensession_core::trace::Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus-4-6".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.event_count = 1;
+        session.context.attributes.insert(
+            "git_branch".to_string(),
+            serde_json::Value::String("from-session".to_string()),
+        );
+
+        let fallback_git = crate::git::GitContext {
+            remote: Some("https://github.com/acme/repo.git".to_string()),
+            branch: Some("fallback-branch".to_string()),
+            commit: Some("aaaaaaaa".to_string()),
+            repo_name: Some("acme/repo".to_string()),
+        };
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.claude/projects/foo/session-git-branch.jsonl",
+            &fallback_git,
+        )
+        .unwrap();
+
+        session.context.attributes.insert(
+            "git_branch".to_string(),
+            serde_json::Value::String("from-session-updated".to_string()),
+        );
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.claude/projects/foo/session-git-branch.jsonl",
+            &fallback_git,
+        )
+        .unwrap();
+
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.id == "session-git-branch")
+            .expect("row exists");
+        assert_eq!(row.git_branch.as_deref(), Some("from-session-updated"));
+    }
+
+    #[test]
     fn test_open_backfills_legacy_sessions_columns() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy.db");
@@ -2229,6 +2427,49 @@ mod tests {
         assert_eq!(gemini_rows.len() as i64, gemini_count);
         assert!(gemini_rows.is_empty());
         assert_eq!(gemini_count, 0);
+    }
+
+    #[test]
+    fn test_exclude_low_signal_filter_hides_metadata_only_sessions() {
+        let db = test_db();
+
+        let mut low_signal = make_summary("meta-only", "claude-code", "", "2024-01-01T00:00:00Z");
+        low_signal.title = None;
+        low_signal.message_count = 0;
+        low_signal.task_count = 0;
+        low_signal.event_count = 2;
+        low_signal.git_repo_name = Some("frontend/aviss-react-front".to_string());
+
+        let mut normal = make_summary(
+            "real-work",
+            "opencode",
+            "Socket.IO decision",
+            "2024-01-02T00:00:00Z",
+        );
+        normal.message_count = 14;
+        normal.task_count = 2;
+        normal.event_count = 38;
+        normal.git_repo_name = Some("frontend/aviss-react-front".to_string());
+
+        db.upsert_remote_session(&low_signal).unwrap();
+        db.upsert_remote_session(&normal).unwrap();
+
+        let default_filter = LocalSessionFilter {
+            git_repo_name: Some("frontend/aviss-react-front".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(db.list_sessions(&default_filter).unwrap().len(), 2);
+        assert_eq!(db.count_sessions_filtered(&default_filter).unwrap(), 2);
+
+        let repo_filter = LocalSessionFilter {
+            git_repo_name: Some("frontend/aviss-react-front".to_string()),
+            exclude_low_signal: true,
+            ..Default::default()
+        };
+        let rows = db.list_sessions(&repo_filter).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "real-work");
+        assert_eq!(db.count_sessions_filtered(&repo_filter).unwrap(), 1);
     }
 
     #[test]

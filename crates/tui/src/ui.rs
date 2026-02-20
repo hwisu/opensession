@@ -38,9 +38,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             (summary, body, None)
         };
         render_focus_session_summary(frame, app, summary_area);
-        if matches!(app.view, View::Help) {
-            help::render(frame, body_area);
-        } else if app.selected_session().is_some() {
+        if app.selected_session().is_some() {
             app.view = View::SessionDetail;
             session_detail::render(frame, app, body_area);
         } else {
@@ -51,6 +49,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         if let Some(footer_area) = footer_area {
             render_footer(frame, app, footer_area);
+        }
+        if app.help_overlay_open {
+            help::render(frame, frame.area(), app);
         }
         if let Some(ref m) = app.modal {
             modal::render(frame, m, &app.edit_buffer);
@@ -96,8 +97,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SessionDetail => session_detail::render(frame, app, body_area),
         View::Settings => settings::render(frame, app, body_area),
         View::Handoff => handoff::render(frame, app, body_area),
-        View::Help => {}  // rendered as overlay below
-        View::Setup => {} // handled above
+        View::Help => session_list::render(frame, app, body_area), // compatibility fallback
+        View::Setup => {}                                          // handled above
     }
 
     if let Some(footer_area) = footer_area {
@@ -114,8 +115,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // Help overlay
-    if matches!(app.view, View::Help) {
-        help::render(frame, frame.area());
+    if app.help_overlay_open {
+        help::render(frame, frame.area(), app);
     }
 
     // Modal overlay
@@ -146,14 +147,15 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 ViewMode::Repo(r) => format!("Repo: {r}"),
             };
 
-            // Connection context badge
-            let (badge_text, badge_fg, badge_bg) = match &app.connection_ctx {
-                ConnectionContext::Local => ("LOCAL".to_string(), Color::Black, Theme::BADGE_LOCAL),
+            // Connection context badge: local mode is the default, so only show
+            // remote-capable contexts to reduce persistent visual noise.
+            let badge = match &app.connection_ctx {
+                ConnectionContext::Local => None,
                 ConnectionContext::Server { .. } => {
-                    ("SERVER".to_string(), Color::Black, Theme::BADGE_SERVER)
+                    Some(("SERVER".to_string(), Color::Black, Theme::BADGE_SERVER))
                 }
                 ConnectionContext::CloudPersonal => {
-                    ("PERSONAL".to_string(), Color::Black, Theme::BADGE_PERSONAL)
+                    Some(("PERSONAL".to_string(), Color::Black, Theme::BADGE_PERSONAL))
                 }
             };
 
@@ -171,16 +173,23 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                     " opensession ",
                     Style::new().fg(Theme::ACCENT_ORANGE).bold(),
                 ),
-                Span::styled(" ", Style::new()),
-                Span::styled(
-                    format!(" {} ", badge_text),
-                    Style::new().fg(badge_fg).bg(badge_bg).bold(),
-                ),
                 Span::styled("  ", Style::new()),
                 Span::styled(mode_label, Style::new().fg(Theme::ACCENT_BLUE)),
                 Span::styled("  ", Style::new()),
                 session_count_span,
             ];
+
+            if let Some((badge_text, badge_fg, badge_bg)) = badge {
+                left_spans.insert(1, Span::styled(" ", Style::new()));
+                left_spans.insert(
+                    2,
+                    Span::styled(
+                        format!(" {} ", badge_text),
+                        Style::new().fg(badge_fg).bg(badge_bg).bold(),
+                    ),
+                );
+                left_spans.insert(3, Span::styled(" ", Style::new()));
+            }
 
             if !app.search_query.is_empty() {
                 left_spans.push(Span::styled(
@@ -254,23 +263,15 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::SessionDetail => {
-            let filter_label = active_filter_label(app);
-            let line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
                     " Session Detail ",
                     Style::new().fg(Theme::TEXT_PRIMARY).bold(),
                 ),
-                Span::styled(" ", Style::new()),
-                Span::styled(
-                    format!("active:{filter_label}"),
-                    Style::new().fg(Theme::ACCENT_BLUE).bold(),
-                ),
                 Span::styled("  ", Style::new()),
-                Span::styled(
-                    event_filter_hotkey_legend(),
-                    Style::new().fg(Theme::TEXT_SECONDARY),
-                ),
-            ]);
+            ];
+            spans.extend(event_filter_hotkey_spans(app));
+            let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());
             frame.render_widget(p, area);
         }
@@ -320,12 +321,37 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
+            let candidates = app.handoff_candidates();
+            let candidate_count = candidates.len();
+            let picked_count = app.handoff_selected_candidates().len();
+            let preview_count = app.handoff_effective_candidates().len();
+            let scope = match &app.view_mode {
+                ViewMode::Local => "Local".to_string(),
+                ViewMode::Repo(repo) => format!("Repo: {repo}"),
+            };
+
             let line = Line::from(vec![
                 Span::styled(" Handoff ", Style::new().fg(Theme::TEXT_PRIMARY).bold()),
                 Span::styled("  ", Style::new()),
+                Span::styled(scope, Style::new().fg(Theme::ACCENT_BLUE)),
+                Span::styled("  ", Style::new()),
                 Span::styled(
-                    "session picker + artifact preview/save/refresh",
-                    Style::new().fg(Theme::TEXT_MUTED),
+                    format!("{candidate_count} candidates"),
+                    Style::new().fg(Theme::TEXT_SECONDARY),
+                ),
+                Span::styled("  ", Style::new()),
+                Span::styled(
+                    format!(" picked {picked_count} "),
+                    if picked_count > 0 {
+                        Style::new().fg(Color::Black).bg(Theme::ACCENT_GREEN).bold()
+                    } else {
+                        Style::new().fg(Theme::TEXT_MUTED)
+                    },
+                ),
+                Span::styled("  ", Style::new()),
+                Span::styled(
+                    format!("preview {preview_count}"),
+                    Style::new().fg(Theme::ACCENT_CYAN),
                 ),
             ]);
             frame.render_widget(Paragraph::new(line), inner);
@@ -375,36 +401,35 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn active_filter_label(app: &App) -> String {
-    if app.event_filters.contains(&EventFilter::All) {
-        return "All".to_string();
-    }
-    let mut labels = Vec::new();
+fn event_filter_hotkey_spans(app: &App) -> Vec<Span<'static>> {
     let filters = [
-        ("User", EventFilter::User),
-        ("Agent", EventFilter::Agent),
-        ("Think", EventFilter::Think),
-        ("Tools", EventFilter::Tools),
-        ("Files", EventFilter::Files),
-        ("Shell", EventFilter::Shell),
-        ("Task", EventFilter::Task),
-        ("Web", EventFilter::Web),
-        ("Other", EventFilter::Other),
+        ("1", "All", EventFilter::All),
+        ("2", "User", EventFilter::User),
+        ("3", "Agent", EventFilter::Agent),
+        ("4", "Think", EventFilter::Think),
+        ("5", "Tools", EventFilter::Tools),
+        ("6", "Files", EventFilter::Files),
+        ("7", "Shell", EventFilter::Shell),
+        ("8", "Task", EventFilter::Task),
+        ("9", "Web", EventFilter::Web),
+        ("0", "Other", EventFilter::Other),
     ];
-    for (label, filter) in filters {
-        if app.event_filters.contains(&filter) {
-            labels.push(label);
+
+    let mut spans = Vec::with_capacity(filters.len() * 2);
+    for (idx, (key, label, filter)) in filters.iter().enumerate() {
+        let token = format!("[{key}]{label}");
+        let is_active = app.event_filters.contains(filter);
+        let style = if is_active {
+            Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE).bold()
+        } else {
+            Style::new().fg(Theme::TEXT_SECONDARY)
+        };
+        spans.push(Span::styled(token, style));
+        if idx + 1 != filters.len() {
+            spans.push(Span::styled(" ", Style::new().fg(Theme::TEXT_MUTED)));
         }
     }
-    if labels.is_empty() {
-        "All".to_string()
-    } else {
-        labels.join("+")
-    }
-}
-
-fn event_filter_hotkey_legend() -> &'static str {
-    "[1]All [2]User [3]Agent [4]Think [5]Tools [6]Files [7]Shell [8]Task [9]Web [0]Other"
+    spans
 }
 
 #[derive(Clone)]
@@ -502,7 +527,11 @@ fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
         },
         FooterSegment::Shortcut {
             key: "R".to_string(),
-            desc: "repo".to_string(),
+            desc: "repo search".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "Tab/S-Tab".to_string(),
+            desc: "view".to_string(),
         },
         FooterSegment::Shortcut {
             key: "1/2/3".to_string(),
@@ -532,40 +561,85 @@ fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
 }
 
 fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
-    let mut segments: Vec<FooterSegment> = vec![
-        FooterSegment::Shortcut {
-            key: "j/k".to_string(),
-            desc: "nav".to_string(),
-        },
-        FooterSegment::Shortcut {
-            key: "g/G".to_string(),
-            desc: "head/tail".to_string(),
-        },
-        FooterSegment::Shortcut {
-            key: "u/U".to_string(),
-            desc: "user jump".to_string(),
-        },
-        FooterSegment::Shortcut {
-            key: "n/N".to_string(),
-            desc: "type jump".to_string(),
-        },
-        FooterSegment::Shortcut {
-            key: "h/l".to_string(),
-            desc: "scroll".to_string(),
-        },
-        FooterSegment::Shortcut {
-            key: "1-0".to_string(),
-            desc: "filter".to_string(),
-        },
-        FooterSegment::Shortcut {
-            key: "d".to_string(),
-            desc: "diff toggle".to_string(),
-        },
-        FooterSegment::Shortcut {
-            key: "?".to_string(),
-            desc: "help".to_string(),
-        },
-    ];
+    let mut segments: Vec<FooterSegment> = match app.detail_view_mode {
+        DetailViewMode::Linear => {
+            let mut shortcuts = vec![
+                FooterSegment::Shortcut {
+                    key: "j/k".to_string(),
+                    desc: "nav".to_string(),
+                },
+                FooterSegment::Shortcut {
+                    key: "g/G".to_string(),
+                    desc: "head/tail".to_string(),
+                },
+                FooterSegment::Shortcut {
+                    key: "u/U".to_string(),
+                    desc: "user jump".to_string(),
+                },
+                FooterSegment::Shortcut {
+                    key: "n/N".to_string(),
+                    desc: "type jump".to_string(),
+                },
+                FooterSegment::Shortcut {
+                    key: "h/l".to_string(),
+                    desc: "scroll".to_string(),
+                },
+                FooterSegment::Shortcut {
+                    key: "1-0".to_string(),
+                    desc: "filter".to_string(),
+                },
+            ];
+            if selected_event_supports_diff_toggle(app) {
+                shortcuts.push(FooterSegment::Shortcut {
+                    key: "d".to_string(),
+                    desc: "diff toggle".to_string(),
+                });
+            }
+            shortcuts.push(FooterSegment::Shortcut {
+                key: "?".to_string(),
+                desc: "help".to_string(),
+            });
+            shortcuts
+        }
+        DetailViewMode::Turn => vec![
+            FooterSegment::Shortcut {
+                key: "j/k".to_string(),
+                desc: "pane".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "n/N".to_string(),
+                desc: "turn jump".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "g/G".to_string(),
+                desc: "head/tail".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "h/l".to_string(),
+                desc: "scroll".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "Space/Enter".to_string(),
+                desc: "raw".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "p".to_string(),
+                desc: "prompt".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "v".to_string(),
+                desc: "linear".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "1-0".to_string(),
+                desc: "filter".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "?".to_string(),
+                desc: "help".to_string(),
+            },
+        ],
+    };
 
     if let Some(session) = app.selected_session() {
         let visible = app.get_visible_events(session);
@@ -617,6 +691,21 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
     )));
 
     render_footer_segments(segments, width)
+}
+
+fn selected_event_supports_diff_toggle(app: &App) -> bool {
+    let Some(session) = app.selected_session() else {
+        return false;
+    };
+    let visible = app.get_visible_events(session);
+    if visible.is_empty() {
+        return false;
+    }
+    let idx = app.detail_event_index.min(visible.len() - 1);
+    matches!(
+        visible[idx].event().event_type,
+        EventType::FileEdit { diff: Some(_), .. }
+    )
 }
 
 fn format_elapsed_compact(elapsed: ChronoDuration) -> String {
@@ -1084,11 +1173,14 @@ fn build_server_status_spans(info: &ServerInfo) -> Vec<Span<'_>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_server_status_spans, compact_line, event_first_text, handoff_footer_line,
-        latest_output_preview, latest_prompt_preview, render, session_detail_footer_line,
-        session_list_footer_line, settings_footer_line, should_show_footer,
+        build_server_status_spans, compact_line, event_filter_hotkey_spans, event_first_text,
+        handoff_footer_line, latest_output_preview, latest_prompt_preview, render,
+        session_detail_footer_line, session_list_footer_line, settings_footer_line,
+        should_show_footer,
     };
-    use crate::app::{App, ServerInfo, ServerStatus, View};
+    use crate::app::{
+        App, ConnectionContext, DetailViewMode, EventFilter, ServerInfo, ServerStatus, View,
+    };
     use crate::theme::Theme;
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
@@ -1399,7 +1491,49 @@ mod tests {
         assert!(text.contains("u/U"));
         assert!(text.contains("n/N"));
         assert!(text.contains("1-0 filter"));
+        assert!(!text.contains("d diff toggle"));
+    }
+
+    #[test]
+    fn detail_footer_line_shows_diff_toggle_for_file_edit_event() {
+        let mut session = make_session(vec![
+            make_event(EventType::UserMessage, "prompt"),
+            make_event(
+                EventType::FileEdit {
+                    path: "src/main.rs".to_string(),
+                    diff: Some("- old\n+ new".to_string()),
+                },
+                "edit",
+            ),
+        ]);
+        session.context.created_at = Utc::now() - chrono::Duration::seconds(90);
+
+        let mut app = App::new(vec![session]);
+        app.view = View::SessionDetail;
+        app.enter_detail_for_startup();
+        app.detail_event_index = 1;
+
+        let text = spans_to_text(&session_detail_footer_line(&app, 360).spans);
         assert!(text.contains("d diff toggle"));
+    }
+
+    #[test]
+    fn detail_footer_line_turn_mode_hides_linear_only_shortcuts() {
+        let session = make_session(vec![
+            make_event(EventType::UserMessage, "prompt"),
+            make_event(EventType::AgentMessage, "answer"),
+        ]);
+        let mut app = App::new(vec![session]);
+        app.view = View::SessionDetail;
+        app.enter_detail_for_startup();
+        app.detail_view_mode = DetailViewMode::Turn;
+
+        let text = spans_to_text(&session_detail_footer_line(&app, 420).spans);
+        assert!(text.contains("Space/Enter"));
+        assert!(text.contains("turn jump"));
+        assert!(text.contains("v linear"));
+        assert!(!text.contains("u/U"));
+        assert!(!text.contains("d diff toggle"));
     }
 
     #[test]
@@ -1418,6 +1552,92 @@ mod tests {
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(!text.contains("always expanded"));
         assert!(!text.contains("mode:"));
+        assert!(!text.contains("active:"));
         assert!(text.contains("[1]All [2]User [3]Agent"));
+    }
+
+    #[test]
+    fn event_filter_hotkey_spans_highlight_selected_filter_instead_of_active_label() {
+        let mut app = App::new(Vec::new());
+        app.event_filters = std::collections::HashSet::from([EventFilter::User]);
+
+        let spans = event_filter_hotkey_spans(&app);
+        let user = spans
+            .iter()
+            .find(|span| span.content.as_ref() == "[2]User")
+            .expect("user filter token");
+        let all = spans
+            .iter()
+            .find(|span| span.content.as_ref() == "[1]All")
+            .expect("all filter token");
+
+        assert_eq!(user.style.bg, Some(Theme::ACCENT_BLUE));
+        assert_eq!(all.style.bg, None);
+    }
+
+    #[test]
+    fn session_list_header_hides_local_connection_badge() {
+        let mut app = App::new(Vec::new());
+        app.view = View::SessionList;
+        app.connection_ctx = ConnectionContext::Local;
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render(frame, &mut app);
+            })
+            .expect("draw");
+        let text = buffer_to_string(terminal.backend().buffer());
+
+        assert!(!text.contains("LOCAL"));
+        assert!(text.contains("Local"));
+    }
+
+    #[test]
+    fn session_list_header_shows_server_connection_badge() {
+        let mut app = App::new(Vec::new());
+        app.view = View::SessionList;
+        app.connection_ctx = ConnectionContext::Server {
+            url: "http://localhost:8787".to_string(),
+        };
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render(frame, &mut app);
+            })
+            .expect("draw");
+        let text = buffer_to_string(terminal.backend().buffer());
+
+        assert!(text.contains("SERVER"));
+    }
+
+    #[test]
+    fn handoff_header_shows_scope_and_selection_counts() {
+        let mut session = make_session(vec![make_event(EventType::UserMessage, "prompt")]);
+        session.session_id = "handoff-1".to_string();
+        session.context.title = Some("Handoff polish".to_string());
+
+        let mut app = App::new(vec![session]);
+        app.view = View::Handoff;
+        app.handoff_selected_session_id = Some("handoff-1".to_string());
+        app.handoff_selected_session_ids = vec!["handoff-1".to_string()];
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render(frame, &mut app);
+            })
+            .expect("draw");
+        let text = buffer_to_string(terminal.backend().buffer());
+
+        assert!(text.contains("Handoff"));
+        assert!(text.contains("Local"));
+        assert!(text.contains("1 candidates"));
+        assert!(text.contains("picked 1"));
+        assert!(text.contains("preview 1"));
     }
 }

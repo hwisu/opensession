@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.19](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.18...opensession-parsers-v0.2.19) - 2026-02-20
+
+### Other
+
+- Improve TUI detail clarity, handoff UX, and live detection
+
 ## [0.2.18](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.17...opensession-parsers-v0.2.18) - 2026-02-20
 
 ### Added

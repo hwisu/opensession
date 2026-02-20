@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.18](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.18) - 2026-02-20
+
+### Added
+
+- *(handoff)* switch to git-ref artifacts as source of truth
+- add GitHub URL ingest preview session renderer
+
+### Fixed
+
+- *(cli)* box session action to satisfy clippy enum size
+- address hook failures after cleanup
+
+### Other
+
+- *(release)* apply release-plz update
+- remove deprecated summary and team remnants
+- *(release)* apply release-plz update
+- *(release)* apply release-plz update
+- drop legacy paths and align tui/session pipelines
+- *(release)* apply release-plz update
+- Improve handoff temporal consistency and execution timeline
+- *(release)* apply release-plz update
+- Simplify handoff flow and add provider populate mode
+- *(release)* apply release-plz update
+- Remove legacy handoff paths and clean publish/docs
+- *(release)* apply release-plz update
+- test pushpush
+- *(release)* apply release-plz update
+- Fix TUI env-flag test flake and docs
+- Prune team surfaces and complete git-native runtime cleanup
+- *(release)* apply release-plz update
+- prune docker/team surfaces and align on git-native public sessions
+
 ## [0.2.17](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.17) - 2026-02-20
 
 ### Added

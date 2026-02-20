@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.18](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.17...opensession-git-native-v0.2.18) - 2026-02-20
+
+### Added
+
+- *(handoff)* switch to git-ref artifacts as source of truth
+
 ## [0.2.16](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.15...opensession-git-native-v0.2.16) - 2026-02-19
 
 ### Fixed

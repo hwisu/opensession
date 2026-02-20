@@ -221,9 +221,7 @@ fn is_subagent_source(source_path: Option<&str>) -> bool {
 }
 
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
-    let Some(source_path) = source_path.map(|path| path.to_ascii_lowercase()) else {
-        return None;
-    };
+    let source_path = source_path.map(|path| path.to_ascii_lowercase())?;
 
     if source_path.contains("/.codex/sessions/")
         || source_path.contains("\\.codex\\sessions\\")

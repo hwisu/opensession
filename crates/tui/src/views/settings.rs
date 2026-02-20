@@ -126,7 +126,7 @@ fn render_account(frame: &mut Frame, app: &App, area: Rect) {
         Style::new().fg(Theme::TEXT_HINT),
     )));
     lines.push(Line::from(Span::styled(
-        "  (this is your personal key, not a team-only key)",
+        "  (this is your personal key)",
         Style::new().fg(Theme::TEXT_HINT),
     )));
     lines.push(Line::raw(""));
@@ -569,76 +569,6 @@ fn render_daemon_config(
                         ),
                     ]));
                 }
-            }
-
-            if is_selected && field == SettingField::SummaryProvider {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "Settings override env when set. Env fallback: ANTHROPIC_API_KEY | OPENAI_API_KEY | GEMINI_API_KEY",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ),
-                ]));
-            }
-
-            if is_selected && field == SettingField::SummaryCliAgent {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "CLI env fallback: OPS_TL_SUM_CLI_BIN, OPS_TL_SUM_CLI_ARGS. Model can be set below.",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ),
-                ]));
-            }
-
-            if is_selected && field == SettingField::SummaryModel {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "Applies to API requests and CLI --model when not already specified in CLI args.",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ),
-                ]));
-            }
-
-            if is_selected
-                && matches!(
-                    field,
-                    SettingField::SummaryOpenAiCompatEndpoint
-                        | SettingField::SummaryOpenAiCompatBase
-                        | SettingField::SummaryOpenAiCompatPath
-                        | SettingField::SummaryOpenAiCompatStyle
-                        | SettingField::SummaryOpenAiCompatApiKey
-                        | SettingField::SummaryOpenAiCompatApiKeyHeader
-                )
-            {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "Used by LLM Summary Mode = API:OpenAI-Compatible (or Auto when selected).",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ),
-                ]));
-            }
-
-            if is_selected && field == SettingField::SummaryEventWindow {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "Tip: 0/auto = turn-aware auto segmentation mode",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ),
-                ]));
-            }
-
-            if is_selected && field == SettingField::SummaryMaxInflight {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "Debounce controls pacing; max inflight controls parallelism.",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ),
-                ]));
             }
 
             if is_selected && field == SettingField::RealtimeDebounceMs {

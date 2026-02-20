@@ -5,13 +5,11 @@ use opensession_api::{
     UploadRequest, UserSettingsResponse,
 };
 
-use crate::app::TeamInfo;
 use crate::config::DaemonConfig;
 
 /// Commands that require async I/O (network calls).
 pub enum AsyncCommand {
     // ── Upload flow (existing) ────────────────────────────────────────
-    FetchUploadTeams,
     UploadSession {
         session_json: serde_json::Value,
         target_name: String,
@@ -39,7 +37,6 @@ pub enum AsyncCommand {
 /// Results returned by async commands.
 pub enum CommandResult {
     // Upload flow
-    UploadTeams(Result<Vec<TeamInfo>, String>),
     UploadDone(Result<(String, String), (String, String)>), // Ok((target_name, url)) or Err((target_name, error))
 
     // Profile / Account
@@ -67,18 +64,6 @@ fn make_client(config: &DaemonConfig) -> Result<opensession_api_client::ApiClien
 pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult {
     match cmd {
         // ── Upload flow ───────────────────────────────────────────────
-        AsyncCommand::FetchUploadTeams => {
-            let result = async {
-                Ok(vec![TeamInfo {
-                    id: String::new(),
-                    name: "Personal (Public)".to_string(),
-                    is_personal: true,
-                }])
-            }
-            .await;
-            CommandResult::UploadTeams(result)
-        }
-
         AsyncCommand::UploadSession {
             session_json,
             target_name,

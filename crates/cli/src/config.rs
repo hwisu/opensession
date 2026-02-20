@@ -126,27 +126,19 @@ fn load_runtime_config_from_doc(doc: &toml::Value) -> DaemonConfig {
     config
 }
 
-fn load_runtime_config_from_disk() -> Result<(DaemonConfig, bool, bool)> {
+fn load_runtime_config_from_disk() -> Result<(DaemonConfig, bool)> {
     let path = config_path()?;
     let mut auto_start = true;
-    let mut legacy_team_id_present = false;
 
     let config = if path.exists() {
         let doc = read_config_doc(&path)?;
         auto_start = get_bool(&doc, &["cli", "auto_start"]).unwrap_or(true);
-        legacy_team_id_present = [("server", "team_id"), ("identity", "team_id")]
-            .into_iter()
-            .any(|(section, key)| {
-                get_value(&doc, &[section, key])
-                    .and_then(toml::Value::as_str)
-                    .is_some_and(|v| !v.trim().is_empty())
-            });
         load_runtime_config_from_doc(&doc)
     } else {
         DaemonConfig::default()
     };
 
-    Ok((config, auto_start, legacy_team_id_present))
+    Ok((config, auto_start))
 }
 
 fn write_runtime_config(config: &DaemonConfig, auto_start: bool) -> Result<()> {
@@ -166,10 +158,7 @@ fn write_runtime_config(config: &DaemonConfig, auto_start: bool) -> Result<()> {
 
 /// Load CLI-facing config from disk, returning default if not found.
 pub fn load_config() -> Result<CliConfig> {
-    let (runtime, auto_start, legacy_team_id_present) = load_runtime_config_from_disk()?;
-    if legacy_team_id_present {
-        eprintln!("Warning: team_id fields are ignored and can be removed from config.");
-    }
+    let (runtime, auto_start) = load_runtime_config_from_disk()?;
     Ok(CliConfig {
         server: ServerConfig {
             url: if runtime.server.url.trim().is_empty() {

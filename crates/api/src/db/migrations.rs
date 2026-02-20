@@ -13,10 +13,6 @@ pub const MIGRATIONS: &[Migration] = &[
         include_str!("../../migrations/0001_schema.sql"),
     ),
     (
-        "0002_team_invite_keys",
-        include_str!("../../migrations/0002_team_invite_keys.sql"),
-    ),
-    (
         "0003_max_active_agents",
         include_str!("../../migrations/0003_max_active_agents.sql"),
     ),
@@ -35,10 +31,6 @@ pub const MIGRATIONS: &[Migration] = &[
     (
         "0007_sessions_list_perf_indexes",
         include_str!("../../migrations/0007_sessions_list_perf_indexes.sql"),
-    ),
-    (
-        "0008_teams_force_public",
-        include_str!("../../migrations/0008_teams_force_public.sql"),
     ),
     (
         "0009_session_score_plugin",
@@ -60,9 +52,5 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
     (
         "local_0002_drop_unused_local_sessions",
         include_str!("../../migrations/local_0002_drop_unused_local_sessions.sql"),
-    ),
-    (
-        "local_0003_timeline_summary_cache",
-        include_str!("../../migrations/local_0003_timeline_summary_cache.sql"),
     ),
 ];

@@ -1,17 +1,12 @@
 [[file]]
 path = "src/app.rs"
 owner = "tui-core"
-domains = ["navigation-state", "timeline-summary-orchestration", "interaction-flow"]
+domains = ["navigation-state", "timeline-orchestration", "interaction-flow"]
 
 [[file]]
 path = "src/config.rs"
 owner = "tui-config"
-domains = ["runtime-config-io", "settings-layout", "timeline-intelligence-settings"]
-
-[[file]]
-path = "src/timeline_summary.rs"
-owner = "tui-summary"
-domains = ["llm-provider-adapters", "summary-prompting", "summary-payload-parsing"]
+domains = ["runtime-config-io", "settings-layout", "timeline-settings"]
 
 [[file]]
 path = "src/views/session_detail.rs"

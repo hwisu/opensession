@@ -4,7 +4,6 @@ mod config;
 mod live;
 mod session_timeline;
 mod theme;
-mod timeline_summary;
 mod ui;
 mod views;
 
@@ -345,11 +344,7 @@ fn load_cached_sessions_from_db(db: &LocalDb) -> Vec<Session> {
     let rows = db
         .list_sessions(&LocalSessionFilter::default())
         .unwrap_or_default();
-    let mut sessions: Vec<Session> = rows
-        .iter()
-        .map(session_from_cached_row)
-        .filter(|session| !App::is_internal_summary_session(session))
-        .collect();
+    let mut sessions: Vec<Session> = rows.iter().map(session_from_cached_row).collect();
     sessions.sort_by(|a, b| b.context.created_at.cmp(&a.context.created_at));
     sessions
 }
@@ -389,10 +384,6 @@ fn cache_sessions_to_db(db: &LocalDb, sessions: &[LoadedSession]) {
             .get("cwd")
             .or_else(|| session.context.attributes.get("working_directory"))
             .and_then(|v| v.as_str().map(String::from));
-
-        if App::is_internal_summary_session(session) {
-            continue;
-        }
 
         if existing.contains(&session.session_id) {
             if cwd.is_some() {
@@ -464,33 +455,15 @@ fn event_loop(
         }
 
         // ── Handle upload popup async ops ────────────────────────────
-        // Fetch teams for upload popup
-        if let Some(ref popup) = app.upload_popup {
-            if matches!(popup.phase, UploadPhase::FetchingTeams) {
-                app.pending_command = Some(async_ops::AsyncCommand::FetchUploadTeams);
-            }
-        }
-
-        // Upload session — sequential multi-target dispatch
+        // Upload session (single target: Personal/Public)
         if let Some(ref popup) = app.upload_popup {
             if matches!(popup.phase, UploadPhase::Uploading) {
-                // Find the next checked team that hasn't been uploaded yet
-                let uploaded_names: Vec<_> =
-                    popup.results.iter().map(|(name, _)| name.clone()).collect();
-                let next_target = popup
-                    .teams
-                    .iter()
-                    .enumerate()
-                    .find(|(i, t)| popup.checked[*i] && !uploaded_names.contains(&t.name));
-
-                if let Some((_idx, target)) = next_target {
-                    let target_name = target.name.clone();
-                    let is_personal = target.is_personal;
-
+                if popup.results.is_empty() {
+                    let target_name = popup.target_name.clone();
                     let session_clone = app.selected_session().cloned();
 
                     if let Some(session) = session_clone {
-                        let body_url = if is_personal {
+                        let body_url = if app.selected_session_allows_public() {
                             try_git_store(&session, &app.daemon_config)
                         } else {
                             None
@@ -508,10 +481,6 @@ fn event_loop(
                         popup.status = Some("No session selected".to_string());
                         popup.phase = UploadPhase::Done;
                     }
-                } else if let Some(ref mut popup) = app.upload_popup {
-                    // All checked teams uploaded
-                    popup.phase = UploadPhase::Done;
-                    popup.status = None;
                 }
             }
         }
@@ -639,8 +608,7 @@ fn load_from_paths(args: &[String]) -> Vec<LoadedSession> {
         if let Some(parser) = parsers.iter().find(|p| p.can_parse(&path)) {
             match parser.parse(&path) {
                 Ok(session) => {
-                    if session.stats.event_count > 0 && !App::is_internal_summary_session(&session)
-                    {
+                    if session.stats.event_count > 0 {
                         sessions.push(LoadedSession {
                             source_path: path.clone(),
                             session,
@@ -775,8 +743,7 @@ fn load_sessions() -> Vec<LoadedSession> {
             if let Some(parser) = parsers.iter().find(|p| p.can_parse(path)) {
                 if let Ok(session) = parser.parse(path) {
                     // Skip empty sessions (0 events usually means parse was incomplete)
-                    if session.stats.event_count > 0 && !App::is_internal_summary_session(&session)
-                    {
+                    if session.stats.event_count > 0 {
                         sessions.push(LoadedSession {
                             source_path: path.clone(),
                             session,
@@ -804,7 +771,7 @@ fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session,
     let session = parser
         .parse(path)
         .map_err(|err| format!("parse failed ({}): {err}", parser.name()))?;
-    if session.stats.event_count == 0 || App::is_internal_summary_session(&session) {
+    if session.stats.event_count == 0 {
         if let Some(hint) = App::source_error_hint(path) {
             return Err(format!(
                 "parsed as 0 events ({}), detected source error: {hint}",

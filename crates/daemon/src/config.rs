@@ -109,7 +109,7 @@ pub struct ProjectPrivacy {
     pub exclude_tools: Option<Vec<String>>,
 }
 
-/// Project-level identity overrides (e.g., different team for different repos).
+/// Project-level identity overrides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectIdentity {
     pub nickname: Option<String>,
@@ -279,7 +279,7 @@ pub fn load_effective_project_config(repo_root: &Path) -> Option<ProjectConfig> 
 #[cfg(test)]
 pub fn generate_default_project_config() -> String {
     r#"# OpenSession per-repo configuration
-# This file is committed to version control and shared with the team.
+# This file is committed to version control and shared with collaborators.
 # Create `.opensession/config.local.toml` for personal overrides (add to .gitignore).
 
 # [privacy]

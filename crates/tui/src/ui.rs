@@ -664,10 +664,7 @@ fn latest_prompt_preview(session: &Session) -> Option<String> {
         .events
         .iter()
         .rev()
-        .find(|event| {
-            matches!(event.event_type, EventType::UserMessage)
-                && !App::is_internal_summary_user_event(event)
-        })
+        .find(|event| matches!(event.event_type, EventType::UserMessage))
         .and_then(|event| event_first_text(event.content.blocks.as_slice()))
 }
 
@@ -741,11 +738,7 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let popup_width = 60u16.min(area.width.saturating_sub(4));
     let content_lines = match &popup.phase {
-        UploadPhase::FetchingTeams | UploadPhase::Uploading => 3,
-        UploadPhase::SelectTeam => {
-            let status_line = if popup.status.is_some() { 1 } else { 0 };
-            popup.teams.len() as u16 + 3 + status_line
-        }
+        UploadPhase::Uploading => 4,
         UploadPhase::Done => popup.results.len() as u16 + 3,
     };
     let popup_height = (content_lines + 2).min(area.height.saturating_sub(4));
@@ -756,9 +749,7 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, popup_area);
 
     let title = match &popup.phase {
-        UploadPhase::FetchingTeams => " Fetching Upload Targets... ",
-        UploadPhase::SelectTeam => " Publish Session ",
-        UploadPhase::Uploading => " Uploading... ",
+        UploadPhase::Uploading => " Publish Session ",
         UploadPhase::Done => " Upload Results ",
     };
 
@@ -772,67 +763,14 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
     let mut lines = Vec::new();
 
     match &popup.phase {
-        UploadPhase::FetchingTeams => {
-            lines.push(Line::from(Span::styled(
-                "  Loading...",
-                Style::new().fg(Theme::ACCENT_BLUE),
-            )));
-        }
-        UploadPhase::SelectTeam => {
-            for (i, target) in popup.teams.iter().enumerate() {
-                let is_cursor = i == popup.selected;
-                let is_checked = popup.checked.get(i).copied().unwrap_or(false);
-                let check = if is_checked { "[x]" } else { "[ ]" };
-                let pointer = if is_cursor { ">" } else { " " };
-                let badge = if target.is_personal {
-                    "public"
-                } else {
-                    "scope"
-                };
-                // Pad target name to align badges
-                let name_width = 30usize.saturating_sub(target.name.len());
-                let padding = " ".repeat(name_width);
-                let style = if is_cursor {
-                    Style::new().fg(Theme::TEXT_PRIMARY).bold()
-                } else if is_checked {
-                    Style::new().fg(Theme::ACCENT_BLUE)
-                } else {
-                    Style::new().fg(Theme::TEXT_SECONDARY)
-                };
-                let badge_style = Style::new().fg(Theme::TEXT_MUTED);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(" {} {} {}{}", pointer, check, target.name, padding),
-                        style,
-                    ),
-                    Span::styled(badge, badge_style),
-                ]));
-            }
-            lines.push(Line::raw(""));
-            let checked_count = popup.checked.iter().filter(|&&c| c).count();
-            let enter_label = if checked_count > 0 {
-                format!("upload ({checked_count})  ")
-            } else {
-                "upload  ".to_string()
-            };
-            lines.push(Line::from(vec![
-                Span::styled(" Space ", key_style),
-                Span::styled("toggle  ", desc_style),
-                Span::styled("a ", key_style),
-                Span::styled("all  ", desc_style),
-                Span::styled("Enter ", key_style),
-                Span::styled(enter_label, desc_style),
-                Span::styled("Esc ", key_style),
-                Span::styled("cancel", desc_style),
-            ]));
-            if let Some(ref status) = popup.status {
-                lines.push(Line::from(Span::styled(
-                    format!("  {status}"),
-                    Style::new().fg(Theme::ACCENT_YELLOW),
-                )));
-            }
-        }
         UploadPhase::Uploading => {
+            lines.push(Line::from(vec![
+                Span::styled("  Target: ", Style::new().fg(Theme::TEXT_MUTED)),
+                Span::styled(
+                    popup.target_name.as_str(),
+                    Style::new().fg(Theme::TEXT_PRIMARY),
+                ),
+            ]));
             if let Some(ref status) = popup.status {
                 lines.push(Line::from(Span::styled(
                     format!("  {status}"),
@@ -844,6 +782,11 @@ fn render_upload_popup(frame: &mut Frame, app: &App) {
                     Style::new().fg(Theme::ACCENT_BLUE),
                 )));
             }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled(" Esc ", key_style),
+                Span::styled("cancel", desc_style),
+            ]));
         }
         UploadPhase::Done => {
             for (target_name, result) in &popup.results {
@@ -1095,11 +1038,11 @@ mod tests {
     }
 
     #[test]
-    fn latest_prompt_preview_ignores_internal_summary_user_events() {
+    fn latest_prompt_preview_ignores_control_user_events() {
         let session = make_session(vec![
             make_event(
                 EventType::UserMessage,
-                "You are generating a turn-summary payload. Return JSON only.",
+                "<instructions>system control message</instructions>",
             ),
             make_event(EventType::UserMessage, "real prompt"),
         ]);

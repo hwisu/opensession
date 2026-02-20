@@ -8,7 +8,7 @@ const {
 const highlights = [
 	'Capture AI sessions in open HAIL JSONL format',
 	'Search and review sessions with timeline context',
-	'Keep team workflow git-native without mandatory Docker ops',
+	'Keep your workflow git-native without mandatory Docker ops',
 ];
 </script>
 
@@ -25,7 +25,7 @@ const highlights = [
 				<span class="block text-accent">Keep them searchable.</span>
 			</h1>
 			<p class="max-w-xl text-sm leading-relaxed text-text-secondary">
-				OpenSession stores coding sessions as HAIL traces and gives your team a structured way
+				OpenSession stores coding sessions as HAIL traces and gives you a structured way
 				to review what happened, what changed, and what to reuse.
 			</p>
 			<div class="flex flex-wrap gap-2">
@@ -48,7 +48,7 @@ const highlights = [
 		</div>
 
 		<div class="border border-border bg-bg-secondary p-4 sm:p-5">
-			<p class="mb-3 text-xs text-text-muted">Why teams use OpenSession</p>
+			<p class="mb-3 text-xs text-text-muted">Why people use OpenSession</p>
 			<ul class="space-y-2">
 				{#each highlights as item}
 					<li class="flex gap-2 text-xs text-text-secondary sm:text-sm">

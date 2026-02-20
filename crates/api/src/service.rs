@@ -79,17 +79,6 @@ pub fn grace_until_sqlite(now_unix: u64) -> Result<String, ServiceError> {
         .to_string())
 }
 
-/// Validate and normalize a team name. Returns the trimmed name.
-pub fn validate_team_name(name: &str) -> Result<String, ServiceError> {
-    let trimmed = name.trim().to_string();
-    if trimmed.is_empty() || trimmed.len() > 128 {
-        return Err(ServiceError::BadRequest(
-            "name must be 1-128 characters".into(),
-        ));
-    }
-    Ok(trimmed)
-}
-
 // ─── Auth Token Resolution ──────────────────────────────────────────────────
 
 /// Result of resolving an auth token string.
@@ -202,15 +191,5 @@ mod tests {
         assert!(validate_nickname("   ").is_err());
         assert!(validate_nickname(&"x".repeat(65)).is_err());
         assert!(validate_nickname(&"x".repeat(64)).is_ok());
-    }
-
-    #[test]
-    fn test_validate_team_name() {
-        assert!(validate_team_name("my-team").is_ok());
-        assert_eq!(validate_team_name("  team  ").unwrap(), "team");
-        assert!(validate_team_name("").is_err());
-        assert!(validate_team_name("   ").is_err());
-        assert!(validate_team_name(&"x".repeat(129)).is_err());
-        assert!(validate_team_name(&"x".repeat(128)).is_ok());
     }
 }

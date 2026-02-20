@@ -13,6 +13,18 @@ function parseInlineText(ctx: RendererThis, token: { text: string; tokens?: Toke
 	return token.text;
 }
 
+function parseListItem(ctx: RendererThis, item: Tokens.ListItem): string {
+	// marked list items carry block-level `tokens`, not always inline tokens.
+	// Using parseInline() here can throw on block tokens and fall back to raw markdown.
+	if (item.tokens && ctx.parser?.parse) {
+		return ctx.parser.parse(item.tokens);
+	}
+	if (item.tokens && ctx.parser?.parseInline) {
+		return ctx.parser.parseInline(item.tokens);
+	}
+	return item.text ?? '';
+}
+
 const marked = new Marked({
 	gfm: true,
 	breaks: true,
@@ -38,7 +50,7 @@ const marked = new Marked({
 		list(this: RendererThis, token: Tokens.List) {
 			const tag = token.ordered ? 'ol' : 'ul';
 			const items = token.items
-				.map((item: Tokens.ListItem) => `<li>${parseInlineText(this, item)}</li>`)
+				.map((item: Tokens.ListItem) => `<li>${parseListItem(this, item)}</li>`)
 				.join('');
 			return `<${tag} class="md-list">${items}</${tag}>`;
 		},

@@ -23,6 +23,15 @@ Completion criteria:
 For test validation gates, use `pre-commit` and `pre-push`.
 Treat both hook stages as required checks when available.
 
+## Web Verification Policy
+For any web/frontend/runtime-web change, do not stop at smoke-only checks.
+
+Required:
+1. Start the app with `wrangler dev` (local mode unless explicitly requested otherwise).
+2. Validate behavior with Playwright against the running dev server (real browser flow).
+3. Cover at least one user-visible path relevant to the change (not only `/api/health`).
+4. Treat “`wrangler dev` boot + health endpoint only” as insufficient validation.
+
 ## Codex Frequent Failure Guardrails (from recent sessions)
 1. In `zsh`, always quote or escape paths containing brackets or glob-like tokens (for example `"[id]"`, `"[...path]"`) before `cat/sed/rg` commands.
 2. Do not assume file locations. Verify with `rg --files` (or `ls`) first, then read/edit the confirmed path.

@@ -3,4 +3,4 @@
 	import { goto } from '$app/navigation';
 </script>
 
-<AuthCallbackPage onSuccess={() => goto('/')} onError={() => goto('/login')} />
+<AuthCallbackPage onSuccess={() => goto('/sessions')} onError={() => goto('/login')} />

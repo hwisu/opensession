@@ -3,4 +3,4 @@
 	import { goto } from '$app/navigation';
 </script>
 
-<LoginPage onSuccess={() => goto('/')} />
+<LoginPage onSuccess={() => goto('/sessions')} />

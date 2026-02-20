@@ -89,7 +89,7 @@ export async function registerUser(request: APIRequestContext): Promise<TestUser
  * Inject auth tokens into localStorage so the SPA treats the user as authenticated.
  */
 export async function injectAuth(page: Page, user: TestUser) {
-	await page.goto('/');
+	await page.goto('/sessions');
 	await page.evaluate(
 		({ accessToken, refreshToken }) => {
 			localStorage.setItem('opensession_access_token', accessToken);

@@ -1,89 +1,62 @@
 {
   "source": "docs.md",
   "required_chapters": [
-    "Product Map",
-    "Capture Sessions",
-    "Explore Sessions",
-    "GitHub Share Preview",
-    "Auth & Access",
+    "Product Overview",
+    "Core Capabilities",
     "Runtime Profiles",
+    "Web Routes",
+    "CLI Workflows",
+    "API Summary",
+    "Self-Hosting and Verification",
     "Troubleshooting"
   ],
-  "required_template_subheadings": [
-    "What it does",
-    "How to use",
-    "Example",
-    "Limits"
-  ],
+  "required_template_subheadings": [],
   "chapters": [
     {
-      "heading": "Product Map",
+      "heading": "Product Overview",
       "subheadings": [
-        "What it does",
-        "How to use",
-        "Example",
-        "Limits"
+        "Quick checks"
       ],
       "code_blocks": 1
     },
     {
-      "heading": "Capture Sessions",
+      "heading": "Core Capabilities",
       "subheadings": [
-        "What it does",
-        "How to use",
-        "Example",
-        "Limits"
+        "Browse Sessions",
+        "Share Sessions via Git Branch",
+        "Publish Sessions Online",
+        "Why this matters"
       ],
-      "code_blocks": 1
-    },
-    {
-      "heading": "Explore Sessions",
-      "subheadings": [
-        "What it does",
-        "How to use",
-        "Example",
-        "Limits"
-      ],
-      "code_blocks": 1
-    },
-    {
-      "heading": "GitHub Share Preview",
-      "subheadings": [
-        "What it does",
-        "How to use",
-        "Example",
-        "Limits"
-      ],
-      "code_blocks": 1
-    },
-    {
-      "heading": "Auth & Access",
-      "subheadings": [
-        "What it does",
-        "How to use",
-        "Example",
-        "Limits"
-      ],
-      "code_blocks": 1
+      "code_blocks": 0
     },
     {
       "heading": "Runtime Profiles",
-      "subheadings": [
-        "What it does",
-        "How to use",
-        "Example",
-        "Limits"
-      ],
+      "subheadings": [],
+      "code_blocks": 0
+    },
+    {
+      "heading": "Web Routes",
+      "subheadings": [],
+      "code_blocks": 0
+    },
+    {
+      "heading": "CLI Workflows",
+      "subheadings": [],
+      "code_blocks": 1
+    },
+    {
+      "heading": "API Summary",
+      "subheadings": [],
+      "code_blocks": 0
+    },
+    {
+      "heading": "Self-Hosting and Verification",
+      "subheadings": [],
       "code_blocks": 1
     },
     {
       "heading": "Troubleshooting",
-      "subheadings": [
-        "What it does",
-        "How to use",
-        "Example",
-        "Limits"
-      ],
+      "subheadings": [],
       "code_blocks": 1
     }
   ]

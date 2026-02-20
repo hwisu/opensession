@@ -16,7 +16,7 @@ test.describe('Navigation', () => {
 	});
 
 	test('session layout toggle labels explain the two views', async ({ page }) => {
-		await page.goto('/');
+		await page.goto('/sessions');
 		await expect(page.locator('[data-testid="list-shortcut-legend"]')).toBeVisible();
 		await expect(page.getByRole('tab', { name: 'List' })).toBeVisible();
 		await expect(page.getByRole('tab', { name: 'Agents' })).toBeVisible();
@@ -46,7 +46,7 @@ test.describe('Navigation', () => {
 	});
 
 	test('footer shows keyboard hints', async ({ page }) => {
-		await page.goto('/');
+		await page.goto('/sessions');
 		const footer = page.locator('[data-testid="shortcut-footer"]');
 		await expect(footer).toBeVisible();
 		await expect(footer.getByText('Shortcuts')).toBeVisible();

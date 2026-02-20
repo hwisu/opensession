@@ -14,7 +14,7 @@ test.describe('Sessions', () => {
 		});
 
 		await injectAuth(page, admin);
-		await page.goto('/');
+		await page.goto('/sessions');
 
 		// Session should appear in the list
 		await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
@@ -30,7 +30,7 @@ test.describe('Sessions', () => {
 		await uploadSession(request, admin.access_token, { title });
 
 		await injectAuth(page, admin);
-		await page.goto('/');
+		await page.goto('/sessions');
 		const listSearchInput = page.locator('#session-search');
 		await listSearchInput.fill(title);
 		await page.keyboard.press('Enter');
@@ -205,7 +205,7 @@ test.describe('Sessions', () => {
 
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
-		await page.goto('/');
+		await page.goto('/sessions');
 
 		// Should be on the session list page.
 		await expect(page.locator('#session-search')).toBeVisible();

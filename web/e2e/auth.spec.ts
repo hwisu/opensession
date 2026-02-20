@@ -17,7 +17,7 @@ test.describe('Authentication', () => {
 		await page.fill('#login-nickname', nickname);
 		await page.getByRole('button', { name: 'Continue' }).click();
 
-		await expect(page).toHaveURL(/\/$/);
+		await expect(page).toHaveURL(/\/sessions$/);
 		await expect(page.locator('[data-testid="account-menu-trigger"]')).toContainText(`[${nickname}]`);
 		await page.locator('[data-testid="account-menu-trigger"]').click();
 		await expect(page.locator('[data-testid="account-menu"]')).toBeVisible();
@@ -30,7 +30,7 @@ test.describe('Authentication', () => {
 
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
-		await page.goto('/');
+		await page.goto('/sessions');
 		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav')).toBeVisible();
 	});
@@ -41,7 +41,7 @@ test.describe('Authentication', () => {
 
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
-		await page.goto('/');
+		await page.goto('/sessions');
 		await expect(page.locator('[data-testid="account-menu-trigger"]')).toContainText(`[${admin.nickname}]`);
 		await page.locator('[data-testid="account-menu-trigger"]').click();
 		await expect(page.locator('[data-testid="account-menu"]')).toBeVisible();
@@ -105,7 +105,7 @@ test.describe('Authentication', () => {
 			});
 		});
 
-		await page.goto('/');
+		await page.goto('/sessions');
 		await expect(page.locator('[data-testid="account-menu-trigger"]')).toContainText('[@octocat]');
 		await expect(page.locator('[data-testid="account-menu-trigger"]')).not.toContainText('[fallback-nick]');
 		await page.locator('[data-testid="account-menu-trigger"]').click();
@@ -119,14 +119,14 @@ test.describe('Authentication', () => {
 		const capabilities = await getCapabilities(request);
 		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
 
-		await page.goto('/');
+		await page.goto('/sessions');
 		await page.evaluate(() => {
 			localStorage.setItem('opensession_access_token', 'legacy-invalid-access');
 			localStorage.setItem('opensession_refresh_token', 'legacy-invalid-refresh');
 			localStorage.setItem('opensession_token_expiry', String(Date.now() - 60_000));
 		});
 
-		await page.goto('/');
+		await page.goto('/sessions');
 		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 
@@ -142,7 +142,7 @@ test.describe('Authentication', () => {
 		const capabilities = await getCapabilities(request);
 		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
 
-		await page.goto('/');
+		await page.goto('/sessions');
 		await page.evaluate((apiKey) => {
 			localStorage.removeItem('opensession_access_token');
 			localStorage.removeItem('opensession_refresh_token');
@@ -150,7 +150,7 @@ test.describe('Authentication', () => {
 			localStorage.setItem('opensession_api_key', apiKey);
 		}, 'osk_test_only_key');
 
-		await page.goto('/');
+		await page.goto('/sessions');
 		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 		await expect(page.locator('[data-testid="account-menu-trigger"]')).toHaveCount(0);
@@ -218,7 +218,7 @@ test.describe('Authentication', () => {
 			});
 		});
 
-		await page.goto('/');
+		await page.goto('/sessions');
 		await page.locator('[data-testid="account-menu-trigger"]').click();
 		const layoutWidths = await page.evaluate(() => ({
 			scrollWidth: document.documentElement.scrollWidth,
@@ -226,7 +226,7 @@ test.describe('Authentication', () => {
 		}));
 		expect(layoutWidths.scrollWidth).toBeLessThanOrEqual(layoutWidths.clientWidth + 1);
 		await page.locator('[data-testid="account-menu-logout"]').click();
-		await expect(page).toHaveURL(/\/$/);
+		await expect(page).toHaveURL(/\/sessions$/);
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 		await expect(page.locator('[data-testid="account-menu-trigger"]')).toHaveCount(0);
 

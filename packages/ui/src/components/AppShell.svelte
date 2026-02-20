@@ -45,7 +45,7 @@ let uploadEnabled = $state(false);
 let hasLocalAuth = $state(false);
 
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
-const isSessionList = $derived(currentPath === '/');
+const isSessionList = $derived(currentPath === '/sessions');
 
 function trimNonEmpty(value: string | null | undefined): string | null {
 	if (typeof value !== 'string') return null;
@@ -98,6 +98,7 @@ function splitShortcutHint(hint: string): { combo: string; description: string }
 function isGuestAllowedPath(path: string): boolean {
 	return (
 		path === '/' ||
+		path === '/sessions' ||
 		path.startsWith('/session/') ||
 		path === '/login' ||
 		path === '/auth/callback' ||
@@ -106,7 +107,7 @@ function isGuestAllowedPath(path: string): boolean {
 }
 
 const navLinks = $derived.by(() => {
-	const links: Array<{ href: string; label: string }> = [{ href: '/', label: 'Sessions' }];
+	const links: Array<{ href: string; label: string }> = [{ href: '/sessions', label: 'Sessions' }];
 	if (uploadEnabled && user) {
 		links.push({ href: '/upload', label: 'Upload' });
 	}
@@ -251,8 +252,8 @@ const allPaletteCommands = $derived.by(() => {
 			'go-sessions',
 			'Go to Sessions',
 			'Open the main session list',
-			['sessions', 'home', 'list', '/'],
-			() => onNavigate('/'),
+			['sessions', 'home', 'list', '/sessions'],
+			() => onNavigate('/sessions'),
 		),
 		createPaletteCommand(
 			'go-docs',
@@ -343,7 +344,7 @@ $effect(() => {
 });
 
 function isLinkActive(href: string): boolean {
-	if (href === '/') return currentPath === '/' || currentPath.startsWith('/session/');
+	if (href === '/sessions') return currentPath === '/sessions' || currentPath.startsWith('/session/');
 	return currentPath === href;
 }
 
@@ -419,7 +420,7 @@ async function handleSignOut() {
 	await authLogout();
 	user = null;
 	hasLocalAuth = false;
-	onNavigate('/');
+	onNavigate('/sessions');
 }
 
 function handleAccountMenuNavigate(path: string) {
@@ -519,7 +520,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 								<button
 									type="button"
 									class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-									onclick={() => handleAccountMenuNavigate('/')}
+									onclick={() => handleAccountMenuNavigate('/sessions')}
 								>
 									Session Home
 								</button>
@@ -573,37 +574,32 @@ function handleGlobalKey(e: KeyboardEvent) {
 		data-testid="shortcut-footer"
 		class="shrink-0 flex items-center gap-2 border-t border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-muted sm:gap-3 sm:px-4 sm:text-xs"
 	>
-		<span class="rounded border border-border bg-bg-primary px-1.5 py-0.5 font-medium tracking-[0.04em] text-text-secondary">
+		<span class="font-semibold tracking-[0.06em] text-accent/90">
 			Shortcuts
 		</span>
-		<span
-			class="sm:hidden inline-flex items-center gap-1 rounded border border-border bg-bg-primary px-1.5 py-0.5 text-text-secondary"
-		>
-			<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">
+		<span class="sm:hidden inline-flex items-center gap-1 text-text-secondary">
+			<kbd class="font-mono text-[10px] font-semibold text-accent">
 				Cmd/Ctrl+K
 			</kbd>
 		</span>
 		{#if isSessionList}
-			<span
-				data-testid="tor-footer-hint"
-				class="inline-flex items-center gap-1 rounded border border-border bg-bg-primary px-1.5 py-0.5 text-text-secondary"
-			>
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">t</kbd>
+			<span data-testid="tor-footer-hint" class="inline-flex items-center gap-1 text-text-secondary">
+				<kbd class="font-mono text-[10px] font-semibold text-accent">t</kbd>
 				<span>tool</span>
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">o</kbd>
+				<kbd class="font-mono text-[10px] font-semibold text-accent">o</kbd>
 				<span>order</span>
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">r</kbd>
+				<kbd class="font-mono text-[10px] font-semibold text-accent">r</kbd>
 				<span>range</span>
 			</span>
 		{/if}
 		{#each shortcutHints as hint}
 			{@const parsedHint = splitShortcutHint(hint)}
-			<span class="hidden sm:inline-flex items-center gap-1 rounded border border-border bg-bg-primary px-1.5 py-0.5">
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">
+			<span class="hidden sm:inline-flex items-center gap-1 text-text-secondary">
+				<kbd class="font-mono text-[10px] font-semibold text-accent">
 					{parsedHint.combo}
 				</kbd>
 				{#if parsedHint.description}
-					<span class="text-text-secondary"> {parsedHint.description}</span>
+					<span>{parsedHint.description}</span>
 				{/if}
 			</span>
 		{/each}

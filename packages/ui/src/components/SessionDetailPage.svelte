@@ -73,7 +73,7 @@ $effect(() => {
 {:else if error}
 	<div class="py-16 text-center">
 		<p class="text-xs text-error">{error}</p>
-		<a href="/" class="mt-2 inline-block text-xs text-accent hover:underline">Back to feed</a>
+		<a href="/sessions" class="mt-2 inline-block text-xs text-accent hover:underline">Back to feed</a>
 	</div>
 {:else if session}
 	<SessionRenderPage

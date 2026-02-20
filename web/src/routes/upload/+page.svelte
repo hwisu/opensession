@@ -38,7 +38,7 @@
 {:else if !uploadEnabled || !ingestPreviewEnabled}
 	<div class="mx-auto max-w-2xl border border-border bg-bg-secondary p-6 text-sm text-text-secondary">
 		Uploads are read-only in this deployment.
-		<a href="/" class="ml-1 underline">Back to sessions</a>
+		<a href="/sessions" class="ml-1 underline">Back to sessions</a>
 	</div>
 {:else}
 	<UploadPage onSuccess={(id) => goto(`/session/${id}`)} />

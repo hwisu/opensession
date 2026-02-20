@@ -17,6 +17,8 @@ type CapabilitySnapshot = {
 	error: string | null;
 };
 
+type CapabilityKey = Exclude<keyof CapabilitySnapshot, 'loaded' | 'error'>;
+
 type FeatureCard = {
 	id: string;
 	flag: string;
@@ -27,73 +29,63 @@ type FeatureCard = {
 
 const featureCards: FeatureCard[] = [
 	{
-		id: 'capture',
-		flag: '/upload',
-		title: 'Capture Sessions',
+		id: 'sessions',
+		flag: '/sessions, /session/{id}',
+		title: 'Browse Sessions',
 		summary:
-			'Server runtime provides upload and ingest preview APIs to normalize raw tool exports into HAIL JSONL.',
+			'Read public sessions quickly in list/detail views with shortcut-driven filtering and timeline review.',
 		outcomes: [
-			'UI upload and CLI upload target the same session schema',
-			'Parser preview exposes candidate parsing before ingestion',
-			'Read-only runtimes keep capture paths visible but disabled',
+			'List view scans many sessions fast',
+			'Detail view tracks events, tool calls, and outcomes',
+			'Same HAIL model in web and TUI',
 		],
 	},
 	{
-		id: 'explore',
-		flag: '/',
-		title: 'Explore Sessions',
-		summary: 'Session feed and timeline detail are available in both server and worker profiles.',
-		outcomes: [
-			'`List` is one chronological feed across sessions',
-			'`Agents` groups by max active agents for parallelism visibility',
-			'Shortcuts: `t` tool, `o` order, `r` range, `l` layout, `/` search',
-		],
-	},
-	{
-		id: 'share',
-		flag: '/gh/{owner}/{repo}/{ref}/{path...}',
-		title: 'GitHub Route Preview',
-		summary: 'Route parameters load and parse source files directly when `gh_share_enabled` is true.',
-		outcomes: [
-			'Parser selection flow resolves ambiguous files',
-			'View/filter/parser state is synced in URL query params',
-			'Disabled runtime shows explicit unsupported state',
-		],
-	},
-	{
-		id: 'access',
-		flag: '/login',
-		title: 'Auth and Account',
+		id: 'git-share',
+		flag: 'opensession publish upload <file> --git',
+		title: 'Share via Git Branch',
 		summary:
-			'Auth availability follows runtime `auth_enabled`. Active auth runtimes provide account menu and CLI API key linking.',
+			'Session files can be committed to a git branch and shared as reproducible, reviewable artifacts.',
 		outcomes: [
-			'Top-right handle dropdown exposes account info and logout',
-			'Landing/docs remain accessible for guests',
-			'API keys are issued once and used for CLI-to-server connectivity',
+			'Branch history keeps session evolution visible',
+			'Route-based preview can resolve branch/path inputs',
+			'Sharing stays tool-agnostic through HAIL',
+		],
+	},
+	{
+		id: 'publish',
+		flag: '/upload, opensession publish upload',
+		title: 'Publish Sessions Online',
+		summary:
+			'Publish normalized sessions to the public feed so others can inspect real coding traces on the web.',
+		outcomes: [
+			'Upload API accepts HAIL sessions for hosting',
+			'Public readers can discover sessions from `/sessions`',
+			'Auth/API keys govern write paths in enabled runtimes',
 		],
 	},
 ];
 
 const flowSteps = [
 	{
-		id: 'input',
-		label: 'Input',
-		detail: 'Raw session files are provided via `/upload`, CLI upload, or `/gh/...` route input.',
+		id: 'record',
+		label: 'Record',
+		detail: 'Capture AI coding activity in HAIL-compatible traces.',
 	},
 	{
-		id: 'parse',
-		label: 'Parse',
-		detail: 'Parsers normalize source records into HAIL events and expose parser-selection fallbacks.',
-	},
-	{
-		id: 'index',
-		label: 'Index',
-		detail: 'Session metadata is indexed for feed sorting, filtering, and timeline sidebars.',
+		id: 'publish',
+		label: 'Publish',
+		detail: 'Send sessions to online feed or git branch for stable sharing.',
 	},
 	{
 		id: 'review',
 		label: 'Review',
-		detail: 'Users review list/detail views with keyboard shortcuts and event-level filtering.',
+		detail: 'Browse `/sessions` and inspect detail timelines to understand real workflows.',
+	},
+	{
+		id: 'improve',
+		label: 'Improve',
+		detail: 'Use 공개 세션 knowledge to strengthen open models and open tooling quality.',
 	},
 ];
 
@@ -144,6 +136,36 @@ function capabilityStatus(enabled: boolean): string {
 function capabilityClass(enabled: boolean): string {
 	return enabled ? 'text-success' : 'text-warning';
 }
+
+function capabilityEffect(key: CapabilityKey, enabled: boolean): string {
+	if (key === 'auth_enabled') {
+		return enabled
+			? 'Account login, API key linking, and owner write protection are active.'
+			: 'Guest-only browsing profile; account sign-in/write actions stay unavailable.';
+	}
+	if (key === 'upload_enabled') {
+		return enabled
+			? 'Online publishing is enabled via `/upload` and CLI upload endpoints.'
+			: 'This runtime is read-only for online publish; browsing still works.';
+	}
+	if (key === 'ingest_preview_enabled') {
+		return enabled
+			? 'Parser preview/candidate selection is enabled before ingest.'
+			: 'Advanced preview step is disabled; ingest path may still exist elsewhere.';
+	}
+	return enabled
+		? 'Git branch/path route preview works under `/gh/...`.'
+		: 'Git route preview is unavailable in this runtime profile.';
+}
+
+function runtimeProfileLabel(snapshot: CapabilitySnapshot): string {
+	if (!snapshot.loaded) return 'Detecting runtime profile...';
+	if (snapshot.upload_enabled || snapshot.ingest_preview_enabled || snapshot.gh_share_enabled) {
+		return 'Capture + share profile';
+	}
+	if (snapshot.auth_enabled) return 'Read-only browse profile (auth enabled)';
+	return 'Read-only browse profile';
+}
 </script>
 
 <svelte:head>
@@ -158,13 +180,13 @@ function capabilityClass(enabled: boolean): string {
 				Track real AI coding sessions with one consistent data model.
 			</h1>
 			<p class="max-w-xl text-sm leading-relaxed text-text-secondary">
-				OpenSession normalizes tool logs to HAIL, then serves searchable feed and timeline detail across
-				web and TUI. Runtime flags from <code>/api/capabilities</code> define what is available now.
+				OpenSession helps teams browse sessions, share session artifacts through git branches, and publish
+				sessions online. 목표는 공개 세션을 통해 open model 생태계에 실질적인 학습 신호를 제공하는 것입니다.
 			</p>
 			<div class="flex flex-wrap gap-2">
 				<button
 					type="button"
-					onclick={() => onNavigate('/')}
+					onclick={() => onNavigate('/sessions')}
 					class="bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85"
 				>
 					Open Sessions
@@ -235,7 +257,13 @@ function capabilityClass(enabled: boolean): string {
 
 	<section data-contract-section="capability-matrix" class="mt-6 border border-border p-4 sm:p-5">
 		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ capability-matrix</div>
-		<h2 class="mb-4 text-xl font-semibold text-text-primary">Capability Matrix</h2>
+		<h2 class="mb-2 text-xl font-semibold text-text-primary">Runtime Capability Matrix (Operator View)</h2>
+		<p class="mb-4 text-xs text-text-secondary">
+			상단 Feature Map은 제품 목표를 설명하고, 아래 Matrix는 현재 배포 프로필의 운영 플래그를 보여줍니다.
+		</p>
+		<div class="mb-3 border border-border bg-bg-secondary px-3 py-2 text-xs text-text-secondary">
+			{runtimeProfileLabel(capabilities)}
+		</div>
 
 		{#if capabilities.error}
 			<div class="mb-3 border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
@@ -265,7 +293,7 @@ function capabilityClass(enabled: boolean): string {
 							{/if}
 						</td>
 						<td class="border border-border px-2 py-2 text-text-secondary">
-							Login form and token-based user flows.
+							{capabilityEffect('auth_enabled', capabilities.auth_enabled)}
 						</td>
 					</tr>
 					<tr data-capability-key="upload_enabled">
@@ -280,7 +308,7 @@ function capabilityClass(enabled: boolean): string {
 							{/if}
 						</td>
 						<td class="border border-border px-2 py-2 text-text-secondary">
-							Upload page and publish actions.
+							{capabilityEffect('upload_enabled', capabilities.upload_enabled)}
 						</td>
 					</tr>
 					<tr data-capability-key="ingest_preview_enabled">
@@ -295,7 +323,7 @@ function capabilityClass(enabled: boolean): string {
 							{/if}
 						</td>
 						<td class="border border-border px-2 py-2 text-text-secondary">
-							Parser preview and candidate selection.
+							{capabilityEffect('ingest_preview_enabled', capabilities.ingest_preview_enabled)}
 						</td>
 					</tr>
 					<tr data-capability-key="gh_share_enabled">
@@ -310,11 +338,15 @@ function capabilityClass(enabled: boolean): string {
 							{/if}
 						</td>
 						<td class="border border-border px-2 py-2 text-text-secondary">
-							Route-based source preview under <code>/gh/...</code>.
+							{capabilityEffect('gh_share_enabled', capabilities.gh_share_enabled)}
 						</td>
 					</tr>
 				</tbody>
 			</table>
 		</div>
+		<p class="mt-3 text-[11px] text-text-muted">
+			Flags are independent. Example: auth can be enabled while upload/preview/share are disabled in read-only
+			worker deployments.
+		</p>
 	</section>
 </div>

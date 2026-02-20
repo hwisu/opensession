@@ -147,7 +147,7 @@ onMount(() => {
 			<div class="flex flex-wrap items-center gap-2 text-xs">
 				<button
 					type="button"
-					onclick={() => onNavigate('/')}
+					onclick={() => onNavigate('/sessions')}
 					class="border border-border px-3 py-1 text-text-secondary transition-colors hover:border-accent hover:text-accent"
 				>
 					Sessions

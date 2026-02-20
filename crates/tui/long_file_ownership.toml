@@ -4,11 +4,6 @@ owner = "tui-core"
 domains = ["navigation-state", "timeline-orchestration", "interaction-flow"]
 
 [[file]]
-path = "src/config.rs"
-owner = "tui-config"
-domains = ["runtime-config-io", "settings-layout", "timeline-settings"]
-
-[[file]]
 path = "src/views/session_detail.rs"
 owner = "tui-detail-view"
 domains = ["detail-rendering", "task-lane-aggregation", "timeline-separators"]

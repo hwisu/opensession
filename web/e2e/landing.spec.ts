@@ -7,7 +7,7 @@ test.describe('Home Feed (unauthenticated)', () => {
 		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav').getByText('Sessions')).toBeVisible();
 		await expect(
-			page.locator('h1').filter({ hasText: 'Inspect AI session traces with capability-aware workflows.' }),
+			page.locator('h1').filter({ hasText: 'Track real AI coding sessions with one consistent data model.' }),
 		).toBeVisible();
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 		await expect(page.locator('nav').getByText('Register')).toHaveCount(0);

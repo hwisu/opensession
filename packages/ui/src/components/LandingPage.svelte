@@ -28,48 +28,48 @@ type FeatureCard = {
 const featureCards: FeatureCard[] = [
 	{
 		id: 'capture',
-		flag: '--capture',
-		title: 'Capture and Normalize (when enabled)',
+		flag: '/upload',
+		title: 'Capture Sessions',
 		summary:
-			'When upload and ingest preview APIs are enabled, raw exports can be parsed and normalized to HAIL JSONL.',
+			'Server runtime provides upload and ingest preview APIs to normalize raw tool exports into HAIL JSONL.',
 		outcomes: [
-			'Parser auto-detection with parser hint fallback',
-			'Normalized events feed the same timeline renderer',
-			'Read-only deployments show explicit upload limitations',
+			'UI upload and CLI upload target the same session schema',
+			'Parser preview exposes candidate parsing before ingestion',
+			'Read-only runtimes keep capture paths visible but disabled',
 		],
 	},
 	{
 		id: 'explore',
-		flag: '--explore',
+		flag: '/',
 		title: 'Explore Sessions',
-		summary: 'Browse stored sessions by time range, tool, and in-session event filters.',
+		summary: 'Session feed and timeline detail are available in both server and worker profiles.',
 		outcomes: [
-			'Session list with keyboard-friendly navigation',
-			'Timeline filters for unified/native views',
-			'Detail sidebar with tool/model/session metadata',
+			'`List` is one chronological feed across sessions',
+			'`Agents` groups by max active agents for parallelism visibility',
+			'Shortcuts: `t` tool, `o` order, `r` range, `l` layout, `/` search',
 		],
 	},
 	{
 		id: 'share',
-		flag: '--share',
-		title: 'GitHub Source Preview (when enabled)',
-		summary: 'Preview parseable session files from /gh routes when gh_share_enabled is true.',
+		flag: '/gh/{owner}/{repo}/{ref}/{path...}',
+		title: 'GitHub Route Preview',
+		summary: 'Route parameters load and parse source files directly when `gh_share_enabled` is true.',
 		outcomes: [
-			'Parser selection flow when confidence is ambiguous',
-			'URL-synced view and filter state',
-			'Read-only fallback message in limited deployments',
+			'Parser selection flow resolves ambiguous files',
+			'View/filter/parser state is synced in URL query params',
+			'Disabled runtime shows explicit unsupported state',
 		],
 	},
 	{
-		id: 'operate',
-		flag: '--operate',
-		title: 'Capability-Gated UI',
+		id: 'access',
+		flag: '/login',
+		title: 'Auth and Account',
 		summary:
-			'Runtime capability flags drive auth, upload, ingest preview, and GitHub preview behavior.',
+			'Auth availability follows runtime `auth_enabled`. Active auth runtimes provide account menu and CLI API key linking.',
 		outcomes: [
-			'Guest-safe landing and docs access',
-			'Disabled features render as disabled, not silently hidden',
-			'Same frontend works across server and worker profiles',
+			'Top-right handle dropdown exposes account info and logout',
+			'Landing/docs remain accessible for guests',
+			'API keys are issued once and used for CLI-to-server connectivity',
 		],
 	},
 ];
@@ -78,22 +78,22 @@ const flowSteps = [
 	{
 		id: 'input',
 		label: 'Input',
-		detail: 'Session files or GitHub route payloads are provided to upload or ingest preview APIs.',
+		detail: 'Raw session files are provided via `/upload`, CLI upload, or `/gh/...` route input.',
 	},
 	{
 		id: 'parse',
 		label: 'Parse',
-		detail: 'Supported parsers normalize source records into HAIL events.',
+		detail: 'Parsers normalize source records into HAIL events and expose parser-selection fallbacks.',
 	},
 	{
 		id: 'index',
 		label: 'Index',
-		detail: 'Session metadata is indexed for list filtering and timeline summaries.',
+		detail: 'Session metadata is indexed for feed sorting, filtering, and timeline sidebars.',
 	},
 	{
 		id: 'review',
 		label: 'Review',
-		detail: 'Users inspect timelines, apply event filters, and drill into details.',
+		detail: 'Users review list/detail views with keyboard shortcuts and event-level filtering.',
 	},
 ];
 
@@ -153,22 +153,21 @@ function capabilityClass(enabled: boolean): string {
 <div class="mx-auto w-full max-w-6xl px-3 py-8 sm:px-6 sm:py-10">
 	<section class="grid gap-6 border border-border bg-bg-secondary p-5 sm:p-6 lg:grid-cols-[1.1fr_0.9fr]">
 		<div class="space-y-4">
-			<p class="text-[11px] uppercase tracking-[0.16em] text-text-muted">open format • runtime aware</p>
+			<p class="text-[11px] uppercase tracking-[0.16em] text-text-muted">open format • local + web</p>
 			<h1 class="text-3xl font-bold leading-tight text-text-primary sm:text-4xl">
-				Inspect AI session traces with capability-aware workflows.
+				Track real AI coding sessions with one consistent data model.
 			</h1>
 			<p class="max-w-xl text-sm leading-relaxed text-text-secondary">
-				OpenSession stores sessions in HAIL format and provides timeline inspection. Available actions
-				(auth, upload, ingest preview, GitHub preview) are determined at runtime from
-				<code>/api/capabilities</code>.
+				OpenSession normalizes tool logs to HAIL, then serves searchable feed and timeline detail across
+				web and TUI. Runtime flags from <code>/api/capabilities</code> define what is available now.
 			</p>
 			<div class="flex flex-wrap gap-2">
 				<button
 					type="button"
-					onclick={() => onNavigate('/login')}
+					onclick={() => onNavigate('/')}
 					class="bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85"
 				>
-					Sign In
+					Open Sessions
 				</button>
 				<button
 					type="button"
@@ -182,17 +181,17 @@ function capabilityClass(enabled: boolean): string {
 
 		<div class="border border-border bg-bg-primary p-4">
 			<p class="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">
-				What This Page Guarantees
+				What You Can Verify Now
 			</p>
 			<ul class="space-y-2">
 				<li class="text-sm text-text-secondary">
-					Capability rows reflect live <code>/api/capabilities</code> responses.
+					Capability matrix values come directly from live <code>/api/capabilities</code>.
 				</li>
 				<li class="text-sm text-text-secondary">
-					Landing sections/capability keys are verified by content-contract checks.
+					Feature map items map to current routes and commands in this repository.
 				</li>
 				<li class="text-sm text-text-secondary">
-					Disabled runtime features are shown as disabled, not advertised as active.
+					Disabled runtime features are rendered as disabled states, not hidden marketing claims.
 				</li>
 			</ul>
 		</div>

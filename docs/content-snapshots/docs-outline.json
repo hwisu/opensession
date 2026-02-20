@@ -77,15 +77,6 @@
       "code_blocks": 1
     },
     {
-      "heading": "Migration Parity",
-      "subheadings": [
-        "What it does",
-        "Canonical and mirror paths",
-        "Commands"
-      ],
-      "code_blocks": 1
-    },
-    {
       "heading": "Troubleshooting",
       "subheadings": [
         "What it does",

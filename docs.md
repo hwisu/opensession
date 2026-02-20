@@ -1,20 +1,21 @@
 # Documentation
 
-OpenSession documentation is organized around real product flows instead of feature lists.
-Each chapter follows the same template so functionality and usage examples stay consistent.
+OpenSession stores AI coding sessions in HAIL and makes them inspectable through feed + timeline views.
+This document is limited to behavior that exists in the current repository and runtime profiles.
 
 ## Product Map
 
 ### What it does
 
-OpenSession provides a runtime-aware interface for capturing, indexing, and reviewing AI coding sessions.
-The same documentation source is exposed as markdown (`Accept: text/markdown`) and rendered HTML (`/docs`).
+OpenSession is built around a single practical loop:
+capture logs, normalize to HAIL, index metadata, review sessions quickly.
+The same docs source is exposed as markdown (`Accept: text/markdown`) and rendered HTML (`/docs`).
 
 ### How to use
 
-1. Start by checking runtime capabilities from `/api/capabilities`.
-2. Use session capture paths (`/upload`, CLI upload, or GitHub preview route) based on your runtime.
-3. Move to list and timeline review for search, filtering, and inspection.
+1. Check runtime state from `/api/capabilities`.
+2. Choose available ingestion path (`/upload`, CLI upload, or `/gh/...` preview).
+3. Review sessions from `/` and `/session/{id}`.
 
 ### Example
 
@@ -28,22 +29,22 @@ curl -H "Accept: text/markdown" https://opensession.io/docs
 
 ### Limits
 
-- Product map content reflects currently implemented routes only.
-- Removed legacy collaboration surfaces are intentionally excluded.
+- This map tracks implemented routes and commands only.
+- Capability flags are runtime values, not promises.
 
 ## Capture Sessions
 
 ### What it does
 
 Capture flow ingests raw exports and normalizes them into HAIL sessions.
-The upload UI supports parser preview, parser selection fallback, and upload confirmation.
+Upload UI and CLI upload both feed the same session format.
 
 ### How to use
 
-1. Open `/upload`.
-2. Paste or drop a raw session file.
-3. Review parser preview results and warnings.
-4. Upload the normalized session.
+1. Verify `upload_enabled` and `ingest_preview_enabled` from `/api/capabilities`.
+2. Open `/upload` and provide a raw file.
+3. Confirm parser preview/candidate parser.
+4. Upload and verify the session appears in `/`.
 
 ### Example
 
@@ -51,33 +52,30 @@ The upload UI supports parser preview, parser selection fallback, and upload con
 # CLI upload to server
 opensession publish upload ./session.jsonl
 
-# Session handoff generation
-opensession session handoff --last --format json --validate
+# Optional parser preview API check
+curl -s -X POST https://opensession.io/api/ingest/preview \
+  -H "content-type: application/json" \
+  -d '{"inline_source":"{\"type\":\"message\",\"role\":\"user\",\"content\":\"hello\"}"}'
 ```
 
 ### Limits
 
-- Upload requires `upload_enabled=true` and preview requires `ingest_preview_enabled=true`.
-- Worker deployments are typically read-only for upload paths.
+- Capture requires `upload_enabled=true`; preview requires `ingest_preview_enabled=true`.
+- Worker profile is typically read-only for capture flows.
 
 ## Explore Sessions
 
 ### What it does
 
-Explore flow provides searchable list browsing and detailed timeline analysis.
-Users can filter by time range, tool, and event categories, then inspect session metadata and event details.
+Explore flow provides session list browsing and event-level timeline inspection.
+`List` means one chronological feed; `Agents` groups by max active agents (parallelism view).
 
 ### How to use
 
 1. Open `/` for the session feed.
-2. Choose layout mode:
-   - `List`: one chronological feed across sessions.
-   - `Agents`: grouped by max active agents (parallelism-oriented view).
-3. Use list shortcuts:
-   - `t` tool, `o` order, `r` range, `l` layout, `/` search.
-4. Open a session detail page (`/session/{id}`).
-5. Use in-session shortcuts:
-   - `/` search focus, `n/p` next/previous match, `1-5` event filter toggles.
+2. Use list shortcuts: `t` tool, `o` order, `r` range, `l` layout, `/` search.
+3. Open `/session/{id}` for timeline detail.
+4. Use detail shortcuts: `/` search, `n/p` next/previous match, `1-5` event filter toggles.
 
 ### Example
 
@@ -93,7 +91,6 @@ curl -L "https://opensession.io/api/sessions/<id>/raw" -o session.hail.jsonl
 
 - Public feed visibility depends on deployment policy.
 - Detail rendering assumes parseable HAIL-compatible event structures.
-- List/footer legends are capability-aware and may hide upload-linked actions when upload is disabled.
 
 ## GitHub Share Preview
 
@@ -101,13 +98,13 @@ curl -L "https://opensession.io/api/sessions/<id>/raw" -o session.hail.jsonl
 
 GitHub share preview parses source files directly from route parameters:
 `/gh/{owner}/{repo}/{ref}/{path...}`.
-It supports parser auto-selection, manual parser override, and URL-synced filter state.
+UI state (view/filter/parser hint) is reflected in URL query params.
 
 ### How to use
 
 1. Open a GitHub preview route.
-2. If parser selection is required, choose a parser candidate.
-3. Switch unified/native views and filters; URL query state updates automatically.
+2. If parser confidence is low, pick a parser candidate.
+3. Switch unified/native views and filters as needed.
 
 ### Example
 
@@ -122,22 +119,21 @@ It supports parser auto-selection, manual parser override, and URL-synced filter
 ### Limits
 
 - Requires `gh_share_enabled=true`.
-- Read-only deployments show an unsupported banner instead of preview content.
+- Disabled runtimes return explicit unsupported UI state.
 
 ## Auth & Access
 
 ### What it does
 
-Auth flow supports token-based sign-in with automatic account creation on first login (when enabled),
-plus optional OAuth providers. Guest users can still access landing and docs.
+Auth flow provides token-based sign-in and account metadata in the top-right handle dropdown.
+Guests can still use landing/docs and public session flows.
 
 ### How to use
 
-1. Open `/login`.
-2. Submit email/password.
-3. Use OAuth provider buttons when configured.
-4. After login, open the top-right account handle to view linked providers and use logout.
-5. Use issued API keys for CLI-to-server integration.
+1. Check `auth_enabled` from `/api/capabilities`.
+2. Open `/login` and sign in with email/password.
+3. Open the account handle menu to review providers and logout.
+4. Issue an API key for CLI-to-server integration when needed.
 
 ### Example
 
@@ -151,21 +147,21 @@ opensession account connect --server https://opensession.io --api-key <issued_ke
 
 ### Limits
 
-- Auth endpoints require deployment-side `JWT_SECRET` configuration.
-- API keys are shown only at issuance time and are not retrievable later.
+- Auth endpoints require `JWT_SECRET` in deployment config.
+- API keys are visible only at issuance time.
 
 ## Runtime Profiles
 
 ### What it does
 
-Runtime profiles control feature availability without changing route definitions.
-Server and worker deployments use the same UI routes but expose different capability flags.
+Server and worker use the same frontend routes but expose different capabilities.
+Behavior differences are expected and should be read from `/api/capabilities`.
 
 ### How to use
 
-1. Query `/api/capabilities`.
-2. Verify whether upload, ingest preview, and GitHub share are enabled.
-3. Use capability-aware UI states to avoid unsupported flows.
+1. Start the runtime you are validating.
+2. Read `/api/capabilities` first.
+3. Test only flows enabled by that runtime profile.
 
 ### Example
 
@@ -182,55 +178,33 @@ BASE_URL=http://127.0.0.1:8788 npm run test:e2e
 
 ### Limits
 
-- Capability flags are runtime values, not compile-time assumptions.
-- Worker profile intentionally disables mutating flows by default.
-- Capability-gated E2E tests skip upload/detail flows when required flags are disabled.
-
-## Migration Parity
-
-### What it does
-
-Defines one canonical migration source and one mirror location for numeric remote migrations.
-
-### Canonical and mirror paths
-
-- Canonical: `crates/api/migrations/*.sql`
-- Mirror: `migrations/[0-9][0-9][0-9][0-9]_*.sql`
-
-### Commands
-
-```bash
-# Validate parity
-scripts/check-migration-parity.sh
-
-# Sync mirror from canonical
-scripts/sync-migrations.sh
-```
+- Worker profile commonly reports `upload_enabled=false` and `ingest_preview_enabled=false`.
+- Capability-gated E2E tests intentionally skip unavailable flows.
 
 ## Troubleshooting
 
 ### What it does
 
-Troubleshooting guidance helps detect missing capability flags, parser-selection issues, and storage/read-path mismatches quickly.
+Troubleshooting focuses on capability mismatches, parser-selection failures, and session read-path issues.
 
 ### How to use
 
-1. Confirm `/api/health` and `/api/capabilities` responses first.
-2. Reproduce parser errors with ingest preview endpoints.
-3. Verify raw body source behavior using `/api/sessions/{id}/raw`.
+1. Confirm `/api/health` and `/api/capabilities`.
+2. Reproduce parse failures through ingest preview or `/gh/...` route.
+3. Verify raw session retrieval with `/api/sessions/{id}/raw`.
 
 ### Example
 
 ```bash
-# Health and capabilities
+# Health and capability checks
 curl -s https://opensession.io/api/health
 curl -s https://opensession.io/api/capabilities
 
-# Migration parity check
-scripts/check-migration-parity.sh
+# Raw session check
+curl -L "https://opensession.io/api/sessions/<id>/raw" | head -n 5
 ```
 
 ### Limits
 
-- Troubleshooting assumes environment variables and storage bindings are correctly provisioned.
-- Some errors (OAuth provider mismatch, remote storage policies) require deployment configuration changes.
+- Troubleshooting assumes environment variables and storage bindings are configured.
+- Some failures require deployment-level config updates rather than code changes.

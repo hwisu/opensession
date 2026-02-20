@@ -317,7 +317,7 @@ fn render_lane_timeline(
                         Style::new().fg(Theme::TEXT_MUTED),
                         Style::new().fg(Theme::ACCENT_TEAL).bold(),
                         Style::new().fg(Theme::TEXT_MUTED),
-                        Style::new(),
+                        Style::new().bg(Theme::BG_SURFACE),
                     ),
                 ));
             }
@@ -330,6 +330,10 @@ fn render_lane_timeline(
                 &format!("Q {question_line}"),
                 Style::new().fg(Theme::ACCENT_BLUE),
             ));
+        }
+
+        if i > 0 {
+            lines.push(stream_gap_line(&layout));
         }
 
         event_line_positions.push(lines.len());
@@ -425,6 +429,7 @@ fn render_lane_timeline(
             &summary_text,
             max_preview_lines,
             show_diff,
+            selected,
         );
     }
 
@@ -638,6 +643,21 @@ fn stream_center_line(layout: &StreamLayoutSpec, text: &str, style: Style) -> Li
         (
             Style::new().fg(Theme::TEXT_MUTED),
             style,
+            Style::new().fg(Theme::TEXT_MUTED),
+            Style::new(),
+        ),
+    )
+}
+
+fn stream_gap_line(layout: &StreamLayoutSpec) -> Line<'static> {
+    stream_row_line(
+        layout,
+        "",
+        "",
+        "",
+        (
+            Style::new().fg(Theme::TEXT_MUTED),
+            Style::new().fg(Theme::TEXT_MUTED),
             Style::new().fg(Theme::TEXT_MUTED),
             Style::new(),
         ),
@@ -927,6 +947,7 @@ fn append_event_detail_rows<'a>(
     summary_text: &str,
     max_preview_lines: usize,
     show_diff: bool,
+    selected: bool,
 ) {
     match display_event {
         DisplayEvent::Single { event, .. } => {
@@ -940,37 +961,56 @@ fn append_event_detail_rows<'a>(
                 if matches!(event.event_type, EventType::FileEdit { diff: Some(_), .. })
                     && !show_diff
                 {
-                    push_wrapped_center_rows(
+                    push_wrapped_detail_rows(
                         lines,
                         layout,
                         "diff hidden · press d to expand",
                         Style::new().fg(Theme::TEXT_MUTED),
+                        selected,
                     );
                 }
                 return;
             }
             for (text, style) in preview_rows {
-                push_wrapped_center_rows(lines, layout, &text, style);
+                push_wrapped_detail_rows(lines, layout, &text, style, selected);
             }
         }
         DisplayEvent::Collapsed { first, .. } => {
             for (text, style) in
                 collect_content_preview_rows(first, max_preview_lines.min(3), None, false)
             {
-                push_wrapped_center_rows(lines, layout, &text, style);
+                push_wrapped_detail_rows(lines, layout, &text, style, selected);
             }
         }
     }
 }
 
-fn push_wrapped_center_rows<'a>(
+fn push_wrapped_detail_rows<'a>(
     lines: &mut Vec<Line<'a>>,
     layout: &StreamLayoutSpec,
     text: &str,
     style: Style,
+    selected: bool,
 ) {
-    for row in wrap_display_width(text, layout.center.max(1)) {
-        lines.push(stream_center_line(layout, &row, style));
+    let row_style = if selected {
+        Style::new().bg(Theme::BG_SURFACE)
+    } else {
+        Style::new()
+    };
+    let detail_width = layout.center.saturating_sub(4).max(1);
+    for row in wrap_display_width(text, detail_width) {
+        lines.push(stream_row_line(
+            layout,
+            "",
+            &format!("  └ {row}"),
+            "",
+            (
+                Style::new().fg(Theme::TEXT_MUTED),
+                style,
+                Style::new().fg(Theme::TEXT_MUTED),
+                row_style,
+            ),
+        ));
     }
 }
 
@@ -2446,7 +2486,15 @@ mod tests {
             right: 18,
         };
         let mut lines: Vec<Line<'_>> = Vec::new();
-        append_event_detail_rows(&mut lines, &layout, &display, "src/main.rs +1 -1", 2, false);
+        append_event_detail_rows(
+            &mut lines,
+            &layout,
+            &display,
+            "src/main.rs +1 -1",
+            2,
+            false,
+            false,
+        );
         let rendered = lines
             .iter()
             .map(Line::to_string)
@@ -2457,7 +2505,15 @@ mod tests {
         assert!(!rendered.contains("+ new"));
 
         lines.clear();
-        append_event_detail_rows(&mut lines, &layout, &display, "src/main.rs +1 -1", 2, true);
+        append_event_detail_rows(
+            &mut lines,
+            &layout,
+            &display,
+            "src/main.rs +1 -1",
+            2,
+            true,
+            false,
+        );
         let rendered_with_diff = lines
             .iter()
             .map(Line::to_string)
@@ -2465,6 +2521,41 @@ mod tests {
             .join("\n");
         assert!(rendered_with_diff.contains("+ new"));
         assert!(rendered_with_diff.contains("- old"));
+    }
+
+    #[test]
+    fn append_event_detail_rows_adds_hierarchical_detail_prefix() {
+        let event = make_event(EventType::AgentMessage, "first line\nsecond line");
+        let display = DisplayEvent::Single {
+            event: &event,
+            source_index: 0,
+            lane: 0,
+            marker: LaneMarker::None,
+            active_lanes: vec![0],
+        };
+        let layout = StreamLayoutSpec {
+            left: 12,
+            center: 60,
+            right: 18,
+        };
+
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        append_event_detail_rows(
+            &mut lines,
+            &layout,
+            &display,
+            "agent message",
+            4,
+            false,
+            false,
+        );
+
+        let rendered = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("└"));
     }
 
     #[test]

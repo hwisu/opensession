@@ -1,4 +1,5 @@
 use rusqlite::{Connection, OpenFlags};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Metadata about a discovered session location for a specific AI tool.
@@ -139,11 +140,28 @@ fn find_files_with_ext(dir: &std::path::Path, ext: &str) -> Vec<PathBuf> {
 
 /// Codex stores sessions as JSONL files under ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 fn find_codex_sessions(home: &std::path::Path) -> Vec<PathBuf> {
-    let codex_path = home.join(".codex").join("sessions");
-    if !codex_path.exists() {
-        return Vec::new();
+    let mut roots = Vec::new();
+    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        let codex_home = codex_home.trim();
+        if !codex_home.is_empty() {
+            roots.push(PathBuf::from(codex_home).join("sessions"));
+        }
     }
-    find_files_with_ext(&codex_path, "jsonl")
+    roots.push(home.join(".codex").join("sessions"));
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        for path in find_files_with_ext(&root, "jsonl") {
+            if seen.insert(path.clone()) {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 /// OpenCode stores session info as JSON files under

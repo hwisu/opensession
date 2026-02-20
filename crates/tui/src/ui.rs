@@ -189,11 +189,11 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 ));
             }
 
-            // Tool filter indicator
-            if let Some(tool) = app.active_tool_filter() {
+            // Agent filter indicator
+            if let Some(agent) = app.active_agent_filter() {
                 left_spans.push(Span::styled("  ", Style::new()));
                 left_spans.push(Span::styled(
-                    format!(" tool:{tool} "),
+                    format!(" agent:{agent} "),
                     Style::new().fg(Color::Black).bg(Color::Magenta).bold(),
                 ));
             }
@@ -337,7 +337,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" Handoff ", Style::new().fg(Theme::TEXT_PRIMARY).bold()),
                 Span::styled("  ", Style::new()),
                 Span::styled(
-                    "session picker + execution-contract preview",
+                    "session picker + artifact preview/save/refresh",
                     Style::new().fg(Theme::TEXT_MUTED),
                 ),
             ]);
@@ -438,12 +438,16 @@ fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
         "Enter open".to_string(),
         "/ search".to_string(),
         "m layout".to_string(),
-        "t tool".to_string(),
+        "a agent".to_string(),
+        "t tool(compat)".to_string(),
         "r range".to_string(),
         "R repo".to_string(),
         "1/2/3 tabs".to_string(),
         "? help".to_string(),
     ];
+    if app.searching {
+        segments.insert(0, format!("search: {}|", app.search_query));
+    }
     if app.total_pages() > 1 {
         segments.insert(2, "PgUp/PgDn page".to_string());
     }
@@ -525,7 +529,7 @@ fn settings_footer_line(app: &App) -> Line<'static> {
     let key_style = Style::new().fg(Theme::TEXT_KEY).bold();
     let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
 
-    if app.editing_field || app.password_form.editing {
+    if app.editing_field {
         Line::from(vec![
             Span::styled(" Enter ", key_style),
             Span::styled("apply", desc_style),
@@ -564,7 +568,10 @@ fn handoff_footer_line(width: u16) -> Line<'static> {
         vec![
             "1/2/3 tabs".to_string(),
             "j/k move".to_string(),
-            "Enter open detail".to_string(),
+            "Space pick/unpick".to_string(),
+            "Enter preview".to_string(),
+            "s save artifact".to_string(),
+            "r refresh artifact".to_string(),
             "Esc back".to_string(),
             "? help".to_string(),
         ],
@@ -950,7 +957,7 @@ mod tests {
     use super::{
         build_server_status_spans, compact_line, event_first_text, handoff_footer_line,
         latest_output_preview, latest_prompt_preview, render, session_detail_footer_line,
-        settings_footer_line, should_show_footer,
+        session_list_footer_line, settings_footer_line, should_show_footer,
     };
     use crate::app::{App, ServerInfo, ServerStatus, View};
     use chrono::Utc;
@@ -1183,10 +1190,21 @@ mod tests {
     }
 
     #[test]
+    fn session_list_footer_line_shows_search_input_while_searching() {
+        let mut app = App::new(Vec::new());
+        app.searching = true;
+        app.search_query = "rollout".to_string();
+
+        let text = spans_to_text(&session_list_footer_line(&app, 180).spans);
+        assert!(text.contains("search: rollout|"));
+    }
+
+    #[test]
     fn handoff_footer_line_shows_handoff_shortcuts() {
         let text = spans_to_text(&handoff_footer_line(160).spans);
         assert!(text.contains("1/2/3"));
         assert!(text.contains("j/k"));
+        assert!(text.contains("Space"));
         assert!(text.contains("Enter"));
         assert!(text.contains("Esc"));
         assert!(text.contains("help"));

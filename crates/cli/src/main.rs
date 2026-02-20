@@ -11,7 +11,7 @@ mod upload;
 mod upload_all;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -127,48 +127,115 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SessionAction {
-    /// Generate a session handoff summary for the next agent
+    /// Generate handoff summary or manage handoff artifacts.
     Handoff {
-        /// Session file(s). Multiple files can be specified for merged handoff
-        files: Vec<PathBuf>,
+        #[command(subcommand)]
+        subcommand: Option<HandoffSubcommand>,
 
-        /// Use most recent session(s). Accepts optional count or HEAD~N (e.g. --last, --last 6, --last HEAD~6)
-        #[arg(short, long, num_args = 0..=1, default_missing_value = "1", value_name = "N|HEAD~N")]
-        last: Option<String>,
-
-        /// Write output to a file instead of stdout
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-
-        /// Output format
-        /// Defaults to markdown in terminal, json when piped.
-        #[arg(long, value_enum)]
-        format: Option<OutputFormat>,
-
-        /// Claude Code session reference (e.g. HEAD, HEAD~2)
-        #[arg(long)]
-        claude: Option<String>,
-
-        /// Gemini session reference (e.g. HEAD, HEAD~1)
-        #[arg(long)]
-        gemini: Option<String>,
-
-        /// Generic tool session reference (e.g. "amp HEAD~2")
-        #[arg(long)]
-        tool: Vec<String>,
-
-        /// Validate handoff quality and print a validation report.
-        #[arg(long)]
-        validate: bool,
-
-        /// Treat error-level validation findings as hard failures (non-zero exit).
-        #[arg(long)]
-        strict: bool,
-
-        /// Populate HANDOFF.md via provider command: <provider[:model]> (e.g. claude, claude:opus-4.6)
-        #[arg(long)]
-        populate: Option<String>,
+        #[command(flatten)]
+        run: HandoffRunArgs,
     },
+}
+
+#[derive(Args, Debug, Clone, Default)]
+struct HandoffInputArgs {
+    /// Session file(s). Multiple files can be specified for merged handoff.
+    files: Vec<PathBuf>,
+
+    /// Use most recent session(s). Accepts optional count or HEAD~N (e.g. --last, --last 6, --last HEAD~6)
+    #[arg(short, long, num_args = 0..=1, default_missing_value = "1", value_name = "N|HEAD~N")]
+    last: Option<String>,
+
+    /// Claude Code session reference (e.g. HEAD, HEAD~2)
+    #[arg(long)]
+    claude: Option<String>,
+
+    /// Gemini session reference (e.g. HEAD, HEAD~1)
+    #[arg(long)]
+    gemini: Option<String>,
+
+    /// Generic tool session reference (e.g. "amp HEAD~2")
+    #[arg(long)]
+    tool: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+struct HandoffRunArgs {
+    #[command(flatten)]
+    input: HandoffInputArgs,
+
+    /// Write output to a file instead of stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Output format.
+    /// Defaults to markdown in terminal, json when piped.
+    #[arg(long, value_enum)]
+    format: Option<OutputFormat>,
+
+    /// Validate handoff quality and print a validation report.
+    #[arg(long)]
+    validate: bool,
+
+    /// Treat error-level validation findings as hard failures (non-zero exit).
+    #[arg(long)]
+    strict: bool,
+
+    /// Populate HANDOFF.md via provider command: <provider[:model]> (e.g. claude, claude:opus-4.6)
+    #[arg(long)]
+    populate: Option<String>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum HandoffSubcommand {
+    /// Save merged handoff result as canonical ref artifact.
+    Save {
+        #[command(flatten)]
+        input: HandoffInputArgs,
+
+        /// Optional artifact id. When omitted, one is generated automatically.
+        #[arg(long)]
+        artifact_id: Option<String>,
+
+        /// Payload format stored in artifact payload field.
+        #[arg(long, value_enum, default_value_t = ArtifactPayloadFormatArg::Json)]
+        payload_format: ArtifactPayloadFormatArg,
+    },
+    /// Manage saved handoff artifacts.
+    Artifact {
+        #[command(subcommand)]
+        action: HandoffArtifactAction,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum HandoffArtifactAction {
+    /// List handoff artifact refs.
+    List,
+    /// Show handoff artifact JSON by <artifact_id|ref>.
+    Show {
+        /// Artifact id or full ref (refs/opensession/handoff/artifacts/<id>)
+        id_or_ref: String,
+    },
+    /// Refresh handoff artifact when sources are stale.
+    Refresh {
+        /// Artifact id or full ref (refs/opensession/handoff/artifacts/<id>)
+        id_or_ref: String,
+    },
+    /// Render derived markdown from artifact.
+    RenderMd {
+        /// Artifact id or full ref (refs/opensession/handoff/artifacts/<id>)
+        id_or_ref: String,
+        /// Output markdown file path (default: HANDOFF.md).
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactPayloadFormatArg {
+    Json,
+    Jsonl,
 }
 
 #[derive(Subcommand)]
@@ -225,13 +292,17 @@ impl Commands {
     fn wants_json_errors(&self) -> bool {
         match self {
             Commands::Session { action } => match action {
-                SessionAction::Handoff { format, .. } => {
-                    matches!(
-                        format
-                            .as_ref()
-                            .unwrap_or(&default_handoff_format_for_output()),
-                        OutputFormat::Json | OutputFormat::Stream | OutputFormat::Jsonl
-                    )
+                SessionAction::Handoff { subcommand, run } => {
+                    if subcommand.is_some() {
+                        false
+                    } else {
+                        matches!(
+                            run.format
+                                .as_ref()
+                                .unwrap_or(&default_handoff_format_for_output()),
+                            OutputFormat::Json | OutputFormat::Stream | OutputFormat::Jsonl
+                        )
+                    }
                 }
             },
             _ => false,
@@ -384,45 +455,88 @@ async fn main() {
 
 async fn run_session_action(action: SessionAction) -> anyhow::Result<()> {
     match action {
-        SessionAction::Handoff {
-            files,
-            last,
-            output,
-            format,
-            claude,
-            gemini,
-            tool,
-            validate,
-            strict,
-            populate,
-        } => {
-            let format = format.unwrap_or_else(default_handoff_format_for_output);
-            let force_last = should_default_to_last(
-                &files,
-                last.as_deref(),
-                claude.as_deref(),
-                gemini.as_deref(),
-                &tool,
-            );
-            let resolved_last = if last.is_none() && force_last {
-                Some("1".to_string())
-            } else {
-                last
-            };
-            handoff::run_handoff(
-                &files,
-                resolved_last.as_deref(),
-                output.as_deref(),
-                format,
-                claude.as_deref(),
-                gemini.as_deref(),
-                &tool,
-                validate,
-                strict,
-                populate.as_deref(),
-            )
-            .await
-        }
+        SessionAction::Handoff { subcommand, run } => match subcommand {
+            Some(HandoffSubcommand::Save {
+                input,
+                artifact_id,
+                payload_format,
+            }) => {
+                let input_last = input.last.clone();
+                let force_last = should_default_to_last(
+                    &input.files,
+                    input_last.as_deref(),
+                    input.claude.as_deref(),
+                    input.gemini.as_deref(),
+                    &input.tool,
+                );
+                let resolved_last = if input_last.is_none() && force_last {
+                    Some("1".to_string())
+                } else {
+                    input_last
+                };
+
+                let payload_format = match payload_format {
+                    ArtifactPayloadFormatArg::Json => {
+                        opensession_core::handoff_artifact::HandoffPayloadFormat::Json
+                    }
+                    ArtifactPayloadFormatArg::Jsonl => {
+                        opensession_core::handoff_artifact::HandoffPayloadFormat::Jsonl
+                    }
+                };
+
+                handoff::run_handoff_save(
+                    &input.files,
+                    resolved_last.as_deref(),
+                    input.claude.as_deref(),
+                    input.gemini.as_deref(),
+                    &input.tool,
+                    artifact_id.as_deref(),
+                    payload_format,
+                )
+                .await
+            }
+            Some(HandoffSubcommand::Artifact { action }) => match action {
+                HandoffArtifactAction::List => handoff::run_handoff_artifact_list().await,
+                HandoffArtifactAction::Show { id_or_ref } => {
+                    handoff::run_handoff_artifact_show(&id_or_ref).await
+                }
+                HandoffArtifactAction::Refresh { id_or_ref } => {
+                    handoff::run_handoff_artifact_refresh(&id_or_ref).await
+                }
+                HandoffArtifactAction::RenderMd { id_or_ref, output } => {
+                    handoff::run_handoff_artifact_render_md(&id_or_ref, output.as_deref()).await
+                }
+            },
+            None => {
+                let run_last = run.input.last.clone();
+                let format = run.format.unwrap_or_else(default_handoff_format_for_output);
+                let force_last = should_default_to_last(
+                    &run.input.files,
+                    run_last.as_deref(),
+                    run.input.claude.as_deref(),
+                    run.input.gemini.as_deref(),
+                    &run.input.tool,
+                );
+                let resolved_last = if run_last.is_none() && force_last {
+                    Some("1".to_string())
+                } else {
+                    run_last
+                };
+                handoff::run_handoff(
+                    &run.input.files,
+                    resolved_last.as_deref(),
+                    run.output.as_deref(),
+                    format,
+                    run.input.claude.as_deref(),
+                    run.input.gemini.as_deref(),
+                    &run.input.tool,
+                    run.validate,
+                    run.strict,
+                    run.populate.as_deref(),
+                )
+                .await
+            }
+        },
     }
 }
 

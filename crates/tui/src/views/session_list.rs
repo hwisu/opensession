@@ -23,9 +23,9 @@ fn render_local_single(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.filtered_sessions.is_empty() {
         let msg = if app.sessions.is_empty() {
             if app.startup_status.config_exists {
-                "No sessions found. Make sure you have Claude Code sessions in ~/.claude/projects/"
+                "No sessions found. Check ~/.codex/sessions or ~/.claude/projects/"
             } else {
-                "No sessions yet. You can keep browsing locally, then configure sync in Settings > Web Share."
+                "No sessions yet. You can keep browsing locally, then configure sync in Settings > Web Sync (Public)."
             }
         } else if app.has_active_session_filters() {
             "No sessions match the current filters."
@@ -664,8 +664,8 @@ fn list_title(app: &App) -> String {
         ViewMode::Local => " Sessions ".to_string(),
         ViewMode::Repo(repo) => format!(" Repo: {} ", truncate(repo, 40)),
     };
-    if let Some(tool) = app.active_tool_filter() {
-        base.push_str(&format!("[tool:{tool}] "));
+    if let Some(agent) = app.active_agent_filter() {
+        base.push_str(&format!("[agent:{agent}] "));
     }
     if !app.is_default_time_range() {
         base.push_str(&format!("[range:{}] ", app.session_time_range_label()));

@@ -179,7 +179,7 @@ fn format_summary_message(s: &HandoffSummary) -> String {
     format!("{} session ({duration}, {tok_str})", s.tool)
 }
 
-fn summary_to_json_v2(
+pub(crate) fn summary_to_json_v2(
     s: &HandoffSummary,
     validation: Option<&HandoffValidationReport>,
 ) -> serde_json::Value {

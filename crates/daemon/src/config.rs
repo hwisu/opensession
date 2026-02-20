@@ -36,7 +36,9 @@ pub fn state_file_path() -> Result<PathBuf> {
 pub fn load_config() -> Result<DaemonConfig> {
     let path = config_path()?;
     if !path.exists() {
-        return Ok(DaemonConfig::default());
+        let mut config = DaemonConfig::default();
+        normalize_fixed_runtime_tuning(&mut config);
+        return Ok(config);
     }
 
     let content = std::fs::read_to_string(&path)
@@ -45,7 +47,15 @@ pub fn load_config() -> Result<DaemonConfig> {
     let mut config: DaemonConfig = toml::from_str(&content)
         .with_context(|| format!("Failed to parse daemon config at {}", path.display()))?;
     apply_compat_fallbacks(&mut config, parsed.as_ref());
+    normalize_fixed_runtime_tuning(&mut config);
     Ok(config)
+}
+
+fn normalize_fixed_runtime_tuning(config: &mut DaemonConfig) {
+    let defaults = DaemonConfig::default();
+    config.daemon.realtime_debounce_ms = defaults.daemon.realtime_debounce_ms;
+    config.daemon.health_check_interval_secs = defaults.daemon.health_check_interval_secs;
+    config.daemon.max_retries = defaults.daemon.max_retries;
 }
 
 /// Resolve watch paths based on watcher config
@@ -327,6 +337,27 @@ mod tests {
         assert_eq!(parsed.daemon.health_check_interval_secs, 300);
         assert_eq!(parsed.daemon.realtime_debounce_ms, 500);
         assert!(!parsed.watchers.custom_paths.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_fixed_runtime_tuning_restores_defaults() {
+        let mut cfg = DaemonConfig::default();
+        cfg.daemon.realtime_debounce_ms = 42;
+        cfg.daemon.health_check_interval_secs = 7;
+        cfg.daemon.max_retries = 99;
+
+        normalize_fixed_runtime_tuning(&mut cfg);
+
+        let defaults = DaemonConfig::default();
+        assert_eq!(
+            cfg.daemon.realtime_debounce_ms,
+            defaults.daemon.realtime_debounce_ms
+        );
+        assert_eq!(
+            cfg.daemon.health_check_interval_secs,
+            defaults.daemon.health_check_interval_secs
+        );
+        assert_eq!(cfg.daemon.max_retries, defaults.daemon.max_retries);
     }
 
     #[test]

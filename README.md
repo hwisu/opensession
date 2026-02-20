@@ -98,7 +98,9 @@ Single Cargo workspace with 12 crates:
 | Command | Description |
 |---------|-------------|
 | `opensession` / `opensession .` | Launch local interactive mode (all sessions / current repo scope) |
-| `opensession session handoff` | Generate v2 execution-contract handoff (`--validate`, `--strict`) |
+| `opensession session handoff` | Generate immediate v2 execution-contract handoff (`--validate`, `--strict`) |
+| `opensession session handoff save ...` | Save merged handoff as canonical git ref artifact (`refs/opensession/handoff/artifacts/<id>`) |
+| `opensession session handoff artifact ...` | Artifact lifecycle (`list`, `show`, `refresh`, `render-md`) |
 | `opensession publish upload <file> [--git]` | Publish one session (default: server, `--git`: `opensession/sessions` branch) |
 | `opensession daemon start\|stop\|status\|health` | Manage daemon lifecycle |
 | `opensession daemon enable-hook --agent <name>` | Install stream-write hook manually |
@@ -132,6 +134,13 @@ cargo run -p opensession -- session handoff --last HEAD~6 --format json
 # Populate HANDOFF.md through provider command
 cargo run -p opensession -- session handoff --last 6 --populate claude
 cargo run -p opensession -- session handoff --last 6 --populate claude:opus-4.6
+
+# Save canonical handoff artifact refs
+cargo run -p opensession -- session handoff save --last 6 --payload-format jsonl
+cargo run -p opensession -- session handoff artifact list
+cargo run -p opensession -- session handoff artifact show <artifact_id>
+cargo run -p opensession -- session handoff artifact refresh <artifact_id>
+cargo run -p opensession -- session handoff artifact render-md <artifact_id> --output HANDOFF.md
 ```
 
 For faster repeated runs, prefer the built binary over `cargo run`:
@@ -158,6 +167,10 @@ Behavior summary:
 - `--validate`: prints human + JSON validation report, exits `0`.
 - `--validate --strict`: exits non-zero only for error-level findings.
 - default schema is v2 execution-contract output.
+- canonical handoff source-of-truth is git ref artifact (`refs/opensession/handoff/artifacts/<artifact_id>`).
+- `HANDOFF.md` is a derived output (`artifact render-md`).
+- merge policy for artifacts is fixed to chronological ascending (`time_asc`).
+- source changes mark artifacts stale; refresh is manual via `artifact refresh`.
 - `--populate <provider[:model]>`: pipes handoff JSON to a provider CLI (`claude`, `codex`, `opencode`, `gemini`, `amp`) and asks it to draft `HANDOFF.md`.
 - `execution_contract.parallel_actions`: parallelizable work packages are emitted separately from ordered next actions.
 - `execution_contract.ordered_steps`: preserves task order + timestamps + dependency links so downstream agents can replay without losing temporal consistency.

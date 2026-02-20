@@ -3,14 +3,28 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
-use dialoguer::Select;
 use opensession_core::handoff::{
+    generate_handoff_markdown_v2, generate_merged_handoff_markdown_v2, merge_summaries,
     validate_handoff_summaries, HandoffSummary, HandoffValidationReport,
 };
+use opensession_core::handoff_artifact::{
+    sort_sessions_time_asc, source_from_session, HandoffArtifact, HandoffPayloadFormat,
+    HANDOFF_ARTIFACT_VERSION, HANDOFF_MERGE_POLICY_TIME_ASC,
+};
 use opensession_core::Session;
+use opensession_git_native::{
+    artifact_ref_name, list_handoff_artifact_refs, load_handoff_artifact, ops,
+    store_handoff_artifact,
+};
 use opensession_parsers::discover::discover_sessions;
 use opensession_parsers::{all_parsers, SessionParser};
 use std::io::{IsTerminal, Write};
+
+#[derive(Debug, Clone)]
+struct ResolvedSession {
+    session: Session,
+    source_path: Option<PathBuf>,
+}
 
 /// Run the handoff command: parse session file(s) and output a structured summary.
 #[allow(clippy::too_many_arguments)]
@@ -78,6 +92,278 @@ pub async fn run_handoff(
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_handoff_save(
+    files: &[PathBuf],
+    last: Option<&str>,
+    claude: Option<&str>,
+    gemini: Option<&str>,
+    tool_refs: &[String],
+    artifact_id: Option<&str>,
+    payload_format: HandoffPayloadFormat,
+) -> Result<()> {
+    let resolved = resolve_sessions_with_sources(files, last, claude, gemini, tool_refs)?;
+    if resolved.is_empty() {
+        bail!("No sessions to process.");
+    }
+
+    let artifact =
+        build_artifact_from_resolved(artifact_id, payload_format, resolved, chrono::Utc::now())?;
+
+    let repo_root = resolve_repo_root()?;
+    let artifact_json = serde_json::to_vec_pretty(&artifact)?;
+    let ref_name = store_handoff_artifact(&repo_root, &artifact.artifact_id, &artifact_json)?;
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "artifact_id": artifact.artifact_id,
+            "ref": ref_name,
+            "source_count": artifact.sources.len(),
+            "stale": artifact.is_stale(),
+        }))?
+    );
+    Ok(())
+}
+
+pub async fn run_handoff_artifact_list() -> Result<()> {
+    let repo_root = resolve_repo_root()?;
+    let refs = list_handoff_artifact_refs(&repo_root)?;
+    let mut rows = Vec::new();
+    for ref_name in refs {
+        let artifact = load_artifact(&repo_root, &ref_name)?;
+        rows.push(serde_json::json!({
+            "artifact_id": artifact.artifact_id,
+            "ref": ref_name,
+            "created_at": artifact.created_at,
+            "payload_format": artifact.payload_format,
+            "source_count": artifact.sources.len(),
+            "stale": artifact.is_stale(),
+        }));
+    }
+    println!("{}", serde_json::to_string_pretty(&rows)?);
+    Ok(())
+}
+
+pub async fn run_handoff_artifact_show(id_or_ref: &str) -> Result<()> {
+    let repo_root = resolve_repo_root()?;
+    let artifact = load_artifact(&repo_root, id_or_ref)?;
+    let stale_reasons = artifact.stale_reasons();
+    let output = serde_json::json!({
+        "artifact": artifact,
+        "stale": !stale_reasons.is_empty(),
+        "stale_reasons": stale_reasons,
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+pub async fn run_handoff_artifact_refresh(id_or_ref: &str) -> Result<()> {
+    let repo_root = resolve_repo_root()?;
+    let mut artifact = load_artifact(&repo_root, id_or_ref)?;
+    if artifact.sources.is_empty() {
+        bail!("Artifact has no source files to refresh.");
+    }
+
+    let stale_reasons = artifact.stale_reasons();
+    if stale_reasons.is_empty() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "artifact_id": artifact.artifact_id,
+                "ref": artifact_ref_name(&artifact.artifact_id),
+                "refreshed": false,
+                "stale": false,
+            }))?
+        );
+        return Ok(());
+    }
+
+    let mut resolved = Vec::new();
+    let parsers = all_parsers();
+    for source in &artifact.sources {
+        let path = PathBuf::from(&source.source_path);
+        if !path.exists() {
+            continue;
+        }
+        let session = parse_file(&parsers, &path)?;
+        resolved.push(ResolvedSession {
+            session,
+            source_path: Some(path),
+        });
+    }
+    if resolved.is_empty() {
+        bail!("Unable to refresh artifact: all source files are missing.");
+    }
+
+    let existing_id = artifact.artifact_id.clone();
+    let existing_created_at = artifact.created_at;
+    let existing_payload_format = artifact.payload_format;
+    artifact = build_artifact_from_resolved(
+        Some(&existing_id),
+        existing_payload_format,
+        resolved,
+        existing_created_at,
+    )?;
+
+    let artifact_json = serde_json::to_vec_pretty(&artifact)?;
+    let ref_name = store_handoff_artifact(&repo_root, &artifact.artifact_id, &artifact_json)?;
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "artifact_id": artifact.artifact_id,
+            "ref": ref_name,
+            "refreshed": true,
+            "stale_before": stale_reasons.len(),
+            "stale_after": artifact.is_stale(),
+        }))?
+    );
+    Ok(())
+}
+
+pub async fn run_handoff_artifact_render_md(id_or_ref: &str, output: Option<&Path>) -> Result<()> {
+    let repo_root = resolve_repo_root()?;
+    let artifact = load_artifact(&repo_root, id_or_ref)?;
+    let markdown = artifact
+        .derived_markdown
+        .as_deref()
+        .map(ToOwned::to_owned)
+        .with_context(|| {
+            format!(
+                "Artifact `{}` has no derived_markdown",
+                artifact.artifact_id
+            )
+        })?;
+
+    let path = output
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("HANDOFF.md"));
+    std::fs::write(&path, markdown)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    eprintln!("Rendered {}", path.display());
+    Ok(())
+}
+
+fn resolve_repo_root() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("Failed to read current directory")?;
+    let root = ops::find_repo_root(&cwd).with_context(|| {
+        format!(
+            "Current path {} is not inside a git repository",
+            cwd.display()
+        )
+    })?;
+    Ok(root)
+}
+
+fn load_artifact(repo_root: &Path, id_or_ref: &str) -> Result<HandoffArtifact> {
+    let bytes = load_handoff_artifact(repo_root, id_or_ref)?;
+    let artifact: HandoffArtifact = serde_json::from_slice(&bytes)?;
+    Ok(artifact)
+}
+
+fn build_artifact_from_resolved(
+    artifact_id: Option<&str>,
+    payload_format: HandoffPayloadFormat,
+    mut resolved: Vec<ResolvedSession>,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> Result<HandoffArtifact> {
+    resolved.sort_by(|left, right| {
+        opensession_core::handoff_artifact::merge_time_order(
+            left.session.context.created_at,
+            &left.session.session_id,
+            right.session.context.created_at,
+            &right.session.session_id,
+        )
+    });
+
+    let mut sessions = resolved
+        .iter()
+        .map(|item| item.session.clone())
+        .collect::<Vec<_>>();
+    sort_sessions_time_asc(&mut sessions);
+
+    let summaries: Vec<HandoffSummary> =
+        sessions.iter().map(HandoffSummary::from_session).collect();
+    let payload_values = summaries
+        .iter()
+        .map(|summary| crate::output::summary_to_json_v2(summary, None))
+        .collect::<Vec<_>>();
+
+    let merged = merge_summaries(&summaries);
+    let derived_markdown = match summaries.len() {
+        0 => None,
+        1 => Some(generate_handoff_markdown_v2(&summaries[0])),
+        _ => Some(generate_merged_handoff_markdown_v2(&merged)),
+    };
+
+    let mut sources = Vec::new();
+    for item in &resolved {
+        let path = item
+            .source_path
+            .clone()
+            .or_else(|| source_path_from_session(&item.session));
+        let Some(path) = path else {
+            continue;
+        };
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(source) = source_from_session(&item.session, &path) {
+            sources.push(source);
+        }
+    }
+
+    let artifact_id = artifact_id
+        .map(normalize_artifact_id)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(default_artifact_id);
+
+    Ok(HandoffArtifact {
+        version: HANDOFF_ARTIFACT_VERSION.to_string(),
+        artifact_id,
+        created_at,
+        merge_policy: HANDOFF_MERGE_POLICY_TIME_ASC.to_string(),
+        sources,
+        payload_format,
+        payload: serde_json::Value::Array(payload_values),
+        derived_markdown,
+    })
+}
+
+fn default_artifact_id() -> String {
+    format!("artifact-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%3f"))
+}
+
+fn normalize_artifact_id(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn source_path_from_session(session: &Session) -> Option<PathBuf> {
+    for key in ["source_path", "source_file", "session_path", "path"] {
+        let path = session
+            .context
+            .attributes
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(PathBuf::from);
+        if let Some(path) = path {
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn write_handoff_to_writer(writer: &mut dyn Write, payload: &str) -> Result<()> {
@@ -218,7 +504,7 @@ fn populate_prompt(spec: &PopulateSpec) -> String {
     )
 }
 
-/// Resolve session files: explicit paths, --last, tool refs, or interactive selection.
+/// Resolve session files: explicit paths, --last, or tool refs.
 fn resolve_sessions(
     files: &[PathBuf],
     last: Option<&str>,
@@ -226,6 +512,21 @@ fn resolve_sessions(
     gemini: Option<&str>,
     tool_refs: &[String],
 ) -> Result<Vec<Session>> {
+    Ok(
+        resolve_sessions_with_sources(files, last, claude, gemini, tool_refs)?
+            .into_iter()
+            .map(|resolved| resolved.session)
+            .collect(),
+    )
+}
+
+fn resolve_sessions_with_sources(
+    files: &[PathBuf],
+    last: Option<&str>,
+    claude: Option<&str>,
+    gemini: Option<&str>,
+    tool_refs: &[String],
+) -> Result<Vec<ResolvedSession>> {
     use crate::session_ref::{tool_flag_to_name, SessionRef};
 
     let parsers = all_parsers();
@@ -238,7 +539,10 @@ fn resolve_sessions(
                 bail!("File not found: {}", file.display());
             }
             let session = parse_file(&parsers, file)?;
-            sessions.push(session);
+            sessions.push(ResolvedSession {
+                session,
+                source_path: Some(file.clone()),
+            });
         }
         return Ok(sessions);
     }
@@ -270,7 +574,10 @@ fn resolve_sessions(
         for (tool, sref) in &ref_pairs {
             match sref {
                 SessionRef::File(path) => {
-                    sessions.push(parse_file(&parsers, path)?);
+                    sessions.push(ResolvedSession {
+                        session: parse_file(&parsers, path)?,
+                        source_path: Some(path.clone()),
+                    });
                 }
                 _ => {
                     let rows = sref.resolve(&db, *tool)?;
@@ -279,7 +586,11 @@ fn resolve_sessions(
                             .source_path
                             .as_deref()
                             .with_context(|| format!("Session {} has no source_path", row.id))?;
-                        sessions.push(parse_file(&parsers, &PathBuf::from(source))?);
+                        let path = PathBuf::from(source);
+                        sessions.push(ResolvedSession {
+                            session: parse_file(&parsers, &path)?,
+                            source_path: Some(path),
+                        });
                     }
                 }
             }
@@ -292,7 +603,10 @@ fn resolve_sessions(
     let resolved = resolve_session_files(last_count)?;
     let mut sessions = Vec::new();
     for path in resolved {
-        sessions.push(parse_file(&parsers, &path)?);
+        sessions.push(ResolvedSession {
+            session: parse_file(&parsers, &path)?,
+            source_path: Some(path),
+        });
     }
     Ok(sessions)
 }
@@ -349,42 +663,18 @@ fn parse_last_count(last: Option<&str>) -> Result<Option<u32>> {
     bail!("Invalid --last value `{value}`. Use `--last`, `--last 6`, or `--last HEAD~6`.")
 }
 
-/// Resolve which session files to use: --last count or interactive selection.
+/// Resolve which session files to use: --last count or latest-only fallback.
 fn resolve_session_files(last_count: Option<u32>) -> Result<Vec<PathBuf>> {
-    if let Some(count) = last_count {
-        if let Some(paths) = resolve_last_paths_from_local_index(count) {
-            if std::io::stdout().is_terminal() {
-                eprintln!(
-                    "Using {}/{} most recent sessions (local index)",
-                    paths.len(),
-                    count
-                );
-            }
-            return Ok(paths);
-        }
-
-        let all = collect_all_session_paths()?;
-        if all.is_empty() {
-            bail!("No AI sessions found on this machine. Nothing to hand off.");
-        }
-
-        let mut selected = Vec::new();
-        for (path, _tool) in all.iter().take(count as usize) {
-            selected.push(path.clone());
-        }
-        if selected.is_empty() {
-            bail!("No sessions found for --last {count}");
-        }
+    let count = last_count.unwrap_or(1);
+    if let Some(paths) = resolve_last_paths_from_local_index(count) {
         if std::io::stdout().is_terminal() {
-            if count == 1 {
-                if let Some((_, tool)) = all.first() {
-                    eprintln!("Using most recent session [{tool}]");
-                }
-            } else {
-                eprintln!("Using {}/{} most recent sessions", selected.len(), count);
-            }
+            eprintln!(
+                "Using {}/{} most recent sessions (local index)",
+                paths.len(),
+                count
+            );
         }
-        return Ok(selected);
+        return Ok(paths);
     }
 
     let all = collect_all_session_paths()?;
@@ -392,29 +682,23 @@ fn resolve_session_files(last_count: Option<u32>) -> Result<Vec<PathBuf>> {
         bail!("No AI sessions found on this machine. Nothing to hand off.");
     }
 
-    // Interactive selection
-    let items: Vec<String> = all
-        .iter()
-        .map(|(path, tool)| {
-            let modified = std::fs::metadata(path)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|t| {
-                    let dt: chrono::DateTime<chrono::Utc> = t.into();
-                    dt.format("%Y-%m-%d %H:%M").to_string()
-                })
-                .unwrap_or_else(|| "?".to_string());
-            format!("[{}] {} ({})", tool, path.display(), modified)
-        })
-        .collect();
-
-    let selection = Select::new()
-        .with_prompt("Select a session")
-        .items(&items)
-        .default(0)
-        .interact()?;
-
-    Ok(vec![all[selection].0.clone()])
+    let mut selected = Vec::new();
+    for (path, _tool) in all.iter().take(count as usize) {
+        selected.push(path.clone());
+    }
+    if selected.is_empty() {
+        bail!("No sessions found for --last {count}");
+    }
+    if std::io::stdout().is_terminal() {
+        if count == 1 {
+            if let Some((_, tool)) = all.first() {
+                eprintln!("Using most recent session [{tool}]");
+            }
+        } else {
+            eprintln!("Using {}/{} most recent sessions", selected.len(), count);
+        }
+    }
+    Ok(selected)
 }
 
 fn resolve_last_paths_from_local_index(count: u32) -> Option<Vec<PathBuf>> {

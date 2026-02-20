@@ -1,6 +1,7 @@
 pub mod agent_metrics;
 pub mod extract;
 pub mod handoff;
+pub mod handoff_artifact;
 pub mod jsonl;
 pub mod sanitize;
 pub mod scoring;

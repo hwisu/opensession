@@ -96,6 +96,13 @@ fn sync_runtime_config_extensions(root: Option<&toml::Value>, config: &mut Daemo
     set_git_storage_mode(config, git_mode);
 }
 
+fn normalize_fixed_runtime_tuning(config: &mut DaemonConfig) {
+    let defaults = DaemonConfig::default();
+    config.daemon.realtime_debounce_ms = defaults.daemon.realtime_debounce_ms;
+    config.daemon.health_check_interval_secs = defaults.daemon.health_check_interval_secs;
+    config.daemon.max_retries = defaults.daemon.max_retries;
+}
+
 fn parse_calendar_display_mode(root: Option<&toml::Value>) -> CalendarDisplayMode {
     let value = root
         .and_then(|v| v.as_table())
@@ -204,6 +211,7 @@ pub fn load_daemon_config() -> DaemonConfig {
         if apply_compat_fallbacks(&mut config, parsed.as_ref()) {
             migrated = true;
         }
+        normalize_fixed_runtime_tuning(&mut config);
         sync_runtime_config_extensions(parsed.as_ref(), &mut config);
         if migrated {
             let _ = save_daemon_config(&config);
@@ -394,12 +402,9 @@ pub enum SettingField {
     Nickname,
     AutoPublish,
     DebounceSecs,
-    RealtimeDebounceMs,
     DetailRealtimePreviewEnabled,
     DetailAutoExpandSelectedEvent,
     CalendarDisplayMode,
-    HealthCheckSecs,
-    MaxRetries,
     WatchPaths,
     GitStorageMethod,
     StripPaths,
@@ -435,11 +440,12 @@ pub enum SettingsGroup {
     Workspace,
     CaptureSync,
     StoragePrivacy,
+    Git,
 }
 
 /// The ordered list of items shown in the settings view.
 pub const SETTINGS_LAYOUT: &[SettingItem] = &[
-    SettingItem::Header("Web Share (Public Git)"),
+    SettingItem::Header("Web Sync (Public)"),
     SettingItem::Field {
         field: SettingField::ServerUrl,
         label: "Web Endpoint URL",
@@ -476,25 +482,6 @@ pub const SETTINGS_LAYOUT: &[SettingItem] = &[
         field: SettingField::DebounceSecs,
         label: "Sync Debounce (secs)",
         description: "Wait time after last event before sync upload starts",
-        dependency_hint: Some("Applies when daemon is running"),
-    },
-    SettingItem::Field {
-        field: SettingField::RealtimeDebounceMs,
-        label: "Realtime Sync Poll (ms)",
-        description:
-            "Polling interval for daemon realtime sync and Session Detail auto-refresh checks",
-        dependency_hint: Some("Shared by realtime sync and detail auto-refresh loops"),
-    },
-    SettingItem::Field {
-        field: SettingField::HealthCheckSecs,
-        label: "Sync Health Check (secs)",
-        description: "How often capture runtime checks endpoint connectivity before sync",
-        dependency_hint: Some("Applies when daemon is running"),
-    },
-    SettingItem::Field {
-        field: SettingField::MaxRetries,
-        label: "Sync Retry Limit",
-        description: "Maximum retry attempts for failed sync uploads",
         dependency_hint: Some("Applies when daemon is running"),
     },
     SettingItem::Header("Capture Scope"),
@@ -573,7 +560,6 @@ impl SettingField {
             Self::Nickname => config.identity.nickname.clone(),
             Self::AutoPublish => on_off(config.daemon.auto_publish),
             Self::DebounceSecs => config.daemon.debounce_secs.to_string(),
-            Self::RealtimeDebounceMs => config.daemon.realtime_debounce_ms.to_string(),
             Self::DetailRealtimePreviewEnabled => {
                 on_off(config.daemon.detail_realtime_preview_enabled)
             }
@@ -585,8 +571,6 @@ impl SettingField {
                 CalendarDisplayMode::Relative => "relative".to_string(),
                 CalendarDisplayMode::Absolute => "absolute".to_string(),
             },
-            Self::HealthCheckSecs => config.daemon.health_check_interval_secs.to_string(),
-            Self::MaxRetries => config.daemon.max_retries.to_string(),
             Self::WatchPaths => format!("{} paths", config.watchers.custom_paths.len()),
             Self::GitStorageMethod => match git_storage_mode() {
                 GitStorageMode::Native => "Git-Native (Branch Based)".to_string(),
@@ -604,9 +588,6 @@ impl SettingField {
             Self::ApiKey => config.server.api_key.clone(),
             Self::Nickname => config.identity.nickname.clone(),
             Self::DebounceSecs => config.daemon.debounce_secs.to_string(),
-            Self::RealtimeDebounceMs => config.daemon.realtime_debounce_ms.to_string(),
-            Self::HealthCheckSecs => config.daemon.health_check_interval_secs.to_string(),
-            Self::MaxRetries => config.daemon.max_retries.to_string(),
             Self::WatchPaths => config.watchers.custom_paths.join(", "),
             _ => String::new(),
         }
@@ -664,21 +645,6 @@ impl SettingField {
             Self::DebounceSecs => {
                 if let Ok(v) = value.parse() {
                     config.daemon.debounce_secs = v;
-                }
-            }
-            Self::RealtimeDebounceMs => {
-                if let Ok(v) = value.parse() {
-                    config.daemon.realtime_debounce_ms = v;
-                }
-            }
-            Self::HealthCheckSecs => {
-                if let Ok(v) = value.parse() {
-                    config.daemon.health_check_interval_secs = v;
-                }
-            }
-            Self::MaxRetries => {
-                if let Ok(v) = value.parse() {
-                    config.daemon.max_retries = v;
                 }
             }
             Self::WatchPaths => {
@@ -752,16 +718,12 @@ fn group_for_field(field: SettingField) -> SettingsGroup {
 
         SettingField::AutoPublish
         | SettingField::DebounceSecs
-        | SettingField::RealtimeDebounceMs
-        | SettingField::HealthCheckSecs
-        | SettingField::MaxRetries
-        | SettingField::WatchPaths
         | SettingField::DetailRealtimePreviewEnabled
         | SettingField::DetailAutoExpandSelectedEvent => SettingsGroup::CaptureSync,
 
-        SettingField::GitStorageMethod | SettingField::StripPaths | SettingField::StripEnvVars => {
-            SettingsGroup::StoragePrivacy
-        }
+        SettingField::StripPaths | SettingField::StripEnvVars => SettingsGroup::StoragePrivacy,
+
+        SettingField::WatchPaths | SettingField::GitStorageMethod => SettingsGroup::Git,
     }
 }
 
@@ -829,15 +791,50 @@ mod tests {
     }
 
     #[test]
-    fn workspace_section_focuses_on_web_share_fields() {
+    fn capture_runtime_exposes_only_core_fields() {
+        let capture_fields = selectable_fields(SettingsGroup::CaptureSync);
+        assert_eq!(
+            capture_fields,
+            vec![
+                SettingField::AutoPublish,
+                SettingField::DebounceSecs,
+                SettingField::DetailRealtimePreviewEnabled,
+                SettingField::DetailAutoExpandSelectedEvent,
+            ]
+        );
+    }
+
+    #[test]
+    fn fixed_runtime_tuning_fields_are_normalized_to_defaults() {
+        let mut cfg = DaemonConfig::default();
+        cfg.daemon.realtime_debounce_ms = 42;
+        cfg.daemon.health_check_interval_secs = 7;
+        cfg.daemon.max_retries = 99;
+
+        normalize_fixed_runtime_tuning(&mut cfg);
+
+        let defaults = DaemonConfig::default();
+        assert_eq!(
+            cfg.daemon.realtime_debounce_ms,
+            defaults.daemon.realtime_debounce_ms
+        );
+        assert_eq!(
+            cfg.daemon.health_check_interval_secs,
+            defaults.daemon.health_check_interval_secs
+        );
+        assert_eq!(cfg.daemon.max_retries, defaults.daemon.max_retries);
+    }
+
+    #[test]
+    fn workspace_section_focuses_on_web_sync_fields() {
         let workspace_fields = selectable_fields(SettingsGroup::Workspace);
         assert!(workspace_fields.contains(&SettingField::ServerUrl));
         assert!(workspace_fields.contains(&SettingField::ApiKey));
     }
 
     #[test]
-    fn storage_privacy_section_uses_git_native_and_sqlite_wording() {
-        let items = section_items(SettingsGroup::StoragePrivacy);
+    fn git_section_uses_git_native_and_sqlite_wording() {
+        let items = section_items(SettingsGroup::Git);
 
         assert!(items
             .iter()
@@ -852,7 +849,7 @@ mod tests {
             _ => None,
         });
         let method_description =
-            method_description.expect("GitStorageMethod field should exist in StoragePrivacy");
+            method_description.expect("GitStorageMethod field should exist in Git");
 
         let lowered = method_description.to_ascii_lowercase();
         assert!(lowered.contains("git-native"));

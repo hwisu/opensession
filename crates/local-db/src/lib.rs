@@ -220,6 +220,36 @@ fn is_subagent_source(source_path: Option<&str>) -> bool {
         || filename.starts_with("subagent_")
 }
 
+fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
+    let Some(source_path) = source_path.map(|path| path.to_ascii_lowercase()) else {
+        return None;
+    };
+
+    if source_path.contains("/.codex/sessions/")
+        || source_path.contains("\\.codex\\sessions\\")
+        || source_path.contains("/codex/sessions/")
+        || source_path.contains("\\codex\\sessions\\")
+    {
+        return Some("codex");
+    }
+
+    if source_path.contains("/.claude/projects/")
+        || source_path.contains("\\.claude\\projects\\")
+        || source_path.contains("/claude/projects/")
+        || source_path.contains("\\claude\\projects\\")
+    {
+        return Some("claude-code");
+    }
+
+    None
+}
+
+fn normalize_tool_for_source_path(current_tool: &str, source_path: Option<&str>) -> String {
+    infer_tool_from_source_path(source_path)
+        .unwrap_or(current_tool)
+        .to_string()
+}
+
 /// Filter for listing sessions from the local DB.
 #[derive(Debug, Clone)]
 pub struct LocalSessionFilter {
@@ -412,6 +442,8 @@ impl LocalDb {
         let (files_modified, files_read, has_errors) =
             opensession_core::extract::extract_file_metadata(session);
         let max_active_agents = opensession_core::agent_metrics::max_active_agents(session) as i64;
+        let normalized_tool =
+            normalize_tool_for_source_path(&session.agent.tool, Some(source_path));
 
         let conn = self.conn();
         // NOTE: `body_storage_key` is kept only for migration/schema parity.
@@ -443,7 +475,7 @@ impl LocalDb {
               max_active_agents=excluded.max_active_agents",
             params![
                 &session.session_id,
-                &session.agent.tool,
+                &normalized_tool,
                 &session.agent.provider,
                 &session.agent.model,
                 title,
@@ -1252,6 +1284,7 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
     // Backfill missing columns for existing local DB files where `sessions`
     // existed before newer fields were introduced.
     ensure_sessions_columns(&conn)?;
+    repair_session_tools_from_source_path(&conn)?;
     validate_local_schema(&conn)?;
 
     Ok(conn)
@@ -1308,6 +1341,41 @@ fn validate_local_schema(conn: &Connection) -> Result<()> {
     conn.prepare(&sql)
         .map(|_| ())
         .context("validate local session schema")
+}
+
+fn repair_session_tools_from_source_path(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.tool, ss.source_path \
+         FROM sessions s \
+         LEFT JOIN session_sync ss ON ss.session_id = s.id \
+         WHERE ss.source_path IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+
+    let mut updates: Vec<(String, String)> = Vec::new();
+    for row in rows {
+        let (id, current_tool, source_path) = row?;
+        let normalized = normalize_tool_for_source_path(&current_tool, source_path.as_deref());
+        if normalized != current_tool {
+            updates.push((id, normalized));
+        }
+    }
+    drop(stmt);
+
+    for (id, tool) in updates {
+        conn.execute(
+            "UPDATE sessions SET tool = ?1 WHERE id = ?2",
+            params![tool, id],
+        )?;
+    }
+
+    Ok(())
 }
 
 fn is_schema_compat_error(err: &anyhow::Error) -> bool {
@@ -1416,15 +1484,19 @@ s.pr_number, s.pr_url, s.working_directory, \
 s.files_modified, s.files_read, s.has_errors, COALESCE(s.max_active_agents, 1)";
 
 fn row_to_local_session(row: &rusqlite::Row) -> rusqlite::Result<LocalSessionRow> {
+    let source_path: Option<String> = row.get(1)?;
+    let tool: String = row.get(7)?;
+    let normalized_tool = normalize_tool_for_source_path(&tool, source_path.as_deref());
+
     Ok(LocalSessionRow {
         id: row.get(0)?,
-        source_path: row.get(1)?,
+        source_path,
         sync_status: row.get(2)?,
         last_synced_at: row.get(3)?,
         user_id: row.get(4)?,
         nickname: row.get(5)?,
         team_id: row.get(6)?,
-        tool: row.get(7)?,
+        tool: normalized_tool,
         agent_provider: row.get(8)?,
         agent_model: row.get(9)?,
         title: row.get(10)?,
@@ -1523,6 +1595,67 @@ mod tests {
     #[test]
     fn test_open_and_schema() {
         let _db = test_db();
+    }
+
+    #[test]
+    fn test_open_repairs_codex_tool_hint_from_source_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repair.db");
+
+        {
+            let _ = LocalDb::open_path(&path).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, team_id, tool, created_at) VALUES (?1, 'personal', 'claude-code', ?2)",
+                params!["rollout-repair", "2026-02-20T00:00:00Z"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_sync (session_id, source_path, sync_status) VALUES (?1, ?2, 'local_only')",
+                params!["rollout-repair", "/Users/test/.codex/sessions/2026/02/20/rollout-repair.jsonl"],
+            )
+            .unwrap();
+        }
+
+        let db = LocalDb::open_path(&path).unwrap();
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.id == "rollout-repair")
+            .expect("repaired row");
+        assert_eq!(row.tool, "codex");
+    }
+
+    #[test]
+    fn test_upsert_local_session_normalizes_tool_from_source_path() {
+        let db = test_db();
+        let mut session = Session::new(
+            "rollout-upsert".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.event_count = 1;
+
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.codex/sessions/2026/02/20/rollout-upsert.jsonl",
+            &crate::git::GitContext::default(),
+        )
+        .unwrap();
+
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.id == "rollout-upsert")
+            .expect("upserted row");
+        assert_eq!(row.tool, "codex");
     }
 
     #[test]

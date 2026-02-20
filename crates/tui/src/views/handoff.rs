@@ -1,5 +1,7 @@
 use crate::app::{App, HandoffCandidate};
 use crate::theme::Theme;
+use opensession_core::handoff::HandoffSummary;
+use opensession_parsers::all_parsers;
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
@@ -22,14 +24,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).areas(inner);
     let candidates = app.handoff_candidates();
     let selected_idx = selected_handoff_index(app, &candidates);
-    render_picker(frame, &candidates, selected_idx, picker_area);
-    render_preview(frame, &candidates, selected_idx, preview_area);
+    render_picker(
+        frame,
+        &candidates,
+        selected_idx,
+        &app.handoff_selected_session_ids,
+        picker_area,
+    );
+    render_preview(frame, app, &candidates, selected_idx, preview_area);
 }
 
 fn render_picker(
     frame: &mut Frame,
     candidates: &[HandoffCandidate],
     selected_idx: Option<usize>,
+    selected_session_ids: &[String],
     area: Rect,
 ) {
     if candidates.is_empty() {
@@ -53,10 +62,24 @@ fn render_picker(
         .map(|(idx, candidate)| {
             let global_idx = start + idx;
             let marker = if global_idx == selected_idx { ">" } else { " " };
+            let picked = if selected_session_ids
+                .iter()
+                .any(|session_id| session_id == &candidate.session_id)
+            {
+                "[x]"
+            } else {
+                "[ ]"
+            };
             let title = truncate(candidate.title.as_str(), 44);
+            let time = candidate.created_at.format("%m-%d %H:%M").to_string();
             let meta = format!(
-                "{} {} · {} msgs · {} ev",
-                marker, candidate.tool, candidate.message_count, candidate.event_count
+                "{}{} {} · {} · {} msgs · {} ev",
+                marker,
+                picked,
+                candidate.tool,
+                time,
+                candidate.message_count,
+                candidate.event_count
             );
             ListItem::new(vec![
                 Line::from(Span::styled(
@@ -91,26 +114,29 @@ fn render_picker(
 
 fn render_preview(
     frame: &mut Frame,
+    app: &App,
     candidates: &[HandoffCandidate],
     selected_idx: Option<usize>,
     area: Rect,
 ) {
-    let Some(candidate) = selected_idx.and_then(|idx| candidates.get(idx)) else {
+    let effective_candidates = effective_candidates(app, candidates, selected_idx);
+    if effective_candidates.is_empty() {
         frame.render_widget(
             Paragraph::new("Select a session in picker (j/k).")
                 .block(Theme::block_dim().title(" Preview ")),
             area,
         );
         return;
-    };
+    }
 
-    let selected_source_path = candidate
-        .source_path
-        .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
-    let base = base_handoff_command(selected_source_path.as_deref());
+    let mut sorted = effective_candidates;
+    sorted.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
 
-    let mut lines = preview_lines(candidate, selected_source_path.as_deref(), &base);
+    let mut lines = preview_lines(app, &sorted);
     let max_lines = area.height.saturating_sub(2) as usize;
     if max_lines == 0 {
         return;
@@ -123,6 +149,22 @@ fn render_preview(
         Paragraph::new(lines).block(Theme::block_dim().title(" Preview ")),
         area,
     );
+}
+
+fn effective_candidates(
+    app: &App,
+    candidates: &[HandoffCandidate],
+    selected_idx: Option<usize>,
+) -> Vec<HandoffCandidate> {
+    let selected = app.handoff_effective_candidates();
+    if !selected.is_empty() {
+        return selected;
+    }
+    selected_idx
+        .and_then(|idx| candidates.get(idx))
+        .cloned()
+        .into_iter()
+        .collect::<Vec<_>>()
 }
 
 fn selected_handoff_index(app: &App, candidates: &[HandoffCandidate]) -> Option<usize> {
@@ -160,107 +202,154 @@ fn candidate_window(total: usize, selected_idx: usize, max_items: usize) -> (usi
     (start, end)
 }
 
-fn preview_lines(
-    candidate: &HandoffCandidate,
-    source_path: Option<&str>,
-    base: &str,
-) -> Vec<Line<'static>> {
-    vec![
+fn preview_lines(app: &App, selected_candidates: &[HandoffCandidate]) -> Vec<Line<'static>> {
+    let mut lines = vec![
         Line::from(Span::styled(
-            "Execution-contract handoff (v2 default)",
+            "Handoff artifact preview (merge_policy=time_asc)",
             Style::new().fg(Theme::ACCENT_BLUE).bold(),
         )),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("Session: ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled("Selection: ", Style::new().fg(Theme::TEXT_SECONDARY)),
             Span::styled(
-                truncate(candidate.session_id.as_str(), 52),
+                format!("{} session(s)", selected_candidates.len()),
                 Style::new().fg(Theme::TEXT_PRIMARY),
             ),
         ]),
-        Line::from(vec![
-            Span::styled("Model:   ", Style::new().fg(Theme::TEXT_SECONDARY)),
+    ];
+
+    for (idx, candidate) in selected_candidates.iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("S{} ", idx + 1),
+                Style::new().fg(Theme::TEXT_SECONDARY),
+            ),
+            Span::styled(
+                truncate(&candidate.session_id, 40),
+                Style::new().fg(Theme::TEXT_PRIMARY),
+            ),
+            Span::styled(
+                format!("  {}", candidate.created_at.format("%Y-%m-%d %H:%M:%S")),
+                Style::new().fg(Theme::TEXT_MUTED),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("   "),
             Span::styled(
                 format!(
                     "{} / {} · {} msgs · {} ev",
                     candidate.tool, candidate.model, candidate.message_count, candidate.event_count
                 ),
-                Style::new().fg(Theme::TEXT_PRIMARY),
+                Style::new().fg(Theme::TEXT_SECONDARY),
             ),
-        ]),
-        Line::from(vec![
-            Span::styled("Source:  ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(
-                source_path
-                    .map(|path| truncate(path, 72))
-                    .unwrap_or_else(|| "(unresolved, using --last)".to_string()),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "Recommended commands",
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )),
-        Line::from(vec![
-            Span::styled("  1) ", Style::new().fg(Theme::TEXT_KEY).bold()),
-            Span::styled(base.to_string(), Style::new().fg(Theme::TEXT_KEY_DESC)),
-        ]),
-        Line::from(vec![
-            Span::styled("  2) ", Style::new().fg(Theme::TEXT_KEY).bold()),
-            Span::styled(
-                format!("{base} --validate"),
-                Style::new().fg(Theme::TEXT_KEY_DESC),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  3) ", Style::new().fg(Theme::TEXT_KEY).bold()),
-            Span::styled(
-                format!("{base} --validate --strict"),
-                Style::new().fg(Theme::TEXT_KEY_DESC),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  4) ", Style::new().fg(Theme::TEXT_KEY).bold()),
-            Span::styled(
-                "opensession session handoff --last 6 --populate claude".to_string(),
-                Style::new().fg(Theme::TEXT_KEY_DESC),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  5) ", Style::new().fg(Theme::TEXT_KEY).bold()),
-            Span::styled(
-                "opensession session handoff --last HEAD~6 --populate claude:opus-4.6".to_string(),
-                Style::new().fg(Theme::TEXT_KEY_DESC),
-            ),
-        ]),
-        Line::raw(""),
-        Line::from("Validation semantics"),
-        Line::from("  - --validate: report findings, exit 0"),
-        Line::from("  - --validate --strict: non-zero on error findings"),
-        Line::from("  - execution_contract.parallel_actions: parallelizable work packages"),
-        Line::from("  - execution_contract.ordered_steps: ordered timeline with timestamps"),
-    ]
-}
-
-fn base_handoff_command(source_path: Option<&str>) -> String {
-    match source_path {
-        Some(path) if !path.trim().is_empty() => {
-            format!("opensession session handoff {}", shell_quote(path))
-        }
-        _ => "opensession session handoff --last".to_string(),
+        ]));
     }
-}
 
-fn shell_quote(value: &str) -> String {
-    let safe = value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '~'));
-    if safe {
-        value.to_string()
+    let (payload_preview, warnings) = payload_preview_jsonl(selected_candidates);
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Expected payload (jsonl preview)",
+        Style::new().fg(Theme::ACCENT_BLUE).bold(),
+    )));
+    if payload_preview.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(unavailable: source session file not resolvable)",
+            Style::new().fg(Theme::TEXT_MUTED),
+        )));
     } else {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
+        for line in payload_preview {
+            lines.push(Line::from(Span::styled(
+                truncate(&line, 100),
+                Style::new().fg(Theme::TEXT_KEY_DESC),
+            )));
+        }
     }
+    for warning in warnings {
+        lines.push(Line::from(vec![
+            Span::styled("warn: ", Style::new().fg(Theme::ACCENT_YELLOW).bold()),
+            Span::styled(truncate(&warning, 94), Style::new().fg(Theme::TEXT_MUTED)),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    if let Some((artifact_id, stale, reasons)) = app.handoff_last_artifact_status() {
+        lines.push(Line::from(vec![
+            Span::styled("Artifact: ", Style::new().fg(Theme::TEXT_SECONDARY)),
+            Span::styled(artifact_id, Style::new().fg(Theme::TEXT_PRIMARY)),
+            Span::styled("  ", Style::new()),
+            Span::styled(
+                if stale { "[STALE]" } else { "[FRESH]" },
+                if stale {
+                    Style::new().fg(Theme::ACCENT_RED).bold()
+                } else {
+                    Style::new().fg(Theme::ACCENT_GREEN).bold()
+                },
+            ),
+        ]));
+        for reason in reasons.into_iter().take(3) {
+            lines.push(Line::from(vec![
+                Span::styled("  - ", Style::new().fg(Theme::TEXT_SECONDARY)),
+                Span::styled(truncate(&reason, 96), Style::new().fg(Theme::TEXT_MUTED)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Artifact: (none saved in this TUI session)",
+            Style::new().fg(Theme::TEXT_MUTED),
+        )));
+    }
+
+    lines
+}
+
+fn payload_preview_jsonl(candidates: &[HandoffCandidate]) -> (Vec<String>, Vec<String>) {
+    let parsers = all_parsers();
+    let mut lines = Vec::new();
+    let mut warnings = Vec::new();
+
+    for candidate in candidates {
+        let Some(path) = candidate.source_path.as_ref() else {
+            warnings.push(format!("{} has no local source_path", candidate.session_id));
+            continue;
+        };
+        let Some(parser) = parsers.iter().find(|parser| parser.can_parse(path)) else {
+            warnings.push(format!(
+                "{} unsupported source format: {}",
+                candidate.session_id,
+                path.display()
+            ));
+            continue;
+        };
+
+        match parser.parse(path) {
+            Ok(session) => {
+                let summary = HandoffSummary::from_session(&session);
+                let objective = if summary.objective_undefined_reason.is_some() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(summary.objective)
+                };
+                let value = serde_json::json!({
+                    "session_id": summary.source_session_id,
+                    "tool": summary.tool,
+                    "model": summary.model,
+                    "objective": objective,
+                    "duration_seconds": summary.duration_seconds,
+                    "next_actions": summary.execution_contract.next_actions,
+                });
+                if let Ok(line) = serde_json::to_string(&value) {
+                    lines.push(line);
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "failed to parse {} ({}): {err}",
+                candidate.session_id,
+                path.display()
+            )),
+        }
+    }
+
+    (lines, warnings)
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -276,29 +365,7 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base_handoff_command, candidate_window, shell_quote, truncate};
-
-    #[test]
-    fn base_handoff_command_uses_last_without_path() {
-        assert_eq!(
-            base_handoff_command(None),
-            "opensession session handoff --last"
-        );
-    }
-
-    #[test]
-    fn base_handoff_command_quotes_path_when_needed() {
-        let cmd = base_handoff_command(Some("/tmp/hello world/session.jsonl"));
-        assert_eq!(
-            cmd,
-            "opensession session handoff '/tmp/hello world/session.jsonl'"
-        );
-    }
-
-    #[test]
-    fn shell_quote_leaves_safe_values_unquoted() {
-        assert_eq!(shell_quote("/tmp/session.jsonl"), "/tmp/session.jsonl");
-    }
+    use super::{candidate_window, truncate};
 
     #[test]
     fn truncate_adds_ellipsis_for_long_values() {

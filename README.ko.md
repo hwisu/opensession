@@ -97,7 +97,9 @@ opensession account connect --server https://opensession.io --api-key <issued_ke
 | 명령어 | 설명 |
 |--------|------|
 | `opensession` / `opensession .` | 로컬 인터랙티브 모드 실행 |
-| `opensession session handoff` | v2 실행 계약 핸드오프 생성 (`--validate`, `--strict`) |
+| `opensession session handoff` | 즉시 v2 실행 계약 핸드오프 생성 (`--validate`, `--strict`) |
+| `opensession session handoff save ...` | 병합 handoff를 Git ref 정본 아티팩트로 저장 (`refs/opensession/handoff/artifacts/<id>`) |
+| `opensession session handoff artifact ...` | 아티팩트 수명주기 (`list`, `show`, `refresh`, `render-md`) |
 | `opensession publish upload <file> [--git]` | 단일 세션 퍼블리시 (기본: 서버, `--git`: `opensession/sessions` 브랜치) |
 | `opensession daemon start\|stop\|status\|health` | 데몬 실행/중지/상태 |
 | `opensession daemon enable-hook --agent <name>` | 스트림 훅 수동 설치 |
@@ -131,6 +133,13 @@ cargo run -p opensession -- session handoff --last HEAD~6 --format json
 # provider CLI로 HANDOFF.md 보강 생성
 cargo run -p opensession -- session handoff --last 6 --populate claude
 cargo run -p opensession -- session handoff --last 6 --populate claude:opus-4.6
+
+# 정본 handoff artifact 저장/조회/갱신
+cargo run -p opensession -- session handoff save --last 6 --payload-format jsonl
+cargo run -p opensession -- session handoff artifact list
+cargo run -p opensession -- session handoff artifact show <artifact_id>
+cargo run -p opensession -- session handoff artifact refresh <artifact_id>
+cargo run -p opensession -- session handoff artifact render-md <artifact_id> --output HANDOFF.md
 ```
 
 반복 실행 성능이 중요하면 `cargo run` 대신 빌드된 바이너리를 사용하세요:
@@ -157,6 +166,10 @@ CLI 종류별 예시(세션 생성)와 대응 handoff 명령:
 - `--validate`: 사람이 읽는 리포트 + JSON 리포트를 출력하고 종료코드 `0`.
 - `--validate --strict`: error 레벨 위반이 있을 때만 non-zero 종료.
 - 기본 스키마는 v2 실행 계약 출력입니다.
+- handoff 정본은 Git ref 아티팩트(`refs/opensession/handoff/artifacts/<artifact_id>`)입니다.
+- `HANDOFF.md`는 파생 산출물(`artifact render-md`)입니다.
+- 아티팩트 병합 규칙은 시간순 오름차순(`time_asc`)으로 고정됩니다.
+- 소스가 변경되면 stale로 표시되고, 자동 갱신 없이 `artifact refresh`로 수동 갱신합니다.
 - `--populate <provider[:model]>`: handoff JSON을 provider CLI(`claude`, `codex`, `opencode`, `gemini`, `amp`) 표준입력으로 전달해 `HANDOFF.md` 초안을 생성합니다.
 - `execution_contract.parallel_actions`: 순차 액션과 별도로 병렬 가능한 작업 패키지를 분리해 제공합니다.
 - `execution_contract.ordered_steps`: 작업 순서/타임스탬프/의존성을 함께 보존해 시간성과 정합성을 잃지 않고 후속 에이전트가 재실행할 수 있게 합니다.

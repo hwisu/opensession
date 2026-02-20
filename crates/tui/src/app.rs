@@ -3,7 +3,9 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use opensession_api::{SortOrder, TimeRange, UserSettingsResponse};
+use opensession_core::handoff_artifact::HandoffArtifact;
 use opensession_core::trace::{ContentBlock, Event, EventType, Session};
+use opensession_git_native::{load_handoff_artifact, ops};
 use opensession_local_db::{
     LocalDb, LocalSessionFilter, LocalSessionRow, LocalSortOrder, LocalTimeRange,
 };
@@ -119,42 +121,42 @@ pub enum SettingsSection {
     Workspace,
     CaptureSync,
     StoragePrivacy,
-    Account,
+    Git,
 }
 
 impl SettingsSection {
     pub const ORDER: [Self; 4] = [
-        Self::Workspace,
         Self::CaptureSync,
         Self::StoragePrivacy,
-        Self::Account,
+        Self::Git,
+        Self::Workspace,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Workspace => "Web Share",
+            Self::Workspace => "Web Sync (Public)",
             Self::CaptureSync => "Capture Flow",
-            Self::StoragePrivacy => "Storage & Privacy",
-            Self::Account => "Account",
+            Self::StoragePrivacy => "Privacy",
+            Self::Git => "Git",
         }
     }
 
     pub fn panel_title(self) -> &'static str {
         match self {
-            Self::Workspace => "Web Share (Public Git)",
+            Self::Workspace => "Web Sync (Public)",
             Self::CaptureSync => "Capture Flow",
-            Self::StoragePrivacy => "Storage & Privacy",
-            Self::Account => "Account",
+            Self::StoragePrivacy => "Privacy",
+            Self::Git => "Git Explorer",
         }
     }
 
     pub fn group(self) -> Option<config::SettingsGroup> {
-        match self {
-            Self::Workspace => Some(config::SettingsGroup::Workspace),
-            Self::CaptureSync => Some(config::SettingsGroup::CaptureSync),
-            Self::StoragePrivacy => Some(config::SettingsGroup::StoragePrivacy),
-            Self::Account => None,
-        }
+        Some(match self {
+            Self::Workspace => config::SettingsGroup::Workspace,
+            Self::CaptureSync => config::SettingsGroup::CaptureSync,
+            Self::StoragePrivacy => config::SettingsGroup::StoragePrivacy,
+            Self::Git => config::SettingsGroup::Git,
+        })
     }
 
     pub fn next(self) -> Self {
@@ -176,16 +178,6 @@ impl SettingsSection {
             Self::ORDER[idx - 1]
         }
     }
-}
-
-/// Password change form state.
-#[derive(Default)]
-pub struct PasswordForm {
-    pub field_index: usize, // 0=current, 1=new, 2=confirm
-    pub current: String,
-    pub new_password: String,
-    pub confirm: String,
-    pub editing: bool,
 }
 
 /// Setup flow step: choose scenario first, then configure.
@@ -262,6 +254,7 @@ pub struct HandoffCandidate {
     pub title: String,
     pub tool: String,
     pub model: String,
+    pub created_at: DateTime<Utc>,
     pub event_count: usize,
     pub message_count: usize,
     pub source_path: Option<PathBuf>,
@@ -511,13 +504,14 @@ mod turn_extract_tests {
     }
 
     #[test]
-    fn settings_sections_expose_web_capture_storage_account() {
+    fn settings_sections_expose_web_capture_storage_git() {
         assert_eq!(SettingsSection::ORDER.len(), 4);
-        assert_eq!(SettingsSection::Workspace.label(), "Web Share");
+        assert_eq!(SettingsSection::Workspace.label(), "Web Sync (Public)");
         assert_eq!(SettingsSection::CaptureSync.label(), "Capture Flow");
+        assert_eq!(SettingsSection::Git.label(), "Git");
         assert_eq!(
             SettingsSection::Workspace.panel_title(),
-            "Web Share (Public Git)"
+            "Web Sync (Public)"
         );
     }
 
@@ -897,6 +891,35 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn list_a_key_cycles_agent_filter() {
+        let mut app = App::new(vec![
+            make_live_session("agent-a", 2),
+            make_live_session("agent-b", 2),
+        ]);
+        app.sessions[0].agent.tool = "codex".to_string();
+        app.sessions[1].agent.tool = "claude-code".to_string();
+        app.rebuild_available_tools();
+        app.apply_filter();
+
+        assert_eq!(app.active_agent_filter(), None);
+        app.handle_list_key(KeyCode::Char('a'));
+        assert!(app.active_agent_filter().is_some());
+    }
+
+    #[test]
+    fn list_tab_cycles_repo_view_even_if_active_tab_drifted() {
+        let mut app = App::new(vec![]);
+        app.repos = vec!["alpha/repo".to_string()];
+        app.active_tab = Tab::Handoff;
+        app.view = View::SessionList;
+        app.view_mode = ViewMode::Local;
+
+        app.handle_key(KeyCode::Tab);
+
+        assert_eq!(app.view_mode, ViewMode::Repo("alpha/repo".to_string()));
+    }
+
+    #[test]
     fn list_bracket_keys_do_not_change_page_anymore() {
         let mut app = App::new(vec![
             Session::new(
@@ -1207,11 +1230,53 @@ mod turn_extract_tests {
         assert_ne!(selected_after, before);
 
         app.handle_key(KeyCode::Enter);
-        assert_eq!(app.view, View::SessionDetail);
-        let selected_id = app
-            .selected_session()
-            .map(|session| session.session_id.clone());
-        assert_eq!(selected_id.as_deref(), Some(selected_after.as_str()));
+        assert_eq!(app.view, View::Handoff);
+        assert_eq!(app.active_tab, Tab::Handoff);
+        let message = app
+            .flash_message
+            .as_ref()
+            .map(|(msg, _)| msg.clone())
+            .unwrap_or_default();
+        assert!(message.to_ascii_lowercase().contains("preview"));
+    }
+
+    #[test]
+    fn handoff_picker_space_supports_multi_selection() {
+        let sessions = vec![
+            make_live_session("handoff-a", 2),
+            make_live_session("handoff-b", 2),
+            make_live_session("handoff-c", 2),
+        ];
+        let mut app = App::new(sessions);
+        app.handle_key(KeyCode::Char('2'));
+        assert_eq!(app.view, View::Handoff);
+        let candidate_order = app
+            .handoff_candidates()
+            .into_iter()
+            .map(|candidate| candidate.session_id)
+            .collect::<Vec<_>>();
+        assert_eq!(candidate_order.len(), 3);
+
+        app.handle_key(KeyCode::Char(' ')); // select a
+        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char(' ')); // select b
+        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char(' ')); // select c
+        assert_eq!(app.handoff_selected_session_ids, candidate_order);
+
+        let selected = app
+            .handoff_selected_candidates()
+            .into_iter()
+            .map(|candidate| candidate.session_id)
+            .collect::<Vec<_>>();
+        assert_eq!(selected, app.handoff_selected_session_ids);
+
+        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char(' ')); // deselect c
+        assert_eq!(
+            app.handoff_selected_session_ids,
+            vec![selected[0].clone(), selected[1].clone()]
+        );
     }
 
     #[test]
@@ -1230,13 +1295,15 @@ mod turn_extract_tests {
 
         app.handle_key(KeyCode::Enter);
 
-        assert_eq!(app.active_tab, Tab::Sessions);
-        assert_eq!(app.view, View::SessionDetail);
+        assert_eq!(app.active_tab, Tab::Handoff);
+        assert_eq!(app.view, View::Handoff);
         assert_eq!(app.view_mode, ViewMode::Repo("repo-1".to_string()));
-        let selected_id = app
-            .selected_session()
-            .map(|session| session.session_id.clone());
-        assert_eq!(selected_id.as_deref(), Some("handoff-db"));
+        let message = app
+            .flash_message
+            .as_ref()
+            .map(|(msg, _)| msg.clone())
+            .unwrap_or_default();
+        assert!(message.to_ascii_lowercase().contains("preview"));
     }
 
     #[test]
@@ -1279,7 +1346,7 @@ mod turn_extract_tests {
             .as_ref()
             .map(|(msg, _)| msg.clone())
             .unwrap_or_default();
-        assert!(message.contains("Remote-only session"));
+        assert!(message.to_ascii_lowercase().contains("preview"));
     }
 
     #[test]
@@ -1755,14 +1822,15 @@ pub struct App {
     // ── Tab navigation ───────────────────────────────────────────
     pub active_tab: Tab,
     pub handoff_selected_session_id: Option<String>,
+    pub handoff_selected_session_ids: Vec<String>,
+    pub handoff_last_artifact_id: Option<String>,
     pub pending_command: Option<AsyncCommand>,
 
-    // ── Profile / Account (Settings enhancement) ─────────────────
+    // ── Profile / Web Sync (Settings enhancement) ───────────────
     pub settings_section: SettingsSection,
     pub profile: Option<UserSettingsResponse>,
     pub profile_loading: bool,
     pub profile_error: Option<String>,
-    pub password_form: PasswordForm,
 
     // ── Deferred health check ──────────────────────────────────
     pub health_check_done: bool,
@@ -1925,12 +1993,13 @@ impl App {
             modal: None,
             active_tab: Tab::Sessions,
             handoff_selected_session_id: None,
+            handoff_selected_session_ids: Vec::new(),
+            handoff_last_artifact_id: None,
             pending_command: None,
             settings_section: SettingsSection::Workspace,
             profile: None,
             profile_loading: false,
             profile_error: None,
-            password_form: PasswordForm::default(),
             health_check_done: false,
             loading_sessions: false,
         };
@@ -1964,7 +2033,6 @@ impl App {
         // Help overlay — `?` from any non-editing state
         if matches!(key, KeyCode::Char('?'))
             && !self.editing_field
-            && !self.password_form.editing
             && !self.searching
             && !matches!(self.view, View::Setup)
         {
@@ -1984,7 +2052,6 @@ impl App {
         // Global tab switching (only when not in detail/setup/editing/searching)
         if !matches!(self.view, View::SessionDetail | View::Setup | View::Help)
             && !self.editing_field
-            && !self.password_form.editing
         {
             match key {
                 KeyCode::Char('1') => {
@@ -2068,6 +2135,7 @@ impl App {
             Tab::Handoff => {
                 self.view = View::Handoff;
                 self.handoff_selected_session_id = self.current_scope_handoff_seed_session_id();
+                self.handoff_selected_session_ids.clear();
             }
             Tab::Settings => {
                 self.view = View::Settings;
@@ -2240,11 +2308,12 @@ impl App {
                 self.searching = true;
             }
             KeyCode::Tab => {
-                if self.active_tab == Tab::Sessions {
-                    self.cycle_view_mode();
-                }
+                self.cycle_view_mode();
             }
             KeyCode::Char('m') => self.toggle_list_layout(),
+            KeyCode::Char('a') => {
+                self.cycle_tool_filter();
+            }
             KeyCode::Char('t') => {
                 self.cycle_tool_filter();
             }
@@ -2357,6 +2426,9 @@ impl App {
                 }
             }
             KeyCode::Char('m') => self.toggle_list_layout(),
+            KeyCode::Char('a') => {
+                self.cycle_tool_filter();
+            }
             KeyCode::Char('t') => {
                 self.cycle_tool_filter();
             }
@@ -2369,9 +2441,7 @@ impl App {
                 self.cycle_tool_filter();
             }
             KeyCode::Tab => {
-                if self.active_tab == Tab::Sessions {
-                    self.cycle_view_mode();
-                }
+                self.cycle_view_mode();
             }
             _ => {}
         }
@@ -2449,11 +2519,16 @@ impl App {
                     self.setup_scenario = Some(scenario);
                     match scenario {
                         SetupScenario::Local => {
+                            // Persist local mode selection so startup no longer re-enters setup
+                            // on every launch when no API key is configured yet.
+                            self.save_config();
                             self.view = View::SessionList;
                             self.active_tab = Tab::Sessions;
-                            self.flash_info(
-                                "Local mode enabled. Configure cloud sync later in Settings > Web Share",
-                            );
+                            if self.startup_status.config_exists {
+                                self.flash_info(
+                                    "Local mode enabled. Configure cloud sync later in Settings > Web Sync (Public)",
+                                );
+                            }
                         }
                         SetupScenario::Public => {
                             self.setup_step = SetupStep::Configure;
@@ -2473,7 +2548,7 @@ impl App {
                 self.view = View::SessionList;
                 self.active_tab = Tab::Sessions;
                 self.flash_info(
-                    "You can configure this later in Settings > Web Share (~/.config/opensession/opensession.toml)",
+                    "You can configure this later in Settings > Web Sync (Public) (~/.config/opensession/opensession.toml)",
                 );
             }
             _ => {}
@@ -2538,7 +2613,7 @@ impl App {
                 self.active_tab = Tab::Sessions;
                 if !self.startup_status.config_exists {
                     self.flash_info(
-                        "You can configure this later in Settings > Web Share (~/.config/opensession/opensession.toml)",
+                        "You can configure this later in Settings > Web Sync (Public) (~/.config/opensession/opensession.toml)",
                     );
                 }
             }
@@ -2674,34 +2749,6 @@ impl App {
     }
 
     fn handle_settings_key(&mut self, key: KeyCode) -> bool {
-        // Password form editing
-        if self.password_form.editing {
-            match key {
-                KeyCode::Esc => {
-                    self.password_form.editing = false;
-                    self.edit_buffer.clear();
-                }
-                KeyCode::Enter => {
-                    match self.password_form.field_index {
-                        0 => self.password_form.current = self.edit_buffer.clone(),
-                        1 => self.password_form.new_password = self.edit_buffer.clone(),
-                        2 => self.password_form.confirm = self.edit_buffer.clone(),
-                        _ => {}
-                    }
-                    self.password_form.editing = false;
-                    self.edit_buffer.clear();
-                }
-                KeyCode::Backspace => {
-                    self.edit_buffer.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.edit_buffer.push(c);
-                }
-                _ => {}
-            }
-            return false;
-        }
-
         // DaemonConfig field editing
         if self.editing_field {
             match key {
@@ -2754,12 +2801,10 @@ impl App {
             _ => {
                 // Delegate to section-specific handling
                 match self.settings_section {
-                    SettingsSection::Account => {
-                        self.handle_account_settings_key(key);
-                    }
                     SettingsSection::Workspace
                     | SettingsSection::CaptureSync
-                    | SettingsSection::StoragePrivacy => {
+                    | SettingsSection::StoragePrivacy
+                    | SettingsSection::Git => {
                         self.handle_daemon_config_key(key);
                     }
                 }
@@ -2776,89 +2821,19 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_handoff_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_handoff_selection(-1),
+            KeyCode::Char(' ') => self.toggle_handoff_selection(),
             KeyCode::Enter | KeyCode::Char('l') => {
-                if let Some(candidate) = self.selected_handoff_candidate() {
-                    let target_session_id = candidate.session_id.clone();
-                    if self.select_session_by_id(&target_session_id) {
-                        self.active_tab = Tab::Sessions;
-                        self.enter_detail();
-                        if self.view != View::SessionDetail {
-                            self.active_tab = Tab::Handoff;
-                            self.view = View::Handoff;
-                        }
-                    } else {
-                        self.flash_info(
-                            "Selected handoff session is not available in current scope",
-                        );
-                    }
-                } else {
+                if self.handoff_effective_candidates().is_empty() {
                     self.flash_info("No handoff candidate in current scope");
+                } else {
+                    self.flash_success("Handoff preview refreshed");
                 }
             }
+            KeyCode::Char('s') => self.save_handoff_artifact_via_cli(),
+            KeyCode::Char('r') => self.refresh_handoff_artifact_via_cli(),
             _ => {}
         }
         false
-    }
-
-    fn handle_account_settings_key(&mut self, key: KeyCode) {
-        match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_index < 3 {
-                    // 0..3: current/new/confirm/submit
-                    self.settings_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.settings_index = self.settings_index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                match self.settings_index {
-                    0..=2 => {
-                        // Enter password field edit mode
-                        self.password_form.field_index = self.settings_index;
-                        self.edit_buffer = match self.settings_index {
-                            0 => self.password_form.current.clone(),
-                            1 => self.password_form.new_password.clone(),
-                            2 => self.password_form.confirm.clone(),
-                            _ => String::new(),
-                        };
-                        self.password_form.editing = true;
-                    }
-                    3 => {
-                        // Submit password change
-                        if self.password_form.new_password != self.password_form.confirm {
-                            self.flash_error("Passwords do not match");
-                        } else if self.password_form.new_password.is_empty() {
-                            self.flash_error("New password is required");
-                        } else {
-                            self.pending_command = Some(AsyncCommand::ChangePassword {
-                                current: self.password_form.current.clone(),
-                                new_password: self.password_form.new_password.clone(),
-                            });
-                            self.password_form = PasswordForm::default();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            KeyCode::Char('r') => {
-                if self.daemon_config.server.api_key.is_empty() {
-                    self.flash_info("Set API key in Web Share first");
-                } else {
-                    self.profile_loading = true;
-                    self.pending_command = Some(AsyncCommand::FetchProfile);
-                }
-            }
-            KeyCode::Char('g') => {
-                // Regenerate API key — confirm
-                self.modal = Some(Modal::Confirm {
-                    title: "Regenerate API Key".to_string(),
-                    message: "This will invalidate your current API key.".to_string(),
-                    action: ConfirmAction::RegenerateApiKey,
-                });
-            }
-            _ => {}
-        }
     }
 
     fn handle_daemon_config_key(&mut self, key: KeyCode) {
@@ -2867,6 +2842,21 @@ impl App {
         match key {
             KeyCode::Char('d') if self.settings_section == SettingsSection::CaptureSync => {
                 self.toggle_daemon();
+            }
+            KeyCode::Char('r') if self.settings_section == SettingsSection::Workspace => {
+                if self.daemon_config.server.api_key.is_empty() {
+                    self.flash_info("Set API key in Web Sync (Public) first");
+                } else {
+                    self.profile_loading = true;
+                    self.pending_command = Some(AsyncCommand::FetchProfile);
+                }
+            }
+            KeyCode::Char('g') if self.settings_section == SettingsSection::Workspace => {
+                self.modal = Some(Modal::Confirm {
+                    title: "Regenerate API Key".to_string(),
+                    message: "This will invalidate your current API key.".to_string(),
+                    action: ConfirmAction::RegenerateApiKey,
+                });
             }
             KeyCode::Char('r') if self.settings_section == SettingsSection::CaptureSync => {
                 self.startup_status.daemon_pid = config::daemon_pid();
@@ -3193,13 +3183,6 @@ impl App {
             }
             CommandResult::DeleteSession(Err(e)) => {
                 self.flash_error(format!("Delete failed: {e}"));
-            }
-
-            CommandResult::GenericOk(Ok(msg)) => {
-                self.flash_success(msg);
-            }
-            CommandResult::GenericOk(Err(e)) => {
-                self.flash_error(format!("Error: {e}"));
             }
         }
     }
@@ -3584,8 +3567,12 @@ impl App {
             .filter(|tool| !tool.trim().is_empty())
     }
 
+    pub fn active_agent_filter(&self) -> Option<&str> {
+        self.active_tool_filter()
+    }
+
     pub fn has_active_session_filters(&self) -> bool {
-        self.active_tool_filter().is_some()
+        self.active_agent_filter().is_some()
             || !self.search_query.trim().is_empty()
             || !self.is_default_time_range()
     }
@@ -4243,6 +4230,9 @@ impl App {
                             .agent_model
                             .clone()
                             .unwrap_or_else(|| "unknown".to_string()),
+                        created_at: DateTime::parse_from_rfc3339(&row.created_at)
+                            .map(|value| value.with_timezone(&Utc))
+                            .unwrap_or_else(|_| Utc::now()),
                         event_count: row.event_count.max(0) as usize,
                         message_count: row.message_count.max(0) as usize,
                         source_path,
@@ -4263,6 +4253,7 @@ impl App {
                     .unwrap_or_else(|| session.session_id.clone()),
                 tool: session.agent.tool.clone(),
                 model: session.agent.model.clone(),
+                created_at: session.context.created_at,
                 event_count: if session.events.is_empty() {
                     session.stats.event_count as usize
                 } else {
@@ -4305,6 +4296,150 @@ impl App {
         let max = candidates.len().saturating_sub(1) as isize;
         let next = (current + step).clamp(0, max) as usize;
         self.handoff_selected_session_id = Some(candidates[next].session_id.clone());
+    }
+
+    fn toggle_handoff_selection(&mut self) {
+        let Some(candidate) = self.selected_handoff_candidate() else {
+            self.flash_info("No handoff candidate in current scope");
+            return;
+        };
+        let session_id = candidate.session_id;
+
+        if let Some(idx) = self
+            .handoff_selected_session_ids
+            .iter()
+            .position(|id| id == &session_id)
+        {
+            self.handoff_selected_session_ids.remove(idx);
+            return;
+        }
+
+        self.handoff_selected_session_ids.push(session_id);
+    }
+
+    pub fn handoff_selected_candidates(&self) -> Vec<HandoffCandidate> {
+        let candidates = self.handoff_candidates();
+        self.handoff_selected_session_ids
+            .iter()
+            .filter_map(|session_id| {
+                candidates
+                    .iter()
+                    .find(|candidate| &candidate.session_id == session_id)
+                    .cloned()
+            })
+            .collect()
+    }
+
+    pub fn handoff_effective_candidates(&self) -> Vec<HandoffCandidate> {
+        let selected = self.handoff_selected_candidates();
+        if !selected.is_empty() {
+            return selected;
+        }
+        self.selected_handoff_candidate()
+            .into_iter()
+            .collect::<Vec<_>>()
+    }
+
+    pub fn handoff_last_artifact_status(&self) -> Option<(String, bool, Vec<String>)> {
+        let artifact_id = self.handoff_last_artifact_id.clone()?;
+        let cwd = std::env::current_dir().ok()?;
+        let repo_root = ops::find_repo_root(&cwd)?;
+        let bytes = load_handoff_artifact(&repo_root, &artifact_id).ok()?;
+        let artifact: HandoffArtifact = serde_json::from_slice(&bytes).ok()?;
+        let stale_reasons = artifact
+            .stale_reasons()
+            .into_iter()
+            .map(|reason| format!("{}: {}", reason.session_id, reason.reason))
+            .collect::<Vec<_>>();
+        let stale = !stale_reasons.is_empty();
+        Some((artifact.artifact_id, stale, stale_reasons))
+    }
+
+    fn save_handoff_artifact_via_cli(&mut self) {
+        let candidates = self.handoff_effective_candidates();
+        if candidates.is_empty() {
+            self.flash_info("No handoff candidate in current scope");
+            return;
+        }
+        let source_paths = candidates
+            .iter()
+            .filter_map(|candidate| candidate.source_path.clone())
+            .collect::<Vec<_>>();
+        if source_paths.len() != candidates.len() {
+            self.flash_info("Some selected sessions have no local source file");
+            return;
+        }
+
+        let mut cmd = std::process::Command::new("opensession");
+        cmd.arg("session").arg("handoff").arg("save");
+        for path in &source_paths {
+            cmd.arg(path);
+        }
+
+        let output = match cmd.output() {
+            Ok(output) => output,
+            Err(err) => {
+                self.flash_error(format!("Failed to run opensession CLI: {err}"));
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                self.flash_error("Handoff save command failed");
+            } else {
+                self.flash_error(stderr);
+            }
+            return;
+        }
+
+        let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+        if let Some(artifact_id) = parsed
+            .as_ref()
+            .and_then(|value| value.get("artifact_id"))
+            .and_then(|value| value.as_str())
+        {
+            self.handoff_last_artifact_id = Some(artifact_id.to_string());
+            self.flash_success(format!("Saved handoff artifact: {artifact_id}"));
+            return;
+        }
+
+        self.flash_success("Saved handoff artifact");
+    }
+
+    fn refresh_handoff_artifact_via_cli(&mut self) {
+        let Some(artifact_id) = self.handoff_last_artifact_id.clone() else {
+            self.flash_info("No saved handoff artifact yet");
+            return;
+        };
+
+        let output = match std::process::Command::new("opensession")
+            .arg("session")
+            .arg("handoff")
+            .arg("artifact")
+            .arg("refresh")
+            .arg(&artifact_id)
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) => {
+                self.flash_error(format!("Failed to run opensession CLI: {err}"));
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                self.flash_error("Handoff artifact refresh failed");
+            } else {
+                self.flash_error(stderr);
+            }
+            return;
+        }
+
+        self.flash_success(format!("Refreshed handoff artifact: {artifact_id}"));
     }
 
     fn select_session_by_id(&mut self, session_id: &str) -> bool {

@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use opensession_api::{
-    ChangePasswordRequest, IssueApiKeyResponse, SessionListQuery, SessionListResponse,
-    UploadRequest, UserSettingsResponse,
+    IssueApiKeyResponse, SessionListQuery, SessionListResponse, UploadRequest, UserSettingsResponse,
 };
 
 use crate::config::DaemonConfig;
@@ -18,10 +17,6 @@ pub enum AsyncCommand {
 
     // ── Profile / Account ─────────────────────────────────────────────
     FetchProfile,
-    ChangePassword {
-        current: String,
-        new_password: String,
-    },
     RegenerateApiKey,
 
     // ── Server Sessions ───────────────────────────────────────────────
@@ -45,9 +40,6 @@ pub enum CommandResult {
 
     // Server Sessions
     ServerSessions(Result<SessionListResponse, String>),
-
-    // Generic OK (password change etc.)
-    GenericOk(Result<String, String>),
 
     // Delete
     DeleteSession(Result<String, String>), // Ok(session_id) or Err(msg)
@@ -105,25 +97,6 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
             }
             .await;
             CommandResult::Profile(result)
-        }
-
-        AsyncCommand::ChangePassword {
-            current,
-            new_password,
-        } => {
-            let result = async {
-                let client = make_client(config)?;
-                client
-                    .change_password(&ChangePasswordRequest {
-                        current_password: current,
-                        new_password,
-                    })
-                    .await
-                    .map_err(|e| format!("{e}"))?;
-                Ok("Password changed".to_string())
-            }
-            .await;
-            CommandResult::GenericOk(result)
         }
 
         AsyncCommand::RegenerateApiKey => {

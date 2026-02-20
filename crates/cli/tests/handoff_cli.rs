@@ -35,6 +35,40 @@ fn run(home: &Path, args: &[&str]) -> Output {
     cmd.output().expect("run opensession")
 }
 
+fn run_in(home: &Path, cwd: &Path, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env("NO_COLOR", "1");
+    cmd.output().expect("run opensession")
+}
+
+fn run_git(cwd: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {} failed\nstdout: {}\nstderr: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_git_repo(cwd: &Path) {
+    fs::create_dir_all(cwd).expect("create repo dir");
+    run_git(cwd, &["init", "--initial-branch=main"]);
+    run_git(cwd, &["config", "user.email", "test@example.com"]);
+    run_git(cwd, &["config", "user.name", "Test"]);
+    write_file(&cwd.join("README.md"), "repo");
+    run_git(cwd, &["add", "."]);
+    run_git(cwd, &["commit", "-m", "init"]);
+}
+
 #[test]
 fn top_help_hides_removed_commands() {
     let tmp = make_home();
@@ -232,4 +266,128 @@ fn handoff_json_shape_is_v2() {
     assert!(v2.get("task_summaries").is_none());
     assert!(v2.get("errors").is_none());
     assert!(v2.get("shell_commands").is_none());
+}
+
+#[test]
+fn handoff_artifact_save_list_show_refresh_render_md() {
+    let tmp = make_home();
+    let home = tmp.path();
+    let repo = home.join("repo");
+    init_git_repo(&repo);
+
+    let session_a = create_codex_session(home, "2026/02/14/handoff-artifact-a.jsonl");
+    let session_b = create_codex_session(home, "2026/02/15/handoff-artifact-b.jsonl");
+
+    let save_output = run_in(
+        home,
+        &repo,
+        &[
+            "session",
+            "handoff",
+            "save",
+            session_a.to_str().expect("session path"),
+            session_b.to_str().expect("session path"),
+            "--payload-format",
+            "jsonl",
+        ],
+    );
+    assert!(
+        save_output.status.success(),
+        "save failed: {}",
+        String::from_utf8_lossy(&save_output.stderr)
+    );
+    let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("save json");
+    let artifact_id = save_json
+        .get("artifact_id")
+        .and_then(|value| value.as_str())
+        .expect("artifact_id")
+        .to_string();
+
+    let list_output = run_in(home, &repo, &["session", "handoff", "artifact", "list"]);
+    assert!(
+        list_output.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+    let list_json: Value = serde_json::from_slice(&list_output.stdout).expect("list json");
+    let list = list_json.as_array().expect("list array");
+    assert!(list.iter().any(|row| {
+        row.get("artifact_id").and_then(|value| value.as_str()) == Some(artifact_id.as_str())
+    }));
+
+    let show_output = run_in(
+        home,
+        &repo,
+        &["session", "handoff", "artifact", "show", &artifact_id],
+    );
+    assert!(
+        show_output.status.success(),
+        "show failed: {}",
+        String::from_utf8_lossy(&show_output.stderr)
+    );
+    let show_json: Value = serde_json::from_slice(&show_output.stdout).expect("show json");
+    assert_eq!(
+        show_json.get("stale").and_then(|value| value.as_bool()),
+        Some(false)
+    );
+
+    let changed_body = r#"{"type":"user","uuid":"u1","sessionId":"handoff-cli-test","timestamp":"2026-02-15T00:00:01Z","message":{"role":"user","content":"refresh this"}}
+{"type":"assistant","uuid":"a1","sessionId":"handoff-cli-test","timestamp":"2026-02-15T00:00:02Z","message":{"role":"assistant","model":"gpt-4.1","content":[{"type":"text","text":"updated output with extra content"}]}}"#;
+    write_file(&session_b, changed_body);
+
+    let stale_output = run_in(
+        home,
+        &repo,
+        &["session", "handoff", "artifact", "show", &artifact_id],
+    );
+    assert!(
+        stale_output.status.success(),
+        "show stale failed: {}",
+        String::from_utf8_lossy(&stale_output.stderr)
+    );
+    let stale_json: Value = serde_json::from_slice(&stale_output.stdout).expect("show stale json");
+    assert_eq!(
+        stale_json.get("stale").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    let refresh_output = run_in(
+        home,
+        &repo,
+        &["session", "handoff", "artifact", "refresh", &artifact_id],
+    );
+    assert!(
+        refresh_output.status.success(),
+        "refresh failed: {}",
+        String::from_utf8_lossy(&refresh_output.stderr)
+    );
+    let refresh_json: Value = serde_json::from_slice(&refresh_output.stdout).expect("refresh json");
+    assert_eq!(
+        refresh_json
+            .get("refreshed")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    let out_md = repo.join("HANDOFF.generated.md");
+    let render_output = run_in(
+        home,
+        &repo,
+        &[
+            "session",
+            "handoff",
+            "artifact",
+            "render-md",
+            &artifact_id,
+            "--output",
+            out_md.to_str().expect("md path"),
+        ],
+    );
+    assert!(
+        render_output.status.success(),
+        "render-md failed: {}",
+        String::from_utf8_lossy(&render_output.stderr)
+    );
+    let markdown = fs::read_to_string(&out_md).expect("rendered markdown");
+    assert!(markdown.contains("Session Handoff") || markdown.contains("Merged Session Handoff"));
 }

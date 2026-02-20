@@ -138,8 +138,20 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("Move selected session in picker", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  Space     ", key_style),
+            Span::styled("Multi-select sessions for merged handoff", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  Enter     ", key_style),
-            Span::styled("Open selected session detail", desc_style),
+            Span::styled("Refresh handoff preview (stays in Handoff tab)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  s         ", key_style),
+            Span::styled("Save selected sessions as handoff artifact", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  r         ", key_style),
+            Span::styled("Refresh last saved artifact if stale", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  Esc/q     ", key_style),
@@ -150,7 +162,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  [/]       ", key_style),
             Span::styled(
-                "Switch section (Web Share/Capture Flow/Storage/Account)",
+                "Switch section (Capture Flow/Privacy/Git/Web Sync (Public))",
                 desc_style,
             ),
         ]),
@@ -160,7 +172,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  g         ", key_style),
-            Span::styled("Regenerate API key (Account)", desc_style),
+            Span::styled("Regenerate API key (Web Sync (Public))", desc_style),
         ]),
         Line::raw(""),
         close_hint_line.clone(),

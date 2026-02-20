@@ -11,258 +11,16 @@ const SESSION_STORAGE_METHOD_DETAILS: [&str; 3] = [
 ];
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(group) = app.settings_section.group() {
-        render_daemon_config(frame, app, area, group, app.settings_section.panel_title());
-    } else {
-        render_account(frame, app, area);
-    }
-}
-
-// ── Account section (API key, password change) ───────────────────────────
-
-fn render_account(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Theme::block_dim().padding(Theme::PADDING_CARD);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Server URL display
-    let display_url = app
-        .daemon_config
-        .server
-        .url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
-
-    let mut lines = vec![
-        Line::from(Span::styled(
-            "── Account Profile ──",
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )),
-        Line::raw(""),
-    ];
-
-    if app.profile_loading {
-        lines.push(Line::from(Span::styled(
-            "  Loading profile...",
-            Style::new().fg(Theme::ACCENT_BLUE),
-        )));
-    } else if let Some(ref profile) = app.profile {
-        let oauth = if profile.oauth_providers.is_empty() {
-            "None".to_string()
-        } else {
-            profile
-                .oauth_providers
-                .iter()
-                .map(|p| p.display_name.clone())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        lines.push(Line::from(vec![
-            Span::styled("  Handle:         ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(
-                profile.nickname.as_str(),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  Email:          ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(
-                profile.email.as_deref().unwrap_or("-"),
-                Style::new().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  OAuth:          ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(oauth, Style::new().fg(Theme::TEXT_PRIMARY)),
-        ]));
-    } else if let Some(ref err) = app.profile_error {
-        lines.push(Line::from(vec![
-            Span::styled("  Profile:        ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(
-                format!("load failed ({err})"),
-                Style::new().fg(Theme::ACCENT_RED),
-            ),
-        ]));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  Press 'r' to fetch profile info.",
-            Style::new().fg(Theme::TEXT_HINT),
-        )));
-    }
-
-    lines.extend([
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled("  Server:         ", Style::new().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(display_url, Style::new().fg(Theme::ACCENT_BLUE)),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "── API Key (personal) ──",
-            Style::new().fg(Theme::ACCENT_BLUE).bold(),
-        )),
-        Line::raw(""),
-    ]);
-
-    // Current API key (masked)
-    let key_display = if app.daemon_config.server.api_key.is_empty() {
-        "(not set)".to_string()
-    } else {
-        let key = &app.daemon_config.server.api_key;
-        let visible = key.len().min(8);
-        format!(
-            "{}...{}",
-            &key[..visible],
-            &key[key.len().saturating_sub(4)..]
-        )
-    };
-
-    lines.push(Line::from(vec![
-        Span::styled("  API Key:        ", Style::new().fg(Theme::TEXT_SECONDARY)),
-        Span::styled(key_display, Style::new().fg(Theme::TEXT_PRIMARY)),
-    ]));
-    lines.push(Line::from(Span::styled(
-        "  Press 'g' to regenerate",
-        Style::new().fg(Theme::TEXT_HINT),
-    )));
-    lines.push(Line::from(Span::styled(
-        "  (this is your personal key)",
-        Style::new().fg(Theme::TEXT_HINT),
-    )));
-    lines.push(Line::raw(""));
-
-    // Password change form
-    let has_oauth = app
-        .profile
-        .as_ref()
-        .is_some_and(|p| !p.oauth_providers.is_empty());
-    let pw_title = if has_oauth {
-        "── Change Password (or set initial password) ──"
-    } else {
-        "── Change Password ──"
-    };
-    lines.push(Line::from(Span::styled(
-        pw_title,
-        Style::new().fg(Theme::ACCENT_BLUE).bold(),
-    )));
-    lines.push(Line::raw(""));
-
-    let pw_fields = [
-        (
-            "Current Password",
-            mask_password(&app.password_form.current),
-        ),
-        (
-            "New Password",
-            mask_password(&app.password_form.new_password),
-        ),
-        (
-            "Confirm Password",
-            mask_password(&app.password_form.confirm),
-        ),
-    ];
-
-    for (i, (label, display)) in pw_fields.iter().enumerate() {
-        let is_selected = app.settings_index == i;
-        let is_editing = is_selected && app.password_form.editing;
-
-        let pointer = if is_selected { ">" } else { " " };
-        let pointer_style = if is_selected {
-            Style::new().fg(Color::Cyan).bold()
-        } else {
-            Style::new().fg(Color::DarkGray)
-        };
-
-        let label_style = if is_selected {
-            Style::new().fg(Theme::TEXT_PRIMARY).bold()
-        } else {
-            Style::new().fg(Theme::TEXT_SECONDARY)
-        };
-
-        let value_text = if is_editing {
-            format!("{}|", "*".repeat(app.edit_buffer.len()))
-        } else if display.is_empty() {
-            "(empty)".to_string()
-        } else {
-            display.to_string()
-        };
-
-        let value_style = if is_editing {
-            Style::new().fg(Theme::ACCENT_YELLOW)
-        } else {
-            Style::new().fg(Theme::FIELD_VALUE)
-        };
-
-        let bg = if is_selected {
-            Style::new().bg(Theme::BG_SURFACE)
-        } else {
-            Style::new()
-        };
-
-        lines.push(
-            Line::from(vec![
-                Span::styled(format!(" {} ", pointer), pointer_style),
-                Span::styled(format!("{:<22}", label), label_style),
-                Span::styled(value_text, value_style),
-            ])
-            .style(bg),
-        );
-
-        // OAuth hint for Current Password field
-        if i == 0 && is_selected && has_oauth {
-            lines.push(Line::from(vec![
-                Span::raw("     "),
-                Span::styled(
-                    "(leave empty if no password set)",
-                    Style::new().fg(Theme::TEXT_HINT),
-                ),
-            ]));
-        }
-    }
-
-    // Submit button
-    let submit_selected = app.settings_index == 3;
-    let submit_bg = if submit_selected {
-        Style::new().bg(Theme::BG_SURFACE)
-    } else {
-        Style::new()
-    };
-    let submit_style = if submit_selected {
-        Style::new().fg(Theme::ACCENT_BLUE).bold()
-    } else {
-        Style::new().fg(Theme::TEXT_HINT)
-    };
-    lines.push(Line::raw(""));
-    lines.push(
-        Line::from(vec![
-            Span::styled(
-                if submit_selected { " > " } else { "   " },
-                if submit_selected {
-                    Style::new().fg(Color::Cyan).bold()
-                } else {
-                    Style::new()
-                },
-            ),
-            Span::styled("[Submit Password Change]", submit_style),
-        ])
-        .style(submit_bg),
-    );
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, inner);
-}
-
-fn mask_password(s: &str) -> String {
-    if s.is_empty() {
-        String::new()
-    } else {
-        "*".repeat(s.len())
-    }
+    let group = app
+        .settings_section
+        .group()
+        .unwrap_or(SettingsGroup::Workspace);
+    render_daemon_config(frame, app, area, group, app.settings_section.panel_title());
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{mask_password, render, SESSION_STORAGE_METHOD_DETAILS};
+    use super::{render, SESSION_STORAGE_METHOD_DETAILS};
     use crate::app::{App, SettingsSection};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -290,17 +48,6 @@ mod tests {
     }
 
     #[test]
-    fn mask_password_returns_empty_for_empty_input() {
-        assert_eq!(mask_password(""), "");
-    }
-
-    #[test]
-    fn mask_password_keeps_length_and_hides_content() {
-        assert_eq!(mask_password("abc123"), "******");
-        assert_ne!(mask_password("abc123"), "abc123");
-    }
-
-    #[test]
     fn session_storage_details_are_aligned_with_supported_modes() {
         let details = SESSION_STORAGE_METHOD_DETAILS
             .iter()
@@ -316,12 +63,12 @@ mod tests {
     }
 
     #[test]
-    fn web_share_panel_shows_public_git_purpose_and_section_hint() {
+    fn web_sync_panel_shows_public_git_purpose_and_section_hint() {
         let mut app = App::new(vec![]);
         app.settings_section = SettingsSection::Workspace;
         let text = render_text(&app, 160, 40);
 
-        assert!(text.contains("Web Share = register Public Git target"));
+        assert!(text.contains("Web Sync (Public) = account profile"));
         assert!(text.contains("[/]"));
     }
 
@@ -334,6 +81,15 @@ mod tests {
         assert!(text.contains("Capture = collect local events"));
         assert!(text.contains("Sync = upload captured sessions"));
         assert!(text.contains("capture-runtime:off"));
+    }
+
+    #[test]
+    fn git_panel_explains_git_explorer_scope() {
+        let mut app = App::new(vec![]);
+        app.settings_section = SettingsSection::Git;
+        let text = render_text(&app, 180, 40);
+
+        assert!(text.contains("Git Explorer = parse-path"));
     }
 }
 
@@ -369,13 +125,75 @@ fn render_daemon_config(
     match section {
         SettingsGroup::Workspace => {
             lines.push(Line::from(Span::styled(
-                "  Web Share = register Public Git target and publish shareable logs",
+                "  Web Sync (Public) = account profile + public sync registration",
                 Style::new().fg(Theme::TEXT_MUTED),
             )));
+            let display_url = app
+                .daemon_config
+                .server
+                .url
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Endpoint: ", Style::new().fg(Theme::TEXT_SECONDARY)),
+                Span::styled(display_url, Style::new().fg(Theme::ACCENT_BLUE)),
+            ]));
+            if app.profile_loading {
+                lines.push(Line::from(Span::styled(
+                    "  Profile: loading...",
+                    Style::new().fg(Theme::ACCENT_BLUE),
+                )));
+            } else if let Some(profile) = app.profile.as_ref() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("Profile: ", Style::new().fg(Theme::TEXT_SECONDARY)),
+                    Span::styled(
+                        format!(
+                            "{} ({})",
+                            profile.nickname,
+                            profile.email.as_deref().unwrap_or("-")
+                        ),
+                        Style::new().fg(Theme::TEXT_PRIMARY),
+                    ),
+                ]));
+            } else if let Some(err) = app.profile_error.as_ref() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("Profile: ", Style::new().fg(Theme::TEXT_SECONDARY)),
+                    Span::styled(
+                        format!("load failed ({err})"),
+                        Style::new().fg(Theme::ACCENT_RED),
+                    ),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "  Profile: press 'r' to fetch",
+                    Style::new().fg(Theme::TEXT_HINT),
+                )));
+            }
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("API key: ", Style::new().fg(Theme::TEXT_SECONDARY)),
+                Span::styled(
+                    if app.daemon_config.server.api_key.is_empty() {
+                        "not set".to_string()
+                    } else {
+                        "set (press 'g' to regenerate)".to_string()
+                    },
+                    Style::new().fg(Theme::TEXT_PRIMARY),
+                ),
+            ]));
         }
         SettingsGroup::CaptureSync => {
             lines.push(Line::from(Span::styled(
                 "  Capture = collect local events · Sync = upload captured sessions to share targets",
+                Style::new().fg(Theme::TEXT_MUTED),
+            )));
+        }
+        SettingsGroup::Git => {
+            lines.push(Line::from(Span::styled(
+                "  Git Explorer = parse-path + git-native storage settings (for local/public navigation)",
                 Style::new().fg(Theme::TEXT_MUTED),
             )));
         }
@@ -436,14 +254,7 @@ fn render_daemon_config(
 
         let blocked_reason = app.daemon_config_field_block_reason(field);
         let daemon_hint = !daemon_running
-            && matches!(
-                field,
-                SettingField::DebounceSecs
-                    | SettingField::RealtimeDebounceMs
-                    | SettingField::HealthCheckSecs
-                    | SettingField::MaxRetries
-                    | SettingField::WatchPaths
-            )
+            && matches!(field, SettingField::DebounceSecs | SettingField::WatchPaths)
             && dependency_hint.is_some();
         let dimmed = blocked_reason.is_some();
 
@@ -569,16 +380,6 @@ fn render_daemon_config(
                         ),
                     ]));
                 }
-            }
-
-            if is_selected && field == SettingField::RealtimeDebounceMs {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "Scope: daemon realtime publish cadence + auto-refresh polling",
-                        Style::new().fg(Theme::TEXT_MUTED),
-                    ),
-                ]));
             }
 
             if is_selected && field == SettingField::AutoPublish {

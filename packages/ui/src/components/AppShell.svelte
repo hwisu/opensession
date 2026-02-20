@@ -463,26 +463,28 @@ function handleGlobalKey(e: KeyboardEvent) {
 <svelte:window onkeydown={handleGlobalKey} onmousedown={handleWindowPointerDown} />
 
 <div class="grid min-h-[100dvh] max-w-[100vw] grid-rows-[auto_1fr_auto] overflow-hidden bg-bg-primary text-text-primary">
-	<nav class="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-bg-secondary px-2 py-2 sm:px-4">
+	<nav class="relative z-30 flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-bg-secondary px-2 py-2 sm:px-4">
 		<div class="flex items-center gap-1">
 			<a href="/" class="text-sm font-bold tracking-tight text-text-primary sm:text-base">
 				opensession<span class="text-accent">.io</span>
 			</a>
 			<ThemeToggle />
 		</div>
-		<div class="flex min-w-0 flex-1 items-center justify-end gap-0.5 overflow-x-auto whitespace-nowrap pb-1 sm:pb-0">
-			{#each navLinks as link}
-				<a
-					href={link.href}
-					class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
-					class:text-accent={isLinkActive(link.href)}
-				>
-					{link.label}
-				</a>
-			{/each}
+		<div class="flex min-w-0 flex-1 items-center justify-end gap-0.5 pb-1 sm:pb-0">
+			<div class="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-0.5 overflow-hidden">
+				{#each navLinks as link}
+					<a
+						href={link.href}
+						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
+						class:text-accent={isLinkActive(link.href)}
+					>
+						{link.label}
+					</a>
+				{/each}
+			</div>
 
 			{#if hasLocalAuth}
-				<div class="relative" bind:this={accountMenuRoot}>
+				<div class="relative shrink-0" bind:this={accountMenuRoot}>
 					<button
 						type="button"
 						data-testid="account-menu-trigger"
@@ -494,13 +496,13 @@ function handleGlobalKey(e: KeyboardEvent) {
 						[{navAccountHandle(user)}]
 					</button>
 
-					{#if accountMenuOpen}
-						<div
-							role="menu"
-							aria-label="Account menu"
-							data-testid="account-menu"
-							class="absolute right-0 z-40 mt-1 w-72 border border-border bg-bg-primary shadow-2xl"
-						>
+						{#if accountMenuOpen}
+							<div
+								role="menu"
+								aria-label="Account menu"
+								data-testid="account-menu"
+								class="absolute right-0 z-40 mt-1 w-[min(18rem,calc(100vw-1rem))] border border-border bg-bg-primary shadow-2xl"
+							>
 							<div class="border-b border-border px-3 py-2">
 								<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">Account</p>
 								<p class="mt-1 text-sm font-medium text-text-primary">{user?.nickname}</p>
@@ -563,7 +565,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 		</div>
 	</nav>
 
-	<main class="overflow-y-auto px-2 py-3 sm:px-4">
+	<main class="relative z-0 overflow-y-auto px-2 py-3 sm:px-4">
 		{@render children()}
 	</main>
 

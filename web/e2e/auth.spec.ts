@@ -220,6 +220,11 @@ test.describe('Authentication', () => {
 
 		await page.goto('/');
 		await page.locator('[data-testid="account-menu-trigger"]').click();
+		const layoutWidths = await page.evaluate(() => ({
+			scrollWidth: document.documentElement.scrollWidth,
+			clientWidth: document.documentElement.clientWidth,
+		}));
+		expect(layoutWidths.scrollWidth).toBeLessThanOrEqual(layoutWidths.clientWidth + 1);
 		await page.locator('[data-testid="account-menu-logout"]').click();
 		await expect(page).toHaveURL(/\/$/);
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();

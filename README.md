@@ -75,6 +75,9 @@ Web UI behavior is runtime-driven via `GET /api/capabilities` (no build-time pro
 - Session list layout tabs:
   - `List`: one chronological feed across sessions.
   - `Agents`: grouped by max active agents (parallel lane density view).
+- Docs `/docs`:
+  - Rendered as chapter cards + TOC sidebar (not a raw markdown dump).
+  - Markdown source remains available via `GET /docs` with `Accept: text/markdown`.
 - List footer shortcut legend:
   - `t`: cycle tool filter
   - `o`: cycle ordering (`recent`, `popular`, `longest`)

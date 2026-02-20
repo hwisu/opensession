@@ -75,6 +75,9 @@ opensession account connect --server https://opensession.io --api-key <issued_ke
 - 세션 목록 레이아웃 탭:
   - `List`: 전체 세션을 시간순 단일 피드로 표시
   - `Agents`: 최대 동시 에이전트 수 기준으로 그룹 컬럼 표시(병렬도 관찰용)
+- Docs `/docs`:
+  - 원문 마크다운 덤프 대신 챕터 카드 + TOC 사이드바로 렌더링
+  - 마크다운 원본은 `GET /docs` + `Accept: text/markdown`으로 계속 제공
 - 목록 하단 단축키 범례:
   - `t`: tool 필터 순환
   - `o`: 정렬 순환(`recent`, `popular`, `longest`)

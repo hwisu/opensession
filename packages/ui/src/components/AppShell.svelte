@@ -37,6 +37,8 @@ let paletteOpen = $state(false);
 let paletteQuery = $state('');
 let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
+let accountMenuOpen = $state(false);
+let accountMenuRoot: HTMLDivElement | undefined = $state();
 let authGuardSeq = 0;
 let authEnabled = $state(false);
 let uploadEnabled = $state(false);
@@ -68,6 +70,29 @@ function navAccountHandle(currentUser: UserSettings | null): string {
 	if (preferredGithub) return preferredGithub;
 
 	return trimNonEmpty(currentUser.nickname) ?? 'account';
+}
+
+function shortDate(iso: string | null | undefined): string {
+	if (!iso) return '-';
+	const parsed = new Date(iso);
+	if (Number.isNaN(parsed.getTime())) return '-';
+	return parsed.toLocaleDateString();
+}
+
+function linkedProvidersLabel(currentUser: UserSettings | null): string {
+	if (!currentUser || !currentUser.oauth_providers || currentUser.oauth_providers.length === 0) {
+		return 'none';
+	}
+	return currentUser.oauth_providers.map((provider) => provider.display_name).join(', ');
+}
+
+function splitShortcutHint(hint: string): { combo: string; description: string } {
+	const firstSpace = hint.indexOf(' ');
+	if (firstSpace < 0) return { combo: hint, description: '' };
+	return {
+		combo: hint.slice(0, firstSpace),
+		description: hint.slice(firstSpace + 1),
+	};
 }
 
 function isGuestAllowedPath(path: string): boolean {
@@ -118,7 +143,9 @@ const shortcutHints = $derived.by(() => {
 			'j/k navigate',
 			'Enter open',
 			'/ search',
-			't/o/r cycle',
+			't tool',
+			'o order',
+			'r range',
 			'l layout',
 		];
 	}
@@ -130,12 +157,14 @@ $effect(() => {
 	if (!authEnabled) {
 		user = null;
 		hasLocalAuth = false;
+		accountMenuOpen = false;
 		return;
 	}
 
 	if (!isAuthenticated()) {
 		user = null;
 		hasLocalAuth = false;
+		accountMenuOpen = false;
 		return;
 	}
 
@@ -145,6 +174,7 @@ $effect(() => {
 			if (!ok || cancelled) {
 				user = null;
 				hasLocalAuth = false;
+				accountMenuOpen = false;
 				return;
 			}
 			try {
@@ -157,6 +187,7 @@ $effect(() => {
 				if (cancelled) return;
 				user = null;
 				hasLocalAuth = false;
+				accountMenuOpen = false;
 				if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
 					await authLogout();
 				}
@@ -166,12 +197,18 @@ $effect(() => {
 			if (!cancelled) {
 				user = null;
 				hasLocalAuth = false;
+				accountMenuOpen = false;
 			}
 		});
 
 	return () => {
 		cancelled = true;
 	};
+});
+
+$effect(() => {
+	void currentPath;
+	accountMenuOpen = false;
 });
 
 $effect(() => {
@@ -327,6 +364,22 @@ function closePalette() {
 	paletteQuery = '';
 }
 
+function closeAccountMenu() {
+	accountMenuOpen = false;
+}
+
+function toggleAccountMenu() {
+	accountMenuOpen = !accountMenuOpen;
+}
+
+function handleWindowPointerDown(e: MouseEvent) {
+	if (!accountMenuOpen) return;
+	const target = e.target;
+	if (!(target instanceof Node)) return;
+	if (accountMenuRoot?.contains(target)) return;
+	closeAccountMenu();
+}
+
 function executePaletteCommand(command: PaletteCommand | undefined) {
 	if (!command) return;
 	closePalette();
@@ -362,10 +415,16 @@ function handlePaletteInputKeydown(e: KeyboardEvent) {
 }
 
 async function handleSignOut() {
+	closeAccountMenu();
 	await authLogout();
 	user = null;
 	hasLocalAuth = false;
 	onNavigate('/');
+}
+
+function handleAccountMenuNavigate(path: string) {
+	closeAccountMenu();
+	onNavigate(path);
 }
 
 function handleGlobalKey(e: KeyboardEvent) {
@@ -376,6 +435,12 @@ function handleGlobalKey(e: KeyboardEvent) {
 		} else {
 			void openPalette();
 		}
+		return;
+	}
+
+	if (accountMenuOpen && e.key === 'Escape') {
+		e.preventDefault();
+		closeAccountMenu();
 		return;
 	}
 
@@ -395,7 +460,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 }
 </script>
 
-<svelte:window onkeydown={handleGlobalKey} />
+<svelte:window onkeydown={handleGlobalKey} onmousedown={handleWindowPointerDown} />
 
 <div class="grid min-h-[100dvh] max-w-[100vw] grid-rows-[auto_1fr_auto] overflow-hidden bg-bg-primary text-text-primary">
 	<nav class="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-bg-secondary px-2 py-2 sm:px-4">
@@ -417,14 +482,76 @@ function handleGlobalKey(e: KeyboardEvent) {
 			{/each}
 
 			{#if hasLocalAuth}
-				<span class="px-2 py-1 text-xs text-text-secondary sm:text-sm">[{navAccountHandle(user)}]</span>
-				<button
-					type="button"
-					onclick={handleSignOut}
-					class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
-				>
-					Logout
-				</button>
+				<div class="relative" bind:this={accountMenuRoot}>
+					<button
+						type="button"
+						data-testid="account-menu-trigger"
+						aria-expanded={accountMenuOpen}
+						aria-haspopup="menu"
+						onclick={toggleAccountMenu}
+						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
+					>
+						[{navAccountHandle(user)}]
+					</button>
+
+					{#if accountMenuOpen}
+						<div
+							role="menu"
+							aria-label="Account menu"
+							data-testid="account-menu"
+							class="absolute right-0 z-40 mt-1 w-72 border border-border bg-bg-primary shadow-2xl"
+						>
+							<div class="border-b border-border px-3 py-2">
+								<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">Account</p>
+								<p class="mt-1 text-sm font-medium text-text-primary">{user?.nickname}</p>
+								<p class="text-xs text-text-secondary">{user?.email ?? 'email not linked'}</p>
+							</div>
+
+							<div class="border-b border-border px-3 py-2 text-xs text-text-secondary">
+								<p>User ID: <span class="text-text-primary">{user?.user_id}</span></p>
+								<p>Joined: <span class="text-text-primary">{shortDate(user?.created_at)}</span></p>
+								<p>Providers: <span class="text-text-primary">{linkedProvidersLabel(user)}</span></p>
+							</div>
+
+							<div class="border-b border-border px-2 py-1">
+								<button
+									type="button"
+									class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+									onclick={() => handleAccountMenuNavigate('/')}
+								>
+									Session Home
+								</button>
+								<button
+									type="button"
+									class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+									onclick={() => handleAccountMenuNavigate('/docs')}
+								>
+									Docs
+								</button>
+								{#if uploadEnabled}
+									<button
+										type="button"
+										class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+										onclick={() => handleAccountMenuNavigate('/upload')}
+									>
+										Upload
+									</button>
+								{/if}
+							</div>
+
+							<div class="px-2 py-1">
+								<button
+									type="button"
+									data-testid="account-menu-logout"
+									onclick={handleSignOut}
+									class="block w-full px-2 py-1 text-left text-xs text-error transition-colors hover:bg-error/10"
+								>
+									Logout
+								</button>
+							</div>
+						</div>
+					{/if}
+				</div>
 			{:else}
 				<a
 					href="/login"
@@ -442,12 +569,41 @@ function handleGlobalKey(e: KeyboardEvent) {
 
 	<footer
 		data-testid="shortcut-footer"
-		class="shrink-0 flex items-center gap-3 border-t border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-muted sm:px-4 sm:text-xs"
+		class="shrink-0 flex items-center gap-2 border-t border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-muted sm:gap-3 sm:px-4 sm:text-xs"
 	>
-		<span class="font-medium text-text-secondary">Shortcuts</span>
-		<span class="sm:hidden">Cmd/Ctrl+K</span>
+		<span class="rounded border border-border bg-bg-primary px-1.5 py-0.5 font-medium tracking-[0.04em] text-text-secondary">
+			Shortcuts
+		</span>
+		<span
+			class="sm:hidden inline-flex items-center gap-1 rounded border border-border bg-bg-primary px-1.5 py-0.5 text-text-secondary"
+		>
+			<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">
+				Cmd/Ctrl+K
+			</kbd>
+		</span>
+		{#if isSessionList}
+			<span
+				data-testid="tor-footer-hint"
+				class="inline-flex items-center gap-1 rounded border border-border bg-bg-primary px-1.5 py-0.5 text-text-secondary"
+			>
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">t</kbd>
+				<span>tool</span>
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">o</kbd>
+				<span>order</span>
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">r</kbd>
+				<span>range</span>
+			</span>
+		{/if}
 		{#each shortcutHints as hint}
-			<span class="hidden sm:inline">{hint}</span>
+			{@const parsedHint = splitShortcutHint(hint)}
+			<span class="hidden sm:inline-flex items-center gap-1 rounded border border-border bg-bg-primary px-1.5 py-0.5">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">
+					{parsedHint.combo}
+				</kbd>
+				{#if parsedHint.description}
+					<span class="text-text-secondary"> {parsedHint.description}</span>
+				{/if}
+			</span>
 		{/each}
 		<span class="ml-auto">opensession.io</span>
 	</footer>

@@ -15,10 +15,34 @@ test.describe('Navigation', () => {
 		await expect(nav.getByText('Upload')).toHaveCount(0);
 	});
 
+	test('session layout toggle labels explain the two views', async ({ page }) => {
+		await page.goto('/');
+		await expect(page.locator('[data-testid="list-shortcut-legend"]')).toBeVisible();
+		await expect(page.getByRole('tab', { name: 'List' })).toBeVisible();
+		await expect(page.getByRole('tab', { name: 'Agents' })).toBeVisible();
+		await expect(page.locator('[data-testid="session-layout-summary"]')).toContainText(
+			'List = one chronological feed',
+		);
+
+		await page.getByRole('tab', { name: 'Agents' }).click();
+		await expect(page.locator('[data-testid="session-layout-summary"]')).toContainText(
+			'Agents = grouped by max active agents',
+		);
+	});
+
 	test('clicking Docs navigates to /docs', async ({ page }) => {
 		await page.goto('/');
 		await page.locator('nav').getByText('Docs').click();
 		await expect(page).toHaveURL(/\/docs/);
+	});
+
+	test('root rem baseline is increased for readability', async ({ page }) => {
+		await page.goto('/');
+		await expect
+			.poll(async () =>
+				page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)),
+			)
+			.toBeGreaterThanOrEqual(19);
 	});
 
 	test('footer shows keyboard hints', async ({ page }) => {
@@ -26,8 +50,16 @@ test.describe('Navigation', () => {
 		const footer = page.locator('[data-testid="shortcut-footer"]');
 		await expect(footer).toBeVisible();
 		await expect(footer.getByText('Shortcuts')).toBeVisible();
+		expect(await footer.locator('kbd').filter({ hasText: 'Cmd/Ctrl+K' }).count()).toBeGreaterThan(0);
 		await expect(footer.getByText('Cmd/Ctrl+K palette')).toBeVisible();
 		await expect(footer.getByText('/ search')).toBeVisible();
+		await expect(footer.locator('[data-testid="tor-footer-hint"]')).toBeVisible();
+		await expect(footer).toContainText('t');
+		await expect(footer).toContainText('tool');
+		await expect(footer).toContainText('o');
+		await expect(footer).toContainText('order');
+		await expect(footer).toContainText('r');
+		await expect(footer).toContainText('range');
 		await expect(footer.getByText('opensession.io')).toBeVisible();
 	});
 
@@ -53,6 +85,10 @@ test.describe('Navigation', () => {
 	});
 
 	test('session detail footer shows in-session shortcut hints', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		const sessionId = await uploadSession(request, admin.access_token, {
 			title: `PW Footer Hints ${crypto.randomUUID().slice(0, 8)}`,
@@ -67,15 +103,74 @@ test.describe('Navigation', () => {
 		await expect(footer.getByText('n/p match')).toBeVisible();
 	});
 
-	test('authenticated nav shows settings link', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+	test('authenticated nav shows account dropdown actions', async ({ page }) => {
+		const expiry = Math.floor(Date.now() / 1000) + 3600;
+		await page.addInitScript((nextExpiry) => {
+			localStorage.setItem('opensession_access_token', 'nav-access');
+			localStorage.setItem('opensession_refresh_token', 'nav-refresh');
+			localStorage.setItem('opensession_token_expiry', String(nextExpiry));
+		}, expiry);
 
-		const admin = await getAdmin(request);
-		await injectAuth(page, admin);
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: true,
+					upload_enabled: true,
+					ingest_preview_enabled: true,
+					gh_share_enabled: true,
+				}),
+			});
+		});
+		await page.route('**/api/auth/verify', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ user_id: 'u-nav', nickname: 'nav-user' }),
+			});
+		});
+		await page.route('**/api/auth/me', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					user_id: 'u-nav',
+					nickname: 'nav-user',
+					created_at: new Date().toISOString(),
+					email: 'nav@test.local',
+					avatar_url: null,
+					oauth_providers: [{ provider: 'github', provider_username: 'nav-user', display_name: 'GitHub' }],
+				}),
+			});
+		});
+		await page.route('**/api/sessions**', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					sessions: [],
+					total: 0,
+					page: 1,
+					per_page: 50,
+				}),
+			});
+		});
+
 		await page.goto('/');
 
-		await expect(page.locator('nav').getByText(`[${admin.nickname}]`)).toBeVisible();
+		await expect(page.locator('[data-testid="account-menu-trigger"]')).toContainText('[@nav-user]');
+		await page.locator('[data-testid="account-menu-trigger"]').click();
+		const menu = page.locator('[data-testid="account-menu"]');
+		await expect(menu).toBeVisible();
+		await expect(menu).toContainText('Account');
+		await expect(menu).toContainText('nav@test.local');
+		await expect(menu).toContainText('Providers:');
+		await expect(menu).toContainText('GitHub');
+		await expect(menu).toContainText('Session Home');
+		await expect(menu).toContainText('Docs');
+		await expect(menu.locator('[data-testid="account-menu-logout"]')).toBeVisible();
+
 		const teamsCount = await page.locator('nav').getByText('Teams').count();
 		const inboxCount = await page.locator('nav').getByText('Inbox').count();
 		if (teamsCount > 0 || inboxCount > 0) {
@@ -85,10 +180,6 @@ test.describe('Navigation', () => {
 			await expect(page.locator('nav').getByText('Teams')).toHaveCount(0);
 			await expect(page.locator('nav').getByText('Inbox')).toHaveCount(0);
 		}
-		if (capabilities.upload_enabled) {
-			await expect(page.locator('nav').getByText('Upload')).toBeVisible();
-		} else {
-			await expect(page.locator('nav').getByText('Upload')).toHaveCount(0);
-		}
+		await expect(menu).toContainText('Upload');
 	});
 });

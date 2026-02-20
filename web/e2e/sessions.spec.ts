@@ -1,8 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { getAdmin, injectAuth, uploadSession } from './helpers';
+import { getAdmin, getCapabilities, injectAuth, uploadSession } from './helpers';
 
 test.describe('Sessions', () => {
 	test('upload and view session in list', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		const title = `PW List ${crypto.randomUUID().slice(0, 8)}`;
 		await uploadSession(request, admin.access_token, {
@@ -17,6 +21,10 @@ test.describe('Sessions', () => {
 	});
 
 	test('session list search filters correctly', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		const title = `PW Shortcut Search ${crypto.randomUUID().slice(0, 8)}`;
 		await uploadSession(request, admin.access_token, { title });
@@ -30,6 +38,10 @@ test.describe('Sessions', () => {
 	});
 
 	test('navigate to session detail', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		const sessionId = await uploadSession(request, admin.access_token, {
 			title: 'PW Detail Test',
@@ -40,9 +52,14 @@ test.describe('Sessions', () => {
 
 		// Should show session detail with events
 		await expect(page.getByText('Hello, write a test')).toBeVisible({ timeout: 10000 });
+		await expect(page.locator('[data-testid="session-flow-bar"]')).toBeVisible({ timeout: 10000 });
 	});
 
 	test('session detail shows agent info', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		const sessionId = await uploadSession(request, admin.access_token);
 
@@ -54,6 +71,10 @@ test.describe('Sessions', () => {
 	});
 
 	test('session detail in-session search shortcuts work', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		const now = Date.now();
 		const sessionId = await uploadSession(request, admin.access_token, {
@@ -100,6 +121,10 @@ test.describe('Sessions', () => {
 		page,
 		request,
 	}) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		const now = Date.now();
 		const sessionId = await uploadSession(request, admin.access_token, {
@@ -175,6 +200,9 @@ test.describe('Sessions', () => {
 	});
 
 	test('empty session list shows appropriate state', async ({ page, request }) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
 		await page.goto('/');
@@ -187,14 +215,15 @@ test.describe('Sessions', () => {
 		page,
 		request,
 	}) => {
+		const capabilities = await getCapabilities(request);
+		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
+		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
 		await page.goto('/upload');
 
-		const dropZone = page
-			.locator('div[role="button"]')
-			.filter({ hasText: 'Drag and drop a session JSON file here' })
-			.first();
+		const dropZone = page.getByRole('button', { name: /Drag and drop a session file here/i }).first();
 		await expect(dropZone).toBeVisible({ timeout: 10000 });
 
 		const dataTransfer = await page.evaluateHandle(() => new DataTransfer());

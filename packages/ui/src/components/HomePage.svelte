@@ -1,4 +1,5 @@
 <script lang="ts">
+import LandingPage from './LandingPage.svelte';
 import SessionListPage from './SessionListPage.svelte';
 
 const {
@@ -10,6 +11,7 @@ const {
 } = $props();
 </script>
 
-<div class="h-full">
+<div class="h-full space-y-8">
+	<LandingPage {onNavigate} />
 	<SessionListPage {onNavigate} {uploadEnabled} />
 </div>

@@ -18,8 +18,10 @@ test.describe('Authentication', () => {
 		await page.getByRole('button', { name: 'Continue' }).click();
 
 		await expect(page).toHaveURL(/\/$/);
-		await expect(page.locator('nav').getByText(`[${nickname}]`)).toBeVisible();
-		await expect(page.locator('nav').getByText('Logout')).toBeVisible();
+		await expect(page.locator('[data-testid="account-menu-trigger"]')).toContainText(`[${nickname}]`);
+		await page.locator('[data-testid="account-menu-trigger"]').click();
+		await expect(page.locator('[data-testid="account-menu"]')).toBeVisible();
+		await expect(page.locator('[data-testid="account-menu-logout"]')).toBeVisible();
 	});
 
 	test('authenticated user sees session list instead of landing', async ({ page, request }) => {
@@ -40,8 +42,11 @@ test.describe('Authentication', () => {
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
 		await page.goto('/');
-		await expect(page.locator('nav').getByText(`[${admin.nickname}]`)).toBeVisible();
-		await expect(page.locator('nav').getByText('Logout')).toBeVisible();
+		await expect(page.locator('[data-testid="account-menu-trigger"]')).toContainText(`[${admin.nickname}]`);
+		await page.locator('[data-testid="account-menu-trigger"]').click();
+		await expect(page.locator('[data-testid="account-menu"]')).toBeVisible();
+		await expect(page.locator('[data-testid="account-menu-logout"]')).toBeVisible();
+		await expect(page.locator('[data-testid="account-menu"]')).toContainText('User ID:');
 	});
 
 	test('authenticated user nav prefers github handle over nickname', async ({ page }) => {
@@ -101,8 +106,11 @@ test.describe('Authentication', () => {
 		});
 
 		await page.goto('/');
-		await expect(page.locator('nav').getByText('[@octocat]')).toBeVisible();
-		await expect(page.locator('nav').getByText('[fallback-nick]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="account-menu-trigger"]')).toContainText('[@octocat]');
+		await expect(page.locator('[data-testid="account-menu-trigger"]')).not.toContainText('[fallback-nick]');
+		await page.locator('[data-testid="account-menu-trigger"]').click();
+		await expect(page.locator('[data-testid="account-menu"]')).toContainText('Providers:');
+		await expect(page.locator('[data-testid="account-menu"]')).toContainText('GitHub');
 	});
 
 	test('legacy millisecond token expiry does not keep guest in authenticated home', async ({
@@ -145,7 +153,84 @@ test.describe('Authentication', () => {
 		await page.goto('/');
 		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
-		await expect(page.locator('nav').getByText('Logout')).toHaveCount(0);
+		await expect(page.locator('[data-testid="account-menu-trigger"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="account-menu-logout"]')).toHaveCount(0);
+	});
+
+	test('account dropdown logout signs out and returns to guest nav', async ({ page }) => {
+		const expiry = Math.floor(Date.now() / 1000) + 3600;
+		await page.addInitScript((nextExpiry) => {
+			localStorage.setItem('opensession_access_token', 'logout-access');
+			localStorage.setItem('opensession_refresh_token', 'logout-refresh');
+			localStorage.setItem('opensession_token_expiry', String(nextExpiry));
+		}, expiry);
+
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: true,
+					upload_enabled: false,
+					ingest_preview_enabled: false,
+					gh_share_enabled: true,
+				}),
+			});
+		});
+		await page.route('**/api/auth/verify', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ user_id: 'u-logout', nickname: 'logout-user' }),
+			});
+		});
+		await page.route('**/api/auth/me', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					user_id: 'u-logout',
+					nickname: 'logout-user',
+					created_at: new Date().toISOString(),
+					email: 'logout@test.local',
+					avatar_url: null,
+					oauth_providers: [],
+				}),
+			});
+		});
+		await page.route('**/api/auth/logout', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ ok: true }),
+			});
+		});
+		await page.route('**/api/sessions**', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					sessions: [],
+					total: 0,
+					page: 1,
+					per_page: 50,
+				}),
+			});
+		});
+
+		await page.goto('/');
+		await page.locator('[data-testid="account-menu-trigger"]').click();
+		await page.locator('[data-testid="account-menu-logout"]').click();
+		await expect(page).toHaveURL(/\/$/);
+		await expect(page.locator('nav').getByText('Login')).toBeVisible();
+		await expect(page.locator('[data-testid="account-menu-trigger"]')).toHaveCount(0);
+
+		const tokens = await page.evaluate(() => ({
+			access: localStorage.getItem('opensession_access_token'),
+			refresh: localStorage.getItem('opensession_refresh_token'),
+		}));
+		expect(tokens.access).toBeNull();
+		expect(tokens.refresh).toBeNull();
 	});
 
 	test('docs page accessible without auth', async ({ page }) => {

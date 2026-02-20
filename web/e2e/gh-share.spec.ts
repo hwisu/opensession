@@ -98,7 +98,9 @@ test.describe('GH Share Route', () => {
 		});
 
 		await page.goto('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
-		await expect(page.getByText('GH Share Fixture')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByRole('heading', { name: 'GH Share Fixture' })).toBeVisible({
+			timeout: 10000,
+		});
 		await expect(page.getByText('hello from user')).toBeVisible();
 		await expect(page.getByText('hello from assistant')).toBeVisible();
 	});
@@ -206,7 +208,9 @@ test.describe('GH Share Route', () => {
 		await page.goto('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
 		await expect(page.getByText('Parser selection required')).toBeVisible({ timeout: 10000 });
 		await page.getByRole('button', { name: /codex/i }).click();
-		await expect(page.getByText('GH Share Fixture')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByRole('heading', { name: 'GH Share Fixture' })).toBeVisible({
+			timeout: 10000,
+		});
 
 		const url = new URL(page.url());
 		expect(url.searchParams.get('parser_hint')).toBe('codex');

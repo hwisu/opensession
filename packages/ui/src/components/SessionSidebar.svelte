@@ -24,19 +24,20 @@ const tool = $derived(getToolConfig(session.agent.tool));
 	</div>
 {/snippet}
 
-<aside class="hidden w-56 shrink-0 border-l border-border overflow-y-auto px-3 py-2 lg:block">
+<aside
+	class="hidden w-64 shrink-0 overflow-y-auto border-l border-border bg-[linear-gradient(180deg,rgba(24,33,50,0.45),rgba(14,19,29,0.75))] px-3 py-3 lg:block"
+>
 	<div class="space-y-3">
 		<!-- User -->
 		{#if detail?.nickname}
-			<div class="flex items-center gap-2 text-sm">
+			<div class="flex items-center gap-2 rounded border border-border/70 bg-bg-primary/60 px-2 py-1.5 text-sm">
 				<span class="font-medium text-text-primary">{detail.nickname}</span>
 			</div>
-			<hr class="border-border" />
 		{/if}
 
 		<h3 class="text-xs font-semibold uppercase tracking-wider text-text-muted">Session</h3>
 
-		<div class="space-y-2 text-xs">
+		<div class="space-y-2 rounded border border-border/70 bg-bg-primary/55 p-2 text-xs">
 			<!-- Date -->
 			<div>
 				<div class="text-text-secondary">{formatTimestamp(session.context.created_at)}</div>
@@ -56,7 +57,7 @@ const tool = $derived(getToolConfig(session.agent.tool));
 
 			{@render statRow('Provider:', session.agent.provider)}
 
-			<hr class="border-border" />
+			<hr class="border-border/60" />
 
 			{@render statRow('Messages:', `${session.stats.message_count}`)}
 			{@render statRow('Tools:', `${session.stats.tool_call_count}`)}
@@ -83,10 +84,11 @@ const tool = $derived(getToolConfig(session.agent.tool));
 
 		<!-- Tags -->
 		{#if session.context.tags.length > 0}
-			<hr class="border-border" />
-			<div class="flex flex-wrap gap-1 text-xs">
+			<div class="flex flex-wrap gap-1 rounded border border-border/70 bg-bg-primary/55 p-2 text-xs">
 				{#each session.context.tags as tag}
-					<span class="text-text-secondary">#{tag}</span>
+					<span class="rounded border border-border/70 bg-bg-secondary px-1.5 py-0.5 text-text-secondary">
+						#{tag}
+					</span>
 				{/each}
 			</div>
 		{/if}

@@ -8,7 +8,6 @@ mod stream_push;
 #[cfg(feature = "e2e")]
 mod test_cmd;
 mod upload;
-mod upload_all;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -96,7 +95,7 @@ enum Commands {
         action: Box<SessionAction>,
     },
 
-    /// Publish workflows (single upload / bulk upload)
+    /// Publish workflows
     Publish {
         #[command(subcommand)]
         action: PublishAction,
@@ -253,8 +252,6 @@ enum PublishAction {
         #[arg(long)]
         git: bool,
     },
-    /// Discover and upload ALL local sessions to the server
-    UploadAll,
 }
 
 #[derive(Subcommand)]
@@ -413,16 +410,11 @@ async fn main() {
     };
 
     // Auto-start daemon for commands that benefit from it
-    match &command {
-        Commands::Publish {
-            action: PublishAction::Upload { .. },
-        }
-        | Commands::Publish {
-            action: PublishAction::UploadAll,
-        } => {
-            maybe_auto_start_daemon();
-        }
-        _ => {}
+    if let Commands::Publish {
+        action: PublishAction::Upload { .. },
+    } = &command
+    {
+        maybe_auto_start_daemon();
     }
 
     let json_errors = command.wants_json_errors();
@@ -775,7 +767,6 @@ async fn run_publish_action(action: PublishAction) -> anyhow::Result<()> {
         PublishAction::Upload { file, parent, git } => {
             upload::run_upload(&file, &parent, git).await
         }
-        PublishAction::UploadAll => upload_all::run_upload_all().await,
     }
 }
 

@@ -213,6 +213,16 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                     Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
                 ));
             }
+            if !app.is_default_sort_order() {
+                left_spans.push(Span::styled("  ", Style::new()));
+                left_spans.push(Span::styled(
+                    format!(" order:{} ", app.session_sort_order_label()),
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Theme::ACCENT_YELLOW)
+                        .bold(),
+                ));
+            }
             // Page indicator
             if app.total_pages() > 1 {
                 left_spans.push(Span::styled(
@@ -497,6 +507,7 @@ fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
             app.session_count()
         )),
         FooterSegment::Plain(format!("page {}/{}", app.page + 1, app.total_pages())),
+        FooterSegment::Plain(format!("order:{}", app.session_sort_order_label())),
         FooterSegment::Shortcut {
             key: "j/k".to_string(),
             desc: "move".to_string(),
@@ -515,11 +526,15 @@ fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
         },
         FooterSegment::Shortcut {
             key: "a".to_string(),
-            desc: "agent".to_string(),
+            desc: "tool(alias)".to_string(),
         },
         FooterSegment::Shortcut {
             key: "t".to_string(),
-            desc: "tool(compat)".to_string(),
+            desc: "tool".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "o".to_string(),
+            desc: "order".to_string(),
         },
         FooterSegment::Shortcut {
             key: "r".to_string(),
@@ -1446,6 +1461,8 @@ mod tests {
         let line = session_list_footer_line(&app, 220);
         assert!(line_has_colored_span(&line, "j/k", Theme::TEXT_KEY));
         assert!(line_has_colored_span(&line, "move", Theme::TEXT_KEY_DESC));
+        assert!(line_has_colored_span(&line, "o", Theme::TEXT_KEY));
+        assert!(line_has_colored_span(&line, "order", Theme::TEXT_KEY_DESC));
     }
 
     #[test]

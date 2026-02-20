@@ -29,6 +29,10 @@ cargo install opensession
 opensession --help
 opensession session handoff --last
 opensession daemon start --repo .
+```
+
+Optional stream-write hook path (only when you explicitly integrate agent hook writes):
+```bash
 opensession daemon enable-hook --agent claude-code
 ```
 
@@ -65,6 +69,20 @@ Issue the key from your web settings page (`/settings`); it is shown once at iss
 | Team/invitation/sync routes | Disabled | Disabled |
 
 Web UI behavior is runtime-driven via `GET /api/capabilities` (no build-time profile flag).
+
+## Web UX Map
+
+- Session list layout tabs:
+  - `List`: one chronological feed across sessions.
+  - `Agents`: grouped by max active agents (parallel lane density view).
+- List footer shortcut legend:
+  - `t`: cycle tool filter
+  - `o`: cycle ordering (`recent`, `popular`, `longest`)
+  - `r`: cycle time range (`all`, `24h`, `7d`, `30d`)
+  - `l`: toggle list layout (`List`/`Agents`)
+- Session detail shortcuts:
+  - `/`: focus in-session search, `n/p`: next/previous match, `1-5`: event filters.
+- Top-right account handle (`[@handle]`) opens a dropdown with account metadata, linked providers, quick links, and logout.
 
 ## Architecture
 
@@ -103,12 +121,16 @@ Single Cargo workspace with 12 crates:
 | `opensession session handoff artifact ...` | Artifact lifecycle (`list`, `show`, `refresh`, `render-md`) |
 | `opensession publish upload <file> [--git]` | Publish one session (default: server, `--git`: `opensession/sessions` branch) |
 | `opensession daemon start\|stop\|status\|health` | Manage daemon lifecycle |
-| `opensession daemon enable-hook --agent <name>` | Install stream-write hook manually |
+| `opensession daemon enable-hook --agent <name>` | Optional: install stream-write hook for agent-side append workflows |
+| `opensession daemon stream-push --agent <name>` | Hook target: stream newly appended local session events |
 | `opensession daemon select --repo ...` | Select watcher paths/repos |
 | `opensession daemon show` | Show daemon watcher targets |
 | `opensession account connect` | Set server URL/API key (optional) |
 | `opensession account status\|verify` | Check server connectivity |
 | `opensession docs completion <shell>` | Generate shell completions |
+
+Removed command:
+- `opensession publish upload-all` was removed; upload sessions explicitly with `opensession publish upload <file>`.
 
 ## Handoff Usage (Verified)
 
@@ -198,12 +220,15 @@ Notes:
 - `wrangler dev` uses `sh build.sh` in this repo and serves the Worker locally.
 - Local bindings (D1/R2/assets/env vars) are attached from `wrangler.toml`.
 - `--remote` requires Cloudflare auth and can hit real remote resources.
+- Worker profile commonly reports `upload_enabled=false` and `ingest_preview_enabled=false`; capability-gated E2E cases skip upload-only flows by design.
 
 ## Configuration
 
 Daemon hook policy:
 - `opensession daemon start` does not auto-install tool hooks.
-- Install hook explicitly when needed: `opensession daemon enable-hook --agent claude-code`.
+- Install hook only when needed for agent stream-write integration:
+  - `opensession daemon enable-hook --agent claude-code`
+  - `opensession daemon stream-push --agent claude-code`
 
 Canonical config file:
 - `~/.config/opensession/opensession.toml`

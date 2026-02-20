@@ -1,6 +1,7 @@
 <script lang="ts">
 import { goto } from '$app/navigation';
 import { page } from '$app/stores';
+import { untrack } from 'svelte';
 import {
 	buildNativeFilterOptions,
 	buildUnifiedFilterOptions,
@@ -48,6 +49,7 @@ let routeQueryEf = $state<string[]>([]);
 let routeQueryNf = $state<string[]>([]);
 let routeVersion = $state(0);
 let lastPreviewKey = $state<string | null>(null);
+let lastObservedHref = '';
 
 function safeDecode(value: string): string | null {
 	try {
@@ -276,8 +278,14 @@ async function loadFromRoute() {
 }
 
 $effect(() => {
-	void $page.url.href;
-	void loadFromRoute();
+	const href = $page.url.href;
+	if (href === lastObservedHref) return;
+	lastObservedHref = href;
+	// Prevent effect dependency capture from loadFromRoute internals, which can retrigger
+	// this effect in a tight loop while route state is being resolved.
+	untrack(() => {
+		void loadFromRoute();
+	});
 });
 </script>
 

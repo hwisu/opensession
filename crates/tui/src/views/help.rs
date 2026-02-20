@@ -119,6 +119,7 @@ fn current_view_shortcuts(app: &App, key_style: Style, desc_style: Style) -> Vec
                 desc_style,
             ),
             shortcut_line("  a / t       ", "Cycle tool filter", key_style, desc_style),
+            shortcut_line("  o           ", "Cycle sort order", key_style, desc_style),
             shortcut_line("  r           ", "Cycle time range", key_style, desc_style),
         ],
         View::SessionDetail => {

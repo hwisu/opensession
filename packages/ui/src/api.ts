@@ -41,7 +41,12 @@ function getTokenExpiry(): number {
 		if (!v) return 0;
 		const parsed = parseInt(v, 10);
 		if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-		return parsed;
+		// Legacy clients stored token expiry as epoch milliseconds.
+		const normalized = parsed > 100_000_000_000 ? Math.floor(parsed / 1000) : parsed;
+		if (normalized !== parsed) {
+			localStorage.setItem('opensession_token_expiry', String(normalized));
+		}
+		return normalized;
 	}
 	return 0;
 }

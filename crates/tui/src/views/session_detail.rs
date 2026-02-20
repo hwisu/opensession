@@ -2733,6 +2733,59 @@ fn lane_marker_text(marker: LaneMarker) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineFlowKind {
+    User,
+    Agent,
+    Tool,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FlowBucket {
+    total: u32,
+    kinds: [u32; 4],
+}
+
+fn timeline_flow_kind(event_type: &EventType) -> TimelineFlowKind {
+    match event_type {
+        EventType::UserMessage => TimelineFlowKind::User,
+        EventType::SystemMessage => TimelineFlowKind::System,
+        EventType::AgentMessage
+        | EventType::Thinking
+        | EventType::TaskStart { .. }
+        | EventType::TaskEnd { .. } => TimelineFlowKind::Agent,
+        _ => TimelineFlowKind::Tool,
+    }
+}
+
+fn timeline_flow_kind_index(kind: TimelineFlowKind) -> usize {
+    match kind {
+        TimelineFlowKind::User => 0,
+        TimelineFlowKind::Agent => 1,
+        TimelineFlowKind::Tool => 2,
+        TimelineFlowKind::System => 3,
+    }
+}
+
+fn timeline_flow_kind_label(kind: TimelineFlowKind) -> &'static str {
+    match kind {
+        TimelineFlowKind::User => "U",
+        TimelineFlowKind::Agent => "A",
+        TimelineFlowKind::Tool => "T",
+        TimelineFlowKind::System => "S",
+    }
+}
+
+fn timeline_flow_kind_color(kind: TimelineFlowKind) -> Color {
+    match kind {
+        TimelineFlowKind::User => Theme::ROLE_USER,
+        TimelineFlowKind::Agent => Theme::ROLE_AGENT_BRIGHT,
+        TimelineFlowKind::Tool => Theme::ACCENT_YELLOW,
+        TimelineFlowKind::System => Theme::ROLE_SYSTEM,
+    }
+}
+
 fn format_duration(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
@@ -2748,11 +2801,8 @@ fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], c
         return;
     }
 
-    let counter = format!(" ({}/{}) ", current_idx + 1, events.len());
-    let bar_width = (area.width as usize).saturating_sub(counter.len() + 2);
-    if bar_width == 0 {
-        return;
-    }
+    let counter = format!(" ({}/{})", current_idx + 1, events.len());
+    let viewport_width = area.width as usize;
 
     let first_ts = events
         .first()
@@ -2763,37 +2813,117 @@ fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], c
         .map(|e| e.event().timestamp)
         .unwrap_or(first_ts);
     let total_secs = (last_ts - first_ts).num_seconds().max(1) as f64;
-    let mut buckets = vec![0u32; bar_width];
-    let mut current_bucket_idx = 0;
+    let mut flow_totals = [0usize; 4];
+    let mut current_bucket_idx = 0usize;
+
+    let legend_kinds = [
+        TimelineFlowKind::User,
+        TimelineFlowKind::Agent,
+        TimelineFlowKind::Tool,
+        TimelineFlowKind::System,
+    ];
+    let show_system_legend = events.iter().any(|entry| {
+        matches!(
+            timeline_flow_kind(&entry.event().event_type),
+            TimelineFlowKind::System
+        )
+    });
+
+    let legend_kinds: Vec<TimelineFlowKind> = legend_kinds
+        .into_iter()
+        .filter(|kind| *kind != TimelineFlowKind::System || show_system_legend)
+        .collect();
+    let count_digits = events.len().to_string().len();
+    let legend_width = legend_kinds
+        .iter()
+        .map(|kind| timeline_flow_kind_label(*kind).len() + count_digits + 2)
+        .sum::<usize>();
+
+    let mut bar_width = viewport_width.saturating_sub(counter.len() + 2);
+    let mut show_legend = viewport_width > (counter.len() + 20);
+    if show_legend {
+        bar_width = viewport_width.saturating_sub(counter.len() + legend_width + 3);
+        if bar_width < 20 {
+            show_legend = false;
+            bar_width = viewport_width.saturating_sub(counter.len() + 2);
+        }
+    }
+    if bar_width == 0 {
+        return;
+    }
+
+    let mut buckets = vec![FlowBucket::default(); bar_width];
 
     for (i, de) in events.iter().enumerate() {
         let t = (de.event().timestamp - first_ts).num_seconds() as f64;
         let bucket = ((t / total_secs) * (bar_width - 1) as f64) as usize;
         let bucket = bucket.min(bar_width - 1);
-        buckets[bucket] += 1;
+        let flow_kind = timeline_flow_kind(&de.event().event_type);
+        let flow_index = timeline_flow_kind_index(flow_kind);
+        buckets[bucket].total += 1;
+        buckets[bucket].kinds[flow_index] += 1;
+        flow_totals[flow_index] += 1;
         if i == current_idx {
             current_bucket_idx = bucket;
         }
     }
 
-    let max_count = *buckets.iter().max().unwrap_or(&1).max(&1);
+    let max_count = buckets
+        .iter()
+        .map(|bucket| bucket.total)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let density_chars = [' ', '.', ':', '=', '#'];
     let mut spans = vec![Span::styled(" ", Style::new())];
-    for (idx, count) in buckets.iter().enumerate() {
-        let level = if *count == 0 {
+    for (idx, bucket) in buckets.iter().enumerate() {
+        let level = if bucket.total == 0 {
             0
         } else {
-            ((*count as f64 / max_count as f64) * 4.0).ceil() as usize
+            ((bucket.total as f64 / max_count as f64) * 4.0).ceil() as usize
         }
         .min(4);
-        let style = if idx == current_bucket_idx {
-            Style::new().fg(Color::Black).bg(Theme::ACCENT_BLUE)
-        } else {
+
+        let dominant_kind = bucket
+            .kinds
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, count)| *count)
+            .map(|(kind_idx, _)| match kind_idx {
+                0 => TimelineFlowKind::User,
+                1 => TimelineFlowKind::Agent,
+                2 => TimelineFlowKind::Tool,
+                _ => TimelineFlowKind::System,
+            })
+            .unwrap_or(TimelineFlowKind::Tool);
+
+        let mut style = if bucket.total == 0 {
             Style::new().fg(Theme::BAR_DIM)
+        } else {
+            Style::new().fg(timeline_flow_kind_color(dominant_kind))
         };
+        if idx == current_bucket_idx {
+            style = style.bg(Theme::BG_SURFACE).add_modifier(Modifier::BOLD);
+        }
         spans.push(Span::styled(density_chars[level].to_string(), style));
     }
-    spans.push(Span::styled(counter, Style::new().fg(Color::DarkGray)));
+    spans.push(Span::styled(counter, Style::new().fg(Theme::TEXT_MUTED)));
+    if show_legend {
+        for kind in legend_kinds {
+            let idx = timeline_flow_kind_index(kind);
+            let count = flow_totals[idx];
+            let style = if count == 0 {
+                Style::new().fg(Theme::TEXT_MUTED)
+            } else {
+                Style::new().fg(timeline_flow_kind_color(kind))
+            };
+            spans.push(Span::styled(" ", Style::new()));
+            spans.push(Span::styled(
+                format!("{}:{count}", timeline_flow_kind_label(kind)),
+                style,
+            ));
+        }
+    }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -3420,6 +3550,32 @@ mod tests {
                 path: "x.rs".to_string()
             }),
             "CREATE"
+        );
+    }
+
+    #[test]
+    fn timeline_flow_kind_groups_events_by_actor() {
+        assert_eq!(
+            timeline_flow_kind(&EventType::UserMessage),
+            TimelineFlowKind::User
+        );
+        assert_eq!(
+            timeline_flow_kind(&EventType::AgentMessage),
+            TimelineFlowKind::Agent
+        );
+        assert_eq!(
+            timeline_flow_kind(&EventType::TaskStart { title: None }),
+            TimelineFlowKind::Agent
+        );
+        assert_eq!(
+            timeline_flow_kind(&EventType::ToolCall {
+                name: "exec_command".to_string()
+            }),
+            TimelineFlowKind::Tool
+        );
+        assert_eq!(
+            timeline_flow_kind(&EventType::SystemMessage),
+            TimelineFlowKind::System
         );
     }
 

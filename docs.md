@@ -70,9 +70,14 @@ Users can filter by time range, tool, and event categories, then inspect session
 ### How to use
 
 1. Open `/` for the session feed.
-2. Filter by time range and tool.
-3. Open a session detail page (`/session/{id}`).
-4. Use in-session search and timeline filters to focus on relevant events.
+2. Choose layout mode:
+   - `List`: one chronological feed across sessions.
+   - `Agents`: grouped by max active agents (parallelism-oriented view).
+3. Use list shortcuts:
+   - `t` tool, `o` order, `r` range, `l` layout, `/` search.
+4. Open a session detail page (`/session/{id}`).
+5. Use in-session shortcuts:
+   - `/` search focus, `n/p` next/previous match, `1-5` event filter toggles.
 
 ### Example
 
@@ -88,6 +93,7 @@ curl -L "https://opensession.io/api/sessions/<id>/raw" -o session.hail.jsonl
 
 - Public feed visibility depends on deployment policy.
 - Detail rendering assumes parseable HAIL-compatible event structures.
+- List/footer legends are capability-aware and may hide upload-linked actions when upload is disabled.
 
 ## GitHub Share Preview
 
@@ -130,7 +136,8 @@ plus optional OAuth providers. Guest users can still access landing and docs.
 1. Open `/login`.
 2. Submit email/password.
 3. Use OAuth provider buttons when configured.
-4. Use issued API keys for CLI-to-server integration.
+4. After login, open the top-right account handle to view linked providers and use logout.
+5. Use issued API keys for CLI-to-server integration.
 
 ### Example
 
@@ -168,12 +175,16 @@ wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state
 
 # Server local dev
 cargo run -p opensession-server
+
+# E2E against worker profile (capability-gated skips are expected)
+BASE_URL=http://127.0.0.1:8788 npm run test:e2e
 ```
 
 ### Limits
 
 - Capability flags are runtime values, not compile-time assumptions.
 - Worker profile intentionally disables mutating flows by default.
+- Capability-gated E2E tests skip upload/detail flows when required flags are disabled.
 
 ## Migration Parity
 

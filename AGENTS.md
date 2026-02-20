@@ -40,6 +40,7 @@ Required:
 5. Use `write_stdin` only for sessions started with `tty=true` and still interactive; otherwise rerun the command non-interactively.
 6. Run `node/npm/pnpm` commands in the package directory that owns `package.json` and dependencies.
 7. When edits push a TUI source file over 1000 lines, add or update its ownership entry in `crates/tui/long_file_ownership.toml` before running `pre-push`.
+8. For `wrangler dev` web validation, restart `wrangler dev` after source edits when using custom build hooks; do not assume an already-running instance rebuilt the latest bundle.
 
 ## Auto-Improvement Routine
 Trigger this routine automatically whenever a command, test, hook, or runtime check fails.

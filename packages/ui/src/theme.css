@@ -35,12 +35,12 @@
 html {
 	background-color: var(--color-bg-primary);
 	color: var(--color-text-primary);
-	font-size: 16.5px;
+	font-size: 19px;
 }
 
 body {
 	font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
-	font-size: 14px;
+	font-size: 1rem;
 	line-height: 1.5;
 	-webkit-font-smoothing: antialiased;
 }

@@ -940,6 +940,22 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn list_o_key_cycles_sort_order() {
+        let mut app = App::new(vec![
+            make_live_session("sort-a", 2),
+            make_live_session("sort-b", 2),
+        ]);
+
+        assert!(matches!(app.session_sort_order, SortOrder::Recent));
+        app.handle_list_key(KeyCode::Char('o'));
+        assert!(matches!(app.session_sort_order, SortOrder::Popular));
+        app.handle_list_key(KeyCode::Char('o'));
+        assert!(matches!(app.session_sort_order, SortOrder::Longest));
+        app.handle_list_key(KeyCode::Char('o'));
+        assert!(matches!(app.session_sort_order, SortOrder::Recent));
+    }
+
+    #[test]
     fn list_tab_cycles_repo_view_even_if_active_tab_drifted() {
         let mut app = App::new(vec![]);
         app.repos = vec!["alpha/repo".to_string()];
@@ -1905,6 +1921,7 @@ pub struct App {
     pub tool_filter: Option<String>,
     pub available_tools: Vec<String>,
     pub session_time_range: TimeRange,
+    pub session_sort_order: SortOrder,
 
     // ── Pagination ───────────────────────────────────────────────
     pub page: usize,
@@ -2098,6 +2115,7 @@ impl App {
             tool_filter: None,
             available_tools: local_tools,
             session_time_range: TimeRange::All,
+            session_sort_order: SortOrder::Recent,
             page: 0,
             per_page: 50,
             list_layout: ListLayout::default(),
@@ -2448,6 +2466,9 @@ impl App {
             KeyCode::Char('r') => {
                 self.cycle_session_time_range();
             }
+            KeyCode::Char('o') => {
+                self.cycle_session_sort_order();
+            }
             KeyCode::Char('R') => self.open_repo_picker(),
             KeyCode::Char('p') => {
                 // Open upload popup — only when connected to a server
@@ -2562,6 +2583,9 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.cycle_session_time_range();
+            }
+            KeyCode::Char('o') => {
+                self.cycle_session_sort_order();
             }
             KeyCode::Char('R') => self.open_repo_picker(),
             KeyCode::Char('f') => {
@@ -3521,7 +3545,7 @@ impl App {
                 tool: self.tool_filter.clone(),
                 search,
                 exclude_low_signal: true,
-                sort: LocalSortOrder::Recent,
+                sort: self.local_sort_order(),
                 time_range: self.local_session_time_range(),
                 ..Default::default()
             },
@@ -3657,7 +3681,7 @@ impl App {
                     tool: None,
                     search,
                     exclude_low_signal: true,
-                    sort: LocalSortOrder::Recent,
+                    sort: self.local_sort_order(),
                     time_range: self.local_session_time_range(),
                     ..Default::default()
                 };
@@ -3705,8 +3729,20 @@ impl App {
         }
     }
 
+    pub fn session_sort_order_label(&self) -> &'static str {
+        match self.session_sort_order {
+            SortOrder::Recent => "recent",
+            SortOrder::Popular => "popular",
+            SortOrder::Longest => "longest",
+        }
+    }
+
     pub fn is_default_time_range(&self) -> bool {
         matches!(self.session_time_range, TimeRange::All)
+    }
+
+    pub fn is_default_sort_order(&self) -> bool {
+        matches!(self.session_sort_order, SortOrder::Recent)
     }
 
     pub fn active_tool_filter(&self) -> Option<&str> {
@@ -3722,6 +3758,7 @@ impl App {
     pub fn has_active_session_filters(&self) -> bool {
         self.active_agent_filter().is_some()
             || !self.search_query.trim().is_empty()
+            || !self.is_default_sort_order()
             || !self.is_default_time_range()
     }
 
@@ -3749,6 +3786,14 @@ impl App {
             TimeRange::Hours24 => LocalTimeRange::Hours24,
             TimeRange::Days7 => LocalTimeRange::Days7,
             TimeRange::Days30 => LocalTimeRange::Days30,
+        }
+    }
+
+    fn local_sort_order(&self) -> LocalSortOrder {
+        match self.session_sort_order {
+            SortOrder::Recent => LocalSortOrder::Recent,
+            SortOrder::Popular => LocalSortOrder::Popular,
+            SortOrder::Longest => LocalSortOrder::Longest,
         }
     }
 
@@ -3829,6 +3874,16 @@ impl App {
             TimeRange::Hours24 => TimeRange::Days7,
             TimeRange::Days7 => TimeRange::Days30,
             TimeRange::Days30 => TimeRange::All,
+        };
+        self.page = 0;
+        self.apply_filter();
+    }
+
+    fn cycle_session_sort_order(&mut self) {
+        self.session_sort_order = match self.session_sort_order {
+            SortOrder::Recent => SortOrder::Popular,
+            SortOrder::Popular => SortOrder::Longest,
+            SortOrder::Longest => SortOrder::Recent,
         };
         self.page = 0;
         self.apply_filter();
@@ -5668,7 +5723,7 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
 
-                let sort_order = SortOrder::Recent;
+                let sort_order = self.session_sort_order.clone();
                 self.filtered_sessions.sort_by(|a, b| {
                     let lhs = &self.sessions[*a];
                     let rhs = &self.sessions[*b];

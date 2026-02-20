@@ -29,6 +29,10 @@ cargo install opensession
 opensession --help
 opensession session handoff --last
 opensession daemon start --repo .
+```
+
+선택적 스트림 훅 경로(에이전트 훅 쓰기 연동이 필요할 때만):
+```bash
 opensession daemon enable-hook --agent claude-code
 ```
 
@@ -59,11 +63,26 @@ opensession account connect --server https://opensession.io --api-key <issued_ke
 |------|----------------|-------------------|
 | 홈(`/`) | 게스트 랜딩, 로그인 후 세션 목록 | 게스트 랜딩, 로그인 후 세션 목록 |
 | 업로드 UI(`/upload`) | 사용 가능 | 비활성(read-only) |
-| API 표면 | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
+| GitHub 공유 미리보기(`/gh/{owner}/{repo}/{ref}/{path...}`) | 사용 가능 | read-only 안내 배너 |
+| API 표면 | `/api/health`, `/api/capabilities`, `/api/ingest/preview`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
 | 인증 라우트 | `JWT_SECRET` 설정 시 활성 | `JWT_SECRET` 설정 시 활성 |
 | 팀/초대/싱크 라우트 | 비활성 | 비활성 |
 
 웹 UI 동작은 `GET /api/capabilities` 기반 런타임 감지로 결정됩니다(빌드 타임 프로필 플래그 없음).
+
+## 웹 UX 맵
+
+- 세션 목록 레이아웃 탭:
+  - `List`: 전체 세션을 시간순 단일 피드로 표시
+  - `Agents`: 최대 동시 에이전트 수 기준으로 그룹 컬럼 표시(병렬도 관찰용)
+- 목록 하단 단축키 범례:
+  - `t`: tool 필터 순환
+  - `o`: 정렬 순환(`recent`, `popular`, `longest`)
+  - `r`: 기간 순환(`all`, `24h`, `7d`, `30d`)
+  - `l`: 레이아웃 전환(`List`/`Agents`)
+- 세션 상세 단축키:
+  - `/`: 상세 검색 포커스, `n/p`: 이전/다음 검색 결과, `1-5`: 이벤트 필터 토글
+- 우측 상단 계정 핸들(`[@handle]`) 클릭 시 드롭다운에서 계정 메타데이터, 연동 provider, 빠른 이동, 로그아웃을 제공합니다.
 
 ## 아키텍처
 
@@ -102,12 +121,16 @@ opensession account connect --server https://opensession.io --api-key <issued_ke
 | `opensession session handoff artifact ...` | 아티팩트 수명주기 (`list`, `show`, `refresh`, `render-md`) |
 | `opensession publish upload <file> [--git]` | 단일 세션 퍼블리시 (기본: 서버, `--git`: `opensession/sessions` 브랜치) |
 | `opensession daemon start\|stop\|status\|health` | 데몬 실행/중지/상태 |
-| `opensession daemon enable-hook --agent <name>` | 스트림 훅 수동 설치 |
+| `opensession daemon enable-hook --agent <name>` | 선택 기능: 에이전트 스트림 append 워크플로용 훅 설치 |
+| `opensession daemon stream-push --agent <name>` | 훅 대상: 로컬 세션 파일에 append된 신규 이벤트를 전송 |
 | `opensession daemon select --repo ...` | 감시 경로/레포 선택 |
 | `opensession daemon show` | 현재 감시 대상 확인 |
 | `opensession account connect` | 서버 URL/API 키 설정(선택) |
 | `opensession account status\|verify` | 서버 연결 상태 확인 |
 | `opensession docs completion <shell>` | 쉘 자동완성 생성 |
+
+제거된 명령:
+- `opensession publish upload-all`은 제거되었습니다. 파일 단위로 `opensession publish upload <file>`을 사용하세요.
 
 ## Handoff 사용법 (실행 검증 완료)
 
@@ -197,12 +220,15 @@ wrangler dev --ip 127.0.0.1 --port 8788 --log-level debug
 - `wrangler dev`는 이 레포의 `sh build.sh`를 호출해 Worker를 로컬 서빙합니다.
 - `wrangler.toml` 기준으로 D1/R2/assets/env 바인딩이 로컬에 연결됩니다.
 - `--remote`는 Cloudflare 로그인/권한이 필요하고 실제 원격 리소스에 접근할 수 있습니다.
+- Worker 프로필은 보통 `upload_enabled=false`, `ingest_preview_enabled=false`이며, capability-gated E2E는 업로드 전용 경로를 의도적으로 skip합니다.
 
 ## 설정
 
 데몬 훅 정책:
 - `opensession daemon start`는 자동으로 훅을 설치하지 않습니다.
-- 필요 시 명시적으로 설치합니다: `opensession daemon enable-hook --agent claude-code`.
+- 에이전트 스트림 쓰기 연동이 필요할 때만 설치/사용합니다:
+  - `opensession daemon enable-hook --agent claude-code`
+  - `opensession daemon stream-push --agent claude-code`
 
 표준 설정 파일:
 - `~/.config/opensession/opensession.toml`
@@ -241,7 +267,7 @@ custom_paths = [
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
 | GET | `/api/health` | 헬스 체크 |
-| GET | `/api/capabilities` | 런타임 기능 플래그(`auth_enabled`, `upload_enabled`) |
+| GET | `/api/capabilities` | 런타임 기능 플래그(`auth_enabled`, `upload_enabled`, `ingest_preview_enabled`, `gh_share_enabled`) |
 | GET | `/api/auth/providers` | 사용 가능한 인증 공급자 목록 |
 | POST | `/api/auth/register` | 이메일/비밀번호 회원가입 |
 | POST | `/api/auth/login` | 이메일/비밀번호 로그인 |

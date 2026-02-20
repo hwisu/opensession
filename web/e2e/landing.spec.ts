@@ -6,19 +6,26 @@ test.describe('Home Feed (unauthenticated)', () => {
 		await page.goto('/');
 		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav').getByText('Sessions')).toBeVisible();
-		await expect(page.locator('nav').getByText('Login')).toBeVisible();
-		await expect(page.locator('nav').getByText('Register')).toHaveCount(0);
 		await expect(
 			page.locator('h1').filter({ hasText: 'Inspect AI session traces with capability-aware workflows.' }),
-		).toHaveCount(0);
+		).toBeVisible();
+		await expect(page.locator('nav').getByText('Login')).toBeVisible();
+		await expect(page.locator('nav').getByText('Register')).toHaveCount(0);
 	});
 
-	test('home feed no longer renders landing-only sections', async ({ page }) => {
+	test('home feed renders landing sections and capability matrix', async ({ page }) => {
 		await page.goto('/');
 		await expect(page.locator('#session-search')).toBeVisible();
-		await expect(page.locator('[data-contract-section="feature-map"]')).toHaveCount(0);
-		await expect(page.locator('[data-contract-section="data-flow"]')).toHaveCount(0);
-		await expect(page.locator('[data-contract-section="capability-matrix"]')).toHaveCount(0);
+		await expect(page.locator('[data-contract-section="feature-map"]')).toBeVisible();
+		await expect(page.locator('[data-contract-section="data-flow"]')).toBeVisible();
+		await expect(page.locator('[data-contract-section="capability-matrix"]')).toBeVisible();
+	});
+
+	test('landing quick action opens docs page', async ({ page }) => {
+		await page.goto('/');
+		await page.getByRole('button', { name: 'Open Docs' }).click();
+		await expect(page).toHaveURL(/\/docs$/);
+		await expect(page.locator('main h1').first()).toContainText('Documentation');
 	});
 
 	test('login page is accessible to guests', async ({ page }) => {

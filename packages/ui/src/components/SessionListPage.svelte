@@ -34,6 +34,22 @@ const perPage = 20;
 const layoutPreferenceKey = 'opensession_session_list_layout';
 const listCacheKey = 'opensession_public_list_cache_v1';
 const listCacheTtlMs = 30_000;
+const layoutTabs: ReadonlyArray<{
+	value: ListLayout;
+	label: string;
+	title: string;
+}> = [
+	{
+		value: 'single',
+		label: 'List',
+		title: 'Single feed across all sessions',
+	},
+	{
+		value: 'agent-columns',
+		label: 'Agents',
+		title: 'Group sessions by max active agents (parallel lanes)',
+	},
+];
 
 type SessionListCacheEntry = {
 	query: string;
@@ -49,6 +65,16 @@ const groupedByAgents = $derived(groupSessionsByAgentCount(visibleSessions));
 const visibleColumnCount = $derived(groupedByAgents.length);
 const navigableSessions = $derived(visibleSessions);
 const selectedSessionId = $derived(navigableSessions[selectedIndex]?.id ?? null);
+const layoutSummaryLabel = $derived(
+	listLayout === 'single'
+		? 'List = one chronological feed'
+		: 'Agents = grouped by max active agents',
+);
+const layoutSummaryDetail = $derived(
+	listLayout === 'single'
+		? 'Best for scanning overall flow with selected order.'
+		: 'Best for seeing parallelism and handoff density.',
+);
 const sessionOrder = $derived.by(() => {
 	const order = new Map<string, number>();
 	navigableSessions.forEach((session, idx) => {
@@ -373,21 +399,41 @@ $effect(() => {
 			<option value="popular">Most Messages</option>
 			<option value="longest">Longest</option>
 		</select>
-		<div class="flex w-full items-center justify-center border border-border bg-bg-secondary p-0.5 sm:w-auto">
-			<button
-				onclick={() => { listLayout = 'single'; }}
-				class="px-2 py-0.5 text-xs"
-				class:bg-bg-hover={listLayout === 'single'}
-			>
-				List
-			</button>
-			<button
-				onclick={() => { listLayout = 'agent-columns'; }}
-				class="px-2 py-0.5 text-xs"
-				class:bg-bg-hover={listLayout === 'agent-columns'}
-			>
-				Agents
-			</button>
+		<div class="flex w-full items-center justify-center border border-border bg-bg-secondary p-0.5 sm:w-auto" role="tablist" aria-label="Session layout">
+			{#each layoutTabs as tab}
+				<button
+					role="tab"
+					aria-selected={listLayout === tab.value}
+					onclick={() => { listLayout = tab.value; }}
+					title={tab.title}
+					class="px-2 py-0.5 text-xs"
+					class:bg-bg-hover={listLayout === tab.value}
+				>
+					{tab.label}
+				</button>
+			{/each}
+		</div>
+		<div
+			data-testid="list-shortcut-legend"
+			class="flex w-full flex-wrap items-center gap-1 text-[11px] text-text-muted"
+		>
+			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">t</kbd>
+				<span>tool</span>
+			</span>
+			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">o</kbd>
+				<span>order</span>
+			</span>
+			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">r</kbd>
+				<span>range</span>
+			</span>
+			<span class="text-text-secondary">|</span>
+			<span class="text-text-secondary">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">l</kbd>
+				layout
+			</span>
 		</div>
 	</div>
 
@@ -398,11 +444,11 @@ $effect(() => {
 	{/if}
 
 	<div class="flex-1 overflow-y-auto">
-		<div class="border-b border-border px-3 py-1 text-xs text-text-muted">
+		<div data-testid="session-layout-summary" class="border-b border-border px-3 py-1 text-xs text-text-muted">
 			Sessions ({total})
-			{#if listLayout === 'agent-columns'}
-				<span class="ml-2 text-text-secondary">[cols:{visibleColumnCount}]</span>
-			{/if}
+			<span class="ml-2 text-text-secondary">[{layoutSummaryLabel}]</span>
+			<span class="ml-2 text-text-secondary">[cols:{visibleColumnCount}]</span>
+			<span class="ml-2 text-text-secondary">{layoutSummaryDetail}</span>
 		</div>
 
 			{#if sessions.length === 0 && !loading}

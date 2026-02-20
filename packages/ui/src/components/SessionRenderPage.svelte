@@ -34,6 +34,45 @@ let searchInput: HTMLInputElement | undefined = $state();
 let searchCursor = $state(-1);
 let timelineEl: HTMLDivElement | undefined = $state();
 
+type FlowKind = 'user' | 'agent' | 'tool' | 'system';
+type FlowSegment = { kind: FlowKind; width: number; tooltip: string };
+
+function eventFlowKind(event: Event): FlowKind {
+	const type = event.event_type.type;
+	if (type === 'UserMessage') return 'user';
+	if (type === 'SystemMessage') return 'system';
+	if (type === 'AgentMessage' || type === 'Thinking' || type === 'TaskStart' || type === 'TaskEnd') {
+		return 'agent';
+	}
+	return 'tool';
+}
+
+function flowBarClass(kind: FlowKind): string {
+	switch (kind) {
+		case 'user':
+			return 'bg-emerald-400/80';
+		case 'agent':
+			return 'bg-sky-400/80';
+		case 'tool':
+			return 'bg-amber-400/80';
+		case 'system':
+			return 'bg-slate-400/80';
+	}
+}
+
+function flowDotClass(kind: FlowKind): string {
+	switch (kind) {
+		case 'user':
+			return 'bg-emerald-400';
+		case 'agent':
+			return 'bg-sky-400';
+		case 'tool':
+			return 'bg-amber-400';
+		case 'system':
+			return 'bg-slate-400';
+	}
+}
+
 const tool = $derived(getToolConfig(session.agent.tool));
 const displayTitle = $derived(getDisplayTitle(session));
 const fileStats = $derived(computeFileStats(session.events));
@@ -58,6 +97,41 @@ const searchFilteredEvents = $derived.by(() => {
 });
 
 const searchMatchCount = $derived(normalizedSearchQuery ? searchFilteredEvents.length : 0);
+
+const flowCounts = $derived.by(() => {
+	const counts: Record<FlowKind, number> = {
+		user: 0,
+		agent: 0,
+		tool: 0,
+		system: 0,
+	};
+	for (const event of session.events) {
+		counts[eventFlowKind(event)] += 1;
+	}
+	return counts;
+});
+
+const flowSegments = $derived.by((): FlowSegment[] => {
+	if (session.events.length === 0) return [];
+	const width = 100 / session.events.length;
+	return session.events.map((event, index) => {
+		const kind = eventFlowKind(event);
+		return {
+			kind,
+			width,
+			tooltip: `${index + 1}. ${event.event_type.type}`,
+		};
+	});
+});
+
+const flowLegend = $derived.by(() => {
+	return [
+		{ kind: 'user' as const, label: 'User', count: flowCounts.user },
+		{ kind: 'agent' as const, label: 'Agent', count: flowCounts.agent },
+		{ kind: 'tool' as const, label: 'Tool', count: flowCounts.tool },
+		{ kind: 'system' as const, label: 'System', count: flowCounts.system },
+	];
+});
 
 $effect(() => {
 	if (viewMode === 'native' && !nativeEnabled) {
@@ -200,49 +274,94 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 </svelte:head>
 
 <div class="flex h-full flex-col">
-	<div class="shrink-0 border-b border-border px-3 py-2">
-		<h1 class="truncate text-lg font-bold text-text-primary">
-			{displayTitle}
-		</h1>
-		<div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-muted">
-			<span class="tui-badge tui-badge-tool" style="background-color: {tool.color}">{tool.icon}</span>
-			<span>{tool.label}</span>
-			<span>&middot;</span>
-			<span class="text-text-secondary">{session.agent.model}</span>
-			<span>&middot;</span>
-			<span>{formatDuration(session.stats.duration_seconds)}</span>
-			<span>&middot;</span>
-			<span>{session.stats.message_count} msgs</span>
-			{#if fileStats.filesChanged > 0}
-				<span>&middot;</span>
-				<span>{fileStats.filesChanged} files
-					(<span class="text-success">+{fileStats.linesAdded}</span>
-					<span class="text-error">-{fileStats.linesRemoved}</span>)
+	<div
+		class="relative shrink-0 border-b border-border/70 bg-[linear-gradient(180deg,rgba(24,33,50,0.8),rgba(15,20,31,0.92))] px-3 py-3"
+	>
+		<div class="pointer-events-none absolute inset-x-0 top-0 h-16 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.2),transparent_65%)]"></div>
+		<div class="relative">
+			<h1 class="truncate text-base font-semibold text-text-primary sm:text-lg">
+				{displayTitle}
+			</h1>
+
+			<div class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-text-muted">
+				<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-primary/65 px-2 py-0.5">
+					<span class="tui-badge tui-badge-tool" style="background-color: {tool.color}">{tool.icon}</span>
+					<span class="text-text-secondary">{tool.label}</span>
 				</span>
-			{/if}
-			<span>&middot;</span>
-			<span>{formatTimestamp(session.context.created_at)}</span>
-		</div>
-		<div class="mt-2 flex flex-wrap items-center gap-2">
-			<label for="session-event-search" class="text-xs text-text-muted">/</label>
-			<input
-				id="session-event-search"
-				type="text"
-				bind:this={searchInput}
-				bind:value={searchQuery}
-				onkeydown={handleSearchInputKeydown}
-				placeholder="search in this session..."
-				class="min-w-[220px] flex-1 border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
-			/>
-			{#if normalizedSearchQuery}
-				<span
-					class="text-xs"
-					class:text-warning={searchMatchCount === 0}
-					class:text-text-muted={searchMatchCount > 0}
+				<span class="rounded border border-border bg-bg-primary/65 px-2 py-0.5 text-text-secondary">
+					{session.agent.model}
+				</span>
+				<span class="rounded border border-border bg-bg-primary/65 px-2 py-0.5">
+					{formatDuration(session.stats.duration_seconds)}
+				</span>
+				<span class="rounded border border-border bg-bg-primary/65 px-2 py-0.5">
+					{session.stats.message_count} msgs
+				</span>
+				{#if fileStats.filesChanged > 0}
+					<span class="rounded border border-border bg-bg-primary/65 px-2 py-0.5">
+						{fileStats.filesChanged} files
+						(<span class="text-success">+{fileStats.linesAdded}</span>
+						<span class="text-error">-{fileStats.linesRemoved}</span>)
+					</span>
+				{/if}
+				<span class="rounded border border-border bg-bg-primary/65 px-2 py-0.5">
+					{formatTimestamp(session.context.created_at)}
+				</span>
+			</div>
+
+			<div class="mt-3 rounded border border-border/80 bg-bg-secondary/55 p-2.5" data-testid="session-flow-bar">
+				<div class="flex items-center justify-between text-[11px] text-text-muted">
+					<span class="font-medium text-text-secondary">Session Flow</span>
+					<span>{session.events.length} events</span>
+				</div>
+				{#if flowSegments.length > 0}
+					<div class="mt-2 flex h-2 overflow-hidden rounded-sm border border-border/70 bg-bg-tertiary/80">
+						{#each flowSegments as segment}
+							<span
+								class={`h-full ${flowBarClass(segment.kind)}`}
+								style={`width:${segment.width}%`}
+								title={segment.tooltip}
+							></span>
+						{/each}
+					</div>
+				{/if}
+				<div class="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-text-muted">
+					{#each flowLegend as item}
+						<span class="inline-flex items-center gap-1 rounded border border-border/70 bg-bg-primary/70 px-1.5 py-0.5">
+							<span class={`h-2 w-2 rounded-full ${flowDotClass(item.kind)}`}></span>
+							<span>{item.label}</span>
+							<span class="text-text-secondary">{item.count}</span>
+						</span>
+					{/each}
+				</div>
+			</div>
+
+			<div class="mt-3 flex flex-wrap items-center gap-2 rounded border border-border/80 bg-bg-secondary/55 p-2">
+				<label
+					for="session-event-search"
+					class="inline-flex h-6 w-6 items-center justify-center rounded border border-border bg-bg-primary text-xs text-text-muted"
 				>
-					{searchMatchCount} matches
-				</span>
-			{/if}
+					/
+				</label>
+				<input
+					id="session-event-search"
+					type="text"
+					bind:this={searchInput}
+					bind:value={searchQuery}
+					onkeydown={handleSearchInputKeydown}
+					placeholder="search in this session..."
+					class="min-w-[220px] flex-1 border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
+				/>
+				{#if normalizedSearchQuery}
+					<span
+						class="rounded border border-border bg-bg-primary px-2 py-1 text-xs"
+						class:text-warning={searchMatchCount === 0}
+						class:text-text-muted={searchMatchCount > 0}
+					>
+						{searchMatchCount} matches
+					</span>
+				{/if}
+			</div>
 		</div>
 	</div>
 
@@ -252,8 +371,8 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 		</div>
 	{/if}
 
-	<div class="flex min-h-0 flex-1 overflow-hidden">
-		<div bind:this={timelineEl} class="flex-1 overflow-y-auto px-3 py-2">
+	<div class="flex min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.06),transparent_60%)]">
+		<div bind:this={timelineEl} class="relative flex-1 overflow-y-auto px-3 py-3">
 			{#if normalizedSearchQuery && searchMatchCount === 0}
 				<div class="mb-2 border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
 					No matching events for "{searchQuery}".

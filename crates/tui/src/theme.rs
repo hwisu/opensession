@@ -41,7 +41,6 @@ impl Theme {
 
     // ── Detail view colors ───────────────────────────────────────────
     pub const GUTTER: Color = Color::Rgb(55, 60, 75);
-    pub const TREE: Color = Color::Rgb(70, 75, 90);
     pub const BAR_DIM: Color = Color::Rgb(70, 75, 90);
 
     // ── Role colors ──────────────────────────────────────────────────

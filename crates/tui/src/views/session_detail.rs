@@ -22,17 +22,32 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
-    let [header_area, bar_area, timeline_area] = Layout::vertical([
-        Constraint::Length(6),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
+    let [header_area, content_area] =
+        Layout::vertical([Constraint::Length(5), Constraint::Fill(1)]).areas(area);
+    let (main_area, side_area) = if content_area.width >= 104 {
+        let [main, side] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(34)]).areas(content_area);
+        (main, Some(side))
+    } else {
+        (content_area, None)
+    };
+    let [bar_area, timeline_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(main_area);
 
     render_session_header(frame, app, &session, header_area);
     app.detail_viewport_height = timeline_area.height.saturating_sub(3);
 
     let mut visible_events = app.get_visible_events(&session);
+    if let Some(side_area) = side_area {
+        let actor = app.selected_session_actor_label();
+        let lines = build_detail_sidebar_lines(
+            &session,
+            actor.as_deref(),
+            &visible_events,
+            app.detail_event_index,
+        );
+        render_detail_sidebar(frame, side_area, lines);
+    }
     if visible_events.is_empty() {
         let mut lines = vec![Line::from(Span::styled(
             "No events match the current filter.",
@@ -110,82 +125,233 @@ fn render_session_header(
             Style::new().fg(theme::user_color(&actor_color_key)).bold(),
         ));
     }
-    if let Some(r) = repo.as_deref() {
-        line1.push(Span::styled("  ", Style::new()));
-        line1.push(Span::styled(r, Style::new().fg(Theme::ACCENT_BLUE)));
-        if let Some(b) = branch.as_deref() {
-            line1.push(Span::styled(
-                format!("/{b}"),
-                Style::new().fg(Theme::ACCENT_GREEN),
-            ));
-        }
+
+    let mut line2: Vec<Span<'static>> = Vec::new();
+    push_meta_span(
+        &mut line2,
+        session.agent.tool.clone(),
+        Style::new().fg(Theme::ACCENT_ORANGE),
+    );
+    push_meta_span(
+        &mut line2,
+        session.agent.model.clone(),
+        Style::new().fg(Theme::ROLE_AGENT),
+    );
+    push_meta_span(
+        &mut line2,
+        format_duration(session.stats.duration_seconds),
+        Style::new().fg(Theme::TEXT_SECONDARY),
+    );
+    push_meta_span(
+        &mut line2,
+        format!("{} msgs", session.stats.message_count),
+        Style::new().fg(Theme::TEXT_SECONDARY),
+    );
+    push_meta_span(
+        &mut line2,
+        format!("{} events", session.stats.event_count),
+        Style::new().fg(Theme::TEXT_SECONDARY),
+    );
+    if session.stats.task_count > 0 {
+        push_meta_span(
+            &mut line2,
+            format!("{} tasks", session.stats.task_count),
+            Style::new().fg(Theme::TEXT_SECONDARY),
+        );
     }
 
-    let line2 = vec![
-        Span::styled(&session.agent.tool, Style::new().fg(Theme::ACCENT_ORANGE)),
-        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(&session.agent.model, Style::new().fg(Theme::ROLE_AGENT)),
-        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(
-            format_duration(session.stats.duration_seconds),
-            Style::new().fg(Theme::TEXT_SECONDARY),
-        ),
-    ];
-
-    let line3 = vec![
-        Span::styled(
-            format!("{} prompts", session.stats.user_message_count),
-            Style::new().fg(Theme::TEXT_SECONDARY),
-        ),
-        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(
-            format!("{} events", session.stats.event_count),
-            Style::new().fg(Theme::TEXT_SECONDARY),
-        ),
-        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(
-            format!("{} files", session.stats.files_changed),
-            Style::new().fg(Theme::ACCENT_PURPLE),
-        ),
-        Span::styled(" | ", Style::new().fg(Theme::GUTTER)),
-        Span::styled(
-            format!(
-                "+{} -{}",
-                session.stats.lines_added, session.stats.lines_removed
-            ),
-            Style::new().fg(Theme::TEXT_MUTED),
-        ),
-    ];
-
-    let mut line4 = vec![Span::styled(
+    let mut line3: Vec<Span<'static>> = Vec::new();
+    if let Some(r) = repo.as_deref() {
+        let repo_branch = if let Some(b) = branch.as_deref() {
+            format!("{r}/{b}")
+        } else {
+            r.to_string()
+        };
+        push_meta_span(&mut line3, repo_branch, Style::new().fg(Theme::ACCENT_BLUE));
+    }
+    push_meta_span(
+        &mut line3,
         session
             .context
             .created_at
             .format("%Y-%m-%d %H:%M")
             .to_string(),
-        Style::new().fg(Color::DarkGray),
-    )];
+        Style::new().fg(Theme::TEXT_MUTED),
+    );
     if !session.context.tags.is_empty() {
         let tags = session
             .context
             .tags
             .iter()
-            .map(|t| format!("#{t}"))
+            .map(|tag| format!("#{tag}"))
             .collect::<Vec<_>>()
             .join(" ");
-        line4.push(Span::styled("  ", Style::new()));
-        line4.push(Span::styled(tags, Style::new().fg(Theme::TAG_COLOR)));
+        push_meta_span(&mut line3, tags, Style::new().fg(Theme::TAG_COLOR));
     }
 
     let header = Paragraph::new(vec![
         Line::from(line1),
         Line::from(line2),
         Line::from(line3),
-        Line::from(line4),
     ])
-    .block(Theme::block().padding(ratatui::widgets::Padding::new(1, 1, 0, 0)));
+    .block(Theme::block_dim().padding(ratatui::widgets::Padding::new(1, 1, 0, 0)));
 
     frame.render_widget(header, area);
+}
+
+fn push_meta_span(line: &mut Vec<Span<'static>>, text: impl Into<String>, style: Style) {
+    let text = text.into();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if !line.is_empty() {
+        line.push(Span::styled(" · ", Style::new().fg(Theme::GUTTER)));
+    }
+    line.push(Span::styled(trimmed.to_string(), style));
+}
+
+fn render_detail_sidebar(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
+    let block = Theme::block_dim().title(" Overview ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 12 || inner.height < 4 {
+        return;
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+fn build_detail_sidebar_lines(
+    session: &opensession_core::trace::Session,
+    actor: Option<&str>,
+    visible_events: &[DisplayEvent<'_>],
+    current_idx: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    if let Some(actor) = actor {
+        let actor_color_key = actor.trim_start_matches('@').to_string();
+        lines.push(Line::from(Span::styled(
+            actor.to_string(),
+            Style::new().fg(theme::user_color(&actor_color_key)).bold(),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(sidebar_heading_line("SESSION"));
+    lines.push(sidebar_kv_line(
+        "Created",
+        session
+            .context
+            .created_at
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+    ));
+    lines.push(sidebar_kv_line("Model", session.agent.model.clone()));
+    lines.push(sidebar_kv_line("Tool", session.agent.tool.clone()));
+    lines.push(sidebar_kv_line("Provider", session.agent.provider.clone()));
+    lines.push(sidebar_kv_line(
+        "Duration",
+        format_duration(session.stats.duration_seconds),
+    ));
+    lines.push(sidebar_kv_line(
+        "Messages",
+        session.stats.message_count.to_string(),
+    ));
+    lines.push(sidebar_kv_line(
+        "Tools",
+        session.stats.tool_call_count.to_string(),
+    ));
+    lines.push(sidebar_kv_line(
+        "Tasks",
+        session.stats.task_count.to_string(),
+    ));
+    if session.stats.files_changed > 0
+        || session.stats.lines_added > 0
+        || session.stats.lines_removed > 0
+    {
+        lines.push(sidebar_kv_line(
+            "Files",
+            format!(
+                "{} (+{} -{})",
+                session.stats.files_changed, session.stats.lines_added, session.stats.lines_removed
+            ),
+        ));
+    }
+
+    if !session.context.tags.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(sidebar_heading_line("TAGS"));
+        lines.push(Line::from(Span::styled(
+            session
+                .context
+                .tags
+                .iter()
+                .map(|tag| format!("#{tag}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Style::new().fg(Theme::TAG_COLOR),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(sidebar_heading_line("SELECTION"));
+    if visible_events.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No event selected",
+            Style::new().fg(Theme::TEXT_MUTED),
+        )));
+        return lines;
+    }
+
+    let selected_idx = current_idx.min(visible_events.len().saturating_sub(1));
+    let selected = &visible_events[selected_idx];
+    lines.push(sidebar_kv_line(
+        "Event",
+        format!("{}/{}", selected_idx + 1, visible_events.len()),
+    ));
+    lines.push(sidebar_kv_line(
+        "Time",
+        selected.event().timestamp.format("%H:%M:%S").to_string(),
+    ));
+    let (event_kind, kind_color) = event_type_display(&selected.event().event_type);
+    lines.push(Line::from(vec![
+        Span::styled("Type: ", Style::new().fg(Theme::TEXT_MUTED)),
+        Span::styled(event_kind.to_string(), Style::new().fg(kind_color).bold()),
+    ]));
+    if let Some(task_key) = display_event_task_key(selected) {
+        lines.push(sidebar_kv_line("Task", task_key));
+    }
+    let mut lane_label = if selected.lane() == 0 {
+        "main".to_string()
+    } else {
+        format!("sub #{}", selected.lane())
+    };
+    if let Some(marker) = lane_marker_text(selected.marker()) {
+        lane_label.push_str(&format!(" ({marker})"));
+    }
+    lines.push(sidebar_kv_line("Lane", lane_label));
+
+    let active_agents = display_event_agent_count(selected);
+    if active_agents > 1 {
+        lines.push(sidebar_kv_line("Agents", active_agents.to_string()));
+    }
+
+    lines
+}
+
+fn sidebar_heading_line(title: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        title.to_string(),
+        Style::new().fg(Theme::TEXT_KEY).bold(),
+    ))
+}
+
+fn sidebar_kv_line(label: &str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), Style::new().fg(Theme::TEXT_MUTED)),
+        Span::styled(value, Style::new().fg(Theme::TEXT_SECONDARY)),
+    ])
 }
 
 fn nested_json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -240,8 +406,8 @@ fn render_lane_timeline(
     let (turn_lookup, turn_groups) = build_linear_turn_group_lookup(events);
     let mut active_turn: Option<usize> = None;
     let mut active_task: Option<String> = None;
-    let block = Theme::block().title(format!(
-        " Timeline ({}/{}) ",
+    let block = Theme::block_dim().title(format!(
+        " Session Flow ({}/{}) ",
         current_idx + 1,
         total_visible
     ));
@@ -279,7 +445,7 @@ fn render_lane_timeline(
                     lines.push(stream_center_line(
                         &layout,
                         &timeline_turn_group_text(group),
-                        Style::new().fg(Theme::ACCENT_BLUE).bold(),
+                        Style::new().fg(Theme::TEXT_SECONDARY).bold(),
                     ));
                 }
             }
@@ -343,7 +509,11 @@ fn render_lane_timeline(
             event.timestamp.format("%H:%M:%S")
         );
         let active_agents = display_event_agent_count(display_event);
-        let mut right = format_active_agents(active_agents);
+        let mut right = if active_agents > 1 {
+            format_active_agents(active_agents)
+        } else {
+            String::new()
+        };
         if let Some(sub_agent) = display_event_sub_agent_label(display_event) {
             if !right.is_empty() {
                 right.push_str(" · ");
@@ -632,13 +802,13 @@ fn stream_layout_spec(total: usize) -> StreamLayoutSpec {
 fn stream_header_line(layout: &StreamLayoutSpec) -> Line<'static> {
     stream_row_line(
         layout,
-        "time/stream",
-        "conversation",
-        "agents/sub/diff",
+        "time",
+        "event",
+        "meta",
         (
-            Style::new().fg(Theme::TEXT_KEY).bold(),
-            Style::new().fg(Theme::TEXT_KEY).bold(),
-            Style::new().fg(Theme::TEXT_KEY).bold(),
+            Style::new().fg(Theme::TEXT_KEY),
+            Style::new().fg(Theme::TEXT_KEY),
+            Style::new().fg(Theme::TEXT_KEY),
             Style::new().fg(Theme::TEXT_MUTED),
         ),
     )
@@ -684,11 +854,11 @@ fn stream_row_line(
     let (left_style, center_style, right_style, row_style) = styles;
     let mut spans = vec![
         Span::styled(fit_cell(left, layout.left), left_style),
-        Span::styled(" │ ", Style::new().fg(Theme::TREE)),
+        Span::styled("   ", Style::new()),
         Span::styled(fit_cell(center, layout.center), center_style),
     ];
     if layout.right > 0 {
-        spans.push(Span::styled(" │ ", Style::new().fg(Theme::TREE)));
+        spans.push(Span::styled("   ", Style::new()));
         spans.push(Span::styled(fit_cell(right, layout.right), right_style));
     }
     Line::from(spans).style(row_style)
@@ -743,8 +913,6 @@ fn timeline_turn_group_text(group: &LinearTurnGroupMeta) -> String {
     if group.task_count > 0 {
         text.push_str(&format!(" · {} tasks", group.task_count));
     }
-    text.push_str(" · ");
-    text.push_str(&group.prompt);
     text
 }
 
@@ -2633,7 +2801,7 @@ fn render_timeline_bar(frame: &mut Frame, area: Rect, events: &[DisplayEvent], c
 mod tests {
     use super::*;
     use chrono::{Duration, TimeZone, Utc};
-    use opensession_core::trace::{Content, ContentBlock, Event, EventType};
+    use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
 
     fn make_event(event_type: EventType, text: &str) -> Event {
         Event {
@@ -2698,6 +2866,90 @@ mod tests {
         assert_eq!(centered.width, 120);
         assert_eq!(centered.y, 5);
         assert_eq!(centered.height, 20);
+    }
+
+    #[test]
+    fn stream_header_line_uses_compact_labels() {
+        let layout = StreamLayoutSpec {
+            left: 12,
+            center: 60,
+            right: 18,
+        };
+        let header = stream_header_line(&layout).to_string();
+        assert!(header.contains("time"));
+        assert!(header.contains("event"));
+        assert!(header.contains("meta"));
+        assert!(!header.contains("time/stream"));
+    }
+
+    #[test]
+    fn stream_row_line_uses_spacing_instead_of_tree_glyph() {
+        let layout = StreamLayoutSpec {
+            left: 10,
+            center: 50,
+            right: 16,
+        };
+        let row = stream_row_line(
+            &layout,
+            "10:00:00",
+            "[USER] hello world",
+            "meta",
+            (Style::new(), Style::new(), Style::new(), Style::new()),
+        )
+        .to_string();
+        assert!(!row.contains('│'));
+    }
+
+    #[test]
+    fn timeline_turn_group_text_is_compact() {
+        let group = LinearTurnGroupMeta {
+            turn_number: 3,
+            event_count: 8,
+            task_count: 2,
+            prompt: "very long prompt should not appear in heading".to_string(),
+        };
+        let text = timeline_turn_group_text(&group);
+        assert!(text.contains("Turn #3"));
+        assert!(text.contains("8 events"));
+        assert!(text.contains("2 tasks"));
+        assert!(!text.contains("prompt"));
+    }
+
+    #[test]
+    fn build_detail_sidebar_lines_includes_selection_section() {
+        let mut session = Session::new(
+            "session-1".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus-4-6".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: Some("1.0.0".to_string()),
+            },
+        );
+        session.context.title = Some("Demo session".to_string());
+        session.context.tags = vec!["demo".to_string()];
+        session.events = vec![make_event(EventType::UserMessage, "hello world")];
+        session.recompute_stats();
+
+        let display = vec![DisplayEvent::Single {
+            event: session.events.first().expect("event"),
+            source_index: 0,
+            lane: 0,
+            marker: LaneMarker::None,
+            active_lanes: vec![0],
+        }];
+        let lines = build_detail_sidebar_lines(&session, Some("@alice"), &display, 0);
+        let rendered = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("@alice"));
+        assert!(rendered.contains("SESSION"));
+        assert!(rendered.contains("SELECTION"));
+        assert!(rendered.contains("Event: 1/1"));
+        assert!(rendered.contains("Type: user"));
     }
 
     #[test]

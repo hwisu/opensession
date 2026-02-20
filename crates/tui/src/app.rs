@@ -411,7 +411,6 @@ mod turn_extract_tests {
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, Session};
     use serde_json::Value;
-    use std::time::{Duration, Instant};
 
     fn make_event(event_id: &str, event_type: EventType, text: &str) -> Event {
         Event {

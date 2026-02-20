@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.20](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.19...opensession-parsers-v0.2.20) - 2026-02-20
+
+### Other
+
+- centralize session role handling and local-db auxiliary filtering
+
 ## [0.2.19](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.18...opensession-parsers-v0.2.19) - 2026-02-20
 
 ### Other

@@ -156,12 +156,25 @@ fn find_codex_sessions(home: &std::path::Path) -> Vec<PathBuf> {
             continue;
         }
         for path in find_files_with_ext(&root, "jsonl") {
+            if !is_codex_rollout_session_file(&path) {
+                continue;
+            }
             if seen.insert(path.clone()) {
                 out.push(path);
             }
         }
     }
     out
+}
+
+fn is_codex_rollout_session_file(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower == "rollout.jsonl" || (lower.starts_with("rollout-") && lower.ends_with(".jsonl"))
+        })
+        .unwrap_or(false)
 }
 
 /// OpenCode stores session info as JSON files under
@@ -313,4 +326,96 @@ fn has_cursor_rows(conn: &Connection, table: &str) -> bool {
          LIMIT 1)"
     );
     conn.query_row(&sql, [], |row| row.get(0)).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_codex_sessions, is_codex_rollout_session_file};
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarRestore {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var(key).ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            if let Some(ref previous) = self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn codex_rollout_matcher_only_accepts_rollout_files() {
+        assert!(is_codex_rollout_session_file(Path::new(
+            "/tmp/rollout-123.jsonl"
+        )));
+        assert!(is_codex_rollout_session_file(Path::new(
+            "/tmp/rollout.jsonl"
+        )));
+        assert!(!is_codex_rollout_session_file(Path::new(
+            "/tmp/summary.jsonl"
+        )));
+        assert!(!is_codex_rollout_session_file(Path::new(
+            "/tmp/rollout-not-json.txt"
+        )));
+    }
+
+    #[test]
+    fn codex_discovery_ignores_non_rollout_jsonl() {
+        let _guard = env_test_lock().lock().expect("env lock");
+        let restore = EnvVarRestore::capture("CODEX_HOME");
+        let unique = format!(
+            "opensession-codex-discover-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let sessions_dir = root.join("sessions").join("2026").join("02").join("20");
+        std::fs::create_dir_all(&sessions_dir).expect("mkdir");
+
+        std::fs::write(sessions_dir.join("rollout-1.jsonl"), "{}\n").expect("rollout");
+        std::fs::write(sessions_dir.join("rollout.jsonl"), "{}\n").expect("rollout base");
+        std::fs::write(sessions_dir.join("summary.jsonl"), "{}\n").expect("summary");
+        std::fs::write(sessions_dir.join("notes.jsonl"), "{}\n").expect("notes");
+
+        std::env::set_var("CODEX_HOME", &root);
+        let found = find_codex_sessions(Path::new("/this/home/path/does/not/exist"));
+
+        assert!(found
+            .iter()
+            .any(|path| path.ends_with(Path::new("rollout-1.jsonl"))));
+        assert!(found
+            .iter()
+            .any(|path| path.ends_with(Path::new("rollout.jsonl"))));
+        assert!(!found
+            .iter()
+            .any(|path| path.ends_with(Path::new("summary.jsonl"))));
+        assert!(!found
+            .iter()
+            .any(|path| path.ends_with(Path::new("notes.jsonl"))));
+
+        std::fs::remove_dir_all(&root).ok();
+        drop(restore);
+    }
 }

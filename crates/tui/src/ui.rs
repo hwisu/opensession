@@ -254,10 +254,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::SessionDetail => {
-            let mode = match app.detail_view_mode {
-                DetailViewMode::Linear => "linear",
-                DetailViewMode::Turn => "turn",
-            };
             let filter_label = active_filter_label(app);
             let line = Line::from(vec![
                 Span::styled(
@@ -266,22 +262,13 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(" ", Style::new()),
                 Span::styled(
-                    format!("mode:{mode}"),
+                    format!("active:{filter_label}"),
                     Style::new().fg(Theme::ACCENT_BLUE).bold(),
                 ),
                 Span::styled("  ", Style::new()),
                 Span::styled(
-                    format!("filter:{filter_label}"),
+                    event_filter_hotkey_legend(),
                     Style::new().fg(Theme::TEXT_SECONDARY),
-                ),
-                Span::styled("  ", Style::new()),
-                Span::styled(
-                    format!(
-                        "live:{} follow:{}",
-                        if app.live_mode { "ON" } else { "OFF" },
-                        app.detail_follow_status_label()
-                    ),
-                    Style::new().fg(Theme::TEXT_MUTED),
                 ),
             ]);
             let p = Paragraph::new(line).block(Theme::block());
@@ -416,57 +403,179 @@ fn active_filter_label(app: &App) -> String {
     }
 }
 
-fn fit_footer_segments(mut segments: Vec<String>, width: u16) -> String {
+fn event_filter_hotkey_legend() -> &'static str {
+    "[1]All [2]User [3]Agent [4]Think [5]Tools [6]Files [7]Shell [8]Task [9]Web [0]Other"
+}
+
+#[derive(Clone)]
+enum FooterSegment {
+    Plain(String),
+    Shortcut { key: String, desc: String },
+}
+
+impl FooterSegment {
+    fn display_width(&self) -> usize {
+        match self {
+            FooterSegment::Plain(value) => value.chars().count(),
+            FooterSegment::Shortcut { key, desc } => key.chars().count() + 1 + desc.chars().count(),
+        }
+    }
+}
+
+fn fit_footer_segments(mut segments: Vec<FooterSegment>, width: u16) -> Vec<FooterSegment> {
     if segments.is_empty() {
-        return String::new();
+        return segments;
     }
     let max_width = width.max(1) as usize;
     loop {
-        let line = segments.join("  |  ");
-        if line.chars().count() <= max_width || segments.len() <= 1 {
-            return line;
+        let separators_width = segments.len().saturating_sub(1) * 5;
+        let content_width = segments
+            .iter()
+            .map(FooterSegment::display_width)
+            .sum::<usize>();
+        if separators_width + content_width <= max_width || segments.len() <= 1 {
+            return segments;
         }
         segments.pop();
     }
 }
 
+fn render_footer_segments(segments: Vec<FooterSegment>, width: u16) -> Line<'static> {
+    let key_style = Style::new().fg(Theme::TEXT_KEY).bold();
+    let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
+    let fitted = fit_footer_segments(segments, width);
+    let mut spans = vec![Span::styled(" ", desc_style)];
+
+    for (idx, segment) in fitted.into_iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled("  |  ", desc_style));
+        }
+        match segment {
+            FooterSegment::Plain(value) => {
+                spans.push(Span::styled(value, desc_style));
+            }
+            FooterSegment::Shortcut { key, desc } => {
+                spans.push(Span::styled(format!("{key} "), key_style));
+                spans.push(Span::styled(desc, desc_style));
+            }
+        }
+    }
+
+    Line::from(spans)
+}
+
 fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
     let mut segments = vec![
-        format!("sessions {}/{}", app.page_count(), app.session_count()),
-        format!("page {}/{}", app.page + 1, app.total_pages()),
-        "j/k move".to_string(),
-        "Enter open".to_string(),
-        "/ search".to_string(),
-        "m layout".to_string(),
-        "a agent".to_string(),
-        "t tool(compat)".to_string(),
-        "r range".to_string(),
-        "R repo".to_string(),
-        "1/2/3 tabs".to_string(),
-        "? help".to_string(),
+        FooterSegment::Plain(format!(
+            "sessions {}/{}",
+            app.page_count(),
+            app.session_count()
+        )),
+        FooterSegment::Plain(format!("page {}/{}", app.page + 1, app.total_pages())),
+        FooterSegment::Shortcut {
+            key: "j/k".to_string(),
+            desc: "move".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "Enter".to_string(),
+            desc: "open".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "/".to_string(),
+            desc: "search".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "m".to_string(),
+            desc: "layout".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "a".to_string(),
+            desc: "agent".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "t".to_string(),
+            desc: "tool(compat)".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "r".to_string(),
+            desc: "range".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "R".to_string(),
+            desc: "repo".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "1/2/3".to_string(),
+            desc: "tabs".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "?".to_string(),
+            desc: "help".to_string(),
+        },
     ];
     if app.searching {
-        segments.insert(0, format!("search: {}|", app.search_query));
+        segments.insert(
+            0,
+            FooterSegment::Plain(format!("search: {}|", app.search_query)),
+        );
     }
     if app.total_pages() > 1 {
-        segments.insert(2, "PgUp/PgDn page".to_string());
+        segments.insert(
+            2,
+            FooterSegment::Shortcut {
+                key: "PgUp/PgDn".to_string(),
+                desc: "page".to_string(),
+            },
+        );
     }
-    let line = fit_footer_segments(segments, width);
-    Line::from(Span::styled(
-        format!(" {line}"),
-        Style::new().fg(Theme::TEXT_KEY_DESC),
-    ))
+    render_footer_segments(segments, width)
 }
 
 fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
-    let mut segments = Vec::new();
+    let mut segments: Vec<FooterSegment> = vec![
+        FooterSegment::Shortcut {
+            key: "j/k".to_string(),
+            desc: "nav".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "g/G".to_string(),
+            desc: "head/tail".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "u/U".to_string(),
+            desc: "user jump".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "n/N".to_string(),
+            desc: "type jump".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "h/l".to_string(),
+            desc: "scroll".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "1-0".to_string(),
+            desc: "filter".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "d".to_string(),
+            desc: "diff toggle".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "?".to_string(),
+            desc: "help".to_string(),
+        },
+    ];
+
     if let Some(session) = app.selected_session() {
         let visible = app.get_visible_events(session);
         let event_total = visible.len();
         if event_total > 0 {
             let selected_index = app.detail_event_index.min(event_total - 1);
             let event_idx = selected_index + 1;
-            segments.push(format!("event {event_idx}/{event_total}"));
+            segments.push(FooterSegment::Plain(format!(
+                "event {event_idx}/{event_total}"
+            )));
 
             let turns = extract_visible_turns(&visible);
             if !turns.is_empty() {
@@ -481,7 +590,10 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
                         .map(|idx| idx + 1)
                         .unwrap_or(1),
                 };
-                segments.push(format!("turn {turn_idx}/{}", turns.len()));
+                segments.push(FooterSegment::Plain(format!(
+                    "turn {turn_idx}/{}",
+                    turns.len()
+                )));
             }
 
             if let Some(selected_event) = visible.get(event_idx - 1).map(|row| row.event()) {
@@ -491,24 +603,20 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
                     .map(|event| event.timestamp)
                     .unwrap_or(session.context.created_at);
                 let elapsed = selected_event.timestamp.signed_duration_since(baseline);
-                segments.push(format!("elapsed {}", format_elapsed_compact(elapsed)));
+                segments.push(FooterSegment::Plain(format!(
+                    "elapsed {}",
+                    format_elapsed_compact(elapsed)
+                )));
             }
         }
     }
 
-    segments.push(format!("live {}", if app.live_mode { "ON" } else { "OFF" }));
-    segments.push(format!("follow {}", app.detail_follow_status_label()));
-    segments.push("j/k nav".to_string());
-    segments.push("h/l scroll".to_string());
-    segments.push("0-9 filter".to_string());
-    segments.push("d diff toggle".to_string());
-    segments.push("? help".to_string());
+    segments.push(FooterSegment::Plain(format!(
+        "follow:{}",
+        app.detail_follow_status_label()
+    )));
 
-    let line = fit_footer_segments(segments, width);
-    Line::from(Span::styled(
-        format!(" {line}"),
-        Style::new().fg(Theme::TEXT_KEY_DESC),
-    ))
+    render_footer_segments(segments, width)
 }
 
 fn format_elapsed_compact(elapsed: ChronoDuration) -> String {
@@ -563,24 +671,45 @@ fn settings_footer_line(app: &App) -> Line<'static> {
 }
 
 fn handoff_footer_line(width: u16) -> Line<'static> {
-    let desc_style = Style::new().fg(Theme::TEXT_KEY_DESC);
-    let line = fit_footer_segments(
-        vec![
-            "1/2/3 tabs".to_string(),
-            "j/k move".to_string(),
-            "Space pick/unpick".to_string(),
-            "Enter preview".to_string(),
-            "s save artifact".to_string(),
-            "r refresh artifact".to_string(),
-            "Esc back".to_string(),
-            "? help".to_string(),
-        ],
-        width,
-    );
-    Line::from(vec![
-        Span::styled(" ", desc_style),
-        Span::styled(line, desc_style),
-    ])
+    let segments = vec![
+        FooterSegment::Shortcut {
+            key: "1/2/3".to_string(),
+            desc: "tabs".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "j/k".to_string(),
+            desc: "move".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "Space".to_string(),
+            desc: "pick/unpick".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "Enter".to_string(),
+            desc: "preview".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "g".to_string(),
+            desc: "generate handoff".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "s".to_string(),
+            desc: "save artifact".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "r".to_string(),
+            desc: "refresh artifact".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "Esc".to_string(),
+            desc: "back".to_string(),
+        },
+        FooterSegment::Shortcut {
+            key: "?".to_string(),
+            desc: "help".to_string(),
+        },
+    ];
+    render_footer_segments(segments, width)
 }
 
 fn render_focus_session_summary(frame: &mut Frame, app: &App, area: Rect) {
@@ -960,10 +1089,12 @@ mod tests {
         session_list_footer_line, settings_footer_line, should_show_footer,
     };
     use crate::app::{App, ServerInfo, ServerStatus, View};
+    use crate::theme::Theme;
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
     use ratatui::Terminal;
     use std::collections::HashMap;
 
@@ -1000,6 +1131,12 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    fn line_has_colored_span(line: &ratatui::text::Line<'_>, needle: &str, color: Color) -> bool {
+        line.spans
+            .iter()
+            .any(|span| span.content.as_ref().contains(needle) && span.style.fg == Some(color))
     }
 
     fn buffer_to_string(buffer: &Buffer) -> String {
@@ -1206,8 +1343,38 @@ mod tests {
         assert!(text.contains("j/k"));
         assert!(text.contains("Space"));
         assert!(text.contains("Enter"));
+        assert!(text.contains("generate"));
         assert!(text.contains("Esc"));
         assert!(text.contains("help"));
+    }
+
+    #[test]
+    fn session_list_footer_highlights_shortcut_keys() {
+        let app = App::new(Vec::new());
+        let line = session_list_footer_line(&app, 220);
+        assert!(line_has_colored_span(&line, "j/k", Theme::TEXT_KEY));
+        assert!(line_has_colored_span(&line, "move", Theme::TEXT_KEY_DESC));
+    }
+
+    #[test]
+    fn session_detail_footer_highlights_shortcut_keys() {
+        let session = make_session(vec![
+            make_event(EventType::UserMessage, "prompt"),
+            make_event(EventType::AgentMessage, "answer"),
+        ]);
+        let mut app = App::new(vec![session]);
+        app.view = View::SessionDetail;
+        app.enter_detail_for_startup();
+        let line = session_detail_footer_line(&app, 260);
+        assert!(line_has_colored_span(&line, "j/k", Theme::TEXT_KEY));
+        assert!(line_has_colored_span(&line, "nav", Theme::TEXT_KEY_DESC));
+    }
+
+    #[test]
+    fn handoff_footer_highlights_shortcut_keys() {
+        let line = handoff_footer_line(220);
+        assert!(line_has_colored_span(&line, "j/k", Theme::TEXT_KEY));
+        assert!(line_has_colored_span(&line, "move", Theme::TEXT_KEY_DESC));
     }
 
     #[test]
@@ -1227,7 +1394,11 @@ mod tests {
         assert!(text.contains("event"));
         assert!(text.contains("turn"));
         assert!(text.contains("elapsed"));
-        assert!(text.contains("0-9 filter"));
+        assert!(text.contains("follow:"));
+        assert!(text.contains("g/G"));
+        assert!(text.contains("u/U"));
+        assert!(text.contains("n/N"));
+        assert!(text.contains("1-0 filter"));
         assert!(text.contains("d diff toggle"));
     }
 
@@ -1246,5 +1417,7 @@ mod tests {
             .expect("draw");
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(!text.contains("always expanded"));
+        assert!(!text.contains("mode:"));
+        assert!(text.contains("[1]All [2]User [3]Agent"));
     }
 }

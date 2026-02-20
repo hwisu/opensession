@@ -100,7 +100,7 @@ fn handoff_help_hides_llm_flags() {
 fn handoff_last_supports_all_output_formats() {
     let tmp = make_home();
     let home = tmp.path();
-    create_codex_session(home, "2026/02/14/handoff-cli-test.jsonl");
+    create_codex_session(home, "2026/02/14/rollout-handoff-cli-test.jsonl");
 
     for format in ["text", "markdown", "json", "jsonl", "hail", "stream"] {
         let output = run(home, &["session", "handoff", "--last", "--format", format]);
@@ -145,8 +145,8 @@ fn handoff_last_supports_all_output_formats() {
 fn handoff_last_with_count_returns_multiple_sessions() {
     let tmp = make_home();
     let home = tmp.path();
-    create_codex_session(home, "2026/02/14/handoff-last-a.jsonl");
-    create_codex_session(home, "2026/02/15/handoff-last-b.jsonl");
+    create_codex_session(home, "2026/02/14/rollout-handoff-last-a.jsonl");
+    create_codex_session(home, "2026/02/15/rollout-handoff-last-b.jsonl");
 
     let output = run(
         home,
@@ -167,7 +167,7 @@ fn handoff_last_with_count_returns_multiple_sessions() {
 fn handoff_defaults_to_json_and_last_when_piped() {
     let tmp = make_home();
     let home = tmp.path();
-    create_codex_session(home, "2026/02/14/handoff-default-pipe.jsonl");
+    create_codex_session(home, "2026/02/14/rollout-handoff-default-pipe.jsonl");
 
     // Command output is captured in tests (non-tty), so default should be JSON,
     // and missing explicit session ref should auto-fallback to latest.

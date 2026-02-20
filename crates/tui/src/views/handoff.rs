@@ -71,16 +71,7 @@ fn render_picker(
                 "[ ]"
             };
             let title = truncate(candidate.title.as_str(), 44);
-            let time = candidate.created_at.format("%m-%d %H:%M").to_string();
-            let meta = format!(
-                "{}{} {} · {} · {} msgs · {} ev",
-                marker,
-                picked,
-                candidate.tool,
-                time,
-                candidate.message_count,
-                candidate.event_count
-            );
+            let meta = candidate_picker_meta(marker, picked, candidate);
             ListItem::new(vec![
                 Line::from(Span::styled(
                     title,
@@ -202,6 +193,29 @@ fn candidate_window(total: usize, selected_idx: usize, max_items: usize) -> (usi
     (start, end)
 }
 
+fn candidate_agent_label(candidate: &HandoffCandidate) -> String {
+    let tool = candidate.tool.trim();
+    let model = candidate.model.trim();
+    match (tool.is_empty(), model.is_empty()) {
+        (false, false) => format!("{tool} / {model}"),
+        (false, true) => tool.to_string(),
+        (true, false) => model.to_string(),
+        (true, true) => "unknown".to_string(),
+    }
+}
+
+fn candidate_picker_meta(marker: &str, picked: &str, candidate: &HandoffCandidate) -> String {
+    format!(
+        "{}{} {} · {} · {} msgs · {} ev",
+        marker,
+        picked,
+        candidate_agent_label(candidate),
+        candidate.created_at.format("%m-%d %H:%M"),
+        candidate.message_count,
+        candidate.event_count
+    )
+}
+
 fn preview_lines(app: &App, selected_candidates: &[HandoffCandidate]) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled(
@@ -218,7 +232,49 @@ fn preview_lines(app: &App, selected_candidates: &[HandoffCandidate]) -> Vec<Lin
         ]),
     ];
 
+    let (payload_preview, warnings) = payload_preview_jsonl(selected_candidates);
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Expected payload (jsonl preview)",
+        Style::new().fg(Theme::ACCENT_BLUE).bold(),
+    )));
+    if payload_preview.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(unavailable: source session file not resolvable)",
+            Style::new().fg(Theme::TEXT_MUTED),
+        )));
+        lines.push(Line::from(Span::styled(
+            truncate(
+                &format!("example: {}", fallback_payload_example(selected_candidates)),
+                100,
+            ),
+            Style::new().fg(Theme::TEXT_KEY_DESC),
+        )));
+    } else {
+        let preview_limit = 3usize;
+        let extra_count = payload_preview.len().saturating_sub(preview_limit);
+        for line in payload_preview.into_iter().take(preview_limit) {
+            lines.push(Line::from(Span::styled(
+                truncate(&line, 100),
+                Style::new().fg(Theme::TEXT_KEY_DESC),
+            )));
+        }
+        if extra_count > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("... +{extra_count} more line(s)"),
+                Style::new().fg(Theme::TEXT_MUTED),
+            )));
+        }
+    }
+    for warning in warnings {
+        lines.push(Line::from(vec![
+            Span::styled("warn: ", Style::new().fg(Theme::ACCENT_YELLOW).bold()),
+            Span::styled(truncate(&warning, 94), Style::new().fg(Theme::TEXT_MUTED)),
+        ]));
+    }
+
     for (idx, candidate) in selected_candidates.iter().enumerate() {
+        lines.push(Line::raw(""));
         lines.push(Line::from(vec![
             Span::styled(
                 format!("S{} ", idx + 1),
@@ -237,37 +293,13 @@ fn preview_lines(app: &App, selected_candidates: &[HandoffCandidate]) -> Vec<Lin
             Span::raw("   "),
             Span::styled(
                 format!(
-                    "{} / {} · {} msgs · {} ev",
-                    candidate.tool, candidate.model, candidate.message_count, candidate.event_count
+                    "{} · {} msgs · {} ev",
+                    candidate_agent_label(candidate),
+                    candidate.message_count,
+                    candidate.event_count
                 ),
                 Style::new().fg(Theme::TEXT_SECONDARY),
             ),
-        ]));
-    }
-
-    let (payload_preview, warnings) = payload_preview_jsonl(selected_candidates);
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "Expected payload (jsonl preview)",
-        Style::new().fg(Theme::ACCENT_BLUE).bold(),
-    )));
-    if payload_preview.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "(unavailable: source session file not resolvable)",
-            Style::new().fg(Theme::TEXT_MUTED),
-        )));
-    } else {
-        for line in payload_preview {
-            lines.push(Line::from(Span::styled(
-                truncate(&line, 100),
-                Style::new().fg(Theme::TEXT_KEY_DESC),
-            )));
-        }
-    }
-    for warning in warnings {
-        lines.push(Line::from(vec![
-            Span::styled("warn: ", Style::new().fg(Theme::ACCENT_YELLOW).bold()),
-            Span::styled(truncate(&warning, 94), Style::new().fg(Theme::TEXT_MUTED)),
         ]));
     }
 
@@ -352,6 +384,23 @@ fn payload_preview_jsonl(candidates: &[HandoffCandidate]) -> (Vec<String>, Vec<S
     (lines, warnings)
 }
 
+fn fallback_payload_example(candidates: &[HandoffCandidate]) -> String {
+    let candidate = candidates.first();
+    let session_id = serde_json::to_string(
+        &candidate
+            .map(|c| c.session_id.as_str())
+            .unwrap_or("session-id"),
+    )
+    .unwrap_or_else(|_| "\"session-id\"".to_string());
+    let tool = serde_json::to_string(&candidate.map(|c| c.tool.as_str()).unwrap_or("unknown"))
+        .unwrap_or_else(|_| "\"unknown\"".to_string());
+    let model = serde_json::to_string(&candidate.map(|c| c.model.as_str()).unwrap_or("unknown"))
+        .unwrap_or_else(|_| "\"unknown\"".to_string());
+    format!(
+        "{{\"session_id\":{session_id},\"tool\":{tool},\"model\":{model},\"objective\":null,\"duration_seconds\":0,\"next_actions\":[]}}"
+    )
+}
+
 fn truncate(value: &str, max: usize) -> String {
     let chars: Vec<char> = value.chars().collect();
     if chars.len() <= max {
@@ -365,11 +414,75 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{candidate_window, truncate};
+    use super::{
+        candidate_agent_label, candidate_picker_meta, candidate_window, fallback_payload_example,
+        preview_lines, truncate,
+    };
+    use crate::app::{App, HandoffCandidate};
+    use chrono::Utc;
+
+    fn sample_candidate() -> HandoffCandidate {
+        HandoffCandidate {
+            session_id: "ses-1".to_string(),
+            title: "Example Session".to_string(),
+            tool: "codex".to_string(),
+            model: "gpt-5-codex".to_string(),
+            created_at: Utc::now(),
+            event_count: 12,
+            message_count: 7,
+            source_path: None,
+        }
+    }
 
     #[test]
     fn truncate_adds_ellipsis_for_long_values() {
         assert_eq!(truncate("abcdefghij", 6), "abc...");
+    }
+
+    #[test]
+    fn candidate_agent_label_formats_tool_and_model() {
+        let candidate = sample_candidate();
+        assert_eq!(candidate_agent_label(&candidate), "codex / gpt-5-codex");
+    }
+
+    #[test]
+    fn candidate_picker_meta_includes_agent_label() {
+        let candidate = sample_candidate();
+        let meta = candidate_picker_meta(">", "[x]", &candidate);
+        assert!(meta.contains("codex / gpt-5-codex"));
+        assert!(meta.contains("7 msgs"));
+        assert!(meta.contains("12 ev"));
+    }
+
+    #[test]
+    fn fallback_payload_example_includes_core_fields() {
+        let candidate = sample_candidate();
+        let payload = fallback_payload_example(&[candidate]);
+        assert!(payload.contains("\"session_id\""));
+        assert!(payload.contains("\"tool\""));
+        assert!(payload.contains("\"model\""));
+        assert!(payload.contains("\"next_actions\":[]"));
+    }
+
+    #[test]
+    fn preview_lines_show_jsonl_example_when_source_is_missing() {
+        let app = App::new(Vec::new());
+        let lines = preview_lines(&app, &[sample_candidate()]);
+        let text = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Expected payload (jsonl preview)"));
+        assert!(text.contains("example: {"));
+        assert!(text.contains("\"session_id\""));
+        assert!(text.contains("\"tool\""));
+        assert!(text.contains("\"model\""));
     }
 
     #[test]

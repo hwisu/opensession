@@ -373,11 +373,21 @@ fn render_lane_timeline(
             }
             DisplayEvent::Single { event, .. } => {
                 let (_, kind_color) = event_type_display(&event.event_type);
-                let icon = event_type_icon(&event.event_type);
                 let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+                let status_like_thinking = is_status_like_thinking_event(event, &summary);
+                let icon = if status_like_thinking {
+                    "STATUS"
+                } else {
+                    event_type_icon(&event.event_type)
+                };
+                let icon_color = if status_like_thinking {
+                    Theme::TEXT_SECONDARY
+                } else {
+                    kind_color
+                };
                 (
                     format!("[{icon}] {summary}"),
-                    Style::new().fg(kind_color),
+                    Style::new().fg(icon_color),
                     summary,
                 )
             }
@@ -1131,7 +1141,8 @@ fn collect_content_preview_rows(
                     } else {
                         trimmed
                     };
-                    let compact = compact_text_snippet(canonical, 4000);
+                    let canonical = strip_inline_markdown_markers(canonical);
+                    let compact = compact_text_snippet(&canonical, 4000);
                     if compact.is_empty() {
                         if is_fence {
                             in_fence = !in_fence;
@@ -1312,8 +1323,12 @@ fn strip_markdown_list_marker(line: &str) -> &str {
 }
 
 fn normalize_preview_line(text: &str) -> String {
-    text.replace('…', " ")
+    let inline_cleaned = strip_inline_markdown_markers(text);
+    inline_cleaned
+        .replace("```", " ")
+        .replace('…', " ")
         .replace("...", " ")
+        .replace(['·', '|', '#', '>', '[', ']'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -1322,16 +1337,89 @@ fn normalize_preview_line(text: &str) -> String {
 }
 
 fn detail_line_matches_summary(line: &str, summary: &str) -> bool {
-    let normalized_line = normalize_preview_line(line);
-    let normalized_summary = normalize_preview_line(summary);
-    if normalized_line.is_empty() || normalized_summary.is_empty() {
+    let line_variants = [line.trim(), strip_summary_event_prefix(line)];
+    let summary_variants = [summary.trim(), strip_summary_event_prefix(summary)];
+
+    for line_variant in line_variants {
+        let normalized_line = normalize_preview_line(line_variant);
+        if normalized_line.is_empty() {
+            continue;
+        }
+        for summary_variant in summary_variants {
+            let normalized_summary = normalize_preview_line(summary_variant);
+            if normalized_summary.is_empty() {
+                continue;
+            }
+            if normalized_line_pair_matches(&normalized_line, &normalized_summary) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn normalized_line_pair_matches(line: &str, summary: &str) -> bool {
+    line == summary
+        || line.contains(summary)
+        || summary.contains(line)
+        || line.starts_with(summary)
+        || summary.starts_with(line)
+}
+
+fn strip_summary_event_prefix(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    for prefix in ["start ", "end ", "status ", "result "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.trim_start();
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("error:") {
+        return rest.trim_start();
+    }
+    trimmed
+}
+
+fn is_status_like_thinking_event(event: &Event, summary: &str) -> bool {
+    if !matches!(event.event_type, EventType::Thinking) {
         return false;
     }
-    normalized_line == normalized_summary
-        || normalized_line.contains(&normalized_summary)
-        || normalized_summary.contains(&normalized_line)
-        || normalized_line.starts_with(&normalized_summary)
-        || normalized_summary.starts_with(&normalized_line)
+
+    if event
+        .source_raw_type()
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|raw| raw.contains("progress") || raw.contains("summary"))
+    {
+        return true;
+    }
+
+    is_status_like_thinking_summary(summary)
+}
+
+fn is_status_like_thinking_summary(summary: &str) -> bool {
+    let lowered = summary.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+    [
+        "searching ",
+        "planning ",
+        "checking ",
+        "reading ",
+        "scanning ",
+        "looking ",
+        "reviewing ",
+        "summarizing ",
+        "running ",
+        "preparing ",
+        "updating ",
+        "verifying ",
+        "collecting ",
+        "inspecting ",
+        "resolving ",
+    ]
+    .iter()
+    .any(|prefix| lowered.starts_with(prefix))
 }
 
 fn collapsed_group_icon(kind: &str) -> &'static str {
@@ -1429,6 +1517,7 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
             let text = first_meaningful_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS)
                 .or_else(|| first_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS))
                 .unwrap_or_default();
+            let text = compact_summary_text_snippet(&text, MESSAGE_SUMMARY_MAX_CHARS);
             if text.is_empty() {
                 "(user prompt)".to_string()
             } else {
@@ -1439,6 +1528,7 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
             let text = first_meaningful_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS)
                 .or_else(|| first_text_line_opt(blocks, MESSAGE_SUMMARY_MAX_CHARS))
                 .unwrap_or_default();
+            let text = compact_summary_text_snippet(&text, MESSAGE_SUMMARY_MAX_CHARS);
             if text.is_empty() {
                 "(agent reply)".to_string()
             } else {
@@ -1447,9 +1537,13 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
         }
         EventType::SystemMessage => first_meaningful_text_line_opt(blocks, 56)
             .or_else(|| first_text_line_opt(blocks, 56))
+            .map(|text| compact_summary_text_snippet(&text, 56))
+            .filter(|text| !text.is_empty())
             .unwrap_or_else(|| "(system)".to_string()),
         EventType::Thinking => first_meaningful_text_line_opt(blocks, 56)
             .or_else(|| first_text_line_opt(blocks, 56))
+            .map(|text| compact_summary_text_snippet(&text, 56))
+            .filter(|text| !text.is_empty())
             .unwrap_or_else(|| "thinking".to_string()),
         EventType::ToolCall { name } => tool_call_compact_summary(name, blocks),
         EventType::ToolResult { name, is_error, .. } => {
@@ -1507,17 +1601,17 @@ fn event_compact_summary(event_type: &EventType, blocks: &[ContentBlock]) -> Str
         | EventType::AudioGenerate { prompt } => truncate(prompt, 52),
         EventType::TaskStart { title } => title
             .as_deref()
-            .map(|text| compact_text_snippet(text, 48))
+            .map(|text| compact_summary_text_snippet(text, 48))
             .filter(|text| !text.is_empty())
             .map(|text| format!("start {text}"))
             .unwrap_or_else(|| "start".to_string()),
         EventType::TaskEnd { summary } => summary
             .as_deref()
-            .map(|text| compact_text_snippet(text, 48))
+            .map(|text| compact_summary_text_snippet(text, 48))
             .filter(|text| !text.is_empty())
             .map(|text| format!("end {text}"))
             .unwrap_or_else(|| "end".to_string()),
-        EventType::Custom { kind } => compact_text_snippet(kind, 52),
+        EventType::Custom { kind } => compact_summary_text_snippet(kind, 52),
         _ => String::new(),
     }
 }
@@ -2032,7 +2126,22 @@ fn json_value_hint(value: &serde_json::Value, max_len: usize) -> Option<String> 
         serde_json::Value::Bool(b) => Some(b.to_string()),
         serde_json::Value::Array(values) => Some(format!("items={}", values.len())),
         serde_json::Value::Object(map) => {
-            if let Some((key, value)) = map.iter().next() {
+            let preferred = [
+                "cmd", "command", "query", "q", "pattern", "path", "url", "ref_id", "title",
+                "prompt", "text", "task", "name", "id",
+            ];
+
+            let picked = preferred
+                .iter()
+                .find_map(|key| map.get(*key).map(|value| (*key, value)))
+                .or_else(|| {
+                    map.iter()
+                        .find(|(key, _)| !is_low_signal_json_hint_key(key))
+                        .map(|(key, value)| (key.as_str(), value))
+                })
+                .or_else(|| map.iter().next().map(|(key, value)| (key.as_str(), value)));
+
+            if let Some((key, value)) = picked {
                 let rendered = json_value_hint(value, max_len.saturating_sub(key.len() + 1))
                     .unwrap_or_else(|| "...".to_string());
                 Some(format!("{key}={rendered}"))
@@ -2042,6 +2151,13 @@ fn json_value_hint(value: &serde_json::Value, max_len: usize) -> Option<String> 
         }
         _ => None,
     }
+}
+
+fn is_low_signal_json_hint_key(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "summary" | "result" | "output" | "metadata" | "status"
+    )
 }
 
 fn first_json_block_hint(blocks: &[ContentBlock], max_len: usize) -> Option<String> {
@@ -2154,6 +2270,31 @@ fn looks_like_terminal_mouse_dump(text: &str) -> bool {
         && digits > letters.saturating_mul(3)
 }
 
+fn is_markdown_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '/' | '-' | '.')
+}
+
+fn strip_inline_markdown_markers(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        match ch {
+            '`' => continue,
+            '*' | '~' | '_' => {
+                let prev = idx.checked_sub(1).and_then(|i| chars.get(i)).copied();
+                let next = chars.get(idx + 1).copied();
+                if prev.is_some_and(is_markdown_word_char)
+                    && next.is_some_and(is_markdown_word_char)
+                {
+                    out.push(ch);
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn compact_text_snippet(text: &str, max_len: usize) -> String {
     let mut cleaned = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -2174,6 +2315,19 @@ fn compact_text_snippet(text: &str, max_len: usize) -> String {
         return "(terminal mouse input omitted)".to_string();
     }
     truncate(&collapsed, max_len)
+}
+
+fn compact_summary_text_snippet(text: &str, max_len: usize) -> String {
+    let compact = compact_text_snippet(text, max_len);
+    if compact.is_empty() {
+        return compact;
+    }
+    let cleaned = strip_inline_markdown_markers(&compact);
+    if cleaned.trim().is_empty() {
+        compact
+    } else {
+        compact_text_snippet(&cleaned, max_len)
+    }
 }
 
 fn count_diff_lines(diff: &str) -> (usize, usize) {
@@ -2680,9 +2834,74 @@ mod tests {
     }
 
     #[test]
+    fn detail_line_matches_summary_ignores_markdown_wrappers() {
+        assert!(detail_line_matches_summary(
+            "Searching for AGENTS documentation",
+            "**Searching for AGENTS documentation**"
+        ));
+    }
+
+    #[test]
+    fn detail_line_matches_summary_ignores_task_end_prefix() {
+        assert!(detail_line_matches_summary(
+            "좋은 포인트야. 결론부터 말하면 파이프라인용으로는 바로 가능",
+            "end 좋은 포인트야. 결론부터 말하면 파이프라인용으로는 바로 가능"
+        ));
+    }
+
+    #[test]
+    fn event_summary_thinking_strips_markdown_emphasis() {
+        let event = make_event(
+            EventType::Thinking,
+            "**Searching for AGENTS documentation**",
+        );
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(summary.contains("Searching for AGENTS documentation"));
+        assert!(!summary.contains("**"));
+    }
+
+    #[test]
+    fn status_like_thinking_summary_is_detected() {
+        let event = make_event(
+            EventType::Thinking,
+            "**Searching for AGENTS documentation**",
+        );
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(is_status_like_thinking_event(&event, &summary));
+    }
+
+    #[test]
+    fn event_summary_unknown_tool_prefers_action_hint_over_summary_key() {
+        let event = Event {
+            event_id: "rollout-call".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::ToolCall {
+                name: "rollout".to_string(),
+            },
+            task_id: None,
+            content: Content {
+                blocks: vec![ContentBlock::Json {
+                    data: serde_json::json!({
+                        "summary": "should not dominate",
+                        "cmd": "opensession rollout run"
+                    }),
+                }],
+            },
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        };
+
+        let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+        assert!(summary.contains("rollout:"));
+        assert!(summary.contains("cmd=opensession rollout run"));
+        assert!(!summary.contains("should not dominate"));
+    }
+
+    #[test]
     fn event_type_icon_assigns_semantic_badges() {
         assert_eq!(event_type_icon(&EventType::UserMessage), "USER");
         assert_eq!(event_type_icon(&EventType::AgentMessage), "AGENT");
+        assert_eq!(event_type_icon(&EventType::Thinking), "THINK");
         assert_eq!(
             event_type_icon(&EventType::ToolCall {
                 name: "exec_command".to_string()

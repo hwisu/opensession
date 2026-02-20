@@ -595,6 +595,24 @@ fn try_git_store(
     }
 }
 
+fn ensure_session_source_path(session: &mut Session, source_path: &Path) {
+    let has_source_path = session
+        .context
+        .attributes
+        .get("source_path")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    if has_source_path {
+        return;
+    }
+
+    session.context.attributes.insert(
+        "source_path".to_string(),
+        serde_json::Value::String(source_path.to_string_lossy().to_string()),
+    );
+}
+
 /// Load sessions from explicit file paths passed as CLI args.
 fn load_from_paths(args: &[String]) -> Vec<LoadedSession> {
     let parsers = opensession_parsers::all_parsers();
@@ -608,7 +626,8 @@ fn load_from_paths(args: &[String]) -> Vec<LoadedSession> {
         }
         if let Some(parser) = parsers.iter().find(|p| p.can_parse(&path)) {
             match parser.parse(&path) {
-                Ok(session) => {
+                Ok(mut session) => {
+                    ensure_session_source_path(&mut session, &path);
                     if session.stats.event_count > 0 {
                         sessions.push(LoadedSession {
                             source_path: path.clone(),
@@ -742,7 +761,8 @@ fn load_sessions() -> Vec<LoadedSession> {
             }
 
             if let Some(parser) = parsers.iter().find(|p| p.can_parse(path)) {
-                if let Ok(session) = parser.parse(path) {
+                if let Ok(mut session) = parser.parse(path) {
+                    ensure_session_source_path(&mut session, path);
                     // Skip empty sessions (0 events usually means parse was incomplete)
                     if session.stats.event_count > 0 {
                         sessions.push(LoadedSession {
@@ -787,12 +807,13 @@ fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session,
 #[cfg(test)]
 mod tests {
     use super::{
-        env_flag_enabled, filter_visible_discovered_sessions, is_hidden_opencode_child_session,
-        refresh_discovery_on_start,
+        ensure_session_source_path, env_flag_enabled, filter_visible_discovered_sessions,
+        is_hidden_opencode_child_session, refresh_discovery_on_start,
     };
     use chrono::Utc;
     use opensession_core::trace::{Agent, Session, SessionContext};
     use serde_json::json;
+    use std::path::Path;
     use std::sync::{Mutex, OnceLock};
 
     fn env_test_lock() -> &'static Mutex<()> {
@@ -958,5 +979,64 @@ mod tests {
             std::env::set_var(key, "0");
             assert!(!refresh_discovery_on_start());
         });
+    }
+
+    #[test]
+    fn ensure_session_source_path_backfills_missing_source_path() {
+        let mut session = Session::new(
+            "ses-source-path".to_string(),
+            Agent {
+                provider: "provider".to_string(),
+                model: "model".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        assert!(!session.context.attributes.contains_key("source_path"));
+
+        ensure_session_source_path(
+            &mut session,
+            Path::new("/tmp/ops-session-source-path/rollout-test.jsonl"),
+        );
+
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get("source_path")
+                .and_then(|value| value.as_str()),
+            Some("/tmp/ops-session-source-path/rollout-test.jsonl")
+        );
+    }
+
+    #[test]
+    fn ensure_session_source_path_preserves_existing_source_path() {
+        let mut session = Session::new(
+            "ses-existing-source".to_string(),
+            Agent {
+                provider: "provider".to_string(),
+                model: "model".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.context.attributes.insert(
+            "source_path".to_string(),
+            json!("/tmp/existing-source.jsonl"),
+        );
+
+        ensure_session_source_path(
+            &mut session,
+            Path::new("/tmp/new-source-should-not-override.jsonl"),
+        );
+
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get("source_path")
+                .and_then(|value| value.as_str()),
+            Some("/tmp/existing-source.jsonl")
+        );
     }
 }

@@ -401,7 +401,7 @@ pub fn extract_visible_turns<'a>(events: &[DisplayEvent<'a>]) -> Vec<Turn<'a>> {
 mod turn_extract_tests {
     use super::*;
     use crate::live::{LiveUpdate, LiveUpdateBatch};
-    use chrono::Utc;
+    use chrono::{Duration as ChronoDuration, Utc};
     use opensession_core::trace::{Agent, Content, Session};
     use serde_json::Value;
 
@@ -999,7 +999,8 @@ mod turn_extract_tests {
         let dir = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("session.jsonl");
-        std::fs::write(&path, "{}\n").expect("write file");
+        let ts = Utc::now().to_rfc3339();
+        std::fs::write(&path, format!(r#"{{"timestamp":"{ts}"}}"#)).expect("write file");
 
         let session = make_live_session("live-source-recent", 2);
         let mut app = App::new(vec![session]);
@@ -1010,6 +1011,38 @@ mod turn_extract_tests {
         app.refresh_live_mode();
 
         assert!(app.live_mode);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn refresh_live_mode_ignores_recent_mtime_when_source_events_are_stale() {
+        let unique = format!(
+            "ops-live-source-stale-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("session.jsonl");
+        let stale_ts = (Utc::now() - ChronoDuration::hours(12)).to_rfc3339();
+        std::fs::write(&path, format!(r#"{{"timestamp":"{stale_ts}"}}"#)).expect("write file");
+
+        let mut session = make_live_session("live-source-stale", 2);
+        let stale_event = Utc::now() - ChronoDuration::hours(10);
+        session.context.created_at = stale_event;
+        session.context.updated_at = stale_event;
+        for event in &mut session.events {
+            event.timestamp = stale_event;
+        }
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_source_path = Some(path.clone());
+        app.live_subscription = None;
+        app.live_mode = false;
+        app.refresh_live_mode();
+
+        assert!(!app.live_mode);
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir_all(&dir).ok();
@@ -1277,6 +1310,39 @@ mod turn_extract_tests {
             app.handoff_selected_session_ids,
             vec![selected[0].clone(), selected[1].clone()]
         );
+    }
+
+    #[test]
+    fn handoff_generate_without_candidates_shows_info() {
+        let mut app = App::new(vec![]);
+        app.handle_key(KeyCode::Char('2'));
+        assert_eq!(app.view, View::Handoff);
+
+        app.handle_key(KeyCode::Char('g'));
+        let message = app
+            .flash_message
+            .as_ref()
+            .map(|(msg, _)| msg.clone())
+            .unwrap_or_default();
+        assert!(message
+            .to_ascii_lowercase()
+            .contains("no handoff candidate"));
+    }
+
+    #[test]
+    fn handoff_generate_requires_local_source_files() {
+        let sessions = vec![make_live_session("handoff-a", 2)];
+        let mut app = App::new(sessions);
+        app.handle_key(KeyCode::Char('2'));
+        assert_eq!(app.view, View::Handoff);
+
+        app.handle_key(KeyCode::Char('g'));
+        let message = app
+            .flash_message
+            .as_ref()
+            .map(|(msg, _)| msg.clone())
+            .unwrap_or_default();
+        assert!(message.to_ascii_lowercase().contains("local source file"));
     }
 
     #[test]
@@ -2829,6 +2895,7 @@ impl App {
                     self.flash_success("Handoff preview refreshed");
                 }
             }
+            KeyCode::Char('g') => self.generate_handoff_via_cli(),
             KeyCode::Char('s') => self.save_handoff_artifact_via_cli(),
             KeyCode::Char('r') => self.refresh_handoff_artifact_via_cli(),
             _ => {}
@@ -4408,6 +4475,57 @@ impl App {
         self.flash_success("Saved handoff artifact");
     }
 
+    fn generate_handoff_via_cli(&mut self) {
+        let candidates = self.handoff_effective_candidates();
+        if candidates.is_empty() {
+            self.flash_info("No handoff candidate in current scope");
+            return;
+        }
+        let source_paths = candidates
+            .iter()
+            .filter_map(|candidate| candidate.source_path.clone())
+            .collect::<Vec<_>>();
+        if source_paths.len() != candidates.len() {
+            self.flash_info("Some selected sessions have no local source file");
+            return;
+        }
+
+        let output_path = std::env::current_dir()
+            .map(|cwd| cwd.join("HANDOFF.md"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("HANDOFF.md"));
+
+        let mut cmd = std::process::Command::new("opensession");
+        cmd.arg("session")
+            .arg("handoff")
+            .arg("--format")
+            .arg("markdown")
+            .arg("--output")
+            .arg(&output_path);
+        for path in &source_paths {
+            cmd.arg(path);
+        }
+
+        let output = match cmd.output() {
+            Ok(output) => output,
+            Err(err) => {
+                self.flash_error(format!("Failed to run opensession CLI: {err}"));
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                self.flash_error("Handoff generate command failed");
+            } else {
+                self.flash_error(stderr);
+            }
+            return;
+        }
+
+        self.flash_success(format!("Generated handoff: {}", output_path.display()));
+    }
+
     fn refresh_handoff_artifact_via_cli(&mut self) {
         let Some(artifact_id) = self.handoff_last_artifact_id.clone() else {
             self.flash_info("No saved handoff artifact yet");
@@ -5035,6 +5153,75 @@ impl App {
             .and_then(|session| session.events.last().map(|event| event.timestamp))
     }
 
+    fn parse_datetime_utc(value: &str) -> Option<DateTime<Utc>> {
+        if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+            return Some(dt.with_timezone(&Utc));
+        }
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
+            return Some(dt.and_utc());
+        }
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+            return Some(dt.and_utc());
+        }
+        None
+    }
+
+    fn parse_unix_timestamp_utc(seconds: i64) -> Option<DateTime<Utc>> {
+        DateTime::<Utc>::from_timestamp(seconds, 0)
+    }
+
+    fn json_value_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+        match value {
+            serde_json::Value::String(raw) => Self::parse_datetime_utc(raw),
+            serde_json::Value::Number(num) => num
+                .as_i64()
+                .or_else(|| num.as_u64().and_then(|v| i64::try_from(v).ok()))
+                .and_then(Self::parse_unix_timestamp_utc),
+            serde_json::Value::Object(map) => {
+                for key in ["timestamp", "created_at", "updated_at", "time", "ts"] {
+                    if let Some(ts) = map.get(key).and_then(Self::json_value_timestamp) {
+                        return Some(ts);
+                    }
+                }
+                for nested in map.values() {
+                    if let Some(ts) = Self::json_value_timestamp(nested) {
+                        return Some(ts);
+                    }
+                }
+                None
+            }
+            serde_json::Value::Array(values) => {
+                for nested in values.iter().rev() {
+                    if let Some(ts) = Self::json_value_timestamp(nested) {
+                        return Some(ts);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn source_path_last_event_at(path: &Path) -> Option<DateTime<Utc>> {
+        let raw = std::fs::read_to_string(path).ok()?;
+
+        for line in raw.lines().rev().take(400) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+            if let Some(ts) = Self::json_value_timestamp(&value) {
+                return Some(ts);
+            }
+        }
+
+        let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+        Self::json_value_timestamp(&value)
+    }
+
     fn is_source_path_recently_modified(&self) -> bool {
         let Some(path) = self.detail_source_path.as_ref() else {
             return false;
@@ -5046,7 +5233,14 @@ impl App {
             return false;
         };
         let modified_at: DateTime<Utc> = modified.into();
-        Utc::now().signed_duration_since(modified_at) <= Self::live_recent_cutoff()
+        if Utc::now().signed_duration_since(modified_at) > Self::live_recent_cutoff() {
+            return false;
+        }
+
+        // Guard against stale sessions that happen to have a recently touched source file.
+        Self::source_path_last_event_at(path)
+            .map(|ts| Utc::now().signed_duration_since(ts) <= Self::live_recent_cutoff())
+            .unwrap_or(false)
     }
 
     fn is_selected_session_recently_live(&self) -> bool {

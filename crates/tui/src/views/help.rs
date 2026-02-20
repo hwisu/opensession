@@ -94,11 +94,19 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("  PgDn/PgUp ", key_style),
             Span::styled("Previous/next page", desc_style),
         ]),
+        Line::from(vec![
+            Span::styled("  LIVE badge ", key_style),
+            Span::styled("Recent source update + recent event activity", desc_style),
+        ]),
         Line::raw(""),
         Line::from(Span::styled("── Session Detail ──", header_style)),
         Line::from(vec![
             Span::styled("  j/k       ", key_style),
             Span::styled("Navigate events", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  g/G       ", key_style),
+            Span::styled("Jump to first/latest event", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  h/l, ←/→  ", key_style),
@@ -122,10 +130,15 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  0-9       ", key_style),
-            Span::styled(
-                "Filter: All/User/Agent/Think/Tools/Files/Shell/Task/Web/Other",
-                desc_style,
-            ),
+            Span::styled("Filters: 1=All 2=User 3=Agent 4=Think 5=Tools", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("            ", key_style),
+            Span::styled("         6=Files 7=Shell 8=Task 9=Web 0=Other", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  follow    ", key_style),
+            Span::styled("ON keeps tail attached; scroll-up turns it OFF", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  Esc/q     ", key_style),
@@ -144,6 +157,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  Enter     ", key_style),
             Span::styled("Refresh handoff preview (stays in Handoff tab)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  g         ", key_style),
+            Span::styled("Generate HANDOFF.md from selected sessions", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  s         ", key_style),

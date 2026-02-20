@@ -5,7 +5,7 @@ use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, Utc};
 use opensession_local_db::LocalSessionRow;
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, Paragraph};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -815,27 +815,123 @@ fn parse_datetime_utc(value: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
         return Some(dt.and_utc());
     }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc());
+    }
     None
 }
 
+fn is_source_path_recently_modified(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified_at) = metadata.modified() else {
+        return false;
+    };
+    let modified_at = DateTime::<Utc>::from(modified_at);
+    is_live_timestamp(modified_at)
+}
+
+fn parse_unix_timestamp_utc(seconds: i64) -> Option<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp(seconds, 0)
+}
+
+fn json_value_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    match value {
+        serde_json::Value::String(raw) => parse_datetime_utc(raw),
+        serde_json::Value::Number(num) => num
+            .as_i64()
+            .or_else(|| num.as_u64().and_then(|v| i64::try_from(v).ok()))
+            .and_then(parse_unix_timestamp_utc),
+        serde_json::Value::Object(map) => {
+            for key in ["timestamp", "created_at", "updated_at", "time", "ts"] {
+                if let Some(ts) = map.get(key).and_then(json_value_timestamp) {
+                    return Some(ts);
+                }
+            }
+            for nested in map.values() {
+                if let Some(ts) = json_value_timestamp(nested) {
+                    return Some(ts);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values.iter().rev() {
+                if let Some(ts) = json_value_timestamp(nested) {
+                    return Some(ts);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn source_path_last_event_at(path: &Path) -> Option<DateTime<Utc>> {
+    let raw = std::fs::read_to_string(path).ok()?;
+
+    for line in raw.lines().rev().take(400) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if let Some(ts) = json_value_timestamp(&value) {
+            return Some(ts);
+        }
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    json_value_timestamp(&value)
+}
+
+fn source_path_has_recent_event(path: &Path) -> bool {
+    if !is_source_path_recently_modified(path) {
+        return false;
+    }
+    source_path_last_event_at(path).is_some_and(is_live_timestamp)
+}
+
 fn is_live_row(row: &LocalSessionRow) -> bool {
-    let mut latest = parse_datetime_utc(&row.created_at);
-    if let Some(uploaded_at) = row.uploaded_at.as_deref().and_then(parse_datetime_utc) {
-        latest = Some(latest.map_or(uploaded_at, |current| current.max(uploaded_at)));
+    if let Some(source_path) = row
+        .source_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if source_path_has_recent_event(Path::new(source_path)) {
+            return true;
+        }
     }
-    if let Some(last_synced_at) = row.last_synced_at.as_deref().and_then(parse_datetime_utc) {
-        latest = Some(latest.map_or(last_synced_at, |current| current.max(last_synced_at)));
-    }
-    latest.is_some_and(is_live_timestamp)
+
+    parse_datetime_utc(&row.created_at).is_some_and(is_live_timestamp)
 }
 
 fn is_live_local_session(session: &opensession_core::trace::Session) -> bool {
-    let ts = session
+    let latest_known = session
         .events
         .last()
         .map(|event| event.timestamp)
         .unwrap_or(session.context.updated_at);
-    is_live_timestamp(ts)
+    if is_live_timestamp(latest_known) {
+        return true;
+    }
+
+    if let Some(source_path) = session
+        .context
+        .attributes
+        .get("source_path")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return source_path_has_recent_event(Path::new(source_path));
+    }
+
+    false
 }
 
 fn is_live_timestamp(ts: DateTime<Utc>) -> bool {
@@ -864,13 +960,53 @@ fn normalized_db_message_count(row: &LocalSessionRow) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        column_viewport, format_relative_datetime, list_title, normalized_db_message_count,
-        resolved_agents_label, MIN_MULTI_COLUMN_WIDTH,
+        column_viewport, format_relative_datetime, is_live_local_session, is_live_row, list_title,
+        normalized_db_message_count, resolved_agents_label, MIN_MULTI_COLUMN_WIDTH,
     };
     use crate::app::{App, ListLayout, ViewMode};
     use crate::config::CalendarDisplayMode;
     use chrono::{Duration as ChronoDuration, Utc};
+    use opensession_core::trace::{Agent, Content, Event, EventType, Session};
     use opensession_local_db::LocalSessionRow;
+    use std::collections::HashMap;
+
+    fn sample_row() -> LocalSessionRow {
+        LocalSessionRow {
+            id: "ses-1".to_string(),
+            source_path: None,
+            sync_status: "local_only".to_string(),
+            last_synced_at: None,
+            user_id: None,
+            nickname: None,
+            team_id: None,
+            tool: "codex".to_string(),
+            agent_provider: Some("openai".to_string()),
+            agent_model: Some("gpt-5-codex".to_string()),
+            title: Some("Session".to_string()),
+            description: None,
+            tags: None,
+            created_at: Utc::now().to_rfc3339(),
+            uploaded_at: None,
+            message_count: 10,
+            user_message_count: 0,
+            task_count: 0,
+            event_count: 12,
+            duration_seconds: 5,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            git_remote: None,
+            git_branch: None,
+            git_commit: None,
+            git_repo_name: None,
+            pr_number: None,
+            pr_url: None,
+            working_directory: None,
+            files_modified: None,
+            files_read: None,
+            has_errors: false,
+            max_active_agents: 0,
+        }
+    }
 
     #[test]
     fn list_title_includes_column_count_for_multi_column_layout() {
@@ -913,43 +1049,150 @@ mod tests {
 
     #[test]
     fn db_list_item_uses_message_count_and_minimum_agent_label() {
-        let row = LocalSessionRow {
-            id: "ses-1".to_string(),
-            source_path: None,
-            sync_status: "local_only".to_string(),
-            last_synced_at: None,
-            user_id: None,
-            nickname: None,
-            team_id: None,
-            tool: "codex".to_string(),
-            agent_provider: Some("openai".to_string()),
-            agent_model: Some("gpt-5-codex".to_string()),
-            title: Some("Session".to_string()),
-            description: None,
-            tags: None,
-            created_at: Utc::now().to_rfc3339(),
-            uploaded_at: None,
-            message_count: 10,
-            user_message_count: 0,
-            task_count: 0,
-            event_count: 12,
-            duration_seconds: 5,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            git_remote: None,
-            git_branch: None,
-            git_commit: None,
-            git_repo_name: None,
-            pr_number: None,
-            pr_url: None,
-            working_directory: None,
-            files_modified: None,
-            files_read: None,
-            has_errors: false,
-            max_active_agents: 0,
-        };
+        let row = sample_row();
 
         assert_eq!(normalized_db_message_count(&row), 10);
         assert_eq!(resolved_agents_label(Some(0)), "1 agent".to_string());
+    }
+
+    #[test]
+    fn live_row_ignores_recent_sync_timestamps_for_old_sessions() {
+        let mut row = sample_row();
+        row.created_at = (Utc::now() - ChronoDuration::hours(12)).to_rfc3339();
+        row.uploaded_at = Some(Utc::now().to_rfc3339());
+        row.last_synced_at = Some(Utc::now().to_rfc3339());
+
+        assert!(!is_live_row(&row));
+    }
+
+    #[test]
+    fn live_row_uses_recent_source_event_timestamp() {
+        let unique = format!(
+            "ops-live-row-source-recent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let source_path = dir.join("session.jsonl");
+        let now = Utc::now().to_rfc3339();
+        std::fs::write(
+            &source_path,
+            format!(r#"{{"timestamp":"{now}","type":"message"}}"#),
+        )
+        .expect("write");
+
+        let mut row = sample_row();
+        row.created_at = (Utc::now() - ChronoDuration::hours(6)).to_rfc3339();
+        row.source_path = Some(source_path.to_string_lossy().to_string());
+
+        assert!(is_live_row(&row));
+
+        std::fs::remove_file(&source_path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn local_session_live_uses_recent_source_event_timestamp() {
+        let unique = format!(
+            "ops-live-row-path-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let source_path = dir.join("session.jsonl");
+        let now = Utc::now().to_rfc3339();
+        std::fs::write(
+            &source_path,
+            format!(r#"{{"timestamp":"{now}","type":"message"}}"#),
+        )
+        .expect("write");
+
+        let mut session = Session::new(
+            "live-by-source-path".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let stale_ts = Utc::now() - ChronoDuration::hours(8);
+        session.context.created_at = stale_ts;
+        session.context.updated_at = stale_ts;
+        session.context.attributes.insert(
+            "source_path".to_string(),
+            serde_json::Value::String(source_path.to_string_lossy().to_string()),
+        );
+        session.events.push(Event {
+            event_id: "e1".to_string(),
+            timestamp: stale_ts,
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content::text("stale timestamp"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+
+        assert!(is_live_local_session(&session));
+
+        std::fs::remove_file(&source_path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn local_session_live_rejects_recent_mtime_when_last_event_is_old() {
+        let unique = format!(
+            "ops-live-row-path-old-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let source_path = dir.join("session.jsonl");
+        let stale_line_ts = (Utc::now() - ChronoDuration::hours(12)).to_rfc3339();
+        std::fs::write(
+            &source_path,
+            format!(r#"{{"timestamp":"{stale_line_ts}","type":"message"}}"#),
+        )
+        .expect("write");
+
+        let mut session = Session::new(
+            "not-live-by-stale-source-event".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let stale_ts = Utc::now() - ChronoDuration::hours(8);
+        session.context.created_at = stale_ts;
+        session.context.updated_at = stale_ts;
+        session.context.attributes.insert(
+            "source_path".to_string(),
+            serde_json::Value::String(source_path.to_string_lossy().to_string()),
+        );
+        session.events.push(Event {
+            event_id: "e1".to_string(),
+            timestamp: stale_ts,
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content::text("stale timestamp"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+
+        assert!(!is_live_local_session(&session));
+
+        std::fs::remove_file(&source_path).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

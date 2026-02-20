@@ -179,8 +179,8 @@ test.describe('Sessions', () => {
 		await injectAuth(page, admin);
 		await page.goto('/');
 
-		// Should be on the session list page (no landing hero)
-		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).not.toBeVisible();
+		// Should be on the session list page.
+		await expect(page.locator('#session-search')).toBeVisible();
 	});
 
 	test('upload drop zone keeps active drag state through nested drag events', async ({

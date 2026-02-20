@@ -25,6 +25,9 @@ web/data/
 # Playwright MCP
 .playwright-mcp/
 
+# Wrangler local state
+.wrangler/
+
 # Claude Code
 .claude/
 

@@ -12,7 +12,7 @@ The same documentation source is exposed as markdown (`Accept: text/markdown`) a
 
 ### How to use
 
-1. Start with the landing page capability matrix to confirm what this deployment supports.
+1. Start by checking runtime capabilities from `/api/capabilities`.
 2. Use session capture paths (`/upload`, CLI upload, or GitHub preview route) based on your runtime.
 3. Move to list and timeline review for search, filtering, and inspection.
 

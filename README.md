@@ -57,7 +57,7 @@ Issue the key from your web settings page (`/settings`); it is shown once at iss
 
 | Area | Server (Axum) | Worker (Wrangler) |
 |------|----------------|-------------------|
-| Home `/` | Landing for guests, session list after login | Landing for guests, session list after login |
+| Home `/` | Session list (public feed policy applies) | Session list (public feed policy applies) |
 | Upload UI `/upload` | Enabled | Disabled (read-only) |
 | GitHub share UI `/gh/{owner}/{repo}/{ref}/{path...}` | Enabled | Read-only fallback (unsupported banner) |
 | API surface | `/api/health`, `/api/capabilities`, `/api/ingest/preview`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |

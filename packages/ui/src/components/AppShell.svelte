@@ -45,6 +45,31 @@ let hasLocalAuth = $state(false);
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/');
 
+function trimNonEmpty(value: string | null | undefined): string | null {
+	if (typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeAtHandle(value: string | null | undefined): string | null {
+	const trimmed = trimNonEmpty(value);
+	if (!trimmed) return null;
+	const withoutAt = trimmed.replace(/^@+/, '');
+	return withoutAt.length > 0 ? `@${withoutAt}` : null;
+}
+
+function navAccountHandle(currentUser: UserSettings | null): string {
+	if (!currentUser) return 'account';
+
+	const githubHandle = currentUser.oauth_providers
+		?.find((provider) => provider.provider.toLowerCase() === 'github')
+		?.provider_username;
+	const preferredGithub = normalizeAtHandle(githubHandle);
+	if (preferredGithub) return preferredGithub;
+
+	return trimNonEmpty(currentUser.nickname) ?? 'account';
+}
+
 function isGuestAllowedPath(path: string): boolean {
 	return (
 		path === '/' ||
@@ -392,7 +417,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 			{/each}
 
 			{#if hasLocalAuth}
-				<span class="px-2 py-1 text-xs text-text-secondary sm:text-sm">[{user?.nickname ?? 'account'}]</span>
+				<span class="px-2 py-1 text-xs text-text-secondary sm:text-sm">[{navAccountHandle(user)}]</span>
 				<button
 					type="button"
 					onclick={handleSignOut}

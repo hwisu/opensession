@@ -29,9 +29,7 @@ test.describe('Authentication', () => {
 		const admin = await getAdmin(request);
 		await injectAuth(page, admin);
 		await page.goto('/');
-		// Should NOT see landing page hero
-		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).not.toBeVisible();
-		// Should see the nav bar
+		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav')).toBeVisible();
 	});
 
@@ -44,6 +42,67 @@ test.describe('Authentication', () => {
 		await page.goto('/');
 		await expect(page.locator('nav').getByText(`[${admin.nickname}]`)).toBeVisible();
 		await expect(page.locator('nav').getByText('Logout')).toBeVisible();
+	});
+
+	test('authenticated user nav prefers github handle over nickname', async ({ page }) => {
+		const expiry = Math.floor(Date.now() / 1000) + 3600;
+		await page.addInitScript((nextExpiry) => {
+			localStorage.setItem('opensession_access_token', 'test-access');
+			localStorage.setItem('opensession_refresh_token', 'test-refresh');
+			localStorage.setItem('opensession_token_expiry', String(nextExpiry));
+		}, expiry);
+
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: true,
+					upload_enabled: true,
+					ingest_preview_enabled: true,
+					gh_share_enabled: true,
+				}),
+			});
+		});
+		await page.route('**/api/auth/verify', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ user_id: 'u-test', nickname: 'fallback-nick' }),
+			});
+		});
+		await page.route('**/api/auth/me', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					user_id: 'u-test',
+					nickname: 'fallback-nick',
+					created_at: new Date().toISOString(),
+					email: null,
+					avatar_url: null,
+					oauth_providers: [
+						{ provider: 'github', provider_username: '@octocat', display_name: 'GitHub' },
+					],
+				}),
+			});
+		});
+		await page.route('**/api/sessions**', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					sessions: [],
+					total: 0,
+					page: 1,
+					per_page: 50,
+				}),
+			});
+		});
+
+		await page.goto('/');
+		await expect(page.locator('nav').getByText('[@octocat]')).toBeVisible();
+		await expect(page.locator('nav').getByText('[fallback-nick]')).toHaveCount(0);
 	});
 
 	test('legacy millisecond token expiry does not keep guest in authenticated home', async ({
@@ -60,8 +119,7 @@ test.describe('Authentication', () => {
 		});
 
 		await page.goto('/');
-		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).toBeVisible();
-		await expect(page.locator('#session-search')).toHaveCount(0);
+		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 
 		const tokens = await page.evaluate(() => ({
@@ -85,8 +143,7 @@ test.describe('Authentication', () => {
 		}, 'osk_test_only_key');
 
 		await page.goto('/');
-		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).toBeVisible();
-		await expect(page.locator('#session-search')).toHaveCount(0);
+		await expect(page.locator('#session-search')).toBeVisible();
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 		await expect(page.locator('nav').getByText('Logout')).toHaveCount(0);
 	});

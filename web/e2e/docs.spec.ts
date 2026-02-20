@@ -28,11 +28,12 @@ test.describe('Docs', () => {
 		await page.goto('/docs');
 		const article = page.locator('main article');
 		const minChapters = chapterHeadings.length;
+		await expect(article.getByRole('heading', { level: 1, name: 'Documentation' })).toBeVisible();
 
-		const whatCount = await article.locator('h3', { hasText: 'What it does' }).count();
-		const howCount = await article.locator('h3', { hasText: 'How to use' }).count();
-		const exampleCount = await article.locator('h3', { hasText: 'Example' }).count();
-		const limitsCount = await article.locator('h3', { hasText: 'Limits' }).count();
+		const whatCount = await article.getByRole('heading', { level: 3, name: 'What it does' }).count();
+		const howCount = await article.getByRole('heading', { level: 3, name: 'How to use' }).count();
+		const exampleCount = await article.getByRole('heading', { level: 3, name: 'Example' }).count();
+		const limitsCount = await article.getByRole('heading', { level: 3, name: 'Limits' }).count();
 
 		expect(whatCount).toBeGreaterThanOrEqual(minChapters);
 		expect(howCount).toBeGreaterThanOrEqual(minChapters);

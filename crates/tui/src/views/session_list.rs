@@ -551,35 +551,26 @@ fn local_actor_label(session: &opensession_core::trace::Session) -> Option<Strin
     if let Some(nick) = attrs
         .get("nickname")
         .or_else(|| attrs.get("user_nickname"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .and_then(|v| trimmed_non_empty(v.as_str()))
     {
         return Some(format!("@{}", truncate(nick, 18)));
     }
     if let Some(uid) = attrs
         .get("user_id")
         .or_else(|| attrs.get("uid"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .and_then(|v| trimmed_non_empty(v.as_str()))
     {
         return Some(format!("id:{}", truncate(uid, 10)));
     }
     attrs
         .get("originator")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .and_then(|v| trimmed_non_empty(v.as_str()))
         .map(|originator| truncate(originator, 18))
 }
 
 fn display_model(row: &LocalSessionRow) -> String {
-    if let Some(model) = row
-        .agent_model
-        .as_deref()
-        .map(str::trim)
-        .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("unknown"))
+    if let Some(model) = trimmed_non_empty(row.agent_model.as_deref())
+        .filter(|model| !model.eq_ignore_ascii_case("unknown"))
     {
         return model.to_string();
     }
@@ -588,10 +579,7 @@ fn display_model(row: &LocalSessionRow) -> String {
             return model;
         }
     }
-    row.agent_model
-        .as_deref()
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
+    trimmed_non_empty(row.agent_model.as_deref())
         .unwrap_or("-")
         .to_string()
 }
@@ -627,26 +615,20 @@ fn parse_codex_config_model(config_toml: &str) -> Option<String> {
     let active_profile = value
         .get("profile")
         .or_else(|| value.get("default_profile"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+        .and_then(|v| trimmed_non_empty(v.as_str()));
     if let Some(profile) = active_profile {
         if let Some(model) = value
             .get("profiles")
             .and_then(|profiles| profiles.get(profile))
             .and_then(|profile| profile.get("model"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .and_then(|v| trimmed_non_empty(v.as_str()))
         {
             return Some(model.to_string());
         }
     }
     value
         .get("model")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .and_then(|v| trimmed_non_empty(v.as_str()))
         .map(str::to_string)
 }
 
@@ -836,6 +818,10 @@ fn parse_unix_timestamp_utc(seconds: i64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp(seconds, 0)
 }
 
+fn trimmed_non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 fn json_value_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
     match value {
         serde_json::Value::String(raw) => parse_datetime_utc(raw),
@@ -896,12 +882,7 @@ fn source_path_has_recent_event(path: &Path) -> bool {
 }
 
 fn is_live_row(row: &LocalSessionRow) -> bool {
-    if let Some(source_path) = row
-        .source_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(source_path) = trimmed_non_empty(row.source_path.as_deref()) {
         if source_path_has_recent_event(Path::new(source_path)) {
             return true;
         }
@@ -924,9 +905,7 @@ fn is_live_local_session(session: &opensession_core::trace::Session) -> bool {
         .context
         .attributes
         .get("source_path")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .and_then(|value| trimmed_non_empty(value.as_str()))
     {
         return source_path_has_recent_event(Path::new(source_path));
     }

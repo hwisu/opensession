@@ -29,19 +29,20 @@ const featureCards: FeatureCard[] = [
 	{
 		id: 'capture',
 		flag: '--capture',
-		title: 'Capture and Normalize',
-		summary: 'Upload raw exports and normalize to HAIL JSONL for consistent storage.',
+		title: 'Capture and Normalize (when enabled)',
+		summary:
+			'When upload and ingest preview APIs are enabled, raw exports can be parsed and normalized to HAIL JSONL.',
 		outcomes: [
 			'Parser auto-detection with parser hint fallback',
-			'Unified schema for cross-tool timeline rendering',
-			'Server and worker deployments share the same docs surface',
+			'Normalized events feed the same timeline renderer',
+			'Read-only deployments show explicit upload limitations',
 		],
 	},
 	{
 		id: 'explore',
 		flag: '--explore',
 		title: 'Explore Sessions',
-		summary: 'Filter and inspect sessions by time range, tool, and in-session event search.',
+		summary: 'Browse stored sessions by time range, tool, and in-session event filters.',
 		outcomes: [
 			'Session list with keyboard-friendly navigation',
 			'Timeline filters for unified/native views',
@@ -51,8 +52,8 @@ const featureCards: FeatureCard[] = [
 	{
 		id: 'share',
 		flag: '--share',
-		title: 'GitHub Source Preview',
-		summary: 'Preview parseable session files from GitHub routes without local imports.',
+		title: 'GitHub Source Preview (when enabled)',
+		summary: 'Preview parseable session files from /gh routes when gh_share_enabled is true.',
 		outcomes: [
 			'Parser selection flow when confidence is ambiguous',
 			'URL-synced view and filter state',
@@ -62,12 +63,13 @@ const featureCards: FeatureCard[] = [
 	{
 		id: 'operate',
 		flag: '--operate',
-		title: 'Runtime-Aware UX',
-		summary: 'Capability flags drive UI behavior for auth, upload, preview, and sharing.',
+		title: 'Capability-Gated UI',
+		summary:
+			'Runtime capability flags drive auth, upload, ingest preview, and GitHub preview behavior.',
 		outcomes: [
 			'Guest-safe landing and docs access',
-			'Upload gated by runtime capabilities',
-			'Consistent behavior across server and worker profiles',
+			'Disabled features render as disabled, not silently hidden',
+			'Same frontend works across server and worker profiles',
 		],
 	},
 ];
@@ -76,22 +78,22 @@ const flowSteps = [
 	{
 		id: 'input',
 		label: 'Input',
-		detail: 'Session files or GitHub route payloads enter the ingest pipeline.',
+		detail: 'Session files or GitHub route payloads are provided to upload or ingest preview APIs.',
 	},
 	{
 		id: 'parse',
 		label: 'Parse',
-		detail: 'Parser preview resolves source format and normalizes into HAIL.',
+		detail: 'Supported parsers normalize source records into HAIL events.',
 	},
 	{
 		id: 'index',
 		label: 'Index',
-		detail: 'Session metadata is indexed for list filters and timeline summaries.',
+		detail: 'Session metadata is indexed for list filtering and timeline summaries.',
 	},
 	{
 		id: 'review',
 		label: 'Review',
-		detail: 'Users inspect timelines, filter events, and drill into details.',
+		detail: 'Users inspect timelines, apply event filters, and drill into details.',
 	},
 ];
 
@@ -145,7 +147,7 @@ function capabilityClass(enabled: boolean): string {
 </script>
 
 <svelte:head>
-	<title>OpenSession - Capture and Review AI Sessions</title>
+	<title>OpenSession - Capability-Aware Session Review</title>
 </svelte:head>
 
 <div class="mx-auto w-full max-w-6xl px-3 py-8 sm:px-6 sm:py-10">
@@ -153,11 +155,12 @@ function capabilityClass(enabled: boolean): string {
 		<div class="space-y-4">
 			<p class="text-[11px] uppercase tracking-[0.16em] text-text-muted">open format • runtime aware</p>
 			<h1 class="text-3xl font-bold leading-tight text-text-primary sm:text-4xl">
-				AI sessions become a reusable engineering asset.
+				Inspect AI session traces with capability-aware workflows.
 			</h1>
 			<p class="max-w-xl text-sm leading-relaxed text-text-secondary">
-				OpenSession captures session traces in HAIL, visualizes event timelines, and adapts features
-				by runtime capabilities without changing the frontend route layer.
+				OpenSession stores sessions in HAIL format and provides timeline inspection. Available actions
+				(auth, upload, ingest preview, GitHub preview) are determined at runtime from
+				<code>/api/capabilities</code>.
 			</p>
 			<div class="flex flex-wrap gap-2">
 				<button
@@ -178,11 +181,19 @@ function capabilityClass(enabled: boolean): string {
 		</div>
 
 		<div class="border border-border bg-bg-primary p-4">
-			<p class="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">Delivery Focus</p>
+			<p class="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">
+				What This Page Guarantees
+			</p>
 			<ul class="space-y-2">
-				<li class="text-sm text-text-secondary">Feature visibility first, not only marketing copy.</li>
-				<li class="text-sm text-text-secondary">Single docs source served as markdown and HTML.</li>
-				<li class="text-sm text-text-secondary">Contract + snapshot checks to prevent silent content loss.</li>
+				<li class="text-sm text-text-secondary">
+					Capability rows reflect live <code>/api/capabilities</code> responses.
+				</li>
+				<li class="text-sm text-text-secondary">
+					Landing sections/capability keys are verified by content-contract checks.
+				</li>
+				<li class="text-sm text-text-secondary">
+					Disabled runtime features are shown as disabled, not advertised as active.
+				</li>
 			</ul>
 		</div>
 	</section>

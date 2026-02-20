@@ -1,0 +1,25 @@
+{
+  "source": "packages/ui/src/components/LandingPage.svelte",
+  "required_sections": [
+    "feature-map",
+    "data-flow",
+    "capability-matrix"
+  ],
+  "required_capabilities": [
+    "auth_enabled",
+    "upload_enabled",
+    "ingest_preview_enabled",
+    "gh_share_enabled"
+  ],
+  "sections": [
+    "capability-matrix",
+    "data-flow",
+    "feature-map"
+  ],
+  "capabilities": [
+    "auth_enabled",
+    "gh_share_enabled",
+    "ingest_preview_enabled",
+    "upload_enabled"
+  ]
+}

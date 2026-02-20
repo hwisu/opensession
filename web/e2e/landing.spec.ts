@@ -4,11 +4,29 @@ import { getAdmin, getCapabilities, uploadSession } from './helpers';
 test.describe('Home Feed (unauthenticated)', () => {
 	test('shows landing and auth nav for guests', async ({ page }) => {
 		await page.goto('/');
-		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).toBeVisible();
+		await expect(
+			page.locator('h1').filter({ hasText: 'AI sessions become a reusable engineering asset.' }),
+		).toBeVisible();
 		await expect(page.locator('#session-search')).toHaveCount(0);
 		await expect(page.getByRole('button', { name: 'Sign In' })).toBeVisible();
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 		await expect(page.locator('nav').getByText('Register')).toHaveCount(0);
+	});
+
+	test('landing visualizes feature map, data flow, and capability matrix', async ({ page }) => {
+		await page.goto('/');
+
+		await expect(page.locator('[data-contract-section="feature-map"]')).toBeVisible();
+		await expect(page.locator('[data-contract-section="data-flow"]')).toBeVisible();
+		await expect(page.locator('[data-contract-section="capability-matrix"]')).toBeVisible();
+
+		await expect(page.locator('[data-feature-id]')).toHaveCount(4);
+		await expect(page.locator('[data-flow-step]')).toHaveCount(4);
+
+		await expect(page.locator('[data-capability-key="auth_enabled"]')).toBeVisible();
+		await expect(page.locator('[data-capability-key="upload_enabled"]')).toBeVisible();
+		await expect(page.locator('[data-capability-key="ingest_preview_enabled"]')).toBeVisible();
+		await expect(page.locator('[data-capability-key="gh_share_enabled"]')).toBeVisible();
 	});
 
 	test('login page is accessible to guests', async ({ page }) => {
@@ -40,7 +58,9 @@ test.describe('Home Feed (unauthenticated)', () => {
 		const sessionId = await uploadSession(request, admin.access_token, { title });
 
 		await page.goto('/');
-		await expect(page.locator('h1').filter({ hasText: 'AI sessions are' })).toBeVisible();
+		await expect(
+			page.locator('h1').filter({ hasText: 'AI sessions become a reusable engineering asset.' }),
+		).toBeVisible();
 		await expect(page.locator('main').getByText(title)).toHaveCount(0);
 
 		await page.goto(`/session/${sessionId}`);

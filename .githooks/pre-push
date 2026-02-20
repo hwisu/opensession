@@ -26,6 +26,13 @@ echo "=== Running Worker (wasm) checks ==="
 run_cargo check --locked --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown
 run_cargo clippy --locked --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
 
+if command -v node >/dev/null 2>&1; then
+    echo "=== Running content contract check ==="
+    node scripts/verify-content-contract.mjs --check
+else
+    echo "WARNING: node not found; skipping content contract check."
+fi
+
 if command -v npm >/dev/null 2>&1; then
     echo "=== Running frontend checks ==="
     (cd "$ROOT_DIR/packages/ui" && npm ci --prefer-offline --no-audit)

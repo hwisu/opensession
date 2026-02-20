@@ -1,0 +1,39 @@
+{
+	"docs": {
+		"path": "docs.md",
+		"required_chapters": [
+			"Product Map",
+			"Capture Sessions",
+			"Explore Sessions",
+			"GitHub Share Preview",
+			"Auth & Access",
+			"Runtime Profiles",
+			"Troubleshooting"
+		],
+		"required_template_subheadings": [
+			"What it does",
+			"How to use",
+			"Example",
+			"Limits"
+		],
+		"minimum_code_blocks_per_chapter": 1
+	},
+	"landing": {
+		"path": "packages/ui/src/components/LandingPage.svelte",
+		"required_sections": [
+			"feature-map",
+			"data-flow",
+			"capability-matrix"
+		],
+		"required_capabilities": [
+			"auth_enabled",
+			"upload_enabled",
+			"ingest_preview_enabled",
+			"gh_share_enabled"
+		]
+	},
+	"snapshots": {
+		"docs_outline_path": "docs/content-snapshots/docs-outline.json",
+		"landing_outline_path": "docs/content-snapshots/landing-outline.json"
+	}
+}

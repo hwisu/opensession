@@ -1,29 +1,57 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+
+const chapterHeadings = [
+	'Product Map',
+	'Capture Sessions',
+	'Explore Sessions',
+	'GitHub Share Preview',
+	'Auth & Access',
+	'Runtime Profiles',
+	'Troubleshooting',
+];
 
 test.describe('Docs', () => {
-	test('docs markdown is rendered as structured HTML (not raw #/``` text)', async ({ page }) => {
+	test('renders chapter-based docs structure from markdown', async ({ page }) => {
 		await page.goto('/docs');
 		await expect(page.locator('main h1').first()).toBeVisible();
 		await expect(page.locator('main h1').first()).toContainText('Documentation');
 		await expect(page.locator('main article').getByText('# Documentation', { exact: true })).toHaveCount(0);
-		await expect(page.locator('main article').getByText('```bash')).toHaveCount(0);
+
+		for (const heading of chapterHeadings) {
+			await expect(
+				page.locator('main article').getByRole('heading', { level: 2, name: heading }),
+			).toBeVisible();
+		}
 	});
 
-	test('config section shows canonical path and watcher/git-storage example', async ({ page }) => {
+	test('each chapter keeps What/How/Example/Limits template', async ({ page }) => {
 		await page.goto('/docs');
-		await expect(page.locator('main').getByText('~/.config/opensession/opensession.toml')).toBeVisible();
-		await expect(page.locator('main').getByText('custom_paths = [')).toBeVisible();
-		await expect(page.locator('main').getByText('[git_storage]')).toBeVisible();
-		await expect(page.locator('main').getByText('method = "native"')).toBeVisible();
+		const article = page.locator('main article');
+		const minChapters = chapterHeadings.length;
+
+		const whatCount = await article.locator('h3', { hasText: 'What it does' }).count();
+		const howCount = await article.locator('h3', { hasText: 'How to use' }).count();
+		const exampleCount = await article.locator('h3', { hasText: 'Example' }).count();
+		const limitsCount = await article.locator('h3', { hasText: 'Limits' }).count();
+
+		expect(whatCount).toBeGreaterThanOrEqual(minChapters);
+		expect(howCount).toBeGreaterThanOrEqual(minChapters);
+		expect(exampleCount).toBeGreaterThanOrEqual(minChapters);
+		expect(limitsCount).toBeGreaterThanOrEqual(minChapters);
 	});
 
-	test('docs snippet no longer shows legacy watcher toggles and old select command', async ({ page }) => {
+	test('docs include usage examples and avoid legacy route docs', async ({ page }) => {
 		await page.goto('/docs');
-		await expect(page.locator('main').getByText('claude_code = true')).toHaveCount(0);
-		await expect(page.locator('main').getByText('opencode = true')).toHaveCount(0);
-		await expect(page.locator('main').getByText('cursor = false')).toHaveCount(0);
-		await expect(page.locator('main').getByText('daemon select --agent')).toHaveCount(0);
-		await expect(page.locator('main').getByText('daemon select --repo .')).toHaveCount(0);
-		await expect(page.locator('main').getByText('opensession daemon start --repo .')).toBeVisible();
+		const article = page.locator('main article');
+
+		await expect(article.getByText('opensession publish upload ./session.jsonl')).toBeVisible();
+		await expect(article.getByText('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl')).toBeVisible();
+		await expect(
+			article.getByText('wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state'),
+		).toBeVisible();
+
+		await expect(article.getByText('/teams', { exact: false })).toHaveCount(0);
+		await expect(article.getByText('/invitations', { exact: false })).toHaveCount(0);
+		await expect(article.getByRole('heading', { level: 2, name: 'Teams' })).toHaveCount(0);
 	});
 });

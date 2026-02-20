@@ -1,0 +1,99 @@
+{
+  "source": "docs.md",
+  "required_chapters": [
+    "Product Map",
+    "Capture Sessions",
+    "Explore Sessions",
+    "GitHub Share Preview",
+    "Auth & Access",
+    "Runtime Profiles",
+    "Troubleshooting"
+  ],
+  "required_template_subheadings": [
+    "What it does",
+    "How to use",
+    "Example",
+    "Limits"
+  ],
+  "chapters": [
+    {
+      "heading": "Product Map",
+      "subheadings": [
+        "What it does",
+        "How to use",
+        "Example",
+        "Limits"
+      ],
+      "code_blocks": 1
+    },
+    {
+      "heading": "Capture Sessions",
+      "subheadings": [
+        "What it does",
+        "How to use",
+        "Example",
+        "Limits"
+      ],
+      "code_blocks": 1
+    },
+    {
+      "heading": "Explore Sessions",
+      "subheadings": [
+        "What it does",
+        "How to use",
+        "Example",
+        "Limits"
+      ],
+      "code_blocks": 1
+    },
+    {
+      "heading": "GitHub Share Preview",
+      "subheadings": [
+        "What it does",
+        "How to use",
+        "Example",
+        "Limits"
+      ],
+      "code_blocks": 1
+    },
+    {
+      "heading": "Auth & Access",
+      "subheadings": [
+        "What it does",
+        "How to use",
+        "Example",
+        "Limits"
+      ],
+      "code_blocks": 1
+    },
+    {
+      "heading": "Runtime Profiles",
+      "subheadings": [
+        "What it does",
+        "How to use",
+        "Example",
+        "Limits"
+      ],
+      "code_blocks": 1
+    },
+    {
+      "heading": "Migration Parity",
+      "subheadings": [
+        "What it does",
+        "Canonical and mirror paths",
+        "Commands"
+      ],
+      "code_blocks": 1
+    },
+    {
+      "heading": "Troubleshooting",
+      "subheadings": [
+        "What it does",
+        "How to use",
+        "Example",
+        "Limits"
+      ],
+      "code_blocks": 1
+    }
+  ]
+}

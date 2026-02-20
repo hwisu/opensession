@@ -22,6 +22,13 @@ run_cargo() {
 # Cargo.lock 변경 감지를 위한 스냅샷
 LOCK_HASH_BEFORE=$(shasum Cargo.lock 2>/dev/null || echo "none")
 
+if command -v node >/dev/null 2>&1; then
+  echo "Running content contract check..."
+  node scripts/verify-content-contract.mjs --check
+else
+  echo "WARNING: node not found; skipping content contract check."
+fi
+
 echo "Running cargo fmt check..."
 run_cargo fmt --all -- --check
 

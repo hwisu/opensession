@@ -93,7 +93,7 @@ enum Commands {
     /// Session workflows
     Session {
         #[command(subcommand)]
-        action: SessionAction,
+        action: Box<SessionAction>,
     },
 
     /// Publish workflows (single upload / bulk upload)
@@ -291,7 +291,7 @@ impl Commands {
     /// Whether this subcommand wants JSON-formatted error output.
     fn wants_json_errors(&self) -> bool {
         match self {
-            Commands::Session { action } => match action {
+            Commands::Session { action } => match action.as_ref() {
                 SessionAction::Handoff { subcommand, run } => {
                     if subcommand.is_some() {
                         false
@@ -430,7 +430,7 @@ async fn main() {
     let result = match command {
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,
-        Commands::Session { action } => run_session_action(action).await,
+        Commands::Session { action } => run_session_action(*action).await,
         Commands::Publish { action } => run_publish_action(action).await,
         Commands::Daemon { action } => run_daemon_action(action).await,
         Commands::Account { action } => run_account_action(action).await,

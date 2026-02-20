@@ -4945,7 +4945,6 @@ impl App {
     }
 
     fn refresh_live_mode(&mut self) {
-        let previous = self.live_mode;
         let has_subscription = self.live_subscription.is_some();
         let provider_active = self
             .live_subscription

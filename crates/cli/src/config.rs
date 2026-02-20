@@ -177,7 +177,7 @@ pub fn load_config() -> Result<CliConfig> {
 
 /// Save CLI-facing config to disk (in `opensession.toml`).
 pub fn save_config(config: &CliConfig) -> Result<()> {
-    let (mut runtime, _, _) = load_runtime_config_from_disk()?;
+    let (mut runtime, _) = load_runtime_config_from_disk()?;
     runtime.server.url = config.server.url.clone();
     runtime.server.api_key = config.server.api_key.clone();
     runtime.privacy.exclude_tools = config.privacy.exclude_tools.clone();
@@ -186,13 +186,13 @@ pub fn save_config(config: &CliConfig) -> Result<()> {
 
 /// Load daemon runtime config from the canonical config file.
 pub fn load_daemon_config() -> Result<DaemonConfig> {
-    let (runtime, _, _) = load_runtime_config_from_disk()?;
+    let (runtime, _) = load_runtime_config_from_disk()?;
     Ok(runtime)
 }
 
 /// Save daemon runtime config while preserving CLI-specific flags.
 pub fn save_daemon_config(config: &DaemonConfig) -> Result<()> {
-    let (_, auto_start, _) = load_runtime_config_from_disk()?;
+    let (_, auto_start) = load_runtime_config_from_disk()?;
     write_runtime_config(config, auto_start)
 }
 

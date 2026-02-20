@@ -456,32 +456,33 @@ fn event_loop(
 
         // ── Handle upload popup async ops ────────────────────────────
         // Upload session (single target: Personal/Public)
-        if let Some(ref popup) = app.upload_popup {
-            if matches!(popup.phase, UploadPhase::Uploading) {
-                if popup.results.is_empty() {
-                    let target_name = popup.target_name.clone();
-                    let session_clone = app.selected_session().cloned();
+        if let Some(target_name) = app.upload_popup.as_ref().and_then(|popup| {
+            if matches!(popup.phase, UploadPhase::Uploading) && popup.results.is_empty() {
+                Some(popup.target_name.clone())
+            } else {
+                None
+            }
+        }) {
+            let session_clone = app.selected_session().cloned();
 
-                    if let Some(session) = session_clone {
-                        let body_url = if app.selected_session_allows_public() {
-                            try_git_store(&session, &app.daemon_config)
-                        } else {
-                            None
-                        };
+            if let Some(session) = session_clone {
+                let body_url = if app.selected_session_allows_public() {
+                    try_git_store(&session, &app.daemon_config)
+                } else {
+                    None
+                };
 
-                        let session_json = serde_json::to_value(&session).ok();
-                        if let Some(json) = session_json {
-                            app.pending_command = Some(async_ops::AsyncCommand::UploadSession {
-                                session_json: json,
-                                target_name,
-                                body_url,
-                            });
-                        }
-                    } else if let Some(ref mut popup) = app.upload_popup {
-                        popup.status = Some("No session selected".to_string());
-                        popup.phase = UploadPhase::Done;
-                    }
+                let session_json = serde_json::to_value(&session).ok();
+                if let Some(json) = session_json {
+                    app.pending_command = Some(async_ops::AsyncCommand::UploadSession {
+                        session_json: json,
+                        target_name,
+                        body_url,
+                    });
                 }
+            } else if let Some(ref mut popup) = app.upload_popup {
+                popup.status = Some("No session selected".to_string());
+                popup.phase = UploadPhase::Done;
             }
         }
 

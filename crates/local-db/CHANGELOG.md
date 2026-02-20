@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.21](https://github.com/hwisu/opensession/compare/opensession-local-db-v0.2.20...opensession-local-db-v0.2.21) - 2026-02-20
+
+### Other
+
+- Improve session and handoff UX, tracking, and live-state accuracy
+
 ## [0.2.20](https://github.com/hwisu/opensession/compare/opensession-local-db-v0.2.19...opensession-local-db-v0.2.20) - 2026-02-20
 
 ### Other

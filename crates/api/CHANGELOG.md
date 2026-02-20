@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.17](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.16...opensession-api-v0.2.17) - 2026-02-20
+
+### Other
+
+- remove deprecated summary and team remnants
+
 ## [0.2.16](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.15...opensession-api-v0.2.16) - 2026-02-19
 
 ### Added

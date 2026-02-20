@@ -277,12 +277,20 @@ cargo run -p opensession-server
 
 ## 마이그레이션 정합성
 
-원격 마이그레이션 파일은 다음 두 경로가 byte-identical 이어야 합니다.
-- `migrations/*.sql`
-- `crates/api/migrations/[0-9][0-9][0-9][0-9]_*.sql`
+마이그레이션 정본(canonical)은 다음 경로입니다.
+- `crates/api/migrations/*.sql`
+
+배포/도구 호환용 미러 경로:
+- `migrations/[0-9][0-9][0-9][0-9]_*.sql` (숫자 원격 마이그레이션만)
 
 검증:
 
 ```bash
 scripts/check-migration-parity.sh
+```
+
+정본에서 미러로 동기화:
+
+```bash
+scripts/sync-migrations.sh
 ```

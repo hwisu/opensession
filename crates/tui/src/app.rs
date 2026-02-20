@@ -500,6 +500,7 @@ mod turn_extract_tests {
             files_read: None,
             has_errors: false,
             max_active_agents: 1,
+            is_auxiliary: false,
         }
     }
 
@@ -866,6 +867,7 @@ mod turn_extract_tests {
             files_read: None,
             has_errors: false,
             max_active_agents: 1,
+            is_auxiliary: false,
         }];
         app.list_state.select(Some(0));
 

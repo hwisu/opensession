@@ -1,10 +1,13 @@
 use anyhow::{bail, Context, Result};
+use opensession_core::session::{
+    build_git_storage_meta_json, is_auxiliary_session, working_directory,
+};
 use std::path::Path;
 use std::time::Duration;
 
 use crate::config::load_config;
 use opensession_api_client::ApiClient;
-use opensession_parsers::{all_parsers, SessionParser};
+use opensession_parsers::{all_parsers, parser_for_path};
 
 /// Upload a session file to the configured server (or git branch with --git)
 pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Result<()> {
@@ -16,10 +19,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
 
     // Find a parser that can handle this file
     let parsers = all_parsers();
-    let parser: Option<&dyn SessionParser> = parsers
-        .iter()
-        .find(|p| p.can_parse(file))
-        .map(|p| p.as_ref());
+    let parser = parser_for_path(&parsers, file);
 
     let parser = match parser {
         Some(p) => p,
@@ -33,6 +33,13 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
     let session = parser
         .parse(file)
         .with_context(|| format!("Failed to parse {}", file.display()))?;
+    if is_auxiliary_session(&session) {
+        println!(
+            "Skipping upload: auxiliary session '{}' is hidden by policy",
+            session.session_id
+        );
+        return Ok(());
+    }
 
     // Check exclude_tools
     if config
@@ -93,41 +100,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
 
 /// Store session to the git branch in the current repo.
 fn upload_to_git(session: &opensession_core::Session) -> Result<()> {
-    // Determine repo root from session cwd or current dir
-    let cwd = session
-        .context
-        .attributes
-        .get("cwd")
-        .or_else(|| session.context.attributes.get("working_directory"))
-        .and_then(|v| v.as_str())
-        .unwrap_or(".");
-
-    let repo_root = std::env::current_dir()
-        .ok()
-        .and_then(|d| {
-            // Walk up from cwd to find .git
-            let mut dir = d;
-            loop {
-                if dir.join(".git").exists() {
-                    return Some(dir);
-                }
-                if !dir.pop() {
-                    return None;
-                }
-            }
-        })
-        .or_else(|| {
-            // Fallback to session's working directory
-            let mut dir = std::path::PathBuf::from(cwd);
-            loop {
-                if dir.join(".git").exists() {
-                    return Some(dir);
-                }
-                if !dir.pop() {
-                    return None;
-                }
-            }
-        });
+    let repo_root = resolve_repo_root_for_session(session);
 
     let repo_root = match repo_root {
         Some(r) => r,
@@ -140,14 +113,7 @@ fn upload_to_git(session: &opensession_core::Session) -> Result<()> {
     );
 
     let hail_jsonl = session_to_hail_jsonl_bytes(session)?;
-    let meta_json = serde_json::to_string_pretty(&serde_json::json!({
-        "session_id": session.session_id,
-        "title": session.context.title,
-        "tool": session.agent.tool,
-        "model": session.agent.model,
-        "stats": session.stats,
-    }))?
-    .into_bytes();
+    let meta_json = build_git_storage_meta_json(session);
 
     let storage = opensession_git_native::NativeGitStorage;
     let rel_path = storage
@@ -160,6 +126,20 @@ fn upload_to_git(session: &opensession_core::Session) -> Result<()> {
     Ok(())
 }
 
+fn resolve_repo_root_for_session(
+    session: &opensession_core::Session,
+) -> Option<std::path::PathBuf> {
+    if let Some(cwd) = working_directory(session) {
+        if let Some(repo_root) = opensession_git_native::ops::find_repo_root(Path::new(cwd)) {
+            return Some(repo_root);
+        }
+    }
+
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| opensession_git_native::ops::find_repo_root(&cwd))
+}
+
 fn session_to_hail_jsonl_bytes(session: &opensession_core::Session) -> Result<Vec<u8>> {
     session
         .to_jsonl()
@@ -169,9 +149,36 @@ fn session_to_hail_jsonl_bytes(session: &opensession_core::Session) -> Result<Ve
 
 #[cfg(test)]
 mod tests {
-    use super::session_to_hail_jsonl_bytes;
+    use super::{resolve_repo_root_for_session, session_to_hail_jsonl_bytes};
     use chrono::Utc;
+    use opensession_core::session::ATTR_CWD;
     use opensession_core::{Agent, Content, Event, EventType, Session};
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
+
+    fn cwd_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct CwdRestore {
+        path: PathBuf,
+    }
+
+    impl CwdRestore {
+        fn capture() -> Self {
+            Self {
+                path: std::env::current_dir().expect("capture current directory"),
+            }
+        }
+    }
+
+    impl Drop for CwdRestore {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.path);
+        }
+    }
 
     #[test]
     fn git_upload_body_uses_hail_jsonl_lines() {
@@ -206,5 +213,41 @@ mod tests {
         assert_eq!(event["type"], "event");
         let stats: serde_json::Value = serde_json::from_str(lines[2]).expect("valid stats JSON");
         assert_eq!(stats["type"], "stats");
+    }
+
+    #[test]
+    fn resolve_repo_root_prefers_session_working_directory() {
+        let _lock = cwd_test_lock().lock().expect("lock cwd test");
+        let _restore = CwdRestore::capture();
+        let root = tempdir().expect("temp dir");
+
+        let current_repo = root.path().join("current-repo");
+        let session_repo = root.path().join("session-repo");
+        std::fs::create_dir_all(current_repo.join(".git")).expect("create current .git");
+        std::fs::create_dir_all(session_repo.join(".git")).expect("create session .git");
+
+        let current_nested = current_repo.join("nested/path");
+        let session_nested = session_repo.join("nested/path");
+        std::fs::create_dir_all(&current_nested).expect("create current nested");
+        std::fs::create_dir_all(&session_nested).expect("create session nested");
+
+        std::env::set_current_dir(&current_nested).expect("set current dir");
+
+        let mut session = Session::new(
+            "s-cli-repo".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.context.attributes.insert(
+            ATTR_CWD.to_string(),
+            serde_json::Value::String(session_nested.to_string_lossy().to_string()),
+        );
+
+        let resolved = resolve_repo_root_for_session(&session).expect("resolve repo root");
+        assert_eq!(resolved, session_repo);
     }
 }

@@ -1,10 +1,11 @@
 use anyhow::{bail, Result};
+use opensession_core::session::is_auxiliary_session;
 use std::time::Duration;
 
 use crate::config::load_config;
 use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_parsers::discover::discover_sessions;
-use opensession_parsers::{all_parsers, is_auxiliary_session_path, SessionParser};
+use opensession_parsers::{is_auxiliary_session_path, parse_with_default_parsers};
 
 /// Discover all local sessions and upload them to the server.
 pub async fn run_upload_all() -> Result<()> {
@@ -19,7 +20,6 @@ pub async fn run_upload_all() -> Result<()> {
         return Ok(());
     }
 
-    let parsers = all_parsers();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()?;
@@ -43,29 +43,23 @@ pub async fn run_upload_all() -> Result<()> {
                 continue;
             }
 
-            // Find parser
-            let parser: Option<&dyn SessionParser> = parsers
-                .iter()
-                .find(|p| p.can_parse(path))
-                .map(|p| p.as_ref());
-
-            let parser = match parser {
-                Some(p) => p,
-                None => {
+            // Parse
+            let session = match parse_with_default_parsers(path) {
+                Ok(Some(session)) => session,
+                Ok(None) => {
                     skipped += 1;
                     continue;
                 }
-            };
-
-            // Parse
-            let session = match parser.parse(path) {
-                Ok(s) => s,
                 Err(e) => {
                     eprintln!("  FAIL parse {}: {}", path.display(), e);
                     failed += 1;
                     continue;
                 }
             };
+            if is_auxiliary_session(&session) {
+                skipped += 1;
+                continue;
+            }
 
             // Skip empty sessions (no events)
             if session.events.is_empty() {

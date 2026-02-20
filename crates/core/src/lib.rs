@@ -5,6 +5,7 @@ pub mod handoff_artifact;
 pub mod jsonl;
 pub mod sanitize;
 pub mod scoring;
+pub mod session;
 pub mod trace;
 pub mod validate;
 

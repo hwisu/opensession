@@ -5,9 +5,10 @@
 //! The daemon handles uploading to the server via debounced file watching.
 
 use anyhow::{bail, Context, Result};
+use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::LocalDb;
-use opensession_parsers::{all_parsers, is_auxiliary_session_path};
+use opensession_parsers::is_auxiliary_session_path;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -138,22 +139,15 @@ pub fn run_stream_push(agent: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Parse the full file with the standard parser
-    let parsers = all_parsers();
-    let parser = parsers
-        .iter()
-        .find(|p| p.can_parse(&session_file))
+    // Parse the full file with the standard parser.
+    let session = opensession_parsers::parse_with_default_parsers(&session_file)?
         .ok_or_else(|| anyhow::anyhow!("No parser for {}", session_file.display()))?;
-
-    let session = parser.parse(&session_file)?;
+    if is_auxiliary_session(&session) {
+        return Ok(());
+    }
 
     // Extract git context from session's working directory
-    let git = session
-        .context
-        .attributes
-        .get("cwd")
-        .or_else(|| session.context.attributes.get("working_directory"))
-        .and_then(|v| v.as_str())
+    let git = working_directory(&session)
         .map(extract_git_context)
         .unwrap_or_default();
 

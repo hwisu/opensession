@@ -14,6 +14,9 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use opensession_core::session::{
+    build_git_storage_meta_json, is_auxiliary_session, working_directory,
+};
 use opensession_core::trace::{Agent, Session, SessionContext, Stats};
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
@@ -378,12 +381,7 @@ fn cache_sessions_to_db(db: &LocalDb, sessions: &[LoadedSession]) {
     for item in sessions {
         let session = &item.session;
         let source = item.source_path.to_string_lossy();
-        let cwd = session
-            .context
-            .attributes
-            .get("cwd")
-            .or_else(|| session.context.attributes.get("working_directory"))
-            .and_then(|v| v.as_str().map(String::from));
+        let cwd = working_directory(session).map(String::from);
 
         if existing.contains(&session.session_id) {
             if cwd.is_some() {
@@ -570,20 +568,21 @@ fn try_git_store(
     }
 
     // Get working directory from session context.
-    let cwd = session
-        .context
-        .attributes
-        .get("cwd")
-        .or_else(|| session.context.attributes.get("working_directory"))
-        .and_then(|v| v.as_str())?;
+    let cwd = working_directory(session)?;
 
     let repo_root = opensession_git_native::ops::find_repo_root(Path::new(cwd))?;
     let git_ctx = opensession_local_db::git::extract_git_context(cwd);
     let remote_url = git_ctx.remote?;
 
     let jsonl = session.to_jsonl().ok()?;
+    let meta_json = build_git_storage_meta_json(session);
     let storage = opensession_git_native::NativeGitStorage;
-    match storage.store(&repo_root, &session.session_id, jsonl.as_bytes(), b"{}") {
+    match storage.store(
+        &repo_root,
+        &session.session_id,
+        jsonl.as_bytes(),
+        &meta_json,
+    ) {
         Ok(rel_path) => Some(opensession_git_native::generate_raw_url(
             &remote_url,
             &rel_path,
@@ -615,7 +614,6 @@ fn ensure_session_source_path(session: &mut Session, source_path: &Path) {
 
 /// Load sessions from explicit file paths passed as CLI args.
 fn load_from_paths(args: &[String]) -> Vec<LoadedSession> {
-    let parsers = opensession_parsers::all_parsers();
     let mut sessions = Vec::new();
 
     for arg in args {
@@ -624,27 +622,27 @@ fn load_from_paths(args: &[String]) -> Vec<LoadedSession> {
             eprintln!("Warning: file not found: {}", path.display());
             continue;
         }
-        if let Some(parser) = parsers.iter().find(|p| p.can_parse(&path)) {
-            match parser.parse(&path) {
-                Ok(mut session) => {
-                    ensure_session_source_path(&mut session, &path);
-                    if session.stats.event_count > 0 {
-                        sessions.push(LoadedSession {
-                            source_path: path.clone(),
-                            session,
-                        });
-                    } else if session.stats.event_count == 0 {
-                        eprintln!(
-                            "Warning: skipping empty session from {} ({})",
-                            path.display(),
-                            parser.name()
-                        );
-                    }
+        match opensession_parsers::parse_with_default_parsers(&path) {
+            Ok(Some(mut session)) => {
+                if is_auxiliary_session(&session) {
+                    continue;
                 }
-                Err(e) => eprintln!("Warning: failed to parse {}: {}", path.display(), e),
+                ensure_session_source_path(&mut session, &path);
+                if session.stats.event_count > 0 {
+                    sessions.push(LoadedSession {
+                        source_path: path.clone(),
+                        session,
+                    });
+                } else if session.stats.event_count == 0 {
+                    eprintln!("Warning: skipping empty session from {}", path.display());
+                }
             }
-        } else {
-            eprintln!("Warning: no parser for {}", path.display());
+            Ok(None) => {
+                eprintln!("Warning: no parser for {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to parse {}: {}", path.display(), e);
+            }
         }
     }
 
@@ -657,100 +655,18 @@ fn load_from_paths(args: &[String]) -> Vec<LoadedSession> {
     sessions
 }
 
-fn is_hidden_opencode_child_session(session: &opensession_core::trace::Session) -> bool {
-    if session.agent.tool != "opencode" {
-        return false;
-    }
-
-    if !session.context.related_session_ids.is_empty() {
-        return true;
-    }
-
-    if session
-        .context
-        .attributes
-        .iter()
-        .any(|(key, value)| opencode_parent_session_id(value, key))
-    {
-        return true;
-    }
-
-    let session_id = session.session_id.to_ascii_lowercase();
-    if session_id.starts_with("agent-") || session_id.starts_with("agent_") {
-        return true;
-    }
-
-    if session.stats.user_message_count == 0
-        && session.stats.message_count <= 4
-        && session.stats.task_count <= 4
-        && session.stats.event_count > 0
-        && session.stats.event_count <= 16
-    {
-        return true;
-    }
-
-    if let Some(path) = session.context.attributes.get("source_path") {
-        let path = path.as_str().unwrap_or_default().to_ascii_lowercase();
-        if path.contains("/subagents/") || path.contains("\\subagents\\") {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn opencode_parent_session_id(value: &serde_json::Value, key: &str) -> bool {
-    if let Some(parent_id) = value.as_str() {
-        let compact_key = key
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .collect::<String>()
-            .to_ascii_lowercase();
-        if !parent_id.trim().is_empty() {
-            return matches!(
-                compact_key.as_str(),
-                "parentsessionid" | "parentid" | "parentuuid"
-            );
-        }
-    }
-    false
-}
-
-fn is_hidden_claude_code_child_session(session: &opensession_core::trace::Session) -> bool {
-    if session.agent.tool != "claude-code" {
-        return false;
-    }
-
-    if !session.context.related_session_ids.is_empty() {
-        return true;
-    }
-
-    let Some(path) = session.context.attributes.get("source_path") else {
-        return false;
-    };
-    let Some(path) = path.as_str() else {
-        return false;
-    };
-
-    opensession_parsers::is_auxiliary_session_path(std::path::Path::new(path))
-}
-
 fn filter_visible_discovered_sessions(
     sessions: Vec<opensession_core::trace::Session>,
 ) -> Vec<opensession_core::trace::Session> {
     sessions
         .into_iter()
-        .filter(|session| {
-            !is_hidden_opencode_child_session(session)
-                && !is_hidden_claude_code_child_session(session)
-        })
+        .filter(|session| !is_auxiliary_session(session))
         .collect()
 }
 
 /// Auto-discover sessions from known local paths.
 fn load_sessions() -> Vec<LoadedSession> {
     let locations = opensession_parsers::discover::discover_sessions();
-    let parsers = opensession_parsers::all_parsers();
     let mut sessions = Vec::new();
 
     for location in &locations {
@@ -760,16 +676,17 @@ fn load_sessions() -> Vec<LoadedSession> {
                 continue;
             }
 
-            if let Some(parser) = parsers.iter().find(|p| p.can_parse(path)) {
-                if let Ok(mut session) = parser.parse(path) {
-                    ensure_session_source_path(&mut session, path);
-                    // Skip empty sessions (0 events usually means parse was incomplete)
-                    if session.stats.event_count > 0 {
-                        sessions.push(LoadedSession {
-                            source_path: path.clone(),
-                            session,
-                        });
-                    }
+            if let Ok(Some(mut session)) = opensession_parsers::parse_with_default_parsers(path) {
+                if is_auxiliary_session(&session) {
+                    continue;
+                }
+                ensure_session_source_path(&mut session, path);
+                // Skip empty sessions (0 events usually means parse was incomplete)
+                if session.stats.event_count > 0 {
+                    sessions.push(LoadedSession {
+                        source_path: path.clone(),
+                        session,
+                    });
                 }
             }
         }
@@ -786,12 +703,15 @@ fn load_sessions() -> Vec<LoadedSession> {
 
 fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session, String> {
     let parsers = opensession_parsers::all_parsers();
-    let Some(parser) = parsers.iter().find(|p| p.can_parse(path)) else {
+    let Some(parser) = opensession_parsers::parser_for_path(&parsers, path) else {
         return Err(format!("no parser matched {}", path.display()));
     };
     let session = parser
         .parse(path)
         .map_err(|err| format!("parse failed ({}): {err}", parser.name()))?;
+    if is_auxiliary_session(&session) {
+        return Err(format!("parsed as auxiliary session ({})", parser.name()));
+    }
     if session.stats.event_count == 0 {
         if let Some(hint) = App::source_error_hint(path) {
             return Err(format!(
@@ -808,7 +728,7 @@ fn parse_single_session(path: &Path) -> Result<opensession_core::trace::Session,
 mod tests {
     use super::{
         ensure_session_source_path, env_flag_enabled, filter_visible_discovered_sessions,
-        is_hidden_opencode_child_session, refresh_discovery_on_start,
+        refresh_discovery_on_start,
     };
     use chrono::Utc;
     use opensession_core::trace::{Agent, Session, SessionContext};
@@ -890,12 +810,13 @@ mod tests {
     fn opencode_child_session_is_hidden_in_discovery_list() {
         let child = make_opencode_session("ses_child", vec!["ses_parent"]);
         let parent = make_opencode_session("ses_parent", vec![]);
-        assert!(is_hidden_opencode_child_session(&child));
-        assert!(!is_hidden_opencode_child_session(&parent));
+        let visible = filter_visible_discovered_sessions(vec![child, parent.clone()]);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].session_id, parent.session_id);
     }
 
     #[test]
-    fn opencode_zero_user_message_short_session_is_hidden_in_discovery_list() {
+    fn opencode_without_auxiliary_signals_stays_visible_in_discovery_list() {
         let mut child = make_opencode_session("ses_short", vec![]);
         child.stats.user_message_count = 0;
         child.stats.event_count = 4;
@@ -907,18 +828,25 @@ mod tests {
         parent.stats.message_count = 3;
         parent.stats.event_count = 40;
 
-        assert!(is_hidden_opencode_child_session(&child));
-        assert!(!is_hidden_opencode_child_session(&parent));
+        let visible = filter_visible_discovered_sessions(vec![child, parent.clone()]);
+        assert_eq!(visible.len(), 2);
+        assert!(visible
+            .iter()
+            .any(|session| session.session_id == "ses_short"));
+        assert!(visible
+            .iter()
+            .any(|session| session.session_id == parent.session_id));
     }
 
     #[test]
-    fn opencode_session_with_parent_id_attr_alias_is_hidden_in_discovery_list() {
+    fn opencode_session_with_parent_session_id_attr_is_hidden_in_discovery_list() {
         let mut child = make_opencode_session("ses_short", vec![]);
         child
             .context
             .attributes
-            .insert("parentSessionId".to_string(), json!("ses_parent_alias"));
-        assert!(is_hidden_opencode_child_session(&child));
+            .insert("parent_session_id".to_string(), json!("ses_parent_alias"));
+        let visible = filter_visible_discovered_sessions(vec![child]);
+        assert!(visible.is_empty());
     }
 
     #[test]

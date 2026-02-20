@@ -279,12 +279,20 @@ Important environment variables:
 
 ## Migration & DB Parity
 
-Remote migrations must remain byte-identical between:
-- `migrations/*.sql`
-- `crates/api/migrations/[0-9][0-9][0-9][0-9]_*.sql`
+Canonical migration source is:
+- `crates/api/migrations/*.sql`
+
+Mirror target for deploy/tooling compatibility is:
+- `migrations/[0-9][0-9][0-9][0-9]_*.sql` (numeric remote migrations only)
 
 Validation:
 
 ```bash
 scripts/check-migration-parity.sh
+```
+
+Sync mirror from canonical:
+
+```bash
+scripts/sync-migrations.sh
 ```

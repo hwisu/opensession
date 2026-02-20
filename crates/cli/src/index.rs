@@ -1,14 +1,13 @@
 use anyhow::Result;
+use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::LocalDb;
 use opensession_parsers::discover::discover_sessions;
-use opensession_parsers::{all_parsers, SessionParser};
 use std::path::Path;
 
 /// Run the index command: discover all local sessions and build/update the local DB index.
 pub fn run_index() -> Result<()> {
     let db = LocalDb::open()?;
-    let parsers = all_parsers();
     let locations = discover_sessions();
 
     if locations.is_empty() {
@@ -22,7 +21,7 @@ pub fn run_index() -> Result<()> {
 
     for loc in &locations {
         for path in &loc.paths {
-            match index_one_file(&db, &parsers, path) {
+            match index_one_file(&db, path) {
                 Ok(true) => indexed += 1,
                 Ok(false) => skipped += 1,
                 Err(e) => {
@@ -42,22 +41,19 @@ pub fn run_index() -> Result<()> {
 }
 
 /// Index a single session file. Returns Ok(true) if indexed, Ok(false) if skipped.
-fn index_one_file(db: &LocalDb, parsers: &[Box<dyn SessionParser>], path: &Path) -> Result<bool> {
-    let parser = match parsers.iter().find(|p| p.can_parse(path)) {
-        Some(p) => p,
+fn index_one_file(db: &LocalDb, path: &Path) -> Result<bool> {
+    let session = match opensession_parsers::parse_with_default_parsers(path)? {
+        Some(session) => session,
         None => return Ok(false),
     };
-
-    let session = parser.parse(path)?;
+    if is_auxiliary_session(&session) {
+        return Ok(false);
+    }
     let path_str = path.to_string_lossy().to_string();
 
-    let cwd = session
-        .context
-        .attributes
-        .get("cwd")
-        .or_else(|| session.context.attributes.get("working_directory"))
-        .and_then(|v| v.as_str().map(String::from));
-    let git = cwd.as_deref().map(extract_git_context).unwrap_or_default();
+    let git = working_directory(&session)
+        .map(extract_git_context)
+        .unwrap_or_default();
 
     db.upsert_local_session(&session, &path_str, &git)?;
     Ok(true)

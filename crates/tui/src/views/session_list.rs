@@ -1005,6 +1005,7 @@ mod tests {
             files_read: None,
             has_errors: false,
             max_active_agents: 0,
+            is_auxiliary: false,
         }
     }
 

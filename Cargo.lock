@@ -2609,6 +2609,7 @@ version = "0.2.19"
 dependencies = [
  "anyhow",
  "chrono",
+ "opensession-api",
  "opensession-core",
  "rusqlite",
  "serde",

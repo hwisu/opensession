@@ -689,6 +689,7 @@ mod tests {
             files_read: Some("README.md".to_string()),
             has_errors: false,
             max_active_agents: 1,
+            is_auxiliary: false,
         }
     }
 

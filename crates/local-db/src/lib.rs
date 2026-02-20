@@ -1,6 +1,8 @@
 pub mod git;
 
 use anyhow::{Context, Result};
+use opensession_api::db::migrations::{LOCAL_MIGRATIONS, MIGRATIONS};
+use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_core::trace::Session;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -10,52 +12,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use git::GitContext;
-
-type Migration = (&'static str, &'static str);
-
-// Keep local index/cache schema aligned with remote/session schema migrations.
-const REMOTE_MIGRATIONS: &[Migration] = &[
-    ("0001_schema", include_str!("../migrations/0001_schema.sql")),
-    (
-        "0003_max_active_agents",
-        include_str!("../migrations/0003_max_active_agents.sql"),
-    ),
-    (
-        "0004_oauth_states_provider",
-        include_str!("../migrations/0004_oauth_states_provider.sql"),
-    ),
-    (
-        "0005_sessions_body_url_backfill",
-        include_str!("../migrations/0005_sessions_body_url_backfill.sql"),
-    ),
-    (
-        "0006_sessions_remove_fk_constraints",
-        include_str!("../migrations/0006_sessions_remove_fk_constraints.sql"),
-    ),
-    (
-        "0007_sessions_list_perf_indexes",
-        include_str!("../migrations/0007_sessions_list_perf_indexes.sql"),
-    ),
-    (
-        "0009_session_score_plugin",
-        include_str!("../migrations/0009_session_score_plugin.sql"),
-    ),
-    (
-        "0010_api_keys_issuance",
-        include_str!("../migrations/0010_api_keys_issuance.sql"),
-    ),
-];
-
-const LOCAL_MIGRATIONS: &[Migration] = &[
-    (
-        "local_0001_schema",
-        include_str!("../migrations/local_0001_schema.sql"),
-    ),
-    (
-        "local_0002_drop_unused_local_sessions",
-        include_str!("../migrations/local_0002_drop_unused_local_sessions.sql"),
-    ),
-];
 
 /// A local session row stored in the local SQLite index/cache database.
 #[derive(Debug, Clone)]
@@ -93,6 +49,7 @@ pub struct LocalSessionRow {
     pub files_read: Option<String>,
     pub has_errors: bool,
     pub max_active_agents: i64,
+    pub is_auxiliary: bool,
 }
 
 /// A link between a git commit and an AI session.
@@ -107,36 +64,13 @@ pub struct CommitLink {
 
 /// Return true when a cached row corresponds to an OpenCode child session.
 pub fn is_opencode_child_session(row: &LocalSessionRow) -> bool {
-    if row.tool != "opencode" {
-        return false;
-    }
-
-    // Strong heuristic: some orchestration artifacts are generated as sessions
-    // that do not carry a user-visible request surface and only contain system
-    // or agent-only events.
-    if row.user_message_count <= 0
-        && row.message_count <= 4
-        && row.task_count <= 4
-        && row.event_count > 0
-        && row.event_count <= 16
-    {
-        return true;
-    }
-
-    if is_opencode_subagent_source(row.source_path.as_deref()) {
-        return true;
-    }
-
-    let source_path = match row.source_path.as_deref() {
-        Some(path) if !path.trim().is_empty() => path,
-        _ => return false,
-    };
-
-    parse_opencode_parent_session_id(source_path)
-        .is_some_and(|parent_id| !parent_id.trim().is_empty())
+    row.tool == "opencode" && row.is_auxiliary
 }
 
 /// Parse `parentID` / `parentId` from an OpenCode session JSON file.
+#[deprecated(
+    note = "Use parser/core canonical session role attributes instead of runtime file inspection"
+)]
 pub fn parse_opencode_parent_session_id(source_path: &str) -> Option<String> {
     let text = fs::read_to_string(source_path).ok()?;
     let json: Value = serde_json::from_str(&text).ok()?;
@@ -184,40 +118,8 @@ fn is_parent_id_key(key: &str) -> bool {
 
 /// Remove OpenCode child sessions so only parent sessions remain visible.
 pub fn hide_opencode_child_sessions(mut rows: Vec<LocalSessionRow>) -> Vec<LocalSessionRow> {
-    rows.retain(|row| !is_opencode_child_session(row) && !is_claude_subagent_session(row));
+    rows.retain(|row| !row.is_auxiliary);
     rows
-}
-
-fn is_opencode_subagent_source(source_path: Option<&str>) -> bool {
-    is_subagent_source(source_path)
-}
-
-fn is_claude_subagent_session(row: &LocalSessionRow) -> bool {
-    if row.tool != "claude-code" {
-        return false;
-    }
-
-    is_subagent_source(row.source_path.as_deref())
-}
-
-fn is_subagent_source(source_path: Option<&str>) -> bool {
-    let Some(source_path) = source_path.map(|path| path.to_ascii_lowercase()) else {
-        return false;
-    };
-
-    if source_path.contains("/subagents/") || source_path.contains("\\subagents\\") {
-        return true;
-    }
-
-    let filename = match std::path::Path::new(&source_path).file_name() {
-        Some(name) => name.to_string_lossy(),
-        None => return false,
-    };
-
-    filename.starts_with("agent-")
-        || filename.starts_with("agent_")
-        || filename.starts_with("subagent-")
-        || filename.starts_with("subagent_")
 }
 
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
@@ -429,12 +331,8 @@ impl LocalDb {
             Some(session.context.tags.join(","))
         };
         let created_at = session.context.created_at.to_rfc3339();
-        let cwd = session
-            .context
-            .attributes
-            .get("cwd")
-            .or_else(|| session.context.attributes.get("working_directory"))
-            .and_then(|v| v.as_str().map(String::from));
+        let cwd = working_directory(session).map(String::from);
+        let is_auxiliary = is_auxiliary_session(session);
 
         // Extract files_modified, files_read, and has_errors from events
         let (files_modified, files_read, has_errors) =
@@ -450,11 +348,11 @@ impl LocalDb {
             "INSERT INTO sessions \
              (id, team_id, tool, agent_provider, agent_model, \
               title, description, tags, created_at, \
-              message_count, user_message_count, task_count, event_count, duration_seconds, \
+             message_count, user_message_count, task_count, event_count, duration_seconds, \
               total_input_tokens, total_output_tokens, body_storage_key, \
               git_remote, git_branch, git_commit, git_repo_name, working_directory, \
-              files_modified, files_read, has_errors, max_active_agents) \
-             VALUES (?1,'personal',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'',?16,?17,?18,?19,?20,?21,?22,?23,?24) \
+              files_modified, files_read, has_errors, max_active_agents, is_auxiliary) \
+             VALUES (?1,'personal',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'',?16,?17,?18,?19,?20,?21,?22,?23,?24,?25) \
              ON CONFLICT(id) DO UPDATE SET \
               tool=excluded.tool, agent_provider=excluded.agent_provider, \
               agent_model=excluded.agent_model, \
@@ -470,7 +368,8 @@ impl LocalDb {
               working_directory=excluded.working_directory, \
               files_modified=excluded.files_modified, files_read=excluded.files_read, \
               has_errors=excluded.has_errors, \
-              max_active_agents=excluded.max_active_agents",
+              max_active_agents=excluded.max_active_agents, \
+              is_auxiliary=excluded.is_auxiliary",
             params![
                 &session.session_id,
                 &normalized_tool,
@@ -496,6 +395,7 @@ impl LocalDb {
                 &files_read,
                 has_errors,
                 max_active_agents,
+                is_auxiliary as i64,
             ],
         )?;
 
@@ -522,8 +422,8 @@ impl LocalDb {
               total_input_tokens, total_output_tokens, body_storage_key, \
               git_remote, git_branch, git_commit, git_repo_name, \
               pr_number, pr_url, working_directory, \
-              files_modified, files_read, has_errors, max_active_agents) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'',?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28) \
+              files_modified, files_read, has_errors, max_active_agents, is_auxiliary) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'',?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,0) \
              ON CONFLICT(id) DO UPDATE SET \
               title=excluded.title, description=excluded.description, \
               tags=excluded.tags, uploaded_at=excluded.uploaded_at, \
@@ -537,7 +437,8 @@ impl LocalDb {
               working_directory=excluded.working_directory, \
               files_modified=excluded.files_modified, files_read=excluded.files_read, \
               has_errors=excluded.has_errors, \
-              max_active_agents=excluded.max_active_agents",
+              max_active_agents=excluded.max_active_agents, \
+              is_auxiliary=excluded.is_auxiliary",
             params![
                 &summary.id,
                 &summary.user_id,
@@ -587,9 +488,7 @@ impl LocalDb {
     ) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
         let mut where_clauses = vec![
             "1=1".to_string(),
-            "NOT (s.tool = 'claude-code' AND (LOWER(COALESCE(ss.source_path, '')) LIKE '%/subagents/%' OR LOWER(COALESCE(ss.source_path, '')) LIKE '%\\\\subagents\\\\%'))".to_string(),
-            "NOT (s.tool = 'opencode' AND (LOWER(COALESCE(ss.source_path, '')) LIKE '%/subagents/%' OR LOWER(COALESCE(ss.source_path, '')) LIKE '%\\\\subagents\\\\%'))".to_string(),
-            "NOT (s.tool = 'opencode' AND COALESCE(s.user_message_count, 0) <= 0 AND COALESCE(s.message_count, 0) <= 4 AND COALESCE(s.task_count, 0) <= 4 AND COALESCE(s.event_count, 0) > 0 AND COALESCE(s.event_count, 0) <= 16)".to_string(),
+            "COALESCE(s.is_auxiliary, 0) = 0".to_string(),
         ];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1u32;
@@ -680,7 +579,7 @@ impl LocalDb {
             result.push(row?);
         }
 
-        Ok(hide_opencode_child_sessions(result))
+        Ok(result)
     }
 
     /// Count sessions for a given list filter (before UI-level page slicing).
@@ -729,7 +628,10 @@ impl LocalDb {
 
     /// Query sessions with extended filters for the `log` command.
     pub fn list_sessions_log(&self, filter: &LogFilter) -> Result<Vec<LocalSessionRow>> {
-        let mut where_clauses = vec!["1=1".to_string()];
+        let mut where_clauses = vec![
+            "1=1".to_string(),
+            "COALESCE(s.is_auxiliary, 0) = 0".to_string(),
+        ];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1u32;
 
@@ -833,7 +735,7 @@ impl LocalDb {
         for row in rows {
             result.push(row?);
         }
-        Ok(hide_opencode_child_sessions(result))
+        Ok(result)
     }
 
     /// Get the latest N sessions for a specific tool, ordered by created_at DESC.
@@ -844,7 +746,7 @@ impl LocalDb {
     ) -> Result<Vec<LocalSessionRow>> {
         let sql = format!(
             "SELECT {LOCAL_SESSION_COLUMNS} \
-             {FROM_CLAUSE} WHERE s.tool = ?1 \
+             {FROM_CLAUSE} WHERE s.tool = ?1 AND COALESCE(s.is_auxiliary, 0) = 0 \
              ORDER BY s.created_at DESC"
         );
         let conn = self.conn();
@@ -855,16 +757,15 @@ impl LocalDb {
             result.push(row?);
         }
 
-        let mut filtered = hide_opencode_child_sessions(result);
-        filtered.truncate(count as usize);
-        Ok(filtered)
+        result.truncate(count as usize);
+        Ok(result)
     }
 
     /// Get the latest N sessions across all tools, ordered by created_at DESC.
     pub fn get_sessions_latest(&self, count: u32) -> Result<Vec<LocalSessionRow>> {
         let sql = format!(
             "SELECT {LOCAL_SESSION_COLUMNS} \
-             {FROM_CLAUSE} \
+             {FROM_CLAUSE} WHERE COALESCE(s.is_auxiliary, 0) = 0 \
              ORDER BY s.created_at DESC"
         );
         let conn = self.conn();
@@ -875,9 +776,8 @@ impl LocalDb {
             result.push(row?);
         }
 
-        let mut filtered = hide_opencode_child_sessions(result);
-        filtered.truncate(count as usize);
-        Ok(filtered)
+        result.truncate(count as usize);
+        Ok(result)
     }
 
     /// Get the Nth most recent session for a specific tool (0 = HEAD, 1 = HEAD~1, etc.).
@@ -888,28 +788,28 @@ impl LocalDb {
     ) -> Result<Option<LocalSessionRow>> {
         let sql = format!(
             "SELECT {LOCAL_SESSION_COLUMNS} \
-             {FROM_CLAUSE} WHERE s.tool = ?1 \
+             {FROM_CLAUSE} WHERE s.tool = ?1 AND COALESCE(s.is_auxiliary, 0) = 0 \
              ORDER BY s.created_at DESC"
         );
         let conn = self.conn();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![tool], row_to_local_session)?;
-        let filtered = hide_opencode_child_sessions(rows.collect::<Result<Vec<_>, _>>()?);
-        Ok(filtered.into_iter().nth(offset as usize))
+        let result = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(result.into_iter().nth(offset as usize))
     }
 
     /// Get the Nth most recent session across all tools (0 = HEAD, 1 = HEAD~1, etc.).
     pub fn get_session_by_offset(&self, offset: u32) -> Result<Option<LocalSessionRow>> {
         let sql = format!(
             "SELECT {LOCAL_SESSION_COLUMNS} \
-             {FROM_CLAUSE} \
+             {FROM_CLAUSE} WHERE COALESCE(s.is_auxiliary, 0) = 0 \
              ORDER BY s.created_at DESC"
         );
         let conn = self.conn();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], row_to_local_session)?;
-        let filtered = hide_opencode_child_sessions(rows.collect::<Result<Vec<_>, _>>()?);
-        Ok(filtered.into_iter().nth(offset as usize))
+        let result = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(result.into_iter().nth(offset as usize))
     }
 
     /// Fetch the source path used when the session was last parsed/loaded.
@@ -983,7 +883,7 @@ impl LocalDb {
              FROM sessions s \
              INNER JOIN session_sync ss ON ss.session_id = s.id \
              LEFT JOIN users u ON u.id = s.user_id \
-             WHERE ss.sync_status = 'local_only' AND s.team_id = ?1 \
+             WHERE ss.sync_status = 'local_only' AND s.team_id = ?1 AND COALESCE(s.is_auxiliary, 0) = 0 \
              ORDER BY s.created_at ASC"
         );
         let conn = self.conn();
@@ -1109,7 +1009,7 @@ impl LocalDb {
             "SELECT {LOCAL_SESSION_COLUMNS} \
              {FROM_CLAUSE} \
              INNER JOIN commit_session_links csl ON csl.session_id = s.id \
-             WHERE csl.commit_hash = ?1 \
+             WHERE csl.commit_hash = ?1 AND COALESCE(s.is_auxiliary, 0) = 0 \
              ORDER BY s.created_at DESC"
         );
         let conn = self.conn();
@@ -1158,6 +1058,7 @@ impl LocalDb {
             "SELECT {LOCAL_SESSION_COLUMNS} \
              {FROM_CLAUSE} \
              WHERE s.working_directory LIKE ?1 \
+             AND COALESCE(s.is_auxiliary, 0) = 0 \
              AND s.created_at >= datetime('now', ?2) \
              ORDER BY s.created_at DESC LIMIT 1"
         );
@@ -1195,6 +1096,7 @@ impl LocalDb {
         let (files_modified, files_read, has_errors) =
             opensession_core::extract::extract_file_metadata(session);
         let max_active_agents = opensession_core::agent_metrics::max_active_agents(session) as i64;
+        let is_auxiliary = is_auxiliary_session(session);
 
         self.conn().execute(
             "UPDATE sessions SET \
@@ -1202,8 +1104,8 @@ impl LocalDb {
              message_count=?4, user_message_count=?5, task_count=?6, \
              event_count=?7, duration_seconds=?8, \
              total_input_tokens=?9, total_output_tokens=?10, \
-             files_modified=?11, files_read=?12, has_errors=?13, \
-             max_active_agents=?14 \
+              files_modified=?11, files_read=?12, has_errors=?13, \
+             max_active_agents=?14, is_auxiliary=?15 \
              WHERE id=?1",
             params![
                 &session.session_id,
@@ -1220,6 +1122,7 @@ impl LocalDb {
                 &files_read,
                 has_errors,
                 max_active_agents,
+                is_auxiliary as i64,
             ],
         )?;
         Ok(())
@@ -1241,7 +1144,8 @@ impl LocalDb {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT DISTINCT git_repo_name FROM sessions \
-             WHERE git_repo_name IS NOT NULL ORDER BY git_repo_name ASC",
+             WHERE git_repo_name IS NOT NULL AND COALESCE(is_auxiliary, 0) = 0 \
+             ORDER BY git_repo_name ASC",
         )?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         let mut result = Vec::new();
@@ -1257,6 +1161,7 @@ impl LocalDb {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT working_directory FROM sessions \
              WHERE working_directory IS NOT NULL AND TRIM(working_directory) <> '' \
+             AND COALESCE(is_auxiliary, 0) = 0 \
              ORDER BY working_directory ASC",
         )?;
         let rows = stmt.query_map([], |row| row.get(0))?;
@@ -1298,7 +1203,7 @@ fn apply_local_migrations(conn: &Connection) -> Result<()> {
     )
     .context("create _migrations table for local db")?;
 
-    for (name, sql) in REMOTE_MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
+    for (name, sql) in MIGRATIONS.iter().chain(LOCAL_MIGRATIONS.iter()) {
         let already_applied: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM _migrations WHERE name = ?1",
@@ -1448,6 +1353,7 @@ const REQUIRED_SESSION_COLUMNS: &[(&str, &str)] = &[
     ("files_read", "TEXT"),
     ("has_errors", "BOOLEAN DEFAULT 0"),
     ("max_active_agents", "INTEGER DEFAULT 1"),
+    ("is_auxiliary", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 fn ensure_sessions_columns(conn: &Connection) -> Result<()> {
@@ -1479,7 +1385,7 @@ s.message_count, COALESCE(s.user_message_count, 0), s.task_count, s.event_count,
 s.total_input_tokens, s.total_output_tokens, \
 s.git_remote, s.git_branch, s.git_commit, s.git_repo_name, \
 s.pr_number, s.pr_url, s.working_directory, \
-s.files_modified, s.files_read, s.has_errors, COALESCE(s.max_active_agents, 1)";
+s.files_modified, s.files_read, s.has_errors, COALESCE(s.max_active_agents, 1), COALESCE(s.is_auxiliary, 0)";
 
 fn row_to_local_session(row: &rusqlite::Row) -> rusqlite::Result<LocalSessionRow> {
     let source_path: Option<String> = row.get(1)?;
@@ -1520,6 +1426,7 @@ fn row_to_local_session(row: &rusqlite::Row) -> rusqlite::Result<LocalSessionRow
         files_read: row.get(30)?,
         has_errors: row.get::<_, i64>(31).unwrap_or(0) != 0,
         max_active_agents: row.get(32).unwrap_or(1),
+        is_auxiliary: row.get::<_, i64>(33).unwrap_or(0) != 0,
     })
 }
 
@@ -1538,7 +1445,6 @@ fn default_db_path() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    use std::collections::BTreeSet;
     use std::fs::{create_dir_all, write};
     use tempfile::tempdir;
 
@@ -1587,6 +1493,7 @@ mod tests {
             files_read: None,
             has_errors: false,
             max_active_agents: 1,
+            is_auxiliary: false,
         }
     }
 
@@ -1724,215 +1631,21 @@ mod tests {
             "opencode",
             Some(parent_session.to_str().unwrap()),
         );
-        let child = make_row(
+        let mut child = make_row(
             "ses_child",
             "opencode",
             Some(child_session.to_str().unwrap()),
         );
-        let codex = make_row("ses_other", "codex", Some(child_session.to_str().unwrap()));
+        child.is_auxiliary = true;
+        let mut codex = make_row("ses_other", "codex", Some(child_session.to_str().unwrap()));
+        codex.is_auxiliary = true;
 
         assert!(!is_opencode_child_session(&parent));
         assert!(is_opencode_child_session(&child));
         assert!(!is_opencode_child_session(&codex));
     }
 
-    #[test]
-    fn test_is_opencode_child_session_uses_event_shape_heuristic() {
-        let child = LocalSessionRow {
-            id: "sess_child".to_string(),
-            source_path: None,
-            sync_status: "local_only".to_string(),
-            last_synced_at: None,
-            user_id: None,
-            nickname: None,
-            team_id: None,
-            tool: "opencode".to_string(),
-            agent_provider: None,
-            agent_model: None,
-            title: None,
-            description: None,
-            tags: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            uploaded_at: None,
-            message_count: 1,
-            user_message_count: 0,
-            task_count: 4,
-            event_count: 4,
-            duration_seconds: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            git_remote: None,
-            git_branch: None,
-            git_commit: None,
-            git_repo_name: None,
-            pr_number: None,
-            pr_url: None,
-            working_directory: None,
-            files_modified: None,
-            files_read: None,
-            has_errors: false,
-            max_active_agents: 1,
-        };
-
-        let parent = LocalSessionRow {
-            id: "sess_parent".to_string(),
-            source_path: None,
-            sync_status: "local_only".to_string(),
-            last_synced_at: None,
-            user_id: None,
-            nickname: None,
-            team_id: None,
-            tool: "opencode".to_string(),
-            agent_provider: None,
-            agent_model: None,
-            title: Some("regular".to_string()),
-            description: None,
-            tags: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            uploaded_at: None,
-            message_count: 1,
-            user_message_count: 1,
-            task_count: 2,
-            event_count: 20,
-            duration_seconds: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            git_remote: None,
-            git_branch: None,
-            git_commit: None,
-            git_repo_name: None,
-            pr_number: None,
-            pr_url: None,
-            working_directory: None,
-            files_modified: None,
-            files_read: None,
-            has_errors: false,
-            max_active_agents: 1,
-        };
-
-        assert!(is_opencode_child_session(&child));
-        assert!(!is_opencode_child_session(&parent));
-    }
-
-    #[test]
-    fn test_is_opencode_child_session_with_more_messages_is_hidden_if_task_count_small() {
-        let child = LocalSessionRow {
-            id: "sess_child_2".to_string(),
-            source_path: None,
-            sync_status: "local_only".to_string(),
-            last_synced_at: None,
-            user_id: None,
-            nickname: None,
-            team_id: None,
-            tool: "opencode".to_string(),
-            agent_provider: None,
-            agent_model: None,
-            title: None,
-            description: None,
-            tags: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            uploaded_at: None,
-            message_count: 2,
-            user_message_count: 0,
-            task_count: 4,
-            event_count: 4,
-            duration_seconds: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            git_remote: None,
-            git_branch: None,
-            git_commit: None,
-            git_repo_name: None,
-            pr_number: None,
-            pr_url: None,
-            working_directory: None,
-            files_modified: None,
-            files_read: None,
-            has_errors: false,
-            max_active_agents: 1,
-        };
-
-        let parent = LocalSessionRow {
-            id: "sess_parent".to_string(),
-            source_path: None,
-            sync_status: "local_only".to_string(),
-            last_synced_at: None,
-            user_id: None,
-            nickname: None,
-            team_id: None,
-            tool: "opencode".to_string(),
-            agent_provider: None,
-            agent_model: None,
-            title: Some("regular".to_string()),
-            description: None,
-            tags: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            uploaded_at: None,
-            message_count: 2,
-            user_message_count: 1,
-            task_count: 5,
-            event_count: 20,
-            duration_seconds: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            git_remote: None,
-            git_branch: None,
-            git_commit: None,
-            git_repo_name: None,
-            pr_number: None,
-            pr_url: None,
-            working_directory: None,
-            files_modified: None,
-            files_read: None,
-            has_errors: false,
-            max_active_agents: 1,
-        };
-
-        assert!(is_opencode_child_session(&child));
-        assert!(!is_opencode_child_session(&parent));
-    }
-
-    #[test]
-    fn test_is_opencode_child_session_with_more_messages_but_few_tasks() {
-        let child = LocalSessionRow {
-            id: "sess_child_3".to_string(),
-            source_path: None,
-            sync_status: "local_only".to_string(),
-            last_synced_at: None,
-            user_id: None,
-            nickname: None,
-            team_id: None,
-            tool: "opencode".to_string(),
-            agent_provider: None,
-            agent_model: None,
-            title: None,
-            description: None,
-            tags: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            uploaded_at: None,
-            message_count: 3,
-            user_message_count: 0,
-            task_count: 2,
-            event_count: 6,
-            duration_seconds: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            git_remote: None,
-            git_branch: None,
-            git_commit: None,
-            git_repo_name: None,
-            pr_number: None,
-            pr_url: None,
-            working_directory: None,
-            files_modified: None,
-            files_read: None,
-            has_errors: false,
-            max_active_agents: 1,
-        };
-
-        assert!(is_opencode_child_session(&child));
-    }
-
+    #[allow(deprecated)]
     #[test]
     fn test_parse_opencode_parent_session_id_aliases() {
         let root = temp_root();
@@ -1950,6 +1663,7 @@ mod tests {
         );
     }
 
+    #[allow(deprecated)]
     #[test]
     fn test_parse_opencode_parent_session_id_nested_metadata() {
         let root = temp_root();
@@ -1965,18 +1679,6 @@ mod tests {
             parse_opencode_parent_session_id(child_session.to_str().unwrap()).as_deref(),
             Some("ses_parent")
         );
-    }
-
-    #[test]
-    fn test_is_claude_subagent_session() {
-        let row = make_row(
-            "ses_parent",
-            "claude-code",
-            Some("/Users/test/.claude/projects/foo/subagents/agent-abc.jsonl"),
-        );
-        assert!(!is_opencode_child_session(&row));
-        assert!(is_claude_subagent_session(&row));
-        assert!(hide_opencode_child_sessions(vec![row]).is_empty());
     }
 
     #[test]
@@ -2005,11 +1707,15 @@ mod tests {
         .unwrap();
 
         let rows = vec![
-            make_row(
-                "ses_child",
-                "opencode",
-                Some(child_session.to_str().unwrap()),
-            ),
+            {
+                let mut row = make_row(
+                    "ses_child",
+                    "opencode",
+                    Some(child_session.to_str().unwrap()),
+                );
+                row.is_auxiliary = true;
+                row
+            },
             make_row(
                 "ses_parent",
                 "opencode",
@@ -2061,24 +1767,129 @@ mod tests {
     }
 
     #[test]
-    fn test_local_migration_files_match_api_local_migrations() {
-        fn collect_local_sql(dir: PathBuf) -> BTreeSet<String> {
-            std::fs::read_dir(dir)
-                .expect("read migrations directory")
-                .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().to_string())
-                .filter(|name| name.starts_with("local_") && name.ends_with(".sql"))
-                .collect()
-        }
+    fn test_local_migrations_are_loaded_from_api_crate() {
+        let migration_names: Vec<&str> = super::LOCAL_MIGRATIONS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            migration_names.contains(&"local_0003_session_flags"),
+            "expected local_0003_session_flags migration from opensession-api"
+        );
 
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let local_files = collect_local_sql(manifest_dir.join("migrations"));
-        let api_files = collect_local_sql(manifest_dir.join("../api/migrations"));
+        let migrations_dir = manifest_dir.join("migrations");
+        if migrations_dir.exists() {
+            let sql_files = std::fs::read_dir(migrations_dir)
+                .expect("read local-db migrations directory")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .filter(|name| name.ends_with(".sql"))
+                .collect::<Vec<_>>();
+            assert!(
+                sql_files.is_empty(),
+                "local-db must not ship duplicated migration SQL files"
+            );
+        }
+    }
+
+    #[test]
+    fn test_local_0003_session_flags_backfills_known_auxiliary_rows() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("local-legacy.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS _migrations (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+
+            for (name, sql) in super::MIGRATIONS.iter().chain(
+                super::LOCAL_MIGRATIONS
+                    .iter()
+                    .filter(|(name, _)| *name != "local_0003_session_flags"),
+            ) {
+                conn.execute_batch(sql).unwrap();
+                conn.execute(
+                    "INSERT OR IGNORE INTO _migrations (name) VALUES (?1)",
+                    params![name],
+                )
+                .unwrap();
+            }
+
+            conn.execute(
+                "INSERT INTO sessions \
+                 (id, team_id, tool, created_at, body_storage_key, message_count, user_message_count, task_count, event_count) \
+                 VALUES (?1, 'personal', 'codex', '2026-02-20T00:00:00Z', '', 12, 6, 6, 20)",
+                params!["primary-visible"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions \
+                 (id, team_id, tool, created_at, body_storage_key, message_count, user_message_count, task_count, event_count) \
+                 VALUES (?1, 'personal', 'opencode', '2026-02-20T00:00:00Z', '', 2, 0, 2, 6)",
+                params!["opencode-heuristic-child"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions \
+                 (id, team_id, tool, created_at, body_storage_key, message_count, user_message_count, task_count, event_count) \
+                 VALUES (?1, 'personal', 'claude-code', '2026-02-20T00:00:00Z', '', 3, 1, 3, 12)",
+                params!["claude-subagent-child"],
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO session_sync (session_id, source_path, sync_status) VALUES (?1, ?2, 'local_only')",
+                params![
+                    "opencode-heuristic-child",
+                    "/Users/test/.opencode/sessions/opencode-heuristic-child.json"
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_sync (session_id, source_path, sync_status) VALUES (?1, ?2, 'local_only')",
+                params![
+                    "claude-subagent-child",
+                    "/Users/test/.claude/projects/foo/subagents/agent-1.jsonl"
+                ],
+            )
+            .unwrap();
+        }
+
+        let db = LocalDb::open_path(&path).unwrap();
+
+        let flags = {
+            let conn = db.conn();
+            let mut stmt = conn
+                .prepare("SELECT id, COALESCE(is_auxiliary, 0) FROM sessions ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
 
         assert_eq!(
-            local_files, api_files,
-            "local-db local migrations must stay in parity with api local migrations"
+            flags,
+            vec![
+                ("claude-subagent-child".to_string(), 1),
+                ("opencode-heuristic-child".to_string(), 1),
+                ("primary-visible".to_string(), 0),
+            ]
         );
+
+        let visible = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, "primary-visible");
     }
 
     #[test]
@@ -2122,6 +1933,7 @@ mod tests {
         assert_eq!(sessions[0].id, "remote-1");
         assert_eq!(sessions[0].sync_status, "remote_only");
         assert_eq!(sessions[0].nickname, None); // no user in local users table
+        assert!(!sessions[0].is_auxiliary);
     }
 
     #[test]
@@ -2389,6 +2201,34 @@ mod tests {
             .count_sessions_filtered(&LocalSessionFilter::default())
             .unwrap();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_list_and_count_filters_match_when_auxiliary_rows_exist() {
+        let db = test_db();
+        seed_sessions(&db);
+        db.conn()
+            .execute(
+                "UPDATE sessions SET is_auxiliary = 1 WHERE id IN ('s2', 's3')",
+                [],
+            )
+            .unwrap();
+
+        let default_filter = LocalSessionFilter::default();
+        let rows = db.list_sessions(&default_filter).unwrap();
+        let count = db.count_sessions_filtered(&default_filter).unwrap();
+        assert_eq!(rows.len() as i64, count);
+        assert!(rows.iter().all(|row| !row.is_auxiliary));
+
+        let gemini_filter = LocalSessionFilter {
+            tool: Some("gemini".to_string()),
+            ..Default::default()
+        };
+        let gemini_rows = db.list_sessions(&gemini_filter).unwrap();
+        let gemini_count = db.count_sessions_filtered(&gemini_filter).unwrap();
+        assert_eq!(gemini_rows.len() as i64, gemini_count);
+        assert!(gemini_rows.is_empty());
+        assert_eq!(gemini_count, 0);
     }
 
     #[test]

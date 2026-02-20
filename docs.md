@@ -1,240 +1,225 @@
 # Documentation
 
-OpenSession is now optimized for a git-native workflow.
+OpenSession documentation is organized around real product flows instead of feature lists.
+Each chapter follows the same template so functionality and usage examples stay consistent.
+
+## Product Map
+
+### What it does
+
+OpenSession provides a runtime-aware interface for capturing, indexing, and reviewing AI coding sessions.
+The same documentation source is exposed as markdown (`Accept: text/markdown`) and rendered HTML (`/docs`).
+
+### How to use
+
+1. Start with the landing page capability matrix to confirm what this deployment supports.
+2. Use session capture paths (`/upload`, CLI upload, or GitHub preview route) based on your runtime.
+3. Move to list and timeline review for search, filtering, and inspection.
+
+### Example
+
+```bash
+# Runtime capability check
+curl -s https://opensession.io/api/capabilities | jq
+
+# Docs markdown source
+curl -H "Accept: text/markdown" https://opensession.io/docs
+```
+
+### Limits
+
+- Product map content reflects currently implemented routes only.
+- Removed legacy collaboration surfaces are intentionally excluded.
+
+## Capture Sessions
+
+### What it does
+
+Capture flow ingests raw exports and normalizes them into HAIL sessions.
+The upload UI supports parser preview, parser selection fallback, and upload confirmation.
+
+### How to use
+
+1. Open `/upload`.
+2. Paste or drop a raw session file.
+3. Review parser preview results and warnings.
+4. Upload the normalized session.
+
+### Example
+
+```bash
+# CLI upload to server
+opensession publish upload ./session.jsonl
+
+# Session handoff generation
+opensession session handoff --last --format json --validate
+```
+
+### Limits
+
+- Upload requires `upload_enabled=true` and preview requires `ingest_preview_enabled=true`.
+- Worker deployments are typically read-only for upload paths.
+
+## Explore Sessions
+
+### What it does
+
+Explore flow provides searchable list browsing and detailed timeline analysis.
+Users can filter by time range, tool, and event categories, then inspect session metadata and event details.
+
+### How to use
+
+1. Open `/` for the session feed.
+2. Filter by time range and tool.
+3. Open a session detail page (`/session/{id}`).
+4. Use in-session search and timeline filters to focus on relevant events.
+
+### Example
+
+```bash
+# List sessions
+curl -s "https://opensession.io/api/sessions?per_page=20&page=1"
+
+# Download raw session
+curl -L "https://opensession.io/api/sessions/<id>/raw" -o session.hail.jsonl
+```
+
+### Limits
+
+- Public feed visibility depends on deployment policy.
+- Detail rendering assumes parseable HAIL-compatible event structures.
+
+## GitHub Share Preview
+
+### What it does
+
+GitHub share preview parses source files directly from route parameters:
+`/gh/{owner}/{repo}/{ref}/{path...}`.
+It supports parser auto-selection, manual parser override, and URL-synced filter state.
+
+### How to use
+
+1. Open a GitHub preview route.
+2. If parser selection is required, choose a parser candidate.
+3. Switch unified/native views and filters; URL query state updates automatically.
+
+### Example
+
+```bash
+# Example route shape
+/gh/hwisu/opensession/main/sessions/demo.hail.jsonl
+
+# Optional query controls
+/gh/hwisu/opensession/main/sessions/demo.hail.jsonl?view=native&parser_hint=codex
+```
+
+### Limits
+
+- Requires `gh_share_enabled=true`.
+- Read-only deployments show an unsupported banner instead of preview content.
+
+## Auth & Access
+
+### What it does
+
+Auth flow supports token-based sign-in with automatic account creation on first login (when enabled),
+plus optional OAuth providers. Guest users can still access landing and docs.
+
+### How to use
+
+1. Open `/login`.
+2. Submit email/password.
+3. Use OAuth provider buttons when configured.
+4. Use issued API keys for CLI-to-server integration.
+
+### Example
+
+```bash
+# Verify auth capability
+curl -s https://opensession.io/api/capabilities | jq '.auth_enabled'
+
+# Connect CLI with issued API key
+opensession account connect --server https://opensession.io --api-key <issued_key>
+```
+
+### Limits
+
+- Auth endpoints require deployment-side `JWT_SECRET` configuration.
+- API keys are shown only at issuance time and are not retrievable later.
 
 ## Runtime Profiles
 
-| Area | Server (Axum) | Worker (Wrangler) |
-|------|----------------|-------------------|
-| Primary focus | Read + upload sessions | Public session browsing |
-| Home `/` | Guest landing, session list after login | Guest landing, session list after login |
-| Upload UI `/upload` | Enabled | Disabled (read-only) |
-| Auth routes | Enabled when `JWT_SECRET` is set | Enabled when `JWT_SECRET` is set |
-| Team/invitation/sync routes | Disabled | Disabled |
-| API surface | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` | `/api/health`, `/api/capabilities`, `/api/sessions*`, `/api/auth*` |
+### What it does
 
-Web UI behavior is runtime-driven via `GET /api/capabilities` (no build-time profile flag).
+Runtime profiles control feature availability without changing route definitions.
+Server and worker deployments use the same UI routes but expose different capability flags.
 
-## Quick Start
+### How to use
 
-### CLI install
+1. Query `/api/capabilities`.
+2. Verify whether upload, ingest preview, and GitHub share are enabled.
+3. Use capability-aware UI states to avoid unsupported flows.
+
+### Example
 
 ```bash
-cargo install opensession
-```
-
-### Common commands
-
-```bash
-# Session handoff
-opensession session handoff --last
-
-# Publish one session (default: server, --git: opensession/sessions branch)
-opensession publish upload ./session.jsonl --git
-
-# Start daemon (watch + upload)
-opensession daemon start --repo .
-```
-
-### Local interactive mode (TUI)
-
-```bash
-opensession      # all local sessions
-opensession .    # current git repository scope
-```
-
-Optional startup behavior:
-
-```bash
-OPS_TUI_REFRESH_DISCOVERY_ON_START=0 opensession
-```
-
-`0|false|off|no` disables full startup re-discovery and uses cached local DB sessions first.
-
-TUI/Web Share auth uses personal API keys (no in-TUI email-login setup path):
-```bash
-opensession account connect --server https://opensession.io --api-key <issued_key>
-```
-Issue the key from web `/settings`; it is visible only in the issuance response.
-
-## CLI Surface
-
-- `opensession session handoff`
-- `opensession session handoff --validate`
-- `opensession session handoff --strict`
-- `opensession publish upload`
-- `opensession daemon start|stop|status|health|select|show|stream-push`
-- `opensession account connect|show|status|verify`
-- `opensession docs completion`
-
-Notes:
-- `publish upload --git` stores sessions on `opensession/sessions` branch.
-
-## Handoff Commands (Verified)
-
-```bash
-# Help
-cargo run -p opensession -- session handoff --help
-
-# v2 + soft validation gate (exit 0)
-cargo run -p opensession -- session handoff --last --format json --validate
-
-# strict validation gate (non-zero on error findings)
-cargo run -p opensession -- session handoff --last --validate --strict
-
-# stream envelope output
-cargo run -p opensession -- session handoff --last --format stream --validate
-
-# last N sessions (count or HEAD~N)
-cargo run -p opensession -- session handoff --last 6 --format json
-cargo run -p opensession -- session handoff --last HEAD~6 --format json
-
-# populate HANDOFF.md via provider command
-cargo run -p opensession -- session handoff --last 6 --populate claude
-cargo run -p opensession -- session handoff --last 6 --populate claude:opus-4.6
-```
-
-For repeated runs, use the built binary to avoid `cargo run` startup overhead:
-```bash
-cargo build -p opensession
-target/debug/opensession session handoff --last HEAD~2 --format json
-```
-
-CLI-by-CLI examples:
-
-| Source CLI | Example command | Handoff command |
-|---|---|---|
-| Claude Code | `claude -c` or `claude -p "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --claude HEAD --validate` |
-| Codex CLI | `codex exec "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "codex HEAD" --validate` |
-| OpenCode | `opencode run "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "opencode HEAD" --validate` |
-| Gemini CLI | `gemini -p "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --gemini HEAD --validate` |
-| Amp CLI | `amp -x "Fix failing tests and add regression coverage"` | `cargo run -p opensession -- session handoff --tool "amp HEAD" --validate` |
-
-Tips:
-- Use `HEAD~N` instead of `HEAD` for older sessions.
-- `--tool "<name> <ref>"` is for tool families without dedicated flags.
-
-Semantics:
-- `--validate`: report-only, exit `0`.
-- `--validate --strict`: non-zero only on error-level findings.
-- default schema is v2.
-- `--populate <provider[:model]>`: pipe handoff JSON into provider CLI (`claude`, `codex`, `opencode`, `gemini`, `amp`) and request `HANDOFF.md` population.
-- `execution_contract.parallel_actions`: handoff now separates parallelizable work packages from the ordered critical-path list.
-- `execution_contract.ordered_steps`: preserves task sequence + timestamps + dependency links for deterministic downstream replay.
-
-## Worker Local Dev (Wrangler, Verified)
-
-```bash
-wrangler --version
-wrangler dev --help
-
-# basic local run
-wrangler dev --ip 127.0.0.1 --port 8788
-
-# preserve local D1/R2 state between runs
+# Worker local dev with persisted state
 wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state
 
-# run on Cloudflare edge
-wrangler dev --remote
-
-# debug logs
-wrangler dev --ip 127.0.0.1 --port 8788 --log-level debug
-```
-
-Notes:
-- `wrangler dev` runs `sh build.sh` in this repo.
-- Local D1/R2/assets/env bindings are loaded from `wrangler.toml`.
-- `--remote` requires Cloudflare auth and can hit live remote resources.
-
-## Configuration
-
-Canonical config file:
-- `~/.config/opensession/opensession.toml`
-
-Local cache DB:
-- `~/.local/share/opensession/local.db`
-- Used as local index/cache (session metadata, sync status, timeline cache), not canonical session body storage.
-
-## Local-DB Scope
-
-- local index/cache responsibilities:
-  - `log`, `stats`, `HEAD~N`, sync status, TUI cache load
-- default path:
-  - v2 handoff output + git-native workflow
-
-Example:
-
-```toml
-[server]
-url = "http://localhost:3000"
-api_key = ""
-
-[identity]
-nickname = "user"
-
-[watchers]
-custom_paths = [
-  "~/.claude/projects",
-  "~/.codex/sessions",
-]
-
-[git_storage]
-method = "native"  # native | sqlite
-```
-
-## Self-Hosting (Server)
-
-```bash
+# Server local dev
 cargo run -p opensession-server
-# -> http://localhost:3000
 ```
 
-Important environment variables:
+### Limits
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENSESSION_DATA_DIR` | `data/` | Server SQLite DB + blob storage |
-| `OPENSESSION_WEB_DIR` | `web/build` | Static web directory |
-| `OPENSESSION_PUBLIC_FEED_ENABLED` | `true` | `false` blocks anonymous `GET /api/sessions` |
-| `OPENSESSION_SESSION_SCORE_PLUGIN` | `heuristic_v1` | Session score plugin id |
-| `PORT` | `3000` | HTTP listen port |
-| `RUST_LOG` | `opensession_server=info,tower_http=info` | Log level |
-
-## API Summary
-
-Always available:
-- `GET /api/health`
-- `GET /api/capabilities`
-- `GET /api/auth/providers`
-- `POST /api/auth/register` (when `JWT_SECRET` is configured)
-- `POST /api/auth/login` (when `JWT_SECRET` is configured)
-- `POST /api/auth/refresh` (when `JWT_SECRET` is configured)
-- `POST /api/auth/logout` (when `JWT_SECRET` is configured)
-- `POST /api/auth/verify` (when `JWT_SECRET` is configured)
-- `GET /api/auth/me` (when `JWT_SECRET` is configured, no API key field)
-- `POST /api/auth/api-keys/issue` (when `JWT_SECRET` is configured, key shown once)
-- `POST /api/sessions` (server profile, auth required)
-- `GET /api/sessions`
-- `GET /api/sessions/{id}`
-- `GET /api/sessions/{id}/raw`
-- `DELETE /api/sessions/{id}`
-
-API keys are intentionally non-retrievable after issuance; `GET /api/auth/me` returns profile only.
-
-`GET /api/sessions` supports common query filters:
-- `search`
-- `tool`
-- `sort`
-- `time_range`
+- Capability flags are runtime values, not compile-time assumptions.
+- Worker profile intentionally disables mutating flows by default.
 
 ## Migration Parity
 
-Remote migrations must stay byte-identical between:
-- `migrations/*.sql`
-- `crates/api/migrations/[0-9][0-9][0-9][0-9]_*.sql`
+### What it does
 
-Validation:
+Defines one canonical migration source and one mirror location for numeric remote migrations.
+
+### Canonical and mirror paths
+
+- Canonical: `crates/api/migrations/*.sql`
+- Mirror: `migrations/[0-9][0-9][0-9][0-9]_*.sql`
+
+### Commands
 
 ```bash
+# Validate parity
+scripts/check-migration-parity.sh
+
+# Sync mirror from canonical
+scripts/sync-migrations.sh
+```
+
+## Troubleshooting
+
+### What it does
+
+Troubleshooting guidance helps detect missing capability flags, parser-selection issues, and storage/read-path mismatches quickly.
+
+### How to use
+
+1. Confirm `/api/health` and `/api/capabilities` responses first.
+2. Reproduce parser errors with ingest preview endpoints.
+3. Verify raw body source behavior using `/api/sessions/{id}/raw`.
+
+### Example
+
+```bash
+# Health and capabilities
+curl -s https://opensession.io/api/health
+curl -s https://opensession.io/api/capabilities
+
+# Migration parity check
 scripts/check-migration-parity.sh
 ```
+
+### Limits
+
+- Troubleshooting assumes environment variables and storage bindings are correctly provisioned.
+- Some errors (OAuth provider mismatch, remote storage policies) require deployment configuration changes.

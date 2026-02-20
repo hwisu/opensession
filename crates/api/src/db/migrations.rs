@@ -53,4 +53,8 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
         "local_0002_drop_unused_local_sessions",
         include_str!("../../migrations/local_0002_drop_unused_local_sessions.sql"),
     ),
+    (
+        "local_0003_session_flags",
+        include_str!("../../migrations/local_0003_session_flags.sql"),
+    ),
 ];

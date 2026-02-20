@@ -718,16 +718,22 @@ fn parse_opencode_session(info_path: &Path) -> Result<Session> {
     );
 
     let mut related_session_ids = Vec::new();
+    let mut session_role = "primary";
     if let Some(parent_id) = info.parent_id.as_ref() {
         let trimmed = parent_id.trim();
         if !trimmed.is_empty() && trimmed != info.id {
-            related_session_ids.push(parent_id.clone());
+            related_session_ids.push(trimmed.to_string());
             attributes.insert(
                 "parent_session_id".to_string(),
                 serde_json::Value::String(trimmed.to_string()),
             );
+            session_role = "auxiliary";
         }
     }
+    attributes.insert(
+        "session_role".to_string(),
+        serde_json::Value::String(session_role.to_string()),
+    );
 
     let context = SessionContext {
         title: info.title,
@@ -1214,6 +1220,14 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("ses_parent")
         );
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get("session_role")
+                .and_then(|v| v.as_str()),
+            Some("auxiliary")
+        );
         assert_eq!(session.stats.event_count, 1);
     }
 
@@ -1252,6 +1266,14 @@ mod tests {
             .any(|event| matches!(event.event_type, EventType::AgentMessage)));
         assert_eq!(session.agent.provider, "openai");
         assert_eq!(session.agent.model, "gpt-5.2-codex");
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get("session_role")
+                .and_then(|v| v.as_str()),
+            Some("primary")
+        );
     }
 
     #[test]

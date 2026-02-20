@@ -359,6 +359,10 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
         "source_path".to_string(),
         serde_json::Value::String(path.to_string_lossy().to_string()),
     );
+    attributes.insert(
+        "session_role".to_string(),
+        serde_json::Value::String("primary".to_string()),
+    );
     if let Some(ref dir) = cwd {
         attributes.insert("cwd".to_string(), serde_json::Value::String(dir.clone()));
     }
@@ -737,22 +741,38 @@ fn parse_subagent_jsonl(path: &Path) -> Result<Session> {
             (now, now)
         };
 
+    let parent_session_id = meta
+        .as_ref()
+        .and_then(|value| value.parent_session_id.clone())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let mut attributes = HashMap::from([(
+        "source_path".to_string(),
+        serde_json::Value::String(path.to_string_lossy().to_string()),
+    )]);
+    attributes.insert(
+        "session_role".to_string(),
+        serde_json::Value::String(if parent_session_id.is_some() {
+            "auxiliary".to_string()
+        } else {
+            "primary".to_string()
+        }),
+    );
+    if let Some(parent_session_id) = parent_session_id.as_ref() {
+        attributes.insert(
+            "parent_session_id".to_string(),
+            serde_json::Value::String(parent_session_id.clone()),
+        );
+    }
+
     let context = SessionContext {
         title: None,
         description: None,
         tags: vec!["claude-code".to_string()],
         created_at,
         updated_at,
-        related_session_ids: meta
-            .as_ref()
-            .and_then(|value| value.parent_session_id.clone())
-            .filter(|value| !value.trim().is_empty())
-            .into_iter()
-            .collect(),
-        attributes: HashMap::from([(
-            "source_path".to_string(),
-            serde_json::Value::String(path.to_string_lossy().to_string()),
-        )]),
+        related_session_ids: parent_session_id.clone().into_iter().collect(),
+        attributes,
     };
 
     let mut session = Session::new(session_id, agent);
@@ -1792,6 +1812,22 @@ mod tests {
         assert_eq!(
             parsed.context.related_session_ids,
             vec!["parent-2".to_string()]
+        );
+        assert_eq!(
+            parsed
+                .context
+                .attributes
+                .get("session_role")
+                .and_then(|value| value.as_str()),
+            Some("auxiliary")
+        );
+        assert_eq!(
+            parsed
+                .context
+                .attributes
+                .get("parent_session_id")
+                .and_then(|value| value.as_str()),
+            Some("parent-2")
         );
     }
 }

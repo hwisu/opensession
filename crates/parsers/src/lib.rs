@@ -41,6 +41,29 @@ pub fn all_parsers() -> Vec<Box<dyn SessionParser>> {
     ]
 }
 
+/// Return the first parser that can parse the given path.
+pub fn parser_for_path<'a>(
+    parsers: &'a [Box<dyn SessionParser>],
+    path: &Path,
+) -> Option<&'a dyn SessionParser> {
+    parsers
+        .iter()
+        .find(|parser| parser.can_parse(path))
+        .map(|parser| parser.as_ref())
+}
+
+/// Parse one path with the default parser set.
+///
+/// Returns `Ok(None)` when no parser matches the input path.
+pub fn parse_with_default_parsers(path: &Path) -> Result<Option<Session>> {
+    let parsers = all_parsers();
+    let Some(parser) = parser_for_path(&parsers, path) else {
+        return Ok(None);
+    };
+    let session = parser.parse(path)?;
+    Ok(Some(session))
+}
+
 /// Returns true when the path points to an auxiliary child/sub-agent session log.
 ///
 /// This keeps caller crates (`cli`, `tui`) decoupled from parser-specific modules.

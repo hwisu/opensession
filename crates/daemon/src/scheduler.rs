@@ -4,11 +4,14 @@ use opensession_api::UploadRequest;
 use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_api_client::ApiClient;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
+use opensession_core::session::{
+    build_git_storage_meta_json, is_auxiliary_session, working_directory,
+};
 use opensession_core::Session;
 use opensession_git_native::PruneStats;
 use opensession_local_db::git::extract_git_context;
 use opensession_local_db::LocalDb;
-use opensession_parsers::{all_parsers, SessionParser};
+use opensession_parsers::parse_with_default_parsers;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -43,25 +46,12 @@ impl UploadState {
 
 /// Extract the working directory from session context attributes.
 fn session_cwd(session: &Session) -> Option<&str> {
-    session
-        .context
-        .attributes
-        .get("cwd")
-        .or_else(|| session.context.attributes.get("working_directory"))
-        .and_then(|v| v.as_str())
+    working_directory(session)
 }
 
 /// Build a JSON metadata blob for git storage from a session.
 fn build_session_meta_json(session: &Session) -> Vec<u8> {
-    serde_json::to_string_pretty(&serde_json::json!({
-        "session_id": session.session_id,
-        "title": session.context.title,
-        "tool": session.agent.tool,
-        "model": session.agent.model,
-        "stats": session.stats,
-    }))
-    .unwrap_or_default()
-    .into_bytes()
+    build_git_storage_meta_json(session)
 }
 
 fn session_to_hail_jsonl_bytes(session: &Session) -> Option<Vec<u8>> {
@@ -304,22 +294,20 @@ fn was_already_uploaded(path: &PathBuf, db: &LocalDb) -> Result<bool> {
 }
 
 fn parse_session(path: &Path) -> Result<Option<Session>> {
-    let parsers = all_parsers();
-    let parser: Option<&dyn SessionParser> = parsers
-        .iter()
-        .find(|p| p.can_parse(path))
-        .map(|p| p.as_ref());
-
-    let parser = match parser {
-        Some(p) => p,
+    let session = match parse_with_default_parsers(path)? {
+        Some(session) => session,
         None => {
             warn!("No parser for: {}", path.display());
             return Ok(None);
         }
     };
+    if is_auxiliary_session(&session) {
+        debug!("Skipping auxiliary session from {}", path.display());
+        return Ok(None);
+    }
 
-    info!("Parsing: {} ({})", path.display(), parser.name());
-    Ok(Some(parser.parse(path)?))
+    info!("Parsing: {}", path.display());
+    Ok(Some(session))
 }
 
 fn is_tool_excluded(session: &Session, config: &DaemonConfig) -> bool {

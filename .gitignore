@@ -27,6 +27,7 @@ web/data/
 
 # Wrangler local state
 .wrangler/
+.tmp/
 
 # Claude Code
 .claude/

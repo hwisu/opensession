@@ -51,8 +51,10 @@ test.describe('Docs', () => {
 		await page.goto('/docs');
 		const toc = page.getByTestId('docs-toc');
 		await expect(toc).toBeVisible();
-		await expect(toc).toHaveClass(/sticky/);
-		await expect(toc).toHaveClass(/self-start/);
+		const stickyStyle = await toc.evaluate((el) => getComputedStyle(el).position);
+		expect(stickyStyle).toBe('sticky');
+		const stickyTop = await toc.evaluate((el) => getComputedStyle(el).top);
+		expect(stickyTop).not.toBe('auto');
 		for (const heading of chapterHeadings) {
 			await expect(toc.getByRole('link', { name: heading })).toBeVisible();
 		}

@@ -223,7 +223,7 @@ Notes:
 - `wrangler dev` uses `sh build.sh` in this repo and serves the Worker locally.
 - Local bindings (D1/R2/assets/env vars) are attached from `wrangler.toml`.
 - `--remote` requires Cloudflare auth and can hit real remote resources.
-- Worker profile commonly reports `upload_enabled=false` and `ingest_preview_enabled=false`; capability-gated E2E cases skip upload-only flows by design.
+- Worker profile commonly reports `upload_enabled=true` and `ingest_preview_enabled=false`; capability-gated E2E cases should account for ingest preview availability.
 
 ## Configuration
 

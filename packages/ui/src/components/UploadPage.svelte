@@ -1,14 +1,17 @@
 <script lang="ts">
 import { onDestroy } from 'svelte';
 import { getParsePreviewError, previewSessionFromInlineSource, uploadSession } from '../api';
+import { parseHailInput } from '../hail-parse';
 import type { ParsePreviewResponse, Session } from '../types';
 import { formatDuration, getToolConfig } from '../types';
 import ParserSelectPanel from './ParserSelectPanel.svelte';
 
 const {
 	onSuccess,
+	ingestPreviewEnabled = true,
 }: {
 	onSuccess: (id: string) => void;
+	ingestPreviewEnabled?: boolean;
 } = $props();
 
 const PASTE_PARSE_DEBOUNCE_MS = 280;
@@ -55,6 +58,23 @@ async function parseInputWithPreview(filename: string, raw: string) {
 	parseError = null;
 	uploadError = null;
 	sourceFilename = filename.trim() || 'session.jsonl';
+
+	if (!ingestPreviewEnabled) {
+		try {
+			parsedSession = parseHailInput(raw);
+			parsePreview = null;
+			parserSelectionCandidates = [];
+			parseError = null;
+		} catch (error) {
+			clearPreviewState();
+			parserSelectionCandidates = [];
+			const message = error instanceof Error ? error.message : 'Parse failed';
+			parseError = `Ingest preview is disabled in this deployment. Provide a valid HAIL JSON/JSONL payload. ${message}`;
+		} finally {
+			parsing = false;
+		}
+		return;
+	}
 
 	try {
 		const preview = await previewSessionFromInlineSource({
@@ -192,9 +212,15 @@ onDestroy(() => {
 
 <div class="mx-auto max-w-2xl">
 	<h1 class="mb-2 text-lg font-bold text-text-primary">Upload Session</h1>
-	<p class="mb-4 text-sm text-text-secondary">
-		Upload a raw session file. The server will auto-detect parser and normalize it to HAIL.
-	</p>
+	{#if ingestPreviewEnabled}
+		<p class="mb-4 text-sm text-text-secondary">
+			Upload a raw session file. The server will auto-detect parser and normalize it to HAIL.
+		</p>
+	{:else}
+		<p class="mb-4 text-sm text-text-secondary">
+			This deployment accepts pre-parsed HAIL JSON/JSONL only. Auto-detect parsing is disabled.
+		</p>
+	{/if}
 
 	<div
 		role="button"

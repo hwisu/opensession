@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.22](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.21...opensession-api-v0.2.22) - 2026-02-21
+
+### Other
+
+- Refactor landing/docs, remove upload UI, and add git preview flow
+
 ## [0.2.20](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.19...opensession-api-v0.2.20) - 2026-02-20
 
 ### Other

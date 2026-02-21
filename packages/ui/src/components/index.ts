@@ -21,4 +21,3 @@ export { default as TaskGroup } from './TaskGroup.svelte';
 export { default as ThemeToggle } from './ThemeToggle.svelte';
 export { default as ThreadMinimap } from './ThreadMinimap.svelte';
 export { default as TimelineView } from './TimelineView.svelte';
-export { default as UploadPage } from './UploadPage.svelte';

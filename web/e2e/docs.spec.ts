@@ -47,6 +47,16 @@ test.describe('Docs', () => {
 		await expect(docsContent.getByText('wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state')).toBeVisible();
 	});
 
+	test('docs omit legacy capability-matrix language', async ({ page }) => {
+		await page.goto('/docs');
+		const docsContent = page.getByTestId('docs-content');
+		await expect(docsContent.getByRole('heading', { level: 2, name: 'Core Goals' })).toHaveCount(0);
+		await expect(docsContent.getByRole('heading', { level: 2, name: 'Runtime Profiles' })).toHaveCount(0);
+		await expect(docsContent.getByText('Runtime Capability Matrix')).toHaveCount(0);
+		await expect(docsContent.getByText('auth_enabled')).toHaveCount(0);
+		await expect(docsContent.getByText('upload_enabled')).toHaveCount(0);
+	});
+
 	test('shows sticky chapter navigation table of contents', async ({ page }) => {
 		await page.setViewportSize({ width: 1400, height: 900 });
 		await page.goto('/docs');
@@ -88,5 +98,16 @@ test.describe('Docs', () => {
 		const docsPage = page.getByTestId('docs-page');
 		const bg = await docsPage.evaluate((el) => getComputedStyle(el).color);
 		expect(bg).not.toBe('rgb(19, 19, 19)');
+	});
+
+	test('toc navigation keeps chapter linking stable', async ({ page }) => {
+		await page.setViewportSize({ width: 1400, height: 900 });
+		await page.goto('/docs');
+		const toc = page.getByTestId('docs-toc');
+		const targetLink = toc.getByRole('link', { name: 'TUI Workflows' });
+		await targetLink.click();
+		await expect(page).toHaveURL(/#tui-workflows$/);
+		await expect(page.getByRole('heading', { level: 2, name: 'TUI Workflows' })).toBeVisible();
+		await expect(toc).toBeVisible();
 	});
 });

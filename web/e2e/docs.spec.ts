@@ -2,10 +2,11 @@ import { expect, test } from '@playwright/test';
 
 const chapterHeadings = [
 	'Product Overview',
-	'Core Goals',
-	'Runtime Profiles',
-	'Web Routes',
+	'Web Experience',
 	'CLI Workflows',
+	'TUI Workflows',
+	'Handoff Storage Model',
+	'Web Routes',
 	'API Summary',
 	'Self-Hosting and Verification',
 	'Troubleshooting',

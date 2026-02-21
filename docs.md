@@ -1,73 +1,73 @@
 # Documentation
 
-OpenSession turns AI coding traces into durable, reviewable session artifacts.
-The product language in this guide is goal-driven so it remains stable across runtime profiles.
+OpenSession is an online sharing site for AI coding sessions.
+Publish structured traces, review what happened, and keep handoffs reproducible across web, CLI, and TUI.
 
 ## Product Overview
 
-OpenSession is designed around four product goals.
+OpenSession is built for teams and communities that want to review real AI coding work.
 
-| Goal | Why it matters | Typical surface |
+| What you can do | Why it matters | Main surface |
 |---|---|---|
-| Capture work as structured data | Preserve full context instead of partial screenshots | HAIL session format |
-| Review what actually happened | Make tool calls, edits, and outcomes auditable | `/sessions`, `/session/{id}` |
-| Share reproducible artifacts | Keep collaboration tied to immutable references | git refs + upload API |
-| Improve workflows continuously | Turn real traces into feedback loops | docs, session comparisons, review |
+| Publish sessions as structured artifacts | Keep full context, not screenshots | `POST /api/sessions`, `opensession publish upload` |
+| Review timelines and raw events | Audit tool calls, edits, and outcomes | `/sessions`, `/session/{id}` |
+| Share reproducible references | Keep collaboration tied to immutable refs | git refs (`opensession/sessions`) |
+| Generate handoffs from real sessions | Preserve execution context between owners | `opensession session handoff` + artifact refs |
 
 Git-based sharing means storing session artifacts on the `opensession/sessions` branch so they can be reviewed and replayed through standard git refs.
 
 ### Quick checks
 
 ```bash
-# Health + capability snapshot
 curl -s https://opensession.io/api/health
-curl -s https://opensession.io/api/capabilities | jq
-
-# Docs markdown source
 curl -H "Accept: text/markdown" https://opensession.io/docs
 ```
 
-## Core Goals
+## Web Experience
 
-### Capture
+- Open `/sessions` to browse shared sessions.
+- Open `/session/{id}` to inspect the event timeline.
+- Open `/git` to preview a session source from `remote/ref/path`.
+- Use docs and session review flows to compare workflows with real evidence.
 
-- Normalize sessions into HAIL-compatible artifacts.
-- Keep one data model across terminal and web views.
+## CLI Workflows
 
-### Review
+```bash
+# Upload one session to the online feed
+opensession publish upload ./session.jsonl
 
-- Open `/sessions` for the public feed.
-- Open `/session/{id}` for timeline detail.
-- List shortcuts: `t` tool, `o` order, `r` range, `l` layout, `/` search.
-- Detail shortcuts: `/` search, `n/p` next/previous match, `1-5` event filters.
+# Store one session on git branch sharing flow
+opensession publish upload ./session.jsonl --git
 
-### Share
+# Build and validate handoff from recent sessions
+opensession session handoff --last --format json --validate
 
-- Upload API accepts session payloads via `POST /api/sessions`.
-- Git preview accepts direct source query params via `/git`.
-- Legacy `/gh/{owner}/{repo}/{ref}/{path...}` routes are preserved as compatibility redirects.
+# Save canonical handoff artifact to git refs
+opensession session handoff save --last --payload-format json
 
-### Improve
+# Inspect saved handoff artifacts
+opensession session handoff artifact list
+```
 
-- Compare real workflows and outcomes, not claims.
-- Use artifacts to refine prompts, tools, and evaluation loops.
+## TUI Workflows
 
-## Runtime Profiles
+- Start TUI with `opensession` (or `opensession .` for current repo scope).
+- Browse sessions with list filters and quick search (`/`, `t`, `o`, `r`, `l`).
+- Open detail view to inspect timeline order, tool usage, and outputs.
+- Use the handoff view to generate and save handoff artifacts without leaving terminal.
 
-Capabilities are runtime flags, not separate products.
+## Handoff Storage Model
 
-| Capability | Server (Axum) | Worker (Wrangler default) |
-|---|---|---|
-| `auth_enabled` | Depends on `JWT_SECRET` | Depends on `JWT_SECRET` |
-| `upload_enabled` | Enabled | Enabled |
-| `ingest_preview_enabled` | Enabled | Disabled |
-| `gh_share_enabled` | Enabled | Disabled |
+- Canonical handoff storage is git refs: `refs/opensession/handoff/artifacts/<artifact_id>`.
+- Artifact payload is structured JSON/JSONL that points back to source sessions.
+- `HANDOFF.md` is a derived rendering, not source-of-truth.
+- Refresh updates stale artifacts when source sessions change.
 
 ## Web Routes
 
 | Route | Purpose | Notes |
 |---|---|---|
-| `/` | Landing | Goal-oriented overview |
+| `/` | Landing | Product overview for online sharing |
 | `/sessions` | Session feed | Public browsing |
 | `/session/{id}` | Session detail timeline | Raw event inspection |
 | `/git` | Git source preview | Query params: `remote`, `ref`, `path`, optional `parser_hint` |
@@ -75,28 +75,11 @@ Capabilities are runtime flags, not separate products.
 | `/docs` | Structured docs view | Markdown-backed chapters |
 | `/login` | Account sign-in | Available when auth is enabled |
 
-## CLI Workflows
-
-```bash
-# Upload to server API
-opensession publish upload ./session.jsonl
-
-# Share via git branch
-opensession publish upload ./session.jsonl --git
-
-# Generate handoff from latest session
-opensession session handoff --last --format json --validate
-
-# Connect CLI to server account
-opensession account connect --server https://opensession.io --api-key <issued_key>
-```
-
 ## API Summary
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/health` | Runtime health |
-| GET | `/api/capabilities` | Runtime capability flags |
 | GET | `/api/sessions` | List sessions |
 | GET | `/api/sessions/{id}` | Session detail |
 | GET | `/api/sessions/{id}/raw` | Raw HAIL JSONL |
@@ -119,12 +102,12 @@ BASE_URL=http://127.0.0.1:8788 npm run test:e2e
 
 ## Troubleshooting
 
-1. Check health and capabilities first.
-2. Validate route inputs (`remote`, `ref`, `path`) for `/git` previews.
-3. Validate raw session retrieval before parser-level debugging.
+1. Confirm the session exists and raw data is reachable.
+2. Validate `remote/ref/path` input when using `/git` preview.
+3. Re-run handoff validation when source sessions changed.
 
 ```bash
 curl -s https://opensession.io/api/health
-curl -s https://opensession.io/api/capabilities | jq
 curl -L "https://opensession.io/api/sessions/<id>/raw" | head -n 5
+opensession session handoff --last --validate
 ```

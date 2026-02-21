@@ -2,10 +2,11 @@
   "source": "docs.md",
   "required_chapters": [
     "Product Overview",
-    "Core Goals",
-    "Runtime Profiles",
-    "Web Routes",
+    "Web Experience",
     "CLI Workflows",
+    "TUI Workflows",
+    "Handoff Storage Model",
+    "Web Routes",
     "API Summary",
     "Self-Hosting and Verification",
     "Troubleshooting"
@@ -20,22 +21,7 @@
       "code_blocks": 1
     },
     {
-      "heading": "Core Goals",
-      "subheadings": [
-        "Capture",
-        "Review",
-        "Share",
-        "Improve"
-      ],
-      "code_blocks": 0
-    },
-    {
-      "heading": "Runtime Profiles",
-      "subheadings": [],
-      "code_blocks": 0
-    },
-    {
-      "heading": "Web Routes",
+      "heading": "Web Experience",
       "subheadings": [],
       "code_blocks": 0
     },
@@ -43,6 +29,21 @@
       "heading": "CLI Workflows",
       "subheadings": [],
       "code_blocks": 1
+    },
+    {
+      "heading": "TUI Workflows",
+      "subheadings": [],
+      "code_blocks": 0
+    },
+    {
+      "heading": "Handoff Storage Model",
+      "subheadings": [],
+      "code_blocks": 0
+    },
+    {
+      "heading": "Web Routes",
+      "subheadings": [],
+      "code_blocks": 0
     },
     {
       "heading": "API Summary",

@@ -64,8 +64,8 @@ const operatingLoop = [
 					Engineered for Repeatable Learning.
 				</h1>
 				<p class="max-w-xl text-sm leading-relaxed text-text-secondary sm:text-base" data-testid="landing-hero-copy">
-					OpenSession is built to make AI coding work observable, reviewable, and shareable without losing fidelity.
-					The focus is long-term learning quality across teams and open ecosystems.
+					OpenSession is an online session-sharing site for AI coding work.
+					Publish traces, review real timelines, and keep handoffs reproducible without losing fidelity.
 				</p>
 				<div class="flex flex-wrap gap-2">
 					<button
@@ -91,8 +91,8 @@ const operatingLoop = [
 				</p>
 				<ul class="space-y-2">
 					<li class="text-sm text-text-secondary">Readable timelines instead of black-box outputs.</li>
-					<li class="text-sm text-text-secondary">Stable data contracts across CLI and web surfaces.</li>
-					<li class="text-sm text-text-secondary">Reproducible sharing through git-native artifacts.</li>
+					<li class="text-sm text-text-secondary">CLI + TUI + web surfaces around one session model.</li>
+					<li class="text-sm text-text-secondary">Handoff and git refs for reproducible ownership transfer.</li>
 				</ul>
 				<div class="mt-4 grid gap-2 sm:grid-cols-2">
 					<div class="signal-chip border border-border px-2 py-2 text-[11px] text-text-secondary">

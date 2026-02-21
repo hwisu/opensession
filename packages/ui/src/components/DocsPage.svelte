@@ -101,9 +101,11 @@ function parseDocsMarkdown(markdown: string): ParsedDocs {
 
 onMount(() => {
 	let cancelled = false;
-	fetch('/docs', {
+	fetch('/docs?format=markdown', {
+		cache: 'no-store',
 		headers: {
 			Accept: 'text/markdown',
+			'Cache-Control': 'no-cache',
 		},
 	})
 			.then(async (res) => {
@@ -225,7 +227,7 @@ onMount(() => {
 	.docs-stage {
 		position: relative;
 		padding-bottom: 1.25rem;
-		color: #131313;
+		color: var(--color-text-primary);
 	}
 
 	.docs-stage::before {
@@ -234,9 +236,9 @@ onMount(() => {
 		inset: 0;
 		pointer-events: none;
 		background:
-			radial-gradient(84% 62% at 10% 0%, rgba(234, 232, 224, 0.34), transparent),
-			linear-gradient(180deg, rgba(246, 244, 237, 0.22) 0%, rgba(243, 240, 229, 0.08) 100%);
-		opacity: 0.9;
+			radial-gradient(80% 55% at 15% 2%, color-mix(in oklab, var(--color-accent) 14%, transparent), transparent),
+			linear-gradient(180deg, transparent 0%, color-mix(in oklab, var(--color-bg-secondary) 30%, transparent) 100%);
+		opacity: 0.36;
 	}
 
 	.docs-hero,
@@ -248,10 +250,10 @@ onMount(() => {
 	.docs-toc,
 	.docs-intro,
 	.docs-chapter {
-		border-color: color-mix(in oklab, #a39a84 55%, var(--color-border));
-		background: color-mix(in oklab, #eeebe0 90%, transparent);
-		box-shadow: 0 8px 26px rgba(17, 20, 27, 0.12);
-		color: #161616;
+		border-color: var(--color-border);
+		background: color-mix(in oklab, var(--color-bg-secondary) 65%, transparent);
+		box-shadow: 0 18px 56px color-mix(in oklab, var(--color-bg-primary) 82%, transparent);
+		color: var(--color-text-primary);
 	}
 
 	.docs-title,
@@ -263,41 +265,40 @@ onMount(() => {
 
 	.docs-kicker {
 		padding-left: 0.6rem;
-		border-left: 1px solid color-mix(in oklab, #928a79 62%, var(--color-border-light));
-		color: #66604f;
+		border-left: 1px solid var(--color-border-light);
+		color: var(--color-text-muted);
 	}
 
 	.docs-nav-btn {
-		border-color: color-mix(in oklab, #9b8f73 60%, var(--color-border));
-		background: color-mix(in oklab, #ebe6d8 94%, transparent);
-		color: #28231b;
+		border-color: var(--color-border);
+		background: color-mix(in oklab, var(--color-bg-primary) 50%, transparent);
+		color: var(--color-text-secondary);
 	}
 
 	.docs-toc {
-		border-left: 2px solid color-mix(in oklab, #ad8769 68%, var(--color-border));
-		background: color-mix(in oklab, #f2efe6 95%, transparent);
-		box-shadow: 0 8px 24px rgba(19, 19, 19, 0.14);
+		border-left: 2px solid color-mix(in oklab, var(--color-accent) 45%, var(--color-border));
+		background: color-mix(in oklab, var(--color-bg-secondary) 75%, transparent);
 	}
 
 	.docs-toc-title {
-		color: #60594b;
+		color: var(--color-text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 	}
 
 	.docs-toc-index {
-		color: #cf4e42;
+		color: var(--color-warning);
 	}
 
 	.docs-toc-link {
 		border-left: 1px solid transparent;
-		color: #322d23;
+		color: var(--color-text-secondary);
 	}
 
 	.docs-toc-link:hover {
-		border-left-color: #cf4e42;
-		background: color-mix(in oklab, #e4ded0 86%, transparent);
-		color: #151515;
+		border-left-color: var(--color-accent);
+		background: color-mix(in oklab, var(--color-bg-primary) 50%, transparent);
+		color: var(--color-text-primary);
 	}
 
 	.docs-intro,
@@ -313,60 +314,60 @@ onMount(() => {
 		left: 0;
 		width: 100%;
 		height: 2px;
-		background: color-mix(in oklab, #db4e43 78%, var(--color-border-light));
+		background: color-mix(in oklab, #ff4e4e 72%, var(--color-border-light));
 	}
 
 	.docs-title,
 	.docs-chapter-heading {
-		color: #131210;
+		color: var(--color-text-primary);
 	}
 
 	.docs-stage :global(p),
 	.docs-stage :global(li),
 	.docs-stage :global(td),
 	.docs-stage :global(th) {
-		color: #1f1d19;
+		color: var(--color-text-primary);
 	}
 
 	.docs-stage :global(a) {
-		color: #302a21;
+		color: var(--color-text-primary);
 	}
 
 	.docs-stage :global(a:hover) {
-		color: #10100f;
+		color: var(--color-accent);
 	}
 
 	:global(.docs-markdown table) {
 		width: 100%;
 		border-collapse: collapse;
-		background: color-mix(in oklab, #e6e1d3 72%, transparent);
+		background: color-mix(in oklab, var(--color-bg-primary) 55%, transparent);
 	}
 
 	:global(.docs-markdown th),
 	:global(.docs-markdown td) {
-		border: 1px solid color-mix(in oklab, #9a8f79 58%, var(--color-border));
+		border: 1px solid var(--color-border);
 		padding: 0.4rem 0.5rem;
 		text-align: left;
 	}
 
 	:global(.docs-markdown code) {
 		font-size: 0.85em;
-		background: color-mix(in oklab, #ddd6c5 72%, transparent);
+		background: color-mix(in oklab, var(--color-bg-primary) 72%, transparent);
 		padding: 0.1rem 0.22rem;
-		color: #1f1f1f;
+		color: var(--color-text-primary);
 	}
 
 	:global(.docs-markdown h3) {
 		font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, serif;
 		font-size: 1.2rem;
 		font-weight: 600;
-		color: #121110;
+		color: var(--color-text-primary);
 	}
 
 	:global(.docs-markdown blockquote) {
-		border-left: 2px solid #d4584c;
+		border-left: 2px solid var(--color-accent);
 		padding-left: 0.7rem;
-		color: #423b30;
+		color: var(--color-text-secondary);
 	}
 
 	@media (min-width: 1024px) {

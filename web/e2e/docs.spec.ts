@@ -66,8 +66,27 @@ test.describe('Docs', () => {
 			el.scrollTop = 1200;
 		});
 		await page.waitForTimeout(150);
-		const after = await toc.boundingBox();
-		expect(after).not.toBeNull();
-		expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(6);
+		const afterFirst = await toc.boundingBox();
+		expect(afterFirst).not.toBeNull();
+		await page.locator('main').evaluate((el) => {
+			el.scrollTop = 2200;
+		});
+		await page.waitForTimeout(150);
+		const afterSecond = await toc.boundingBox();
+		expect(afterSecond).not.toBeNull();
+		expect(Math.abs((afterSecond?.y ?? 0) - (afterFirst?.y ?? 0))).toBeLessThan(6);
+
+		await page.evaluate(() => window.scrollTo(0, 1200));
+		await page.waitForTimeout(150);
+		const afterWindow = await toc.boundingBox();
+		expect(afterWindow).not.toBeNull();
+		expect(Math.abs((afterWindow?.y ?? 0) - (afterSecond?.y ?? 0))).toBeLessThan(6);
+	});
+
+	test('keeps docs in dark surface styling', async ({ page }) => {
+		await page.goto('/docs');
+		const docsPage = page.getByTestId('docs-page');
+		const bg = await docsPage.evaluate((el) => getComputedStyle(el).color);
+		expect(bg).not.toBe('rgb(19, 19, 19)');
 	});
 });

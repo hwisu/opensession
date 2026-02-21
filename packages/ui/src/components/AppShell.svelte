@@ -413,7 +413,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 
 <svelte:window onkeydown={handleGlobalKey} onmousedown={handleWindowPointerDown} />
 
-<div class="grid min-h-[100dvh] max-w-[100vw] grid-rows-[auto_1fr_auto] overflow-hidden bg-bg-primary text-text-primary">
+<div class="grid h-[100dvh] max-w-[100vw] grid-rows-[auto_1fr_auto] overflow-hidden bg-bg-primary text-text-primary">
 	<nav class="relative z-30 flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-bg-secondary px-2 py-2 sm:px-4">
 		<div class="flex items-center gap-1">
 			<a href="/" class="text-sm font-bold tracking-tight text-text-primary sm:text-base">
@@ -507,7 +507,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 		</div>
 	</nav>
 
-	<main class="relative z-0 overflow-y-auto px-2 py-3 sm:px-4">
+	<main class="relative z-0 overflow-y-auto overscroll-contain px-2 py-3 sm:px-4">
 		{@render children()}
 	</main>
 

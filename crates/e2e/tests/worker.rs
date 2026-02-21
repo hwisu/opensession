@@ -21,33 +21,61 @@ macro_rules! e2e_test {
 
 opensession_e2e::for_each_spec!(e2e_test);
 
+async fn register_access_token(ctx: &TestContext) -> String {
+    let client = reqwest::Client::new();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let resp = client
+        .post(ctx.url("/auth/register"))
+        .json(&json!({
+            "email": format!("worker-upload-{suffix}@local.test"),
+            "password": "testpass99",
+            "nickname": format!("worker-upload-{suffix}"),
+        }))
+        .send()
+        .await
+        .expect("register request failed");
+
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "register must succeed for worker upload test"
+    );
+    let body: serde_json::Value = resp.json().await.expect("invalid auth register response");
+    body["access_token"]
+        .as_str()
+        .expect("missing access_token")
+        .to_string()
+}
+
 #[tokio::test]
-async fn upload_route_is_disabled_in_worker_profile() {
+async fn upload_route_accepts_authenticated_upload_in_worker_profile() {
     let ctx = get_ctx().await;
+    let access_token = register_access_token(&ctx).await;
     let session = opensession_e2e::fixtures::minimal_session();
-    let resp = ctx
-        .post_json(
-            "/sessions",
-            &UploadRequest {
-                session,
-                body_url: None,
-                linked_session_ids: None,
-                git_remote: None,
-                git_branch: None,
-                git_commit: None,
-                git_repo_name: None,
-                pr_number: None,
-                pr_url: None,
-                score_plugin: None,
-            },
-        )
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(ctx.url("/sessions"))
+        .bearer_auth(access_token)
+        .json(&UploadRequest {
+            session,
+            body_url: None,
+            linked_session_ids: None,
+            git_remote: None,
+            git_branch: None,
+            git_commit: None,
+            git_repo_name: None,
+            pr_number: None,
+            pr_url: None,
+            score_plugin: None,
+        })
+        .send()
         .await
         .expect("request failed");
 
-    let status = resp.status().as_u16();
-    assert!(
-        status == 404 || status == 405,
-        "worker profile must reject upload route, got status {status}"
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "worker profile must accept authenticated uploads"
     );
 }
 

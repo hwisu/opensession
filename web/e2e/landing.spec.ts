@@ -6,42 +6,30 @@ test.describe('Landing (unauthenticated)', () => {
 		await page.goto('/');
 		await expect(page.locator('nav').getByText('Sessions')).toBeVisible();
 		await expect(
-			page.locator('h1').filter({ hasText: 'Track real AI coding sessions with one consistent data model.' }),
+			page.locator('h1').filter({ hasText: 'Engineered for Repeatable Learning.' }),
 		).toBeVisible();
 		await expect(page.locator('#session-search')).toHaveCount(0);
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 		await expect(page.locator('nav').getByText('Register')).toHaveCount(0);
 	});
 
-	test('landing renders feature map, data flow, and capability matrix', async ({ page }) => {
+	test('landing renders goal sections without capability matrix language', async ({ page }) => {
 		await page.goto('/');
-		await expect(page.locator('[data-contract-section="feature-map"]')).toBeVisible();
-		await expect(page.locator('[data-contract-section="data-flow"]')).toBeVisible();
-		await expect(page.locator('[data-contract-section="capability-matrix"]')).toBeVisible();
+		await expect(page.locator('[data-contract-section="goal-map"]')).toBeVisible();
+		await expect(page.locator('[data-contract-section="operating-loop"]')).toBeVisible();
+		await expect(page.locator('[data-contract-section="capability-matrix"]')).toHaveCount(0);
+		await expect(page.getByText('Runtime Capability Matrix')).toHaveCount(0);
 	});
 
-	test('capability matrix explains mixed runtime flags', async ({ page }) => {
-		await page.route('**/api/capabilities', async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({
-					auth_enabled: true,
-					upload_enabled: false,
-					ingest_preview_enabled: false,
-					gh_share_enabled: false,
-				}),
-			});
-		});
+	test('landing copy is English-only in hero and section copy', async ({ page }) => {
 		await page.goto('/');
+		const hero = await page.getByTestId('landing-hero-copy').textContent();
+		const goals = await page.locator('[data-contract-section="goal-map"]').textContent();
+		const loop = await page.locator('[data-contract-section="operating-loop"]').textContent();
 
-		const matrix = page.locator('[data-contract-section="capability-matrix"]');
-		await expect(matrix.locator('[data-capability-key="auth_enabled"]')).toContainText('Available');
-		await expect(matrix.locator('[data-capability-key="auth_enabled"]')).toContainText('owner write protection');
-		await expect(matrix.locator('[data-capability-key="upload_enabled"]')).toContainText('Disabled');
-		await expect(matrix.locator('[data-capability-key="upload_enabled"]')).toContainText('read-only');
-		await expect(matrix.locator('[data-capability-key="gh_share_enabled"]')).toContainText('unavailable');
-		await expect(matrix).toContainText('Flags are independent.');
+		expect(hero ?? '').not.toMatch(/[가-힣]/);
+		expect(goals ?? '').not.toMatch(/[가-힣]/);
+		expect(loop ?? '').not.toMatch(/[가-힣]/);
 	});
 
 	test('landing quick action opens docs page', async ({ page }) => {

@@ -1,25 +1,13 @@
 {
   "source": "packages/ui/src/components/LandingPage.svelte",
   "required_sections": [
-    "feature-map",
-    "data-flow",
-    "capability-matrix"
+    "goal-map",
+    "operating-loop"
   ],
-  "required_capabilities": [
-    "auth_enabled",
-    "upload_enabled",
-    "ingest_preview_enabled",
-    "gh_share_enabled"
-  ],
+  "required_capabilities": [],
   "sections": [
-    "capability-matrix",
-    "data-flow",
-    "feature-map"
+    "goal-map",
+    "operating-loop"
   ],
-  "capabilities": [
-    "auth_enabled",
-    "gh_share_enabled",
-    "ingest_preview_enabled",
-    "upload_enabled"
-  ]
+  "capabilities": []
 }

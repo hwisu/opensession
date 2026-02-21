@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 const chapterHeadings = [
 	'Product Overview',
-	'Core Capabilities',
+	'Core Goals',
 	'Runtime Profiles',
 	'Web Routes',
 	'CLI Workflows',
@@ -23,42 +23,48 @@ test.describe('Docs', () => {
 		}
 	});
 
-	test('docs uses structured sections and table-first summaries', async ({ page }) => {
+	test('docs describe /git preview route and remove upload page docs', async ({ page }) => {
 		await page.goto('/docs');
 		const docsContent = page.getByTestId('docs-content');
-		await expect(docsContent.getByRole('heading', { level: 2, name: 'Product Overview' })).toBeVisible();
-		await expect(docsContent.getByRole('heading', { level: 2, name: 'Runtime Profiles' })).toBeVisible();
-		await expect(docsContent.getByRole('heading', { level: 2, name: 'API Summary' })).toBeVisible();
-		await expect(docsContent.getByRole('columnheader', { name: 'Capability' }).first()).toBeVisible();
-		await expect(docsContent.getByText('Server (Axum)')).toBeVisible();
-		await expect(docsContent.getByRole('cell', { name: '/sessions' }).first()).toBeVisible();
+		await expect(docsContent.getByRole('heading', { level: 2, name: 'Web Routes' })).toBeVisible();
+		await expect(docsContent.getByRole('cell', { name: '/git' }).first()).toBeVisible();
 		await expect(
 			docsContent.getByRole('cell', { name: '/gh/{owner}/{repo}/{ref}/{path...}' }).first(),
 		).toBeVisible();
+		await expect(docsContent.getByRole('cell', { name: '/upload' })).toHaveCount(0);
 	});
 
-	test('docs include usage examples and avoid legacy route docs', async ({ page }) => {
+	test('docs include concise git-sharing definition and current commands', async ({ page }) => {
 		await page.goto('/docs');
 		const docsContent = page.getByTestId('docs-content');
 
+		await expect(
+			docsContent.getByText('Git-based sharing means storing session artifacts on the opensession/sessions branch'),
+		).toBeVisible();
 		await expect(docsContent.getByText('opensession publish upload ./session.jsonl')).toBeVisible();
 		await expect(docsContent.getByText('opensession publish upload ./session.jsonl --git')).toBeVisible();
-		await expect(docsContent.getByText('Product goal')).toBeVisible();
-		await expect(docsContent.getByText('use high-signal public sessions')).toBeVisible();
 		await expect(docsContent.getByText('wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state')).toBeVisible();
-
-		await expect(docsContent.getByText('/teams', { exact: false })).toHaveCount(0);
-		await expect(docsContent.getByText('/invitations', { exact: false })).toHaveCount(0);
-		await expect(docsContent.getByRole('heading', { level: 2, name: 'Teams' })).toHaveCount(0);
 	});
 
-	test('shows chapter navigation table of contents', async ({ page }) => {
+	test('shows sticky chapter navigation table of contents', async ({ page }) => {
 		await page.setViewportSize({ width: 1400, height: 900 });
 		await page.goto('/docs');
 		const toc = page.getByTestId('docs-toc');
 		await expect(toc).toBeVisible();
+		await expect(toc).toHaveClass(/sticky/);
+		await expect(toc).toHaveClass(/self-start/);
 		for (const heading of chapterHeadings) {
 			await expect(toc.getByRole('link', { name: heading })).toBeVisible();
 		}
+
+		const before = await toc.boundingBox();
+		expect(before).not.toBeNull();
+		await page.locator('main').evaluate((el) => {
+			el.scrollTop = 1200;
+		});
+		await page.waitForTimeout(150);
+		const after = await toc.boundingBox();
+		expect(after).not.toBeNull();
+		expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(6);
 	});
 });

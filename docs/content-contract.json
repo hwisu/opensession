@@ -3,7 +3,7 @@
 		"path": "docs.md",
 		"required_chapters": [
 			"Product Overview",
-			"Core Capabilities",
+			"Core Goals",
 			"Runtime Profiles",
 			"Web Routes",
 			"CLI Workflows",
@@ -17,16 +17,10 @@
 	"landing": {
 		"path": "packages/ui/src/components/LandingPage.svelte",
 		"required_sections": [
-			"feature-map",
-			"data-flow",
-			"capability-matrix"
+			"goal-map",
+			"operating-loop"
 		],
-		"required_capabilities": [
-			"auth_enabled",
-			"upload_enabled",
-			"ingest_preview_enabled",
-			"gh_share_enabled"
-		]
+		"required_capabilities": []
 	},
 	"snapshots": {
 		"docs_outline_path": "docs/content-snapshots/docs-outline.json",

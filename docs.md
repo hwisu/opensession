@@ -1,20 +1,20 @@
 # Documentation
 
-OpenSession turns AI coding traces into public, reviewable session artifacts.
-This guide is intentionally scoped to functionality that exists in this repository today.
+OpenSession turns AI coding traces into durable, reviewable session artifacts.
+The product language in this guide is goal-driven so it remains stable across runtime profiles.
 
 ## Product Overview
 
-OpenSession is currently built around three concrete capabilities.
+OpenSession is designed around four product goals.
 
-| Capability | Current state | Primary value |
+| Goal | Why it matters | Typical surface |
 |---|---|---|
-| Browse sessions | Available via `/sessions` and `/session/{id}` | Fast review of real coding workflows |
-| Share via git branch | Available via `opensession publish upload <file> --git` | Reproducible, reviewable session artifacts |
-| Publish sessions online | Available where upload APIs are enabled | Public session discovery and comparison |
+| Capture work as structured data | Preserve full context instead of partial screenshots | HAIL session format |
+| Review what actually happened | Make tool calls, edits, and outcomes auditable | `/sessions`, `/session/{id}` |
+| Share reproducible artifacts | Keep collaboration tied to immutable references | git refs + upload API |
+| Improve workflows continuously | Turn real traces into feedback loops | docs, session comparisons, review |
 
-Product goal:
-use high-signal public sessions to improve open models and open tooling quality.
+Git-based sharing means storing session artifacts on the `opensession/sessions` branch so they can be reviewed and replayed through standard git refs.
 
 ### Quick checks
 
@@ -27,63 +27,58 @@ curl -s https://opensession.io/api/capabilities | jq
 curl -H "Accept: text/markdown" https://opensession.io/docs
 ```
 
-## Core Capabilities
+## Core Goals
 
-### Browse Sessions
+### Capture
+
+- Normalize sessions into HAIL-compatible artifacts.
+- Keep one data model across terminal and web views.
+
+### Review
 
 - Open `/sessions` for the public feed.
 - Open `/session/{id}` for timeline detail.
 - List shortcuts: `t` tool, `o` order, `r` range, `l` layout, `/` search.
 - Detail shortcuts: `/` search, `n/p` next/previous match, `1-5` event filters.
 
-### Share Sessions via Git Branch
+### Share
 
-- CLI supports git-native share using `--git`.
-- Session artifacts are committed to `opensession/sessions` branch flow.
-- This makes shared sessions inspectable through normal git history and review tools.
+- Upload API accepts session payloads via `POST /api/sessions`.
+- Git preview accepts direct source query params via `/git`.
+- Legacy `/gh/{owner}/{repo}/{ref}/{path...}` routes are preserved as compatibility redirects.
 
-### Publish Sessions Online
+### Improve
 
-- Web upload path: `/upload` (when enabled by runtime capability).
-- CLI upload path: `opensession publish upload <file>`.
-- Uploaded sessions become available for browsing via `/sessions`.
-
-### Why this matters
-
-- Public session corpora make agent behavior auditable.
-- Reproducible trace artifacts improve evaluation quality.
-- Open communities can compare workflows and improve prompts/tools collaboratively.
+- Compare real workflows and outcomes, not claims.
+- Use artifacts to refine prompts, tools, and evaluation loops.
 
 ## Runtime Profiles
 
-Capabilities are runtime flags, not one fixed product mode.
+Capabilities are runtime flags, not separate products.
 
 | Capability | Server (Axum) | Worker (Wrangler default) |
 |---|---|---|
 | `auth_enabled` | Depends on `JWT_SECRET` | Depends on `JWT_SECRET` |
-| `upload_enabled` | Enabled | Disabled |
+| `upload_enabled` | Enabled | Enabled |
 | `ingest_preview_enabled` | Enabled | Disabled |
 | `gh_share_enabled` | Enabled | Disabled |
 
-Important:
-`auth_enabled=true` with upload/preview/share disabled is a valid read-only profile.
-
 ## Web Routes
 
-| Route | Purpose | Capability gate |
+| Route | Purpose | Notes |
 |---|---|---|
-| `/` | Landing (product overview) | none |
-| `/sessions` | Session feed | `GET /api/sessions` availability |
-| `/session/{id}` | Session detail timeline | `GET /api/sessions/{id}` availability |
-| `/upload` | Publish sessions from web | `upload_enabled` + `ingest_preview_enabled` |
-| `/gh/{owner}/{repo}/{ref}/{path...}` | Route-based source preview | `gh_share_enabled` |
-| `/docs` | Structured docs view | none |
-| `/login` | Account sign-in | `auth_enabled` |
+| `/` | Landing | Goal-oriented overview |
+| `/sessions` | Session feed | Public browsing |
+| `/session/{id}` | Session detail timeline | Raw event inspection |
+| `/git` | Git source preview | Query params: `remote`, `ref`, `path`, optional `parser_hint` |
+| `/gh/{owner}/{repo}/{ref}/{path...}` | Compatibility alias | Redirects to `/git` |
+| `/docs` | Structured docs view | Markdown-backed chapters |
+| `/login` | Account sign-in | Available when auth is enabled |
 
 ## CLI Workflows
 
 ```bash
-# Upload to server
+# Upload to server API
 opensession publish upload ./session.jsonl
 
 # Share via git branch
@@ -105,7 +100,7 @@ opensession account connect --server https://opensession.io --api-key <issued_ke
 | GET | `/api/sessions` | List sessions |
 | GET | `/api/sessions/{id}` | Session detail |
 | GET | `/api/sessions/{id}/raw` | Raw HAIL JSONL |
-| POST | `/api/sessions` | Publish session (auth/runtime dependent) |
+| POST | `/api/sessions` | Publish session |
 | DELETE | `/api/sessions/{id}` | Delete session (auth/runtime dependent) |
 | POST | `/api/ingest/preview` | Parser preview (server profile) |
 
@@ -125,7 +120,7 @@ BASE_URL=http://127.0.0.1:8788 npm run test:e2e
 ## Troubleshooting
 
 1. Check health and capabilities first.
-2. Match test scenarios to active capability flags.
+2. Validate route inputs (`remote`, `ref`, `path`) for `/git` previews.
 3. Validate raw session retrieval before parser-level debugging.
 
 ```bash
@@ -133,6 +128,3 @@ curl -s https://opensession.io/api/health
 curl -s https://opensession.io/api/capabilities | jq
 curl -L "https://opensession.io/api/sessions/<id>/raw" | head -n 5
 ```
-
-If capability combinations look unusual,
-verify runtime profile before assuming UI bugs.

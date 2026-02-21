@@ -18,10 +18,10 @@ use crate::storage;
 type ServiceResult<T> = std::result::Result<T, opensession_api::ServiceError>;
 
 #[derive(Debug)]
-struct AuthUser {
-    user_id: String,
-    nickname: String,
-    email: Option<String>,
+pub(crate) struct AuthUser {
+    pub(crate) user_id: String,
+    pub(crate) nickname: String,
+    pub(crate) email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,7 +84,11 @@ struct OAuthIdentityUserRow {
 
 fn now_unix() -> u64 {
     let now = chrono::Utc::now().timestamp();
-    if now < 0 { 0 } else { now as u64 }
+    if now < 0 {
+        0
+    } else {
+        now as u64
+    }
 }
 
 fn now_sqlite_datetime() -> String {
@@ -115,7 +119,9 @@ async fn d1_first<T: for<'de> Deserialize<'de>>(
         .prepare(&sql)
         .bind(&values_to_js(&values))
         .map_err(|e| service_internal(context, e))?;
-    stmt.first(None).await.map_err(|e| service_internal(context, e))
+    stmt.first(None)
+        .await
+        .map_err(|e| service_internal(context, e))
 }
 
 async fn d1_all<T: for<'de> Deserialize<'de>>(
@@ -212,7 +218,10 @@ async fn ensure_api_key_backfill(d1: &D1Database) -> ServiceResult<()> {
         .await?;
         d1_run(
             d1,
-            dbq::users::update_api_key(&legacy.id, &service::generate_api_key_placeholder(&legacy.id)),
+            dbq::users::update_api_key(
+                &legacy.id,
+                &service::generate_api_key_placeholder(&legacy.id),
+            ),
             "replace legacy users.api_key with placeholder",
         )
         .await?;
@@ -231,11 +240,11 @@ async fn ensure_api_key_backfill(d1: &D1Database) -> ServiceResult<()> {
     Ok(())
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     req: &Request,
     d1: &D1Database,
     config: &WorkerConfig,
-) -> ServiceResult<AuthUser> {
+) -> std::result::Result<AuthUser, opensession_api::ServiceError> {
     ensure_api_key_backfill(d1).await?;
 
     let token = req
@@ -275,8 +284,9 @@ async fn authenticate(
         AuthToken::Jwt(user_id) => {
             let row: Option<UserRow> =
                 d1_first(d1, dbq::users::get_by_id(&user_id), "lookup user by id").await?;
-            let row = row
-                .ok_or_else(|| opensession_api::ServiceError::Unauthorized("user not found".into()))?;
+            let row = row.ok_or_else(|| {
+                opensession_api::ServiceError::Unauthorized("user not found".into())
+            })?;
             Ok(AuthUser {
                 user_id: row.id,
                 nickname: row.nickname,
@@ -365,7 +375,10 @@ async fn fetch_text(req: Request, context: &str) -> ServiceResult<(u16, String)>
         .await
         .map_err(|e| service_internal(context, e))?;
     let status = resp.status_code();
-    let body = resp.text().await.map_err(|e| service_internal(context, e))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| service_internal(context, e))?;
     Ok((status, body))
 }
 
@@ -650,9 +663,8 @@ pub async fn me(req: Request, ctx: RouteContext<()>) -> Result<Response> {
             "load settings fields",
         )
         .await?;
-        let settings = settings.ok_or_else(|| {
-            opensession_api::ServiceError::Unauthorized("user not found".into())
-        })?;
+        let settings = settings
+            .ok_or_else(|| opensession_api::ServiceError::Unauthorized("user not found".into()))?;
 
         let identities: Vec<OAuthIdentityRow> = d1_all(
             &d1,
@@ -795,14 +807,12 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
             .query_pairs()
             .into_owned()
             .collect();
-        let code = query
-            .get("code")
-            .cloned()
-            .ok_or_else(|| opensession_api::ServiceError::BadRequest("missing code parameter".into()))?;
-        let state_param = query
-            .get("state")
-            .cloned()
-            .ok_or_else(|| opensession_api::ServiceError::BadRequest("missing state parameter".into()))?;
+        let code = query.get("code").cloned().ok_or_else(|| {
+            opensession_api::ServiceError::BadRequest("missing code parameter".into())
+        })?;
+        let state_param = query.get("state").cloned().ok_or_else(|| {
+            opensession_api::ServiceError::BadRequest("missing state parameter".into())
+        })?;
 
         let state_row: Option<OAuthStateRow> = d1_first(
             &d1,
@@ -810,8 +820,9 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
             "validate oauth state",
         )
         .await?;
-        let state_row = state_row
-            .ok_or_else(|| opensession_api::ServiceError::BadRequest("invalid OAuth state".into()))?;
+        let state_row = state_row.ok_or_else(|| {
+            opensession_api::ServiceError::BadRequest("invalid OAuth state".into())
+        })?;
 
         if state_row.provider != provider_id {
             return Err(opensession_api::ServiceError::BadRequest(
@@ -854,20 +865,19 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
             .map_err(|e| service_internal("oauth token request build", e))?;
         let (token_status, token_raw) = fetch_text(token_req, "oauth token exchange").await?;
 
-        let access_token =
-            oauth::parse_access_token_response(&token_raw).map_err(|e| {
-                let mut msg = if token_status < 400 {
-                    e.message().to_string()
-                } else {
-                    format!("{} (status {token_status})", e.message())
-                };
-                if msg.contains("incorrect_client_credentials") {
-                    msg.push_str(
-                        "; verify GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET match the GitHub OAuth app",
-                    );
-                }
-                opensession_api::ServiceError::Internal(msg)
-            })?;
+        let access_token = oauth::parse_access_token_response(&token_raw).map_err(|e| {
+            let mut msg = if token_status < 400 {
+                e.message().to_string()
+            } else {
+                format!("{} (status {token_status})", e.message())
+            };
+            if msg.contains("incorrect_client_credentials") {
+                msg.push_str(
+                    "; verify GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET match the GitHub OAuth app",
+                );
+            }
+            opensession_api::ServiceError::Internal(msg)
+        })?;
 
         let userinfo = fetch_json(
             &provider.userinfo_url,
@@ -878,9 +888,9 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
         let emails = match provider.email_url.as_ref() {
             Some(email_url) => {
                 let result = fetch_json(email_url, &access_token, "fetch oauth emails").await;
-                result.ok().and_then(|json| {
-                    json.as_array().map(|arr| arr.to_vec())
-                })
+                result
+                    .ok()
+                    .and_then(|json| json.as_array().map(|arr| arr.to_vec()))
             }
             None => None,
         };
@@ -895,8 +905,12 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
         .await?;
 
         let (user_id, nickname) = if let Some(existing) = existing_by_provider {
-            let existing_user: Option<UserRow> =
-                d1_first(&d1, dbq::users::get_by_id(&existing.user_id), "lookup oauth user").await?;
+            let existing_user: Option<UserRow> = d1_first(
+                &d1,
+                dbq::users::get_by_id(&existing.user_id),
+                "lookup oauth user",
+            )
+            .await?;
             let existing_user = existing_user.ok_or_else(|| {
                 opensession_api::ServiceError::Unauthorized("user not found".into())
             })?;

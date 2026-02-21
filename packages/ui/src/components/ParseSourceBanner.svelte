@@ -12,6 +12,9 @@ const {
 } = $props();
 
 const sourceLabel = $derived.by(() => {
+	if (source.kind === 'git') {
+		return `${source.remote}@${source.ref}:${source.path}`;
+	}
 	if (source.kind === 'github') {
 		return `${source.owner}/${source.repo}@${source.ref}:${source.path}`;
 	}

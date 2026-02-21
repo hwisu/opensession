@@ -4,10 +4,8 @@ import { renderMarkdown } from '../markdown';
 
 const {
 	onNavigate = (_path: string) => {},
-	showUploadLink = true,
 }: {
 	onNavigate?: (path: string) => void;
-	showUploadLink?: boolean;
 } = $props();
 
 type DocsChapter = {
@@ -133,14 +131,14 @@ onMount(() => {
 	<title>Docs - opensession.io</title>
 </svelte:head>
 
-<div class="mx-auto max-w-6xl space-y-4" data-testid="docs-page">
-	<section class="border border-border bg-bg-secondary p-4 sm:p-5">
-		<div class="flex flex-wrap items-center justify-between gap-3">
+<div class="docs-stage mx-auto max-w-6xl space-y-4" data-testid="docs-page">
+	<section class="docs-hero border border-border p-4 sm:p-5">
+		<div class="flex flex-wrap items-end justify-between gap-3">
 			<div class="space-y-1">
-				<p class="text-[11px] uppercase tracking-[0.12em] text-text-muted">docs</p>
-				<h1 class="text-xl font-semibold text-text-primary sm:text-2xl">{parsed.title}</h1>
-				<p class="text-xs text-text-secondary">
-					Capability-aware product guide with chapter navigation and runnable examples.
+				<p class="docs-kicker text-[11px] uppercase tracking-[0.12em] text-text-muted">Owner's Manual</p>
+				<h1 class="docs-title text-3xl text-text-primary sm:text-4xl">{parsed.title}</h1>
+				<p class="max-w-2xl text-xs text-text-secondary sm:text-sm">
+					Product guide with chapter navigation and runnable examples.
 				</p>
 			</div>
 
@@ -148,19 +146,10 @@ onMount(() => {
 				<button
 					type="button"
 					onclick={() => onNavigate('/sessions')}
-					class="border border-border px-3 py-1 text-text-secondary transition-colors hover:border-accent hover:text-accent"
+					class="docs-nav-btn border border-border px-3 py-1 text-text-secondary transition-colors hover:border-accent hover:text-accent"
 				>
 					Sessions
 				</button>
-				{#if showUploadLink}
-					<button
-						type="button"
-						onclick={() => onNavigate('/upload')}
-						class="border border-border px-3 py-1 text-text-secondary transition-colors hover:border-accent hover:text-accent"
-					>
-						Upload
-					</button>
-				{/if}
 			</div>
 		</div>
 	</section>
@@ -176,19 +165,20 @@ onMount(() => {
 			No documentation chapters were found.
 		</div>
 	{:else}
-		<div class="grid gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]" data-testid="docs-content">
+		<div class="docs-shell grid items-start gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]" data-testid="docs-content">
 			<aside
 				data-testid="docs-toc"
-				class="hidden h-fit border border-border bg-bg-secondary p-3 lg:sticky lg:top-4 lg:block"
+				class="docs-toc hidden h-fit border border-border bg-bg-secondary/65 p-3 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-5rem)] lg:overflow-auto lg:block"
 			>
-				<p class="mb-2 text-[11px] uppercase tracking-[0.1em] text-text-muted">Chapters</p>
+				<p class="docs-toc-title mb-2 text-xs text-text-muted">Contents</p>
 				<nav class="space-y-1.5">
-					{#each parsed.chapters as chapter}
+					{#each parsed.chapters as chapter, idx}
 						<a
 							href={`#${chapter.slug}`}
-							class="block border border-transparent px-2 py-1 text-xs text-text-secondary transition-colors hover:border-border hover:bg-bg-primary hover:text-text-primary"
+							class="docs-toc-link block px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
 						>
-							{chapter.heading}
+							<span aria-hidden="true" class="mr-1.5 text-warning">{idx + 1}.</span>
+							<span>{chapter.heading}</span>
 						</a>
 					{/each}
 				</nav>
@@ -196,7 +186,7 @@ onMount(() => {
 
 			<div class="space-y-4">
 				{#if parsed.introMarkdown}
-					<section class="border border-border bg-bg-secondary p-4">
+					<section class="docs-intro border border-border bg-bg-secondary/65 p-4 sm:p-5">
 						<div class="prose prose-invert max-w-none text-sm leading-relaxed docs-markdown">
 							{@html renderMarkdown(parsed.introMarkdown)}
 						</div>
@@ -207,7 +197,7 @@ onMount(() => {
 					<section
 						id={chapter.slug}
 						data-testid="docs-chapter"
-						class="border border-border bg-bg-secondary p-4 sm:p-5"
+						class="docs-chapter border border-border bg-bg-secondary/65 p-4 sm:p-5"
 					>
 						<div class="mb-2 flex items-center justify-between gap-2">
 							<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">
@@ -220,7 +210,7 @@ onMount(() => {
 								#{chapter.slug}
 							</a>
 						</div>
-						<h2 class="mb-3 text-xl font-semibold text-text-primary">{chapter.heading}</h2>
+						<h2 class="docs-chapter-heading mb-3 text-3xl text-text-primary sm:text-4xl">{chapter.heading}</h2>
 						<div class="prose prose-invert max-w-none text-sm leading-relaxed docs-markdown">
 							{@html renderMarkdown(chapter.markdown)}
 						</div>
@@ -232,19 +222,113 @@ onMount(() => {
 </div>
 
 <style>
+	.docs-stage {
+		position: relative;
+	}
+
+	.docs-stage::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background:
+			radial-gradient(80% 55% at 15% 2%, color-mix(in oklab, var(--color-accent) 16%, transparent), transparent),
+			linear-gradient(180deg, transparent 0%, color-mix(in oklab, var(--color-bg-secondary) 38%, transparent) 100%);
+		opacity: 0.36;
+	}
+
+	.docs-hero,
+	.docs-shell {
+		position: relative;
+	}
+
+	.docs-hero,
+	.docs-toc,
+	.docs-intro,
+	.docs-chapter {
+		box-shadow: 0 18px 56px color-mix(in oklab, var(--color-bg-primary) 82%, transparent);
+	}
+
+	.docs-title,
+	.docs-chapter-heading,
+	.docs-toc-title {
+		font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, serif;
+		letter-spacing: -0.02em;
+	}
+
+	.docs-kicker {
+		padding-left: 0.6rem;
+		border-left: 1px solid var(--color-border-light);
+	}
+
+	.docs-nav-btn {
+		background: color-mix(in oklab, var(--color-bg-primary) 50%, transparent);
+	}
+
+	.docs-toc {
+		border-left: 2px solid color-mix(in oklab, var(--color-accent) 45%, var(--color-border));
+	}
+
+	.docs-toc-link {
+		border-left: 1px solid transparent;
+	}
+
+	.docs-toc-link:hover {
+		border-left-color: var(--color-accent);
+		background: color-mix(in oklab, var(--color-bg-primary) 40%, transparent);
+	}
+
+	.docs-intro,
+	.docs-chapter {
+		position: relative;
+	}
+
+	.docs-intro::before,
+	.docs-chapter::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 1px;
+		background: color-mix(in oklab, #ff4e4e 72%, var(--color-border-light));
+	}
+
 	:global(.docs-markdown table) {
 		width: 100%;
 		border-collapse: collapse;
+		background: color-mix(in oklab, var(--color-bg-primary) 55%, transparent);
 	}
 
 	:global(.docs-markdown th),
 	:global(.docs-markdown td) {
-		border: 1px solid var(--border, #2d3748);
+		border: 1px solid var(--color-border);
 		padding: 0.4rem 0.5rem;
 		text-align: left;
 	}
 
 	:global(.docs-markdown code) {
 		font-size: 0.85em;
+		background: color-mix(in oklab, var(--color-bg-primary) 72%, transparent);
+		padding: 0.1rem 0.22rem;
+	}
+
+	:global(.docs-markdown h3) {
+		font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, serif;
+		font-size: 1.2rem;
+		font-weight: 600;
+		color: var(--color-text-primary);
+	}
+
+	:global(.docs-markdown blockquote) {
+		border-left: 2px solid var(--color-accent);
+		padding-left: 0.7rem;
+		color: var(--color-text-secondary);
+	}
+
+	@media (max-width: 1024px) {
+		.docs-chapter-heading {
+			font-size: 2rem;
+		}
 	}
 </style>

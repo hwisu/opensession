@@ -19,6 +19,7 @@ export {
 	isAuthenticated,
 	isUploadApiAvailable,
 	listSessions,
+	previewSessionFromGitSource,
 	previewSessionFromGithubSource,
 	previewSessionFromInlineSource,
 	PreviewApiError,

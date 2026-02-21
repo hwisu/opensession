@@ -39,9 +39,7 @@ let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
 let accountMenuOpen = $state(false);
 let accountMenuRoot: HTMLDivElement | undefined = $state();
-let authGuardSeq = 0;
 let authEnabled = $state(false);
-let uploadEnabled = $state(false);
 let hasLocalAuth = $state(false);
 
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
@@ -95,22 +93,8 @@ function splitShortcutHint(hint: string): { combo: string; description: string }
 	};
 }
 
-function isGuestAllowedPath(path: string): boolean {
-	return (
-		path === '/' ||
-		path === '/sessions' ||
-		path.startsWith('/session/') ||
-		path === '/login' ||
-		path === '/auth/callback' ||
-		path.startsWith('/docs')
-	);
-}
-
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/sessions', label: 'Sessions' }];
-	if (uploadEnabled && user) {
-		links.push({ href: '/upload', label: 'Upload' });
-	}
 	links.push({ href: '/docs', label: 'Docs' });
 	return links;
 });
@@ -121,12 +105,10 @@ $effect(() => {
 		.then((capabilities) => {
 			if (cancelled) return;
 			authEnabled = capabilities.auth_enabled;
-			uploadEnabled = capabilities.upload_enabled;
 		})
 		.catch(() => {
 			if (cancelled) return;
 			authEnabled = false;
-			uploadEnabled = false;
 		});
 
 	return () => {
@@ -212,26 +194,6 @@ $effect(() => {
 	accountMenuOpen = false;
 });
 
-$effect(() => {
-	void currentPath;
-	if (isGuestAllowedPath(currentPath)) return;
-	if (!uploadEnabled || currentPath !== '/upload') return;
-	const seq = ++authGuardSeq;
-	let cancelled = false;
-	verifyAuth()
-		.then((ok) => {
-			if (cancelled || seq !== authGuardSeq || ok) return;
-			onNavigate('/login');
-		})
-		.catch(() => {
-			if (cancelled || seq !== authGuardSeq) return;
-			onNavigate('/login');
-		});
-	return () => {
-		cancelled = true;
-	};
-});
-
 function createPaletteCommand(
 	id: string,
 	label: string,
@@ -263,18 +225,6 @@ const allPaletteCommands = $derived.by(() => {
 			() => onNavigate('/docs'),
 		),
 	];
-
-	if (uploadEnabled && user) {
-		commands.push(
-			createPaletteCommand(
-				'go-upload',
-				'Go to Upload',
-				'Upload a HAIL session file',
-				['upload', 'ingest', 'jsonl'],
-				() => onNavigate('/upload'),
-			),
-		);
-	}
 
 	if (!hasLocalAuth) {
 		commands.push(
@@ -531,15 +481,6 @@ function handleGlobalKey(e: KeyboardEvent) {
 								>
 									Docs
 								</button>
-								{#if uploadEnabled}
-									<button
-										type="button"
-										class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-										onclick={() => handleAccountMenuNavigate('/upload')}
-									>
-										Upload
-									</button>
-								{/if}
 							</div>
 
 							<div class="px-2 py-1">

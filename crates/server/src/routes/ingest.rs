@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 use axum::{http::StatusCode, Json};
@@ -9,7 +10,6 @@ use opensession_api::{
 use opensession_parsers::ingest::{self as parser_ingest, ParseError as ParserParseError};
 use reqwest::header::CONTENT_TYPE;
 
-const GITHUB_RAW_BASE: &str = "https://raw.githubusercontent.com";
 const FETCH_TIMEOUT_SECS: u64 = 10;
 const MAX_SOURCE_SIZE_BYTES: usize = 10 * 1024 * 1024;
 
@@ -17,6 +17,13 @@ const MAX_SOURCE_SIZE_BYTES: usize = 10 * 1024 * 1024;
 struct GithubSource {
     owner: String,
     repo: String,
+    r#ref: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitSource {
+    remote: String,
     r#ref: String,
     path: String,
 }
@@ -147,6 +154,25 @@ fn map_parser_error(err: ParserParseError) -> PreviewRouteError {
 
 async fn prepare_parse_input(source: ParseSource) -> Result<ParseInput, PreviewRouteError> {
     match source {
+        ParseSource::Git {
+            remote,
+            r#ref,
+            path,
+        } => {
+            let normalized = normalize_git_source(&remote, &r#ref, &path)?;
+            let bytes = fetch_git_source(&normalized).await?;
+            let filename = file_name_from_path(&normalized.path);
+
+            Ok(ParseInput {
+                source: ParseSource::Git {
+                    remote: normalized.remote,
+                    r#ref: normalized.r#ref,
+                    path: normalized.path,
+                },
+                filename,
+                bytes,
+            })
+        }
         ParseSource::Github {
             owner,
             repo,
@@ -154,7 +180,15 @@ async fn prepare_parse_input(source: ParseSource) -> Result<ParseInput, PreviewR
             path,
         } => {
             let normalized = normalize_github_source(&owner, &repo, &r#ref, &path)?;
-            let bytes = fetch_github_source(&normalized).await?;
+            let bytes = fetch_git_source(&GitSource {
+                remote: format!(
+                    "https://github.com/{}/{}",
+                    normalized.owner, normalized.repo
+                ),
+                r#ref: normalized.r#ref.clone(),
+                path: normalized.path.clone(),
+            })
+            .await?;
             let filename = file_name_from_path(&normalized.path);
 
             Ok(ParseInput {
@@ -189,6 +223,31 @@ async fn prepare_parse_input(source: ParseSource) -> Result<ParseInput, PreviewR
             })
         }
     }
+}
+
+fn normalize_git_source(
+    remote: &str,
+    r#ref: &str,
+    path: &str,
+) -> Result<GitSource, PreviewRouteError> {
+    let remote = decode_and_trim(remote, "remote")?;
+    let url = validate_remote_url(&remote)?;
+    let remote = normalized_remote_origin(&url);
+
+    let r#ref = decode_and_trim(r#ref, "ref")?;
+    if !is_valid_ref(r#ref.as_str()) {
+        return Err(PreviewRouteError::invalid_source(
+            "ref must match [A-Za-z0-9._/-]{1,255} without '..', '~', '^', ':', or '\\'",
+        ));
+    }
+
+    let path = normalize_repo_path(path)?;
+
+    Ok(GitSource {
+        remote,
+        r#ref,
+        path,
+    })
 }
 
 fn normalize_github_source(
@@ -346,19 +405,229 @@ fn encode_segments(value: &str) -> String {
         .join("/")
 }
 
-fn build_raw_url(source: &GithubSource) -> String {
-    format!(
-        "{}/{}/{}/{}/{}",
-        GITHUB_RAW_BASE,
-        source.owner,
-        source.repo,
-        encode_segments(&source.r#ref),
-        encode_segments(&source.path),
-    )
+fn strip_git_suffix(segment: &str) -> &str {
+    segment.strip_suffix(".git").unwrap_or(segment)
 }
 
-async fn fetch_github_source(source: &GithubSource) -> Result<Vec<u8>, PreviewRouteError> {
-    let url = build_raw_url(source);
+fn validate_remote_url(remote: &str) -> Result<reqwest::Url, PreviewRouteError> {
+    let parsed = reqwest::Url::parse(remote)
+        .map_err(|_| PreviewRouteError::invalid_source("remote must be an absolute http(s) URL"))?;
+
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "https" && scheme != "http" {
+        return Err(PreviewRouteError::invalid_source(
+            "remote must use http or https",
+        ));
+    }
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(PreviewRouteError::invalid_source(
+            "remote cannot include credentials",
+        ));
+    }
+
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(PreviewRouteError::invalid_source(
+            "remote cannot include query or fragment",
+        ));
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| PreviewRouteError::invalid_source("remote host is required"))?;
+
+    if is_disallowed_remote_host(host) {
+        return Err(PreviewRouteError::invalid_source(
+            "remote host is not allowed",
+        ));
+    }
+
+    let repo_path = parsed.path().trim_matches('/');
+    if repo_path.is_empty() {
+        return Err(PreviewRouteError::invalid_source(
+            "remote must include repository path",
+        ));
+    }
+
+    Ok(parsed)
+}
+
+fn normalized_remote_origin(url: &reqwest::Url) -> String {
+    let mut normalized = url.clone();
+    normalized.set_query(None);
+    normalized.set_fragment(None);
+    let _ = normalized.set_username("");
+    let _ = normalized.set_password(None);
+
+    let trimmed_path = normalized.path().trim_end_matches('/').to_string();
+    if trimmed_path.is_empty() {
+        normalized.set_path("/");
+    } else {
+        normalized.set_path(&trimmed_path);
+    }
+
+    let mut rendered = normalized.to_string();
+    if rendered.ends_with('/') {
+        rendered.pop();
+    }
+    rendered
+}
+
+fn is_disallowed_remote_host(host: &str) -> bool {
+    let lowered = host.to_ascii_lowercase();
+    if lowered == "localhost" || lowered.ends_with(".localhost") {
+        return true;
+    }
+
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+        }
+        Ok(IpAddr::V6(v6)) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast()
+                || is_ipv6_documentation(v6)
+        }
+        Err(_) => false,
+    }
+}
+
+fn is_ipv6_documentation(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x2001 && segments[1] == 0x0db8
+}
+
+fn origin_from_url(url: &reqwest::Url) -> Result<String, PreviewRouteError> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| PreviewRouteError::invalid_source("remote host is required"))?;
+    let mut origin = format!("{}://{host}", url.scheme());
+    if let Some(port) = url.port() {
+        origin.push(':');
+        origin.push_str(&port.to_string());
+    }
+    Ok(origin)
+}
+
+fn repo_path_segments(url: &reqwest::Url) -> Result<Vec<String>, PreviewRouteError> {
+    let mut segments: Vec<String> = url
+        .path_segments()
+        .ok_or_else(|| PreviewRouteError::invalid_source("remote repository path is invalid"))?
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            urlencoding::decode(segment)
+                .map(|decoded| decoded.trim().to_string())
+                .map_err(|_| {
+                    PreviewRouteError::invalid_source(
+                        "remote repository path contains invalid percent encoding",
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if segments.len() < 2 {
+        return Err(PreviewRouteError::invalid_source(
+            "remote must include owner/group and repository",
+        ));
+    }
+
+    if let Some(last) = segments.last_mut() {
+        *last = strip_git_suffix(last).to_string();
+    }
+
+    if segments
+        .iter()
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(PreviewRouteError::invalid_source(
+            "remote repository path contains invalid segments",
+        ));
+    }
+
+    Ok(segments)
+}
+
+fn build_github_raw_url(
+    url: &reqwest::Url,
+    r#ref: &str,
+    path: &str,
+) -> Result<String, PreviewRouteError> {
+    let segments = repo_path_segments(url)?;
+    if segments.len() != 2 {
+        return Err(PreviewRouteError::invalid_source(
+            "github remote must look like https://github.com/{owner}/{repo}",
+        ));
+    }
+
+    Ok(format!(
+        "https://raw.githubusercontent.com/{}/{}/{}/{}",
+        segments[0],
+        segments[1],
+        encode_segments(r#ref),
+        encode_segments(path)
+    ))
+}
+
+fn build_gitlab_raw_url(
+    url: &reqwest::Url,
+    r#ref: &str,
+    path: &str,
+) -> Result<String, PreviewRouteError> {
+    let project_path = repo_path_segments(url)?.join("/");
+    let origin = origin_from_url(url)?;
+    Ok(format!(
+        "{}/{}/-/raw/{}/{}",
+        origin,
+        encode_segments(&project_path),
+        encode_segments(r#ref),
+        encode_segments(path)
+    ))
+}
+
+fn build_generic_raw_url(
+    url: &reqwest::Url,
+    r#ref: &str,
+    path: &str,
+) -> Result<String, PreviewRouteError> {
+    let repo_path = repo_path_segments(url)?.join("/");
+    let origin = origin_from_url(url)?;
+    Ok(format!(
+        "{}/{}/raw/{}/{}",
+        origin,
+        encode_segments(&repo_path),
+        encode_segments(r#ref),
+        encode_segments(path)
+    ))
+}
+
+fn build_git_raw_url(source: &GitSource) -> Result<String, PreviewRouteError> {
+    let remote = validate_remote_url(&source.remote)?;
+    let host = remote
+        .host_str()
+        .ok_or_else(|| PreviewRouteError::invalid_source("remote host is required"))?
+        .to_ascii_lowercase();
+
+    if host == "github.com" {
+        return build_github_raw_url(&remote, &source.r#ref, &source.path);
+    }
+    if host == "gitlab.com" || host.contains("gitlab") {
+        return build_gitlab_raw_url(&remote, &source.r#ref, &source.path);
+    }
+
+    build_generic_raw_url(&remote, &source.r#ref, &source.path)
+}
+
+async fn fetch_git_source(source: &GitSource) -> Result<Vec<u8>, PreviewRouteError> {
+    let url = build_git_raw_url(source)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
@@ -506,9 +775,89 @@ mod tests {
         )
         .expect("source should be valid");
         assert_eq!(source.path, "sessions/foo bar.hail.jsonl");
+        let remote = reqwest::Url::parse("https://github.com/hwisu/opensession")
+            .expect("remote url should parse");
         assert_eq!(
-            build_raw_url(&source),
+            build_github_raw_url(&remote, &source.r#ref, &source.path)
+                .expect("github raw url should build"),
             "https://raw.githubusercontent.com/hwisu/opensession/main/sessions/foo%20bar.hail.jsonl"
+        );
+    }
+
+    #[test]
+    fn git_source_rejects_localhost_remote() {
+        let err = normalize_git_source(
+            "http://localhost:3000/hwisu/opensession",
+            "main",
+            "sessions/demo.hail.jsonl",
+        )
+        .expect_err("localhost remote must be rejected");
+        assert_eq!(err.code, "invalid_source");
+    }
+
+    #[test]
+    fn git_source_rejects_private_ip_remote() {
+        let err = normalize_git_source(
+            "http://192.168.0.10/hwisu/opensession",
+            "main",
+            "sessions/demo.hail.jsonl",
+        )
+        .expect_err("private ip remote must be rejected");
+        assert_eq!(err.code, "invalid_source");
+    }
+
+    #[test]
+    fn git_source_rejects_credentials_and_query() {
+        let with_credentials = normalize_git_source(
+            "https://user:secret@example.com/org/repo",
+            "main",
+            "sessions/demo.hail.jsonl",
+        )
+        .expect_err("remote credentials must be rejected");
+        assert_eq!(with_credentials.code, "invalid_source");
+
+        let with_query = normalize_git_source(
+            "https://example.com/org/repo?token=1",
+            "main",
+            "sessions/demo.hail.jsonl",
+        )
+        .expect_err("remote query must be rejected");
+        assert_eq!(with_query.code, "invalid_source");
+    }
+
+    #[test]
+    fn build_git_raw_url_uses_provider_aware_patterns() {
+        let github = build_git_raw_url(&GitSource {
+            remote: "https://github.com/hwisu/opensession".to_string(),
+            r#ref: "main".to_string(),
+            path: "sessions/demo.hail.jsonl".to_string(),
+        })
+        .expect("github raw url should build");
+        assert_eq!(
+            github,
+            "https://raw.githubusercontent.com/hwisu/opensession/main/sessions/demo.hail.jsonl"
+        );
+
+        let gitlab = build_git_raw_url(&GitSource {
+            remote: "https://gitlab.com/group/subgroup/repo".to_string(),
+            r#ref: "main".to_string(),
+            path: "sessions/demo.hail.jsonl".to_string(),
+        })
+        .expect("gitlab raw url should build");
+        assert_eq!(
+            gitlab,
+            "https://gitlab.com/group/subgroup/repo/-/raw/main/sessions/demo.hail.jsonl"
+        );
+
+        let generic = build_git_raw_url(&GitSource {
+            remote: "https://code.example.com/team/repo.git".to_string(),
+            r#ref: "main".to_string(),
+            path: "sessions/demo.hail.jsonl".to_string(),
+        })
+        .expect("generic raw url should build");
+        assert_eq!(
+            generic,
+            "https://code.example.com/team/repo/raw/main/sessions/demo.hail.jsonl"
         );
     }
 

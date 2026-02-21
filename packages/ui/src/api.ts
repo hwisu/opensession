@@ -395,6 +395,24 @@ export async function previewSessionFromGithubSource(params: {
 	});
 }
 
+export async function previewSessionFromGitSource(params: {
+	remote: string;
+	ref: string;
+	path: string;
+	parser_hint?: string;
+}): Promise<ParsePreviewResponse> {
+	const source: ParseSource = {
+		kind: 'git',
+		remote: params.remote,
+		ref: params.ref,
+		path: params.path,
+	};
+	return postIngestPreview({
+		source,
+		parser_hint: params.parser_hint ?? null,
+	});
+}
+
 export async function previewSessionFromInlineSource(params: {
 	filename: string;
 	content_base64: string;

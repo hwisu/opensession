@@ -211,31 +211,4 @@ test.describe('Sessions', () => {
 		await expect(page.locator('#session-search')).toBeVisible();
 	});
 
-	test('upload drop zone keeps active drag state through nested drag events', async ({
-		page,
-		request,
-	}) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		await injectAuth(page, admin);
-		await page.goto('/upload');
-
-		const dropZone = page.getByRole('button', { name: /Drag and drop a session file here/i }).first();
-		await expect(dropZone).toBeVisible({ timeout: 10000 });
-
-		const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
-		await dropZone.dispatchEvent('dragenter', { dataTransfer });
-		await expect(dropZone).toHaveClass(/border-accent/);
-
-		const browseLabel = dropZone.getByText('Browse files');
-		await browseLabel.dispatchEvent('dragenter', { dataTransfer });
-		await browseLabel.dispatchEvent('dragleave', { dataTransfer });
-		await expect(dropZone).toHaveClass(/border-accent/);
-
-		await dropZone.dispatchEvent('dragleave', { dataTransfer });
-		await expect(dropZone).not.toHaveClass(/border-accent/);
-	});
 });

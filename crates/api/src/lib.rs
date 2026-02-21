@@ -448,6 +448,12 @@ pub struct SessionLink {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
 pub enum ParseSource {
+    /// Fetch and parse a raw file from a generic Git remote/ref/path source.
+    Git {
+        remote: String,
+        r#ref: String,
+        path: String,
+    },
     /// Fetch and parse a raw file from a public GitHub repository.
     Github {
         owner: String,
@@ -651,7 +657,37 @@ mod schema_tests {
     use super::*;
 
     #[test]
-    fn parse_preview_request_round_trip() {
+    fn parse_preview_request_round_trip_git() {
+        let req = ParsePreviewRequest {
+            source: ParseSource::Git {
+                remote: "https://github.com/hwisu/opensession".to_string(),
+                r#ref: "main".to_string(),
+                path: "sessions/demo.hail.jsonl".to_string(),
+            },
+            parser_hint: Some("hail".to_string()),
+        };
+
+        let json = serde_json::to_string(&req).expect("request should serialize");
+        let decoded: ParsePreviewRequest =
+            serde_json::from_str(&json).expect("request should deserialize");
+
+        match decoded.source {
+            ParseSource::Git {
+                remote,
+                r#ref,
+                path,
+            } => {
+                assert_eq!(remote, "https://github.com/hwisu/opensession");
+                assert_eq!(r#ref, "main");
+                assert_eq!(path, "sessions/demo.hail.jsonl");
+            }
+            _ => panic!("expected git parse source"),
+        }
+        assert_eq!(decoded.parser_hint.as_deref(), Some("hail"));
+    }
+
+    #[test]
+    fn parse_preview_request_round_trip_github_compat() {
         let req = ParsePreviewRequest {
             source: ParseSource::Github {
                 owner: "hwisu".to_string(),

@@ -1,252 +1,137 @@
 <script lang="ts">
-import { onMount } from 'svelte';
-import { getApiCapabilities } from '../api';
-
 const {
 	onNavigate = (_path: string) => {},
 }: {
 	onNavigate?: (path: string) => void;
 } = $props();
 
-type CapabilitySnapshot = {
-	loaded: boolean;
-	auth_enabled: boolean;
-	upload_enabled: boolean;
-	ingest_preview_enabled: boolean;
-	gh_share_enabled: boolean;
-	error: string | null;
-};
-
-type CapabilityKey = Exclude<keyof CapabilitySnapshot, 'loaded' | 'error'>;
-
-type FeatureCard = {
+type GoalCard = {
 	id: string;
-	flag: string;
 	title: string;
 	summary: string;
-	outcomes: string[];
+	proof: string;
 };
 
-const featureCards: FeatureCard[] = [
+const goalCards: GoalCard[] = [
 	{
-		id: 'sessions',
-		flag: '/sessions, /session/{id}',
-		title: 'Browse Sessions',
+		id: 'capture',
+		title: 'Capture Work As Data',
 		summary:
-			'Read public sessions quickly in list/detail views with shortcut-driven filtering and timeline review.',
-		outcomes: [
-			'List view scans many sessions fast',
-			'Detail view tracks events, tool calls, and outcomes',
-			'Same HAIL model in web and TUI',
-		],
-	},
-	{
-		id: 'git-share',
-		flag: 'opensession publish upload <file> --git',
-		title: 'Share via Git Branch',
-		summary:
-			'Session files can be committed to a git branch and shared as reproducible, reviewable artifacts.',
-		outcomes: [
-			'Branch history keeps session evolution visible',
-			'Route-based preview can resolve branch/path inputs',
-			'Sharing stays tool-agnostic through HAIL',
-		],
-	},
-	{
-		id: 'publish',
-		flag: '/upload, opensession publish upload',
-		title: 'Publish Sessions Online',
-		summary:
-			'Publish normalized sessions to the public feed so others can inspect real coding traces on the web.',
-		outcomes: [
-			'Upload API accepts HAIL sessions for hosting',
-			'Public readers can discover sessions from `/sessions`',
-			'Auth/API keys govern write paths in enabled runtimes',
-		],
-	},
-];
-
-const flowSteps = [
-	{
-		id: 'record',
-		label: 'Record',
-		detail: 'Capture AI coding activity in HAIL-compatible traces.',
-	},
-	{
-		id: 'publish',
-		label: 'Publish',
-		detail: 'Send sessions to online feed or git branch for stable sharing.',
+			'Turn coding sessions into durable artifacts so every decision, handoff, and correction can be revisited.',
+		proof: 'A shared HAIL model keeps CLI and web views aligned.',
 	},
 	{
 		id: 'review',
-		label: 'Review',
-		detail: 'Browse `/sessions` and inspect detail timelines to understand real workflows.',
+		title: 'Review What Actually Happened',
+		summary:
+			'Inspect real timelines, tool usage, and outcomes instead of relying on memory or partial screenshots.',
+		proof: 'Session feed and detail views focus on navigable evidence.',
+	},
+	{
+		id: 'share',
+		title: 'Share Reproducible Sessions',
+		summary:
+			'Git-based sharing means storing session artifacts on the opensession/sessions branch so they can be reviewed and replayed through standard git refs.',
+		proof: 'Sharing remains transport-agnostic and auditable through normal git history.',
 	},
 	{
 		id: 'improve',
-		label: 'Improve',
-		detail: 'Use 공개 세션 knowledge to strengthen open models and open tooling quality.',
+		title: 'Improve Open Tooling Faster',
+		summary:
+			'Use high-signal public traces to compare workflows and improve prompts, agents, and model behavior.',
+		proof: 'The product is optimized for learning loops, not vanity metrics.',
 	},
 ];
 
-let capabilities = $state<CapabilitySnapshot>({
-	loaded: false,
-	auth_enabled: false,
-	upload_enabled: false,
-	ingest_preview_enabled: false,
-	gh_share_enabled: false,
-	error: null,
-});
-
-onMount(() => {
-	let cancelled = false;
-	getApiCapabilities()
-		.then((next) => {
-			if (cancelled) return;
-			capabilities = {
-				loaded: true,
-				auth_enabled: next.auth_enabled,
-				upload_enabled: next.upload_enabled,
-				ingest_preview_enabled: next.ingest_preview_enabled,
-				gh_share_enabled: next.gh_share_enabled,
-				error: null,
-			};
-		})
-		.catch((error) => {
-			if (cancelled) return;
-			capabilities = {
-				loaded: true,
-				auth_enabled: false,
-				upload_enabled: false,
-				ingest_preview_enabled: false,
-				gh_share_enabled: false,
-				error: error instanceof Error ? error.message : 'Failed to load capabilities',
-			};
-		});
-
-	return () => {
-		cancelled = true;
-	};
-});
-
-function capabilityStatus(enabled: boolean): string {
-	return enabled ? 'Available' : 'Disabled';
-}
-
-function capabilityClass(enabled: boolean): string {
-	return enabled ? 'text-success' : 'text-warning';
-}
-
-function capabilityEffect(key: CapabilityKey, enabled: boolean): string {
-	if (key === 'auth_enabled') {
-		return enabled
-			? 'Account login, API key linking, and owner write protection are active.'
-			: 'Guest-only browsing profile; account sign-in/write actions stay unavailable.';
-	}
-	if (key === 'upload_enabled') {
-		return enabled
-			? 'Online publishing is enabled via `/upload` and CLI upload endpoints.'
-			: 'This runtime is read-only for online publish; browsing still works.';
-	}
-	if (key === 'ingest_preview_enabled') {
-		return enabled
-			? 'Parser preview/candidate selection is enabled before ingest.'
-			: 'Advanced preview step is disabled; ingest path may still exist elsewhere.';
-	}
-	return enabled
-		? 'Git branch/path route preview works under `/gh/...`.'
-		: 'Git route preview is unavailable in this runtime profile.';
-}
-
-function runtimeProfileLabel(snapshot: CapabilitySnapshot): string {
-	if (!snapshot.loaded) return 'Detecting runtime profile...';
-	if (snapshot.upload_enabled || snapshot.ingest_preview_enabled || snapshot.gh_share_enabled) {
-		return 'Capture + share profile';
-	}
-	if (snapshot.auth_enabled) return 'Read-only browse profile (auth enabled)';
-	return 'Read-only browse profile';
-}
+const operatingLoop = [
+	{ label: 'Record', detail: 'Capture session traces with enough structure to replay context.' },
+	{ label: 'Inspect', detail: 'Read event timelines to verify what happened and why.' },
+	{ label: 'Share', detail: 'Publish or git-share artifacts for reproducible review.' },
+	{ label: 'Refine', detail: 'Feed findings back into prompts, tools, and process.' },
+];
 </script>
 
 <svelte:head>
-	<title>OpenSession - Capability-Aware Session Review</title>
+	<title>OpenSession - Engineered Session Intelligence</title>
 </svelte:head>
 
-<div class="mx-auto w-full max-w-6xl px-3 py-8 sm:px-6 sm:py-10">
-	<section class="grid gap-6 border border-border bg-bg-secondary p-5 sm:p-6 lg:grid-cols-[1.1fr_0.9fr]">
-		<div class="space-y-4">
-			<p class="text-[11px] uppercase tracking-[0.16em] text-text-muted">open format • local + web</p>
-			<h1 class="text-3xl font-bold leading-tight text-text-primary sm:text-4xl">
-				Track real AI coding sessions with one consistent data model.
-			</h1>
-			<p class="max-w-xl text-sm leading-relaxed text-text-secondary">
-				OpenSession helps teams browse sessions, share session artifacts through git branches, and publish
-				sessions online. 목표는 공개 세션을 통해 open model 생태계에 실질적인 학습 신호를 제공하는 것입니다.
-			</p>
-			<div class="flex flex-wrap gap-2">
-				<button
-					type="button"
-					onclick={() => onNavigate('/sessions')}
-					class="bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85"
-				>
-					Open Sessions
-				</button>
-				<button
-					type="button"
-					onclick={() => onNavigate('/docs')}
-					class="border border-border px-4 py-2 text-xs font-semibold text-text-secondary transition-colors hover:border-accent hover:text-accent"
-				>
-					Open Docs
-				</button>
+<div class="landing-stage mx-auto w-full max-w-6xl px-3 py-8 sm:px-6 sm:py-10" data-testid="landing-page">
+	<section class="hero-panel p-5 sm:p-6">
+		<div class="grid gap-6 lg:grid-cols-[1.1fr_0.9fr] lg:gap-8">
+			<div class="space-y-4">
+				<p class="stage-kicker text-[11px] uppercase tracking-[0.18em] text-text-muted">owner's manual for ai sessions</p>
+				<h1 class="stage-title text-4xl leading-[0.92] text-text-primary sm:text-5xl lg:text-6xl">
+					Engineered for Repeatable Learning.
+				</h1>
+				<p class="max-w-xl text-sm leading-relaxed text-text-secondary sm:text-base" data-testid="landing-hero-copy">
+					OpenSession is built to make AI coding work observable, reviewable, and shareable without losing fidelity.
+					The focus is long-term learning quality across teams and open ecosystems.
+				</p>
+				<div class="flex flex-wrap gap-2">
+					<button
+						type="button"
+						onclick={() => onNavigate('/sessions')}
+						class="stage-cta bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85"
+					>
+						Open Sessions
+					</button>
+					<button
+						type="button"
+						onclick={() => onNavigate('/docs')}
+						class="stage-cta border border-border px-4 py-2 text-xs font-semibold text-text-secondary transition-colors hover:border-accent hover:text-accent"
+					>
+						Open Docs
+					</button>
+				</div>
 			</div>
-		</div>
 
-		<div class="border border-border bg-bg-primary p-4">
-			<p class="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">
-				What You Can Verify Now
-			</p>
-			<ul class="space-y-2">
-				<li class="text-sm text-text-secondary">
-					Capability matrix values come directly from live <code>/api/capabilities</code>.
-				</li>
-				<li class="text-sm text-text-secondary">
-					Feature map items map to current routes and commands in this repository.
-				</li>
-				<li class="text-sm text-text-secondary">
-					Disabled runtime features are rendered as disabled states, not hidden marketing claims.
-				</li>
-			</ul>
+			<div class="stage-note border border-border bg-bg-primary/65 p-4">
+				<p class="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">
+					Product Direction
+				</p>
+				<ul class="space-y-2">
+					<li class="text-sm text-text-secondary">Readable timelines instead of black-box outputs.</li>
+					<li class="text-sm text-text-secondary">Stable data contracts across CLI and web surfaces.</li>
+					<li class="text-sm text-text-secondary">Reproducible sharing through git-native artifacts.</li>
+				</ul>
+				<div class="mt-4 grid gap-2 sm:grid-cols-2">
+					<div class="signal-chip border border-border px-2 py-2 text-[11px] text-text-secondary">
+						<span class="block text-text-muted">Core Format</span>
+						<span class="block text-text-primary">HAIL Sessions</span>
+					</div>
+					<div class="signal-chip border border-border px-2 py-2 text-[11px] text-text-secondary">
+						<span class="block text-text-muted">Sharing Model</span>
+						<span class="block text-text-primary">Web + Git Refs</span>
+					</div>
+				</div>
+			</div>
 		</div>
 	</section>
 
-	<section data-contract-section="feature-map" class="mt-6 border border-border p-4 sm:p-5">
-		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ feature-map</div>
-		<h2 class="mb-4 text-xl font-semibold text-text-primary">Feature Map</h2>
+	<section data-contract-section="goal-map" class="mise-panel mt-6 p-4 sm:p-5">
+		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ goal-map</div>
+		<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">What We Optimize For</h2>
 		<div class="grid gap-3 md:grid-cols-2">
-			{#each featureCards as card}
-				<article class="border border-border bg-bg-secondary p-4" data-feature-id={card.id}>
+			{#each goalCards as card}
+				<article class="mise-card border border-border bg-bg-secondary/70 p-4" data-goal-id={card.id}>
 					<div class="mb-2 flex items-center justify-between">
-						<span class="text-xs text-accent">{card.flag}</span>
-						<span class="text-[11px] uppercase text-text-muted">{card.id}</span>
+						<span class="text-xs text-accent">{card.id}</span>
+						<span class="text-[11px] uppercase text-text-muted">Goal</span>
 					</div>
-					<h3 class="text-sm font-semibold text-text-primary">{card.title}</h3>
+					<h3 class="text-base font-semibold text-text-primary">{card.title}</h3>
 					<p class="mt-2 text-xs leading-relaxed text-text-secondary">{card.summary}</p>
-					<ul class="mt-3 space-y-1">
-						{#each card.outcomes as outcome}
-							<li class="text-xs text-text-muted">- {outcome}</li>
-						{/each}
-					</ul>
+					<p class="mt-3 border-t border-border pt-2 text-xs text-text-muted">{card.proof}</p>
 				</article>
 			{/each}
 		</div>
 	</section>
 
-	<section data-contract-section="data-flow" class="mt-6 border border-border p-4 sm:p-5">
-		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ data-flow</div>
-		<h2 class="mb-4 text-xl font-semibold text-text-primary">Data Flow</h2>
-		<div class="grid gap-2 md:grid-cols-4">
-			{#each flowSteps as step, idx}
-				<div class="border border-border bg-bg-secondary p-3" data-flow-step={step.id}>
+	<section data-contract-section="operating-loop" class="mise-panel mt-6 p-4 sm:p-5">
+		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ operating-loop</div>
+		<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">Operating Loop</h2>
+		<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+			{#each operatingLoop as step, idx}
+				<div class="mise-card border border-border bg-bg-secondary/70 p-3" data-flow-step={step.label}>
 					<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Step {idx + 1}</div>
 					<div class="mt-1 text-sm font-semibold text-text-primary">{step.label}</div>
 					<p class="mt-2 text-xs leading-relaxed text-text-secondary">{step.detail}</p>
@@ -254,99 +139,63 @@ function runtimeProfileLabel(snapshot: CapabilitySnapshot): string {
 			{/each}
 		</div>
 	</section>
-
-	<section data-contract-section="capability-matrix" class="mt-6 border border-border p-4 sm:p-5">
-		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ capability-matrix</div>
-		<h2 class="mb-2 text-xl font-semibold text-text-primary">Runtime Capability Matrix (Operator View)</h2>
-		<p class="mb-4 text-xs text-text-secondary">
-			상단 Feature Map은 제품 목표를 설명하고, 아래 Matrix는 현재 배포 프로필의 운영 플래그를 보여줍니다.
-		</p>
-		<div class="mb-3 border border-border bg-bg-secondary px-3 py-2 text-xs text-text-secondary">
-			{runtimeProfileLabel(capabilities)}
-		</div>
-
-		{#if capabilities.error}
-			<div class="mb-3 border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-				Runtime detection fallback: {capabilities.error}
-			</div>
-		{/if}
-
-		<div class="overflow-x-auto">
-			<table class="w-full border-collapse text-xs">
-				<thead>
-					<tr class="bg-bg-secondary text-left text-text-muted">
-						<th class="border border-border px-2 py-2">Capability</th>
-						<th class="border border-border px-2 py-2">Status</th>
-						<th class="border border-border px-2 py-2">User-visible effect</th>
-					</tr>
-				</thead>
-				<tbody>
-					<tr data-capability-key="auth_enabled">
-						<td class="border border-border px-2 py-2 text-text-secondary">Authentication</td>
-						<td class="border border-border px-2 py-2">
-							{#if capabilities.loaded}
-								<span class={capabilityClass(capabilities.auth_enabled)}>
-									{capabilityStatus(capabilities.auth_enabled)}
-								</span>
-							{:else}
-								<span class="text-text-muted">Detecting...</span>
-							{/if}
-						</td>
-						<td class="border border-border px-2 py-2 text-text-secondary">
-							{capabilityEffect('auth_enabled', capabilities.auth_enabled)}
-						</td>
-					</tr>
-					<tr data-capability-key="upload_enabled">
-						<td class="border border-border px-2 py-2 text-text-secondary">Upload API</td>
-						<td class="border border-border px-2 py-2">
-							{#if capabilities.loaded}
-								<span class={capabilityClass(capabilities.upload_enabled)}>
-									{capabilityStatus(capabilities.upload_enabled)}
-								</span>
-							{:else}
-								<span class="text-text-muted">Detecting...</span>
-							{/if}
-						</td>
-						<td class="border border-border px-2 py-2 text-text-secondary">
-							{capabilityEffect('upload_enabled', capabilities.upload_enabled)}
-						</td>
-					</tr>
-					<tr data-capability-key="ingest_preview_enabled">
-						<td class="border border-border px-2 py-2 text-text-secondary">Ingest Preview</td>
-						<td class="border border-border px-2 py-2">
-							{#if capabilities.loaded}
-								<span class={capabilityClass(capabilities.ingest_preview_enabled)}>
-									{capabilityStatus(capabilities.ingest_preview_enabled)}
-								</span>
-							{:else}
-								<span class="text-text-muted">Detecting...</span>
-							{/if}
-						</td>
-						<td class="border border-border px-2 py-2 text-text-secondary">
-							{capabilityEffect('ingest_preview_enabled', capabilities.ingest_preview_enabled)}
-						</td>
-					</tr>
-					<tr data-capability-key="gh_share_enabled">
-						<td class="border border-border px-2 py-2 text-text-secondary">GitHub Share Preview</td>
-						<td class="border border-border px-2 py-2">
-							{#if capabilities.loaded}
-								<span class={capabilityClass(capabilities.gh_share_enabled)}>
-									{capabilityStatus(capabilities.gh_share_enabled)}
-								</span>
-							{:else}
-								<span class="text-text-muted">Detecting...</span>
-							{/if}
-						</td>
-						<td class="border border-border px-2 py-2 text-text-secondary">
-							{capabilityEffect('gh_share_enabled', capabilities.gh_share_enabled)}
-						</td>
-					</tr>
-				</tbody>
-			</table>
-		</div>
-		<p class="mt-3 text-[11px] text-text-muted">
-			Flags are independent. Example: auth can be enabled while upload/preview/share are disabled in read-only
-			worker deployments.
-		</p>
-	</section>
 </div>
+
+<style>
+	.landing-stage {
+		position: relative;
+	}
+
+	.landing-stage::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background:
+			radial-gradient(85% 56% at 18% 4%, color-mix(in oklab, var(--color-accent) 16%, transparent), transparent),
+			linear-gradient(180deg, transparent 0%, color-mix(in oklab, var(--color-bg-secondary) 38%, transparent) 100%);
+		opacity: 0.32;
+	}
+
+	.hero-panel,
+	.mise-panel {
+		position: relative;
+		border: 1px solid var(--color-border);
+		background: color-mix(in oklab, var(--color-bg-secondary) 44%, transparent);
+		box-shadow: 0 22px 66px color-mix(in oklab, var(--color-bg-primary) 82%, transparent);
+	}
+
+	.stage-title,
+	.section-title {
+		font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, serif;
+		letter-spacing: -0.025em;
+	}
+
+	.stage-kicker {
+		padding-left: 0.65rem;
+		border-left: 1px solid var(--color-border-light);
+	}
+
+	.stage-note {
+		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-border) 72%, transparent);
+	}
+
+	.mise-card {
+		position: relative;
+		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-border) 72%, transparent);
+	}
+
+	.mise-card::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 1px;
+		background: color-mix(in oklab, #ff4e4e 72%, var(--color-border-light));
+	}
+
+	.stage-cta {
+		letter-spacing: 0.015em;
+	}
+</style>

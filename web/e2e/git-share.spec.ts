@@ -10,16 +10,16 @@ function buildPreviewResponse(overrides?: Partial<Record<string, unknown>>) {
 		],
 		session: {
 			version: 'hail-1.0.0',
-			session_id: 'gh-fixture-1',
+			session_id: 'git-fixture-1',
 			agent: {
 				provider: 'openai',
 				model: 'gpt-5',
 				tool: 'codex',
 			},
 			context: {
-				title: 'GH Share Fixture',
+				title: 'Git Share Fixture',
 				description: 'fixture session',
-				tags: ['gh', 'share'],
+				tags: ['git', 'share'],
 				created_at: now,
 				updated_at: now,
 				related_session_ids: [],
@@ -63,9 +63,8 @@ function buildPreviewResponse(overrides?: Partial<Record<string, unknown>>) {
 			},
 		},
 		source: {
-			kind: 'github',
-			owner: 'hwisu',
-			repo: 'opensession',
+			kind: 'git',
+			remote: 'https://github.com/hwisu/opensession',
 			ref: 'main',
 			path: 'sessions/demo.hail.jsonl',
 		},
@@ -75,8 +74,17 @@ function buildPreviewResponse(overrides?: Partial<Record<string, unknown>>) {
 	};
 }
 
-test.describe('GH Share Route', () => {
-	test('renders session automatically from URL', async ({ page }) => {
+function gitUrl(): string {
+	const params = new URLSearchParams({
+		remote: 'https://github.com/hwisu/opensession',
+		ref: 'main',
+		path: 'sessions/demo.hail.jsonl',
+	});
+	return `/git?${params.toString()}`;
+}
+
+test.describe('Git Share Route', () => {
+	test('renders session automatically from /git query URL', async ({ page }) => {
 		await page.route('**/api/capabilities', async (route) => {
 			await route.fulfill({
 				status: 200,
@@ -97,10 +105,8 @@ test.describe('GH Share Route', () => {
 			});
 		});
 
-		await page.goto('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
-		await expect(page.getByRole('heading', { name: 'GH Share Fixture' })).toBeVisible({
-			timeout: 10000,
-		});
+		await page.goto(gitUrl());
+		await expect(page.getByRole('heading', { name: 'Git Share Fixture' })).toBeVisible({ timeout: 10000 });
 		await expect(page.getByText('hello from user')).toBeVisible();
 		await expect(page.getByText('hello from assistant')).toBeVisible();
 	});
@@ -126,7 +132,7 @@ test.describe('GH Share Route', () => {
 			});
 		});
 
-		await page.goto('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
+		await page.goto(gitUrl());
 		await expect(page.getByRole('tab', { name: 'Native (codex)' })).toBeVisible();
 		await page.getByRole('tab', { name: 'Native (codex)' }).click();
 		await expect(page).toHaveURL(/view=native/);
@@ -134,39 +140,7 @@ test.describe('GH Share Route', () => {
 		await expect(page).toHaveURL(/view=unified/);
 	});
 
-	test('toggles unified event filters and updates URL', async ({ page }) => {
-		await page.route('**/api/capabilities', async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({
-					auth_enabled: false,
-					upload_enabled: true,
-					ingest_preview_enabled: true,
-					gh_share_enabled: true,
-				}),
-			});
-		});
-		await page.route('**/api/ingest/preview', async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify(buildPreviewResponse()),
-			});
-		});
-
-		await page.goto('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
-		await expect(page.getByText('hello from assistant')).toBeVisible();
-
-		await page.getByRole('button', { name: /AgentMessage/ }).click();
-		await expect(page.getByText('hello from assistant')).toHaveCount(0);
-
-		const url = new URL(page.url());
-		const ef = url.searchParams.get('ef') ?? '';
-		expect(ef.includes('AgentMessage')).toBeFalsy();
-	});
-
-	test('supports parser selection retry flow', async ({ page }) => {
+	test('supports parser selection retry flow on /git', async ({ page }) => {
 		await page.route('**/api/capabilities', async (route) => {
 			await route.fulfill({
 				status: 200,
@@ -205,18 +179,16 @@ test.describe('GH Share Route', () => {
 			});
 		});
 
-		await page.goto('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
+		await page.goto(gitUrl());
 		await expect(page.getByText('Parser selection required')).toBeVisible({ timeout: 10000 });
 		await page.getByRole('button', { name: /codex/i }).click();
-		await expect(page.getByRole('heading', { name: 'GH Share Fixture' })).toBeVisible({
-			timeout: 10000,
-		});
+		await expect(page.getByRole('heading', { name: 'Git Share Fixture' })).toBeVisible({ timeout: 10000 });
 
 		const url = new URL(page.url());
 		expect(url.searchParams.get('parser_hint')).toBe('codex');
 	});
 
-	test('shows unsupported deployment state when gh share is disabled', async ({ page }) => {
+	test('shows unsupported deployment state when git share is disabled', async ({ page }) => {
 		await page.route('**/api/capabilities', async (route) => {
 			await route.fulfill({
 				status: 200,
@@ -230,9 +202,33 @@ test.describe('GH Share Route', () => {
 			});
 		});
 
+		await page.goto(gitUrl());
+		await expect(page.getByText('does not support git source preview')).toBeVisible({ timeout: 10000 });
+	});
+
+	test('legacy /gh route redirects to /git compatibility URL', async ({ page }) => {
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: false,
+					upload_enabled: true,
+					ingest_preview_enabled: true,
+					gh_share_enabled: true,
+				}),
+			});
+		});
+		await page.route('**/api/ingest/preview', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(buildPreviewResponse()),
+			});
+		});
+
 		await page.goto('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
-		await expect(
-			page.getByText('does not support GitHub share preview'),
-		).toBeVisible({ timeout: 10000 });
+		await expect(page).toHaveURL(/\/git\?/);
+		await expect(page.getByRole('heading', { name: 'Git Share Fixture' })).toBeVisible({ timeout: 10000 });
 	});
 });

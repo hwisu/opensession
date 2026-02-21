@@ -49,6 +49,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .get_async("/api/capabilities", routes::capabilities::handle)
         // Public sessions (read-only)
         .get_async("/api/sessions", routes::sessions::list)
+        .post_async("/api/sessions", routes::sessions::upload)
         .get_async("/api/sessions/:id", routes::sessions::get)
         .get_async("/api/sessions/:id/raw", routes::sessions::get_raw)
         // Auth

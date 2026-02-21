@@ -61,7 +61,7 @@ tags: string | null, created_at: string, uploaded_at: string, message_count: num
 
 export interface SessionLink { session_id: string, linked_session_id: string, link_type: LinkType, created_at: string, }
 
-export type ParseSource = { "kind": "github", owner: string, repo: string, ref: string, path: string, } | { "kind": "inline", filename: string, 
+export type ParseSource = { "kind": "git", remote: string, ref: string, path: string, } | { "kind": "github", owner: string, repo: string, ref: string, path: string, } | { "kind": "inline", filename: string, 
 /**
  * Base64-encoded UTF-8 text content.
  */

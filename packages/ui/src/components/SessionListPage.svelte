@@ -7,10 +7,8 @@ import SessionCard from './SessionCard.svelte';
 
 const {
 	onNavigate,
-	uploadEnabled = true,
 }: {
 	onNavigate: (path: string) => void;
-	uploadEnabled?: boolean;
 } = $props();
 
 type ListLayout = 'single' | 'agent-columns';
@@ -454,13 +452,7 @@ $effect(() => {
 			{#if sessions.length === 0 && !loading}
 				<div class="py-16 text-center">
 					<p class="text-sm text-text-muted">No sessions found</p>
-					<p class="mt-1 text-xs text-text-muted">
-						{#if uploadEnabled}
-							<a href="/upload" class="text-accent hover:underline">Upload</a> a session to get started
-						{:else}
-							Public feed is read-only in this deployment profile.
-						{/if}
-					</p>
+					<p class="mt-1 text-xs text-text-muted">Public feed is currently empty.</p>
 				</div>
 			{/if}
 

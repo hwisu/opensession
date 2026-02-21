@@ -180,6 +180,6 @@ test.describe('Navigation', () => {
 			await expect(page.locator('nav').getByText('Teams')).toHaveCount(0);
 			await expect(page.locator('nav').getByText('Inbox')).toHaveCount(0);
 		}
-		await expect(menu).toContainText('Upload');
+		await expect(menu).not.toContainText('Upload');
 	});
 });

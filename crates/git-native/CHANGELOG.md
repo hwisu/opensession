@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.23](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.22...opensession-git-native-v0.2.23) - 2026-02-22
+
+### Other
+
+- DX reset v1: source URI + local-first register/share/handoff ([#7](https://github.com/hwisu/opensession/pull/7))
+
 ## [0.2.18](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.17...opensession-git-native-v0.2.18) - 2026-02-20
 
 ### Added

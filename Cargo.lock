@@ -2476,7 +2476,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "opensession"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-api"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "base64",
  "chrono",
@@ -2522,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-api-client"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "opensession-api",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-core"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "base64",
  "chrono",
@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-daemon"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-e2e"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-git-native"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-local-db"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-parsers"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2643,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-runtime-config"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "serde",
  "toml",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-server"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "axum",
@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-tui"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "chrono",

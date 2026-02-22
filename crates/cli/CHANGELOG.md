@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.23](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.23) - 2026-02-22
+
+### Added
+
+- align web/tui ux, docs, and runtime checks
+- *(handoff)* switch to git-ref artifacts as source of truth
+- add GitHub URL ingest preview session renderer
+
+### Fixed
+
+- *(cli)* box session action to satisfy clippy enum size
+- address hook failures after cleanup
+
+### Other
+
+- DX reset v1: source URI + local-first register/share/handoff ([#7](https://github.com/hwisu/opensession/pull/7))
+- *(release)* apply release-plz update
+- Fix docs ToC sticky behavior and align worker upload capability
+- Improve docs presentation and stabilize nav dropdown UX
+- Refine session UX, handoff view, and capability docs
+- *(release)* apply release-plz update
+- *(release)* apply release-plz update
+- centralize session role handling and local-db auxiliary filtering
+- *(release)* apply release-plz update
+- Improve TUI detail clarity, handoff UX, and live detection
+- *(release)* apply release-plz update
+- *(release)* apply release-plz update
+- remove deprecated summary and team remnants
+- *(release)* apply release-plz update
+- *(release)* apply release-plz update
+- drop legacy paths and align tui/session pipelines
+- *(release)* apply release-plz update
+- Improve handoff temporal consistency and execution timeline
+- *(release)* apply release-plz update
+- Simplify handoff flow and add provider populate mode
+- *(release)* apply release-plz update
+- Remove legacy handoff paths and clean publish/docs
+- *(release)* apply release-plz update
+- test pushpush
+- *(release)* apply release-plz update
+- Fix TUI env-flag test flake and docs
+- Prune team surfaces and complete git-native runtime cleanup
+- *(release)* apply release-plz update
+- prune docker/team surfaces and align on git-native public sessions
+
 ## [0.2.22](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.22) - 2026-02-21
 
 ### Added

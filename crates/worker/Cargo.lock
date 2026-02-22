@@ -634,11 +634,14 @@ dependencies = [
 name = "opensession-core"
 version = "0.2.21"
 dependencies = [
+ "base64",
  "chrono",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
+ "urlencoding",
  "uuid",
 ]
 

@@ -92,6 +92,7 @@ export type {
 	AuthProvidersResponse,
 	CapabilitiesResponse,
 	HealthResponse,
+	IssueApiKeyResponse,
 	LinkedProvider,
 	LinkType,
 	OAuthProviderInfo,

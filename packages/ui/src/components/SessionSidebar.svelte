@@ -25,7 +25,8 @@ const tool = $derived(getToolConfig(session.agent.tool));
 {/snippet}
 
 <aside
-	class="hidden w-64 shrink-0 overflow-y-auto border-l border-border bg-[linear-gradient(180deg,rgba(24,33,50,0.45),rgba(14,19,29,0.75))] px-3 py-3 lg:block"
+	data-testid="session-detail-sidebar"
+	class="session-sidebar hidden w-64 shrink-0 overflow-y-auto border-l border-border px-3 py-3 lg:block"
 >
 	<div class="space-y-3">
 		<!-- User -->
@@ -94,3 +95,13 @@ const tool = $derived(getToolConfig(session.agent.tool));
 		{/if}
 	</div>
 </aside>
+
+<style>
+	.session-sidebar {
+		background: linear-gradient(
+			180deg,
+			color-mix(in oklab, var(--color-bg-secondary) 82%, transparent),
+			color-mix(in oklab, var(--color-bg-primary) 90%, transparent)
+		);
+	}
+</style>

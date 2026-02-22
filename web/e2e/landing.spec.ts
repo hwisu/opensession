@@ -1,13 +1,16 @@
 import { test, expect } from '@playwright/test';
-import { getAdmin, getCapabilities, uploadSession } from './helpers';
+import { createSessionFixture, mockSessionApis } from './helpers';
 
 test.describe('Landing (unauthenticated)', () => {
 	test('shows landing sections and nav for guests, without inline session list', async ({ page }) => {
 		await page.goto('/');
 		await expect(page.locator('nav').getByText('Sessions')).toBeVisible();
 		await expect(
-			page.locator('h1').filter({ hasText: 'Engineered for Repeatable Learning.' }),
+			page.locator('h1').filter({ hasText: 'Version Control for AI Work.' }),
 		).toBeVisible();
+		await expect(page.getByTestId('landing-hero-copy')).toContainText(
+			'OpenSession turns AI sessions into structured, replayable artifacts',
+		);
 		await expect(page.locator('#session-search')).toHaveCount(0);
 		await expect(page.locator('nav').getByText('Login')).toBeVisible();
 		await expect(page.locator('nav').getByText('Register')).toHaveCount(0);
@@ -59,21 +62,18 @@ test.describe('Landing (unauthenticated)', () => {
 		await expect(page).toHaveURL(/\/login$/);
 	});
 
-	test('renders newly uploaded public session without authentication', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		const title = `PW Public Feed ${crypto.randomUUID().slice(0, 8)}`;
-		const sessionId = await uploadSession(request, admin.access_token, { title });
+	test('renders public session without authentication', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Public Feed ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		await mockSessionApis(page, fixture);
 
 		await page.goto('/sessions');
 		await expect(page.locator('#session-search')).toBeVisible();
-		await expect(page.locator('main').getByText(title)).toBeVisible({ timeout: 10000 });
+		await expect(page.locator('main').getByText(fixture.title)).toBeVisible({ timeout: 10000 });
 
-		await page.goto(`/session/${sessionId}`);
-		await expect(page).toHaveURL(new RegExp(`/session/${sessionId}$`));
-		await expect(page.locator('main').getByText(title)).toBeVisible({ timeout: 10000 });
+		await page.goto(`/session/${fixture.id}`);
+		await expect(page).toHaveURL(new RegExp(`/session/${fixture.id}$`));
+		await expect(page.locator('main').getByText(fixture.title)).toBeVisible({ timeout: 10000 });
 	});
 });

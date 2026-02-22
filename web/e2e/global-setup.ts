@@ -9,6 +9,19 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 async function globalSetup() {
 	const ctx = await request.newContext({ baseURL: BASE_URL });
 
+	const capsResp = await ctx.get('/api/capabilities');
+	if (!capsResp.ok()) {
+		console.warn(`Global setup: capabilities returned ${capsResp.status()}, skipping admin bootstrap`);
+		await ctx.dispose();
+		return;
+	}
+	const caps = (await capsResp.json()) as { auth_enabled?: boolean };
+	if (!caps.auth_enabled) {
+		console.log('Global setup: auth disabled, skipping admin bootstrap');
+		await ctx.dispose();
+		return;
+	}
+
 	// Register admin as the very first user
 	const resp = await ctx.post('/api/auth/register', {
 		data: {

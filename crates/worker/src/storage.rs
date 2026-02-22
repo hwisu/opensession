@@ -131,10 +131,3 @@ pub async fn get_session_body(env: &Env, key: &str) -> Result<Option<Vec<u8>>> {
         None => Ok(None),
     }
 }
-
-/// Store a raw session body to R2 at the given key.
-pub async fn put_session_body(env: &Env, key: &str, bytes: &[u8]) -> Result<()> {
-    let bucket = get_r2(env)?;
-    bucket.put(key, bytes.to_vec()).execute().await?;
-    Ok(())
-}

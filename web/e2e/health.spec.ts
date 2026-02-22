@@ -8,12 +8,19 @@ test.describe('API Health', () => {
 		expect(body.status).toBe('ok');
 	});
 
-	test('capabilities endpoint returns auth/upload booleans', async ({ request }) => {
+	test('capabilities endpoint returns auth/parse/share fields', async ({ request }) => {
 		const resp = await request.get('/api/capabilities');
 		expect(resp.ok()).toBeTruthy();
-		const body: { auth_enabled: boolean; upload_enabled: boolean } = await resp.json();
+		const body: {
+			auth_enabled: boolean;
+			parse_preview_enabled: boolean;
+			register_targets: string[];
+			share_modes: string[];
+		} = await resp.json();
 		expect(typeof body.auth_enabled).toBe('boolean');
-		expect(typeof body.upload_enabled).toBe('boolean');
+		expect(typeof body.parse_preview_enabled).toBe('boolean');
+		expect(Array.isArray(body.register_targets)).toBeTruthy();
+		expect(Array.isArray(body.share_modes)).toBeTruthy();
 	});
 
 	test('auth providers endpoint returns email_password', async ({ request }) => {

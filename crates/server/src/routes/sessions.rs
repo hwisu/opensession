@@ -4,19 +4,14 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use uuid::Uuid;
 
 use opensession_api::{
-    db, saturating_i64, LinkType, OkResponse, SessionDetail, SessionLink, SessionListQuery,
-    SessionListResponse, SessionSummary, UploadRequest, UploadResponse,
+    db, LinkType, SessionDetail, SessionLink, SessionListQuery, SessionListResponse, SessionSummary,
 };
-
-use opensession_core::extract;
-use opensession_core::scoring::SessionScoreRegistry;
 
 use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::{session_from_row, sq_execute, sq_query_map, sq_query_row, Db};
+use crate::storage::{session_from_row, sq_query_map, sq_query_row, Db};
 use crate::AppConfig;
 
 const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalidate=60";
@@ -43,159 +38,6 @@ fn resolve_raw_body_source(
     }
 
     Ok(RawBodySource::LocalStorage(key))
-}
-
-// ---------------------------------------------------------------------------
-// Upload session
-// ---------------------------------------------------------------------------
-
-/// POST /api/sessions — upload a new session (authenticated users only).
-pub async fn upload_session(
-    State(db): State<Db>,
-    user: AuthUser,
-    Json(req): Json<UploadRequest>,
-) -> Result<(StatusCode, Json<UploadResponse>), ApiErr> {
-    let session = &req.session;
-    let team_id = "local";
-
-    let body_jsonl = session.to_jsonl().map_err(|e| {
-        tracing::error!("serialize session body: {e}");
-        ApiErr::bad_request("failed to serialize session")
-    })?;
-
-    let session_id = Uuid::new_v4().to_string();
-
-    // If body_url is provided (external git storage), skip local body storage
-    let (storage_key, effective_body_url) = if req.body_url.is_some() {
-        (String::new(), req.body_url.as_deref())
-    } else {
-        let key = db
-            .write_body(&session_id, body_jsonl.as_bytes())
-            .map_err(|e| {
-                tracing::error!("write body: {e}");
-                ApiErr::internal("failed to store session body")
-            })?;
-        (key, None)
-    };
-
-    let meta = extract::extract_upload_metadata(session);
-    let score_registry = SessionScoreRegistry::default();
-    let requested_score_plugin = req
-        .score_plugin
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let env_score_plugin = std::env::var(opensession_api::deploy::ENV_SESSION_SCORE_PLUGIN)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let selected_score_plugin = requested_score_plugin
-        .or(env_score_plugin.as_deref())
-        .unwrap_or(opensession_core::scoring::DEFAULT_SCORE_PLUGIN);
-    let session_score = match score_registry.score_with(selected_score_plugin, session) {
-        Ok(result) => result,
-        Err(err) => {
-            if requested_score_plugin.is_some() {
-                return Err(ApiErr::bad_request(err.to_string()));
-            }
-            let fallback = score_registry.score_default(session).map_err(|score_err| {
-                tracing::error!("fallback score plugin failed: {score_err}");
-                ApiErr::internal("failed to compute session score")
-            })?;
-            tracing::warn!(
-                "score plugin '{}' unavailable; fallback to '{}': {}",
-                selected_score_plugin,
-                fallback.plugin,
-                err
-            );
-            fallback
-        }
-    };
-
-    let conn = db.conn();
-    sq_execute(
-        &conn,
-        db::sessions::insert(&db::sessions::InsertParams {
-            id: &session_id,
-            user_id: &user.user_id,
-            team_id,
-            tool: &session.agent.tool,
-            agent_provider: &session.agent.provider,
-            agent_model: &session.agent.model,
-            title: meta.title.as_deref().unwrap_or(""),
-            description: meta.description.as_deref().unwrap_or(""),
-            tags: meta.tags.as_deref().unwrap_or(""),
-            created_at: &meta.created_at,
-            message_count: saturating_i64(session.stats.message_count),
-            task_count: saturating_i64(session.stats.task_count),
-            event_count: saturating_i64(session.stats.event_count),
-            duration_seconds: saturating_i64(session.stats.duration_seconds),
-            total_input_tokens: saturating_i64(session.stats.total_input_tokens),
-            total_output_tokens: saturating_i64(session.stats.total_output_tokens),
-            body_storage_key: &storage_key,
-            body_url: effective_body_url,
-            git_remote: req.git_remote.as_deref(),
-            git_branch: req.git_branch.as_deref(),
-            git_commit: req.git_commit.as_deref(),
-            git_repo_name: req.git_repo_name.as_deref(),
-            pr_number: req.pr_number,
-            pr_url: req.pr_url.as_deref(),
-            working_directory: meta.working_directory.as_deref(),
-            files_modified: meta.files_modified.as_deref(),
-            files_read: meta.files_read.as_deref(),
-            has_errors: meta.has_errors,
-            max_active_agents: saturating_i64(opensession_core::agent_metrics::max_active_agents(
-                session,
-            ) as u64),
-            session_score: session_score.score,
-            score_plugin: &session_score.plugin,
-        }),
-    )
-    .map_err(|e| {
-        tracing::error!("insert session: {e}");
-        ApiErr::internal("failed to store session")
-    })?;
-
-    // Insert session links: prefer explicit linked_session_ids, fall back to context.related_session_ids
-    let linked_ids: Vec<String> = req
-        .linked_session_ids
-        .unwrap_or_default()
-        .into_iter()
-        .chain(session.context.related_session_ids.iter().cloned())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    for linked_id in &linked_ids {
-        let _ = sq_execute(
-            &conn,
-            db::sessions::insert_link(&session_id, linked_id, LinkType::Handoff),
-        );
-    }
-
-    // Update FTS (server-specific; D1 does not support FTS)
-    let _ = sq_execute(&conn, db::sessions::insert_fts(&session_id));
-
-    let base_url = std::env::var("BASE_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("OPENSESSION_BASE_URL")
-                .ok()
-                .filter(|s| !s.is_empty())
-        })
-        .unwrap_or_else(|| "http://localhost:3000".into());
-    let url = format!("{base_url}/session/{session_id}");
-
-    Ok((
-        StatusCode::CREATED,
-        Json(UploadResponse {
-            id: session_id,
-            url,
-            session_score: session_score.score,
-            score_plugin: session_score.plugin,
-        }),
-    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -292,31 +134,6 @@ pub async fn get_session(
         summary,
         linked_sessions,
     }))
-}
-
-// ---------------------------------------------------------------------------
-// Delete session
-// ---------------------------------------------------------------------------
-
-/// DELETE /api/sessions/:id — delete a session (owner only).
-pub async fn delete_session(
-    State(db): State<Db>,
-    Path(id): Path<String>,
-) -> Result<Json<OkResponse>, ApiErr> {
-    let conn = db.conn();
-
-    let summary: SessionSummary =
-        sq_query_row(&conn, db::sessions::get_by_id(&id), session_from_row)
-            .map_err(|_| ApiErr::not_found("session not found"))?;
-    let _ = summary;
-
-    sq_execute(&conn, db::sessions::delete_links(&id)).map_err(ApiErr::from_db("delete links"))?;
-    sq_execute(&conn, db::sessions::delete(&id)).map_err(ApiErr::from_db("delete session"))?;
-
-    // Clean up FTS (server-specific; D1 does not support FTS)
-    let _ = sq_execute(&conn, db::sessions::delete_fts(&id));
-
-    Ok(Json(OkResponse { ok: true }))
 }
 
 // ---------------------------------------------------------------------------

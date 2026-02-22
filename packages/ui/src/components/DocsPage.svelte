@@ -137,10 +137,10 @@ onMount(() => {
 	<section class="docs-hero border border-border p-4 sm:p-5">
 		<div class="flex flex-wrap items-end justify-between gap-3">
 			<div class="space-y-1">
-				<p class="docs-kicker text-[11px] uppercase tracking-[0.12em] text-text-muted">Owner's Manual</p>
+				<p class="docs-kicker text-[11px] uppercase tracking-[0.12em] text-text-muted">Docs</p>
 				<h1 class="docs-title text-3xl text-text-primary sm:text-4xl">{parsed.title}</h1>
 				<p class="max-w-2xl text-xs text-text-secondary sm:text-sm">
-					Goal-driven product manual with chapter navigation and runnable examples.
+					Functional guides for register, share, inspect, and handoff workflows.
 				</p>
 			</div>
 
@@ -170,7 +170,7 @@ onMount(() => {
 		<div class="docs-shell grid items-start gap-5 lg:grid-cols-[18.25rem_minmax(0,1fr)]" data-testid="docs-content">
 			<aside
 				data-testid="docs-toc"
-				class="docs-toc hidden h-fit border border-border bg-bg-secondary/65 p-3 lg:block"
+				class="docs-toc hidden h-fit border border-border bg-bg-secondary/65 p-3 lg:block lg:sticky lg:top-5 lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto"
 			>
 				<p class="docs-toc-title mb-2 text-xs text-text-muted">Contents</p>
 				<nav class="space-y-1.5">
@@ -189,7 +189,7 @@ onMount(() => {
 			<div class="space-y-4">
 				{#if parsed.introMarkdown}
 					<section class="docs-intro border border-border bg-bg-secondary/65 p-4 sm:p-5">
-						<div class="prose prose-invert max-w-none text-sm leading-relaxed docs-markdown">
+						<div class="prose max-w-none text-sm leading-relaxed docs-markdown">
 							{@html renderMarkdown(parsed.introMarkdown)}
 						</div>
 					</section>
@@ -213,7 +213,7 @@ onMount(() => {
 							</a>
 						</div>
 						<h2 class="docs-chapter-heading mb-3 text-3xl text-text-primary sm:text-4xl">{chapter.heading}</h2>
-						<div class="prose prose-invert max-w-none text-sm leading-relaxed docs-markdown">
+						<div class="prose max-w-none text-sm leading-relaxed docs-markdown">
 							{@html renderMarkdown(chapter.markdown)}
 						</div>
 					</section>

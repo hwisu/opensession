@@ -479,7 +479,7 @@ pub struct ParseCandidate {
     pub reason: String,
 }
 
-/// Request body for `POST /api/ingest/preview`.
+/// Request body for `POST /api/parse/preview`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
@@ -489,7 +489,7 @@ pub struct ParsePreviewRequest {
     pub parser_hint: Option<String>,
 }
 
-/// Response body for `POST /api/ingest/preview`.
+/// Response body for `POST /api/parse/preview`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
@@ -557,9 +557,9 @@ pub struct HealthResponse {
 #[cfg_attr(feature = "ts", ts(export))]
 pub struct CapabilitiesResponse {
     pub auth_enabled: bool,
-    pub upload_enabled: bool,
-    pub ingest_preview_enabled: bool,
-    pub gh_share_enabled: bool,
+    pub parse_preview_enabled: bool,
+    pub register_targets: Vec<String>,
+    pub share_modes: Vec<String>,
 }
 
 // ─── Service Error ───────────────────────────────────────────────────────────
@@ -744,9 +744,9 @@ mod schema_tests {
     fn capabilities_response_round_trip_includes_new_fields() {
         let caps = CapabilitiesResponse {
             auth_enabled: true,
-            upload_enabled: true,
-            ingest_preview_enabled: true,
-            gh_share_enabled: false,
+            parse_preview_enabled: true,
+            register_targets: vec!["local".to_string(), "git".to_string()],
+            share_modes: vec!["web".to_string(), "git".to_string(), "json".to_string()],
         };
 
         let json = serde_json::to_string(&caps).expect("capabilities should serialize");
@@ -754,9 +754,9 @@ mod schema_tests {
             serde_json::from_str(&json).expect("capabilities should deserialize");
 
         assert!(decoded.auth_enabled);
-        assert!(decoded.upload_enabled);
-        assert!(decoded.ingest_preview_enabled);
-        assert!(!decoded.gh_share_enabled);
+        assert!(decoded.parse_preview_enabled);
+        assert_eq!(decoded.register_targets, vec!["local", "git"]);
+        assert_eq!(decoded.share_modes, vec!["web", "git", "json"]);
     }
 }
 

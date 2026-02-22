@@ -21,10 +21,11 @@ Cursor, and Codex, then provides a timeline viewer, repo analytics, and search.
 
 Base URL: `/api`
 
-- `POST /api/sessions` — Upload HAIL session
+- `POST /api/parse/preview` — Preview parser output from source descriptors
 - `GET /api/sessions` — List sessions
 - `GET /api/sessions/:id` — Get session detail
 - `GET /api/sessions/:id/raw` — Download raw HAIL JSONL
+- `DELETE /api/admin/sessions/:id` — Delete session (admin key)
 
 ## Open Source
 

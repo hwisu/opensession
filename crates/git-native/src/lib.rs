@@ -11,7 +11,7 @@ pub use error::{GitStorageError, Result};
 pub use handoff_artifact_store::{
     artifact_ref_name, list_handoff_artifact_refs, load_handoff_artifact, store_handoff_artifact,
 };
-pub use store::{NativeGitStorage, PruneStats};
+pub use store::{store_blob_at_ref, NativeGitStorage, PruneStats};
 pub use url::generate_raw_url;
 
 /// Branch name used for storing session data.

@@ -1,64 +1,44 @@
 {
   "source": "docs.md",
   "required_chapters": [
-    "Product Overview",
-    "Web Experience",
-    "CLI Workflows",
-    "TUI Workflows",
-    "Handoff Storage Model",
-    "Web Routes",
-    "API Summary",
-    "Self-Hosting and Verification",
-    "Troubleshooting"
+    "Getting Started",
+    "Share via Git",
+    "Inspect Timeline",
+    "Handoff",
+    "Optional UI",
+    "Concepts"
   ],
   "required_template_subheadings": [],
   "chapters": [
     {
-      "heading": "Product Overview",
-      "subheadings": [
-        "Quick checks"
-      ],
-      "code_blocks": 1
-    },
-    {
-      "heading": "Web Experience",
-      "subheadings": [],
-      "code_blocks": 0
-    },
-    {
-      "heading": "CLI Workflows",
+      "heading": "Getting Started",
       "subheadings": [],
       "code_blocks": 1
     },
     {
-      "heading": "TUI Workflows",
+      "heading": "Share via Git",
+      "subheadings": [],
+      "code_blocks": 2
+    },
+    {
+      "heading": "Inspect Timeline",
       "subheadings": [],
       "code_blocks": 0
     },
     {
-      "heading": "Handoff Storage Model",
-      "subheadings": [],
-      "code_blocks": 0
-    },
-    {
-      "heading": "Web Routes",
-      "subheadings": [],
-      "code_blocks": 0
-    },
-    {
-      "heading": "API Summary",
-      "subheadings": [],
-      "code_blocks": 0
-    },
-    {
-      "heading": "Self-Hosting and Verification",
+      "heading": "Handoff",
       "subheadings": [],
       "code_blocks": 1
     },
     {
-      "heading": "Troubleshooting",
+      "heading": "Optional UI",
       "subheadings": [],
-      "code_blocks": 1
+      "code_blocks": 0
+    },
+    {
+      "heading": "Concepts",
+      "subheadings": [],
+      "code_blocks": 0
     }
   ]
 }

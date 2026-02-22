@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { getAdmin, getCapabilities, injectAuth, uploadSession } from './helpers';
+import { createSessionFixture, mockCapabilities, mockSessionApis } from './helpers';
 
 test.describe('Navigation', () => {
 	test('unauthenticated nav links are present', async ({ page }) => {
@@ -15,19 +15,16 @@ test.describe('Navigation', () => {
 		await expect(nav.getByText('Upload')).toHaveCount(0);
 	});
 
-	test('session layout toggle labels explain the two views', async ({ page }) => {
+	test('session list uses single-feed layout only', async ({ page }) => {
 		await page.goto('/sessions');
 		await expect(page.locator('[data-testid="list-shortcut-legend"]')).toBeVisible();
-		await expect(page.getByRole('tab', { name: 'List' })).toBeVisible();
-		await expect(page.getByRole('tab', { name: 'Agents' })).toBeVisible();
+		await expect(page.getByRole('tab', { name: 'List' })).toHaveCount(0);
+		await expect(page.getByRole('tab', { name: 'Agents' })).toHaveCount(0);
 		await expect(page.locator('[data-testid="session-layout-summary"]')).toContainText(
-			'List = one chronological feed',
+			'single chronological feed',
 		);
-
-		await page.getByRole('tab', { name: 'Agents' }).click();
-		await expect(page.locator('[data-testid="session-layout-summary"]')).toContainText(
-			'Agents = grouped by max active agents',
-		);
+		await expect(page.locator('[data-testid="session-layout-summary"]')).not.toContainText('grouped by max active agents');
+		await expect(page.locator('[data-testid="list-shortcut-legend"]')).not.toContainText('layout');
 	});
 
 	test('clicking Docs navigates to /docs', async ({ page }) => {
@@ -84,18 +81,13 @@ test.describe('Navigation', () => {
 		await expect(page).toHaveURL(/\/docs/);
 	});
 
-	test('session detail footer shows in-session shortcut hints', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		const sessionId = await uploadSession(request, admin.access_token, {
+	test('session detail footer shows in-session shortcut hints', async ({ page }) => {
+		const fixture = createSessionFixture({
 			title: `PW Footer Hints ${crypto.randomUUID().slice(0, 8)}`,
 		});
+		await mockSessionApis(page, fixture, { include_in_list: false });
 
-		await injectAuth(page, admin);
-		await page.goto(`/session/${sessionId}`);
+		await page.goto(`/session/${fixture.id}`);
 		const footer = page.locator('[data-testid="shortcut-footer"]');
 		await expect(footer).toBeVisible();
 		await expect(footer.getByText('Cmd/Ctrl+K palette')).toBeVisible();
@@ -111,18 +103,7 @@ test.describe('Navigation', () => {
 			localStorage.setItem('opensession_token_expiry', String(nextExpiry));
 		}, expiry);
 
-		await page.route('**/api/capabilities', async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({
-					auth_enabled: true,
-					upload_enabled: true,
-					ingest_preview_enabled: true,
-					gh_share_enabled: true,
-				}),
-			});
-		});
+		await mockCapabilities(page, { auth_enabled: true, parse_preview_enabled: true });
 		await page.route('**/api/auth/verify', async (route) => {
 			await route.fulfill({
 				status: 200,
@@ -165,11 +146,12 @@ test.describe('Navigation', () => {
 		await expect(menu).toBeVisible();
 		await expect(menu).toContainText('Account');
 		await expect(menu).toContainText('nav@test.local');
-		await expect(menu).toContainText('Providers:');
-		await expect(menu).toContainText('GitHub');
-		await expect(menu).toContainText('Session Home');
-		await expect(menu).toContainText('Docs');
-		await expect(menu.locator('[data-testid="account-menu-logout"]')).toBeVisible();
+			await expect(menu).toContainText('Providers:');
+			await expect(menu).toContainText('GitHub');
+			await expect(menu).toContainText('Settings');
+			await expect(menu).toContainText('Session Home');
+			await expect(menu).toContainText('Docs');
+			await expect(menu.locator('[data-testid="account-menu-logout"]')).toBeVisible();
 
 		const teamsCount = await page.locator('nav').getByText('Teams').count();
 		const inboxCount = await page.locator('nav').getByText('Inbox').count();

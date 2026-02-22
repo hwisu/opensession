@@ -1,6 +1,8 @@
+use opensession_core::testing;
+use opensession_core::{Agent, Content, Event, EventType, Session};
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 fn make_home() -> tempfile::TempDir {
@@ -9,33 +11,12 @@ fn make_home() -> tempfile::TempDir {
 
 fn write_file(path: &Path, body: &str) {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dir");
+        fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, body).expect("write file");
 }
 
-fn create_codex_session(home: &Path, rel: &str) -> PathBuf {
-    let path = home.join(".codex").join("sessions").join(rel);
-    let body = r#"{"type":"user","uuid":"u1","sessionId":"handoff-cli-test","timestamp":"2026-02-14T00:00:01Z","message":{"role":"user","content":"fix handoff command"}}
-{"type":"assistant","uuid":"a1","sessionId":"handoff-cli-test","timestamp":"2026-02-14T00:00:02Z","message":{"role":"assistant","model":"gpt-4.1","content":[{"type":"text","text":"I will update it."}]}}"#;
-    write_file(&path, body);
-    path
-}
-
-fn create_codex_assistant_only_session(home: &Path, rel: &str) -> PathBuf {
-    let path = home.join(".codex").join("sessions").join(rel);
-    let body = r#"{"type":"assistant","uuid":"a1","sessionId":"handoff-cli-test","timestamp":"2026-02-14T00:00:02Z","message":{"role":"assistant","model":"gpt-4.1","content":[{"type":"text","text":"assistant only output"}]}}"#;
-    write_file(&path, body);
-    path
-}
-
-fn run(home: &Path, args: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
-    cmd.args(args).env("HOME", home).env("NO_COLOR", "1");
-    cmd.output().expect("run opensession")
-}
-
-fn run_in(home: &Path, cwd: &Path, args: &[&str]) -> Output {
+fn run(home: &Path, cwd: &Path, args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
     cmd.args(args)
         .current_dir(cwd)
@@ -44,7 +25,7 @@ fn run_in(home: &Path, cwd: &Path, args: &[&str]) -> Output {
     cmd.output().expect("run opensession")
 }
 
-fn run_git(cwd: &Path, args: &[&str]) {
+fn run_git(cwd: &Path, args: &[&str]) -> Output {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
@@ -52,342 +33,464 @@ fn run_git(cwd: &Path, args: &[&str]) {
         .expect("run git");
     assert!(
         output.status.success(),
-        "git {} failed\nstdout: {}\nstderr: {}",
+        "git {} failed\nstdout:{}\nstderr:{}",
         args.join(" "),
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.stderr),
     );
+    output
 }
 
-fn init_git_repo(cwd: &Path) {
-    fs::create_dir_all(cwd).expect("create repo dir");
-    run_git(cwd, &["init", "--initial-branch=main"]);
-    run_git(cwd, &["config", "user.email", "test@example.com"]);
-    run_git(cwd, &["config", "user.name", "Test"]);
-    write_file(&cwd.join("README.md"), "repo");
-    run_git(cwd, &["add", "."]);
-    run_git(cwd, &["commit", "-m", "init"]);
+fn init_git_repo(path: &Path) {
+    fs::create_dir_all(path).expect("create repo");
+    run_git(path, &["init", "--initial-branch=main"]);
+    run_git(path, &["config", "user.email", "test@example.com"]);
+    run_git(path, &["config", "user.name", "Test"]);
+    write_file(&path.join("README.md"), "repo\n");
+    run_git(path, &["add", "."]);
+    run_git(path, &["commit", "-m", "init"]);
+}
+
+fn make_hail_jsonl(session_id: &str) -> String {
+    let mut session = Session::new(
+        session_id.to_string(),
+        Agent {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            tool: "codex".to_string(),
+            tool_version: None,
+        },
+    );
+    session.events.push(Event {
+        event_id: "e1".to_string(),
+        timestamp: chrono::Utc::now(),
+        event_type: EventType::UserMessage,
+        task_id: None,
+        content: Content::text("implement the feature"),
+        duration_ms: None,
+        attributes: Default::default(),
+    });
+    session.recompute_stats();
+    session.to_jsonl().expect("to jsonl")
+}
+
+fn first_non_empty_line(output: &[u8]) -> String {
+    String::from_utf8_lossy(output)
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[test]
-fn top_help_hides_removed_commands() {
+fn help_shows_v1_commands() {
     let tmp = make_home();
-    let output = run(tmp.path(), &["--help"]);
+    let output = run(tmp.path(), tmp.path(), &["--help"]);
     assert!(output.status.success());
-
     let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
-    assert!(!stdout.contains("\n  ui"));
-    assert!(!stdout.contains("\n  view"));
-    assert!(!stdout.contains("discover"));
-    assert!(!stdout.contains("timeline"));
-    assert!(!stdout.contains("\n  ops"));
-    assert!(stdout.contains("\n  daemon"));
+    assert!(stdout.contains("register"));
+    assert!(stdout.contains("share"));
+    assert!(stdout.contains("handoff"));
+    assert!(!stdout.contains("publish"));
 }
 
 #[test]
-fn handoff_help_hides_llm_flags() {
+fn register_and_cat_roundtrip() {
     let tmp = make_home();
-    let output = run(tmp.path(), &["session", "handoff", "--help"]);
-    assert!(output.status.success());
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.contains("--summarize"));
-    assert!(!stdout.contains("--ai"));
-    assert!(!stdout.contains("--legacy-schema"));
-}
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-register"));
 
-#[test]
-fn handoff_last_supports_all_output_formats() {
-    let tmp = make_home();
-    let home = tmp.path();
-    create_codex_session(home, "2026/02/14/rollout-handoff-cli-test.jsonl");
-
-    for format in ["text", "markdown", "json", "jsonl", "hail", "stream"] {
-        let output = run(home, &["session", "handoff", "--last", "--format", format]);
-        assert!(
-            output.status.success(),
-            "format {format} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        match format {
-            "text" | "markdown" => {
-                assert!(stdout.contains("Session Handoff"));
-            }
-            "json" => {
-                let parsed: Value = serde_json::from_str(&stdout).expect("json output");
-                let arr = parsed.as_array().expect("json array");
-                assert_eq!(arr.len(), 1);
-            }
-            "jsonl" => {
-                let first = stdout.lines().next().expect("jsonl line");
-                let parsed: Value = serde_json::from_str(first).expect("jsonl object");
-                assert!(parsed.get("session_id").is_some());
-            }
-            "hail" => {
-                assert!(stdout.contains("hail-1.0.0"));
-            }
-            "stream" => {
-                let first = stdout.lines().next().expect("stream line");
-                let parsed: Value = serde_json::from_str(first).expect("stream object");
-                assert_eq!(
-                    parsed.get("type").and_then(|v| v.as_str()),
-                    Some("session_summary")
-                );
-            }
-            _ => unreachable!(),
-        }
-    }
-}
-
-#[test]
-fn handoff_last_with_count_returns_multiple_sessions() {
-    let tmp = make_home();
-    let home = tmp.path();
-    create_codex_session(home, "2026/02/14/rollout-handoff-last-a.jsonl");
-    create_codex_session(home, "2026/02/15/rollout-handoff-last-b.jsonl");
-
-    let output = run(
-        home,
-        &["session", "handoff", "--last", "2", "--format", "json"],
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", input.to_str().expect("path")],
     );
     assert!(
-        output.status.success(),
-        "handoff --last 2 failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        register_out.status.success(),
+        "register failed: {}",
+        String::from_utf8_lossy(&register_out.stderr)
     );
+    let uri = first_non_empty_line(&register_out.stdout);
+    assert!(uri.starts_with("os://src/local/"));
 
-    let parsed: Value = serde_json::from_slice(&output.stdout).expect("json output");
-    let arr = parsed.as_array().expect("json array");
-    assert_eq!(arr.len(), 2);
+    let cat_out = run(tmp.path(), &repo, &["cat", &uri]);
+    assert!(cat_out.status.success());
+    let cat_body = String::from_utf8_lossy(&cat_out.stdout);
+    let parsed = Session::from_jsonl(&cat_body).expect("cat output is valid jsonl");
+    assert_eq!(parsed.session_id, "s-register");
 }
 
 #[test]
-fn handoff_defaults_to_json_and_last_when_piped() {
+fn share_web_rejects_local_uri() {
     let tmp = make_home();
-    let home = tmp.path();
-    create_codex_session(home, "2026/02/14/rollout-handoff-default-pipe.jsonl");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
 
-    // Command output is captured in tests (non-tty), so default should be JSON,
-    // and missing explicit session ref should auto-fallback to latest.
-    let output = run(home, &["session", "handoff"]);
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-web"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let output = run(tmp.path(), &repo, &["share", &local_uri, "--web"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--git --remote"));
+}
+
+#[test]
+fn share_git_without_push_prints_push_command() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    let remote = tmp.path().join("remote.git");
+    init_git_repo(&repo);
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-git"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(
+        tmp.path(),
+        &repo,
+        &["share", &local_uri, "--git", "--remote", "origin"],
+    );
     assert!(
-        output.status.success(),
-        "handoff default failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        share_out.status.success(),
+        "share --git failed: {}",
+        String::from_utf8_lossy(&share_out.stderr)
     );
+    let stdout = String::from_utf8_lossy(&share_out.stdout);
+    let shared_uri = stdout.lines().next().unwrap_or_default();
+    assert!(shared_uri.starts_with("os://src/git/") || shared_uri.starts_with("os://src/gh/"));
+    assert!(stdout.contains("push_cmd:"));
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(&stdout).expect("default piped output is json");
-    let arr = parsed.as_array().expect("json array");
-    assert_eq!(arr.len(), 1);
-    assert!(arr[0].get("session_id").is_some());
-}
+    let hash = local_uri.split('/').next_back().expect("local hash in uri");
 
-#[test]
-fn handoff_validate_reports_but_exits_zero() {
-    let tmp = make_home();
-    let home = tmp.path();
-    let session = create_codex_assistant_only_session(home, "2026/02/14/handoff-validate.jsonl");
-
-    let output = run(
-        home,
+    run_git(
+        &repo,
         &[
-            "session",
+            "show",
+            &format!("refs/heads/opensession/sessions:sessions/{hash}.jsonl"),
+        ],
+    );
+}
+
+#[test]
+fn config_and_share_web_success() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let init_out = run(
+        tmp.path(),
+        &repo,
+        &["config", "init", "--base-url", "https://example.test"],
+    );
+    assert!(init_out.status.success());
+
+    let uri = opensession_core::source_uri::SourceUri::Src(
+        opensession_core::source_uri::SourceSpec::Git {
+            remote: "https://git.example/repo.git".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            path: "sessions/demo.jsonl".to_string(),
+        },
+    )
+    .to_string();
+    let out = run(tmp.path(), &repo, &["share", &uri, "--web"]);
+    assert!(
+        out.status.success(),
+        "share web failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("https://example.test/src/git/"));
+    assert!(stdout.contains("base_url: https://example.test"));
+}
+
+#[test]
+fn handoff_build_get_verify_pin_unpin_rm() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input_a = repo.join("a.hail.jsonl");
+    let input_b = repo.join("b.hail.jsonl");
+    write_file(&input_a, &make_hail_jsonl("s-a"));
+    write_file(&input_b, &make_hail_jsonl("s-b"));
+
+    let reg_a = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input_a.to_str().expect("path")],
+    );
+    let reg_b = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input_b.to_str().expect("path")],
+    );
+    let uri_a = first_non_empty_line(&reg_a.stdout);
+    let uri_b = first_non_empty_line(&reg_b.stdout);
+
+    let build = run(
+        tmp.path(),
+        &repo,
+        &[
             "handoff",
-            session.to_str().expect("session path"),
-            "--format",
-            "json",
+            "build",
+            "--from",
+            &uri_a,
+            "--from",
+            &uri_b,
+            "--pin",
+            "latest",
             "--validate",
         ],
     );
     assert!(
-        output.status.success(),
-        "validate should be soft-pass: {}",
-        String::from_utf8_lossy(&output.stderr)
+        build.status.success(),
+        "handoff build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
     );
+    let artifact_uri = first_non_empty_line(&build.stdout);
+    assert!(artifact_uri.starts_with("os://artifact/"));
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Handoff validation:"));
-    assert!(stderr.contains("\"type\":\"handoff_validation\""));
-}
-
-#[test]
-fn handoff_strict_does_not_fail_on_warning_only_findings() {
-    let tmp = make_home();
-    let home = tmp.path();
-    let session = create_codex_assistant_only_session(home, "2026/02/14/handoff-strict.jsonl");
-
-    let output = run(
-        home,
+    let get_json = run(
+        tmp.path(),
+        &repo,
         &[
-            "session",
             "handoff",
-            session.to_str().expect("session path"),
-            "--strict",
-        ],
-    );
-    assert!(
-        output.status.success(),
-        "strict should pass when findings are warning-only, stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("\"type\":\"handoff_validation\""));
-}
-
-#[test]
-fn handoff_json_shape_is_v2() {
-    let tmp = make_home();
-    let home = tmp.path();
-    let session = create_codex_session(home, "2026/02/14/handoff-v2-shape.jsonl");
-
-    let output_v2 = run(
-        home,
-        &[
-            "session",
-            "handoff",
-            session.to_str().expect("session path"),
+            "artifacts",
+            "get",
+            &artifact_uri,
             "--format",
+            "canonical",
+            "--encode",
             "json",
         ],
     );
-    assert!(
-        output_v2.status.success(),
-        "v2 handoff failed: {}",
-        String::from_utf8_lossy(&output_v2.stderr)
+    assert!(get_json.status.success());
+    let parsed: Value = serde_json::from_slice(&get_json.stdout).expect("json output");
+    assert!(parsed.as_array().is_some());
+
+    let verify = run(
+        tmp.path(),
+        &repo,
+        &["handoff", "artifacts", "verify", &artifact_uri],
     );
-    let parsed_v2: Value = serde_json::from_slice(&output_v2.stdout).expect("v2 json output");
-    let arr_v2 = parsed_v2.as_array().expect("v2 json array");
-    assert_eq!(arr_v2.len(), 1);
-    let v2 = &arr_v2[0];
-    assert!(v2.get("execution_contract").is_some());
-    assert!(v2.get("task_summaries").is_none());
-    assert!(v2.get("errors").is_none());
-    assert!(v2.get("shell_commands").is_none());
+    assert!(verify.status.success());
+
+    let rm_pinned = run(
+        tmp.path(),
+        &repo,
+        &["handoff", "artifacts", "rm", &artifact_uri],
+    );
+    assert!(!rm_pinned.status.success());
+
+    let unpin = run(
+        tmp.path(),
+        &repo,
+        &["handoff", "artifacts", "unpin", "latest"],
+    );
+    assert!(unpin.status.success());
+
+    let rm = run(
+        tmp.path(),
+        &repo,
+        &["handoff", "artifacts", "rm", &artifact_uri],
+    );
+    assert!(rm.status.success());
 }
 
 #[test]
-fn handoff_artifact_save_list_show_refresh_render_md() {
+fn parse_profile_codex_outputs_canonical_jsonl() {
     let tmp = make_home();
-    let home = tmp.path();
-    let repo = home.join("repo");
+    let repo = tmp.path().join("repo");
     init_git_repo(&repo);
 
-    let session_a = create_codex_session(home, "2026/02/14/handoff-artifact-a.jsonl");
-    let session_b = create_codex_session(home, "2026/02/15/handoff-artifact-b.jsonl");
+    let input = repo.join("codex.jsonl");
+    write_file(
+        &input,
+        r#"{"type":"session_meta","session_id":"abc","timestamp":"2026-02-14T00:00:00Z"}
+{"type":"response_item","timestamp":"2026-02-14T00:00:01Z","payload":{"type":"message","role":"user","content":"hello"}}"#,
+    );
 
-    let save_output = run_in(
-        home,
+    let out = run(
+        tmp.path(),
         &repo,
         &[
-            "session",
+            "parse",
+            "--profile",
+            "codex",
+            input.to_str().expect("path"),
+            "--validate",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "parse failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed = Session::from_jsonl(&String::from_utf8_lossy(&out.stdout)).expect("jsonl");
+    assert_eq!(parsed.version, Session::CURRENT_VERSION);
+    assert_eq!(parsed.agent.tool, "codex");
+}
+
+#[test]
+fn inspect_local_and_artifact_json() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-inspect"));
+
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let inspect_local = run(tmp.path(), &repo, &["inspect", &local_uri, "--json"]);
+    assert!(inspect_local.status.success());
+    let local_json: Value = serde_json::from_slice(&inspect_local.stdout).expect("inspect local");
+    assert_eq!(local_json["uri"], local_uri);
+
+    let build = run(
+        tmp.path(),
+        &repo,
+        &["handoff", "build", "--from", &local_uri],
+    );
+    assert!(build.status.success());
+    let artifact_uri = first_non_empty_line(&build.stdout);
+
+    let inspect_artifact = run(tmp.path(), &repo, &["inspect", &artifact_uri, "--json"]);
+    assert!(inspect_artifact.status.success());
+    let artifact_json: Value =
+        serde_json::from_slice(&inspect_artifact.stdout).expect("inspect artifact");
+    assert_eq!(artifact_json["uri"], artifact_uri);
+}
+
+#[test]
+fn parse_preview_option_prints_parser_used() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-preview"));
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &[
+            "parse",
+            "--profile",
+            "hail",
+            "--preview",
+            input.to_str().expect("path"),
+        ],
+    );
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("parser_used:"));
+}
+
+#[test]
+fn canonical_jsonl_register_rejects_non_hail_input() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("raw.jsonl");
+    write_file(&input, "{\"type\":\"session_meta\"}\n");
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &["register", input.to_str().expect("path")],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("opensession parse"));
+}
+
+#[test]
+fn docs_completion_still_available() {
+    let tmp = make_home();
+    let out = run(tmp.path(), tmp.path(), &["docs", "completion", "bash"]);
+    assert!(out.status.success());
+    assert!(!out.stdout.is_empty());
+}
+
+#[test]
+fn handoff_get_raw_jsonl_outputs_session_json_rows() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-raw"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let build = run(
+        tmp.path(),
+        &repo,
+        &["handoff", "build", "--from", &local_uri],
+    );
+    let artifact_uri = first_non_empty_line(&build.stdout);
+
+    let get = run(
+        tmp.path(),
+        &repo,
+        &[
             "handoff",
-            "save",
-            session_a.to_str().expect("session path"),
-            session_b.to_str().expect("session path"),
-            "--payload-format",
+            "artifacts",
+            "get",
+            &artifact_uri,
+            "--format",
+            "raw",
+            "--encode",
             "jsonl",
         ],
     );
-    assert!(
-        save_output.status.success(),
-        "save failed: {}",
-        String::from_utf8_lossy(&save_output.stderr)
-    );
-    let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("save json");
-    let artifact_id = save_json
-        .get("artifact_id")
-        .and_then(|value| value.as_str())
-        .expect("artifact_id")
+    assert!(get.status.success());
+    let first_line = String::from_utf8_lossy(&get.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
         .to_string();
+    let row: Value = serde_json::from_str(&first_line).expect("json row");
+    assert!(row.get("session_id").is_some());
+}
 
-    let list_output = run_in(home, &repo, &["session", "handoff", "artifact", "list"]);
-    assert!(
-        list_output.status.success(),
-        "list failed: {}",
-        String::from_utf8_lossy(&list_output.stderr)
-    );
-    let list_json: Value = serde_json::from_slice(&list_output.stdout).expect("list json");
-    let list = list_json.as_array().expect("list array");
-    assert!(list.iter().any(|row| {
-        row.get("artifact_id").and_then(|value| value.as_str()) == Some(artifact_id.as_str())
-    }));
-
-    let show_output = run_in(
-        home,
-        &repo,
-        &["session", "handoff", "artifact", "show", &artifact_id],
-    );
-    assert!(
-        show_output.status.success(),
-        "show failed: {}",
-        String::from_utf8_lossy(&show_output.stderr)
-    );
-    let show_json: Value = serde_json::from_slice(&show_output.stdout).expect("show json");
-    assert_eq!(
-        show_json.get("stale").and_then(|value| value.as_bool()),
-        Some(false)
-    );
-
-    let changed_body = r#"{"type":"user","uuid":"u1","sessionId":"handoff-cli-test","timestamp":"2026-02-15T00:00:01Z","message":{"role":"user","content":"refresh this"}}
-{"type":"assistant","uuid":"a1","sessionId":"handoff-cli-test","timestamp":"2026-02-15T00:00:02Z","message":{"role":"assistant","model":"gpt-4.1","content":[{"type":"text","text":"updated output with extra content"}]}}"#;
-    write_file(&session_b, changed_body);
-
-    let stale_output = run_in(
-        home,
-        &repo,
-        &["session", "handoff", "artifact", "show", &artifact_id],
-    );
-    assert!(
-        stale_output.status.success(),
-        "show stale failed: {}",
-        String::from_utf8_lossy(&stale_output.stderr)
-    );
-    let stale_json: Value = serde_json::from_slice(&stale_output.stdout).expect("show stale json");
-    assert_eq!(
-        stale_json.get("stale").and_then(|value| value.as_bool()),
-        Some(true)
-    );
-
-    let refresh_output = run_in(
-        home,
-        &repo,
-        &["session", "handoff", "artifact", "refresh", &artifact_id],
-    );
-    assert!(
-        refresh_output.status.success(),
-        "refresh failed: {}",
-        String::from_utf8_lossy(&refresh_output.stderr)
-    );
-    let refresh_json: Value = serde_json::from_slice(&refresh_output.stdout).expect("refresh json");
-    assert_eq!(
-        refresh_json
-            .get("refreshed")
-            .and_then(|value| value.as_bool()),
-        Some(true)
-    );
-
-    let out_md = repo.join("HANDOFF.generated.md");
-    let render_output = run_in(
-        home,
-        &repo,
-        &[
-            "session",
-            "handoff",
-            "artifact",
-            "render-md",
-            &artifact_id,
-            "--output",
-            out_md.to_str().expect("md path"),
-        ],
-    );
-    assert!(
-        render_output.status.success(),
-        "render-md failed: {}",
-        String::from_utf8_lossy(&render_output.stderr)
-    );
-    let markdown = fs::read_to_string(&out_md).expect("rendered markdown");
-    assert!(markdown.contains("Session Handoff") || markdown.contains("Merged Session Handoff"));
+#[test]
+fn testing_helper_agent_is_available() {
+    // Keep one assertion using opensession_core::testing to ensure dev-dependency path stays valid.
+    let agent = testing::agent();
+    assert!(!agent.tool.is_empty());
 }

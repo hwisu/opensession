@@ -275,9 +275,10 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 
 <div class="flex h-full flex-col">
 	<div
-		class="relative shrink-0 border-b border-border/70 bg-[linear-gradient(180deg,rgba(24,33,50,0.8),rgba(15,20,31,0.92))] px-3 py-3"
+		data-testid="session-detail-hero"
+		class="session-hero relative shrink-0 border-b border-border/70 px-3 py-3"
 	>
-		<div class="pointer-events-none absolute inset-x-0 top-0 h-16 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.2),transparent_65%)]"></div>
+		<div class="session-hero-glow pointer-events-none absolute inset-x-0 top-0 h-16"></div>
 		<div class="relative">
 			<h1 class="truncate text-base font-semibold text-text-primary sm:text-lg">
 				{displayTitle}
@@ -371,7 +372,7 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 		</div>
 	{/if}
 
-	<div class="flex min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.06),transparent_60%)]">
+	<div class="session-body flex min-h-0 flex-1 overflow-hidden">
 		<div bind:this={timelineEl} class="relative flex-1 overflow-y-auto px-3 py-3">
 			{#if normalizedSearchQuery && searchMatchCount === 0}
 				<div class="mb-2 border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
@@ -393,3 +394,29 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 		<SessionSidebar {session} {detail} {fileStats} />
 	</div>
 </div>
+
+<style>
+	.session-hero {
+		background: linear-gradient(
+			180deg,
+			color-mix(in oklab, var(--color-bg-secondary) 88%, transparent),
+			color-mix(in oklab, var(--color-bg-primary) 92%, transparent)
+		);
+	}
+
+	.session-hero-glow {
+		background: radial-gradient(
+			circle at top right,
+			color-mix(in oklab, var(--color-accent) 24%, transparent),
+			transparent 65%
+		);
+	}
+
+	.session-body {
+		background: radial-gradient(
+			circle at top left,
+			color-mix(in oklab, var(--color-accent) 8%, transparent),
+			transparent 60%
+		);
+	}
+</style>

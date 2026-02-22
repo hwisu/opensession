@@ -49,7 +49,6 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .get_async("/api/capabilities", routes::capabilities::handle)
         // Public sessions (read-only)
         .get_async("/api/sessions", routes::sessions::list)
-        .post_async("/api/sessions", routes::sessions::upload)
         .get_async("/api/sessions/:id", routes::sessions::get)
         .get_async("/api/sessions/:id/raw", routes::sessions::get_raw)
         // Auth
@@ -68,7 +67,13 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         )
         // Docs (content negotiation: markdown for AI agents, HTML for browsers)
         .get_async("/docs", routes::docs::handle)
-        .get_async("/llms.txt", routes::docs::llms_txt);
+        .get_async("/llms.txt", routes::docs::llms_txt)
+        // Removed legacy source routes
+        .get_async("/git", routes::legacy::removed_route)
+        .get_async("/gh", routes::legacy::removed_route)
+        .get_async("/gh/*path", routes::legacy::removed_route)
+        .get_async("/resolve", routes::legacy::removed_route)
+        .get_async("/resolve/*path", routes::legacy::removed_route);
 
     let resp = router.run(req, env).await?;
 

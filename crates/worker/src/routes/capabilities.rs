@@ -6,9 +6,9 @@ use crate::config::WorkerConfig;
 fn capabilities_from_config(config: &WorkerConfig) -> CapabilitiesResponse {
     CapabilitiesResponse {
         auth_enabled: config.auth_enabled(),
-        upload_enabled: true,
-        ingest_preview_enabled: false,
-        gh_share_enabled: false,
+        parse_preview_enabled: false,
+        register_targets: vec!["local".to_string(), "git".to_string()],
+        share_modes: vec!["web".to_string(), "git".to_string(), "json".to_string()],
     }
 }
 
@@ -31,8 +31,8 @@ mod tests {
 
         let caps = capabilities_from_config(&config);
         assert!(caps.auth_enabled);
-        assert!(caps.upload_enabled);
-        assert!(!caps.ingest_preview_enabled);
-        assert!(!caps.gh_share_enabled);
+        assert!(!caps.parse_preview_enabled);
+        assert_eq!(caps.register_targets, vec!["local", "git"]);
+        assert_eq!(caps.share_modes, vec!["web", "git", "json"]);
     }
 }

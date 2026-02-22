@@ -110,7 +110,7 @@ impl PreviewRouteError {
     }
 }
 
-/// POST /api/ingest/preview
+/// POST /api/parse/preview
 pub async fn preview(
     Json(req): Json<ParsePreviewRequest>,
 ) -> Result<Json<ParsePreviewResponse>, (StatusCode, Json<ParsePreviewErrorResponse>)> {

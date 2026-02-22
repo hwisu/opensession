@@ -40,6 +40,10 @@ pub const MIGRATIONS: &[Migration] = &[
         "0010_api_keys_issuance",
         include_str!("../../migrations/0010_api_keys_issuance.sql"),
     ),
+    (
+        "0011_drop_legacy_team_refs",
+        include_str!("../../migrations/0011_drop_legacy_team_refs.sql"),
+    ),
 ];
 
 /// Local-only migrations (TUI + Daemon).
@@ -58,3 +62,21 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
         include_str!("../../migrations/local_0003_session_flags.sql"),
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATIONS;
+
+    #[test]
+    fn includes_legacy_team_cleanup_migration() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|(name, _)| *name == "0011_drop_legacy_team_refs")
+            .expect("legacy team cleanup migration must be registered");
+
+        assert!(
+            migration.1.contains("DROP TABLE IF EXISTS team_members"),
+            "cleanup migration should drop legacy team tables"
+        );
+    }
+}

@@ -4,7 +4,7 @@ mod storage;
 
 use axum::{
     extract::{DefaultBodyLimit, FromRef},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::path::PathBuf;
@@ -28,6 +28,7 @@ pub struct AppConfig {
     pub base_url: String,
     pub oauth_use_request_host: bool,
     pub jwt_secret: String,
+    pub admin_key: String,
     pub oauth_providers: Vec<OAuthProviderConfig>,
     pub public_feed_enabled: bool,
 }
@@ -104,6 +105,10 @@ async fn main() -> anyhow::Result<()> {
     if jwt_secret.is_empty() {
         tracing::warn!("JWT_SECRET not set — JWT auth and OAuth will be disabled");
     }
+    let admin_key = env_trimmed("OPENSESSION_ADMIN_KEY").unwrap_or_default();
+    if admin_key.is_empty() {
+        tracing::warn!("OPENSESSION_ADMIN_KEY not set — /api/admin routes will return 401");
+    }
 
     let oauth_providers = load_oauth_providers();
     let public_feed_enabled_raw =
@@ -121,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         base_url: base_url.clone(),
         oauth_use_request_host: base_url_env.is_none(),
         jwt_secret,
+        admin_key,
         oauth_providers,
         public_feed_enabled,
     };
@@ -132,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
         // Health
         .route("/health", get(routes::health::health))
         .route("/capabilities", get(routes::capabilities::capabilities))
-        .route("/ingest/preview", post(routes::ingest::preview))
+        .route("/parse/preview", post(routes::ingest::preview))
         // Auth
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))
@@ -151,22 +157,29 @@ async fn main() -> anyhow::Result<()> {
             get(routes::oauth::callback),
         )
         .route("/auth/oauth/{provider}/link", post(routes::oauth::link))
-        // Sessions
-        .route("/sessions", post(routes::sessions::upload_session))
-        .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB for large sessions
+        // Sessions (read-only)
+        .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
         .route("/sessions", get(routes::sessions::list_sessions))
+        .route("/sessions/{id}", get(routes::sessions::get_session))
+        .route("/sessions/{id}/raw", get(routes::sessions::get_session_raw))
+        // Admin
         .route(
-            "/sessions/{id}",
-            get(routes::sessions::get_session).delete(routes::sessions::delete_session),
-        )
-        .route("/sessions/{id}/raw", get(routes::sessions::get_session_raw));
+            "/admin/sessions/{id}",
+            delete(routes::admin::delete_session),
+        );
 
     // Build main router
     let mut app = Router::new()
         .nest("/api", api)
         // Docs (content negotiation: markdown for AI agents, HTML for browsers)
         .route("/docs", get(routes::docs::handle))
-        .route("/llms.txt", get(routes::docs::llms_txt));
+        .route("/llms.txt", get(routes::docs::llms_txt))
+        // Removed legacy source routes
+        .route("/git", get(routes::legacy::removed_route))
+        .route("/gh", get(routes::legacy::removed_route))
+        .route("/gh/*path", get(routes::legacy::removed_route))
+        .route("/resolve", get(routes::legacy::removed_route))
+        .route("/resolve/*path", get(routes::legacy::removed_route));
 
     // Serve static files from web build if present
     let web_dir = std::env::var("OPENSESSION_WEB_DIR")

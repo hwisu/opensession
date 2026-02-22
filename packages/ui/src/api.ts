@@ -7,6 +7,7 @@ import type {
 	ParsePreviewRequest,
 	ParsePreviewResponse,
 	ParseSource,
+	IssueApiKeyResponse,
 	Session,
 	SessionListResponse,
 	UserSettings,
@@ -216,15 +217,14 @@ async function requestRaw(path: string): Promise<string> {
 	return res.text();
 }
 
-export async function uploadSession(session: Session): Promise<{ id: string; url: string }> {
-	return request('/api/sessions', {
-		method: 'POST',
-		body: JSON.stringify({ session }),
-	});
-}
-
 export async function getSettings(): Promise<UserSettings> {
 	return request<UserSettings>('/api/auth/me');
+}
+
+export async function issueApiKey(): Promise<IssueApiKeyResponse> {
+	return request<IssueApiKeyResponse>('/api/auth/api-keys/issue', {
+		method: 'POST',
+	});
 }
 
 export async function authRegister(
@@ -317,9 +317,9 @@ export async function getApiCapabilities(): Promise<CapabilitiesResponse> {
 	}
 	return {
 		auth_enabled: false,
-		upload_enabled: false,
-		ingest_preview_enabled: false,
-		gh_share_enabled: false,
+		parse_preview_enabled: false,
+		register_targets: [],
+		share_modes: [],
 	};
 }
 
@@ -328,23 +328,13 @@ export async function isAuthApiAvailable(): Promise<boolean> {
 	return capabilities.auth_enabled;
 }
 
-export async function isUploadApiAvailable(): Promise<boolean> {
+export async function isParsePreviewApiAvailable(): Promise<boolean> {
 	const capabilities = await getApiCapabilities();
-	return capabilities.upload_enabled;
+	return capabilities.parse_preview_enabled;
 }
 
-export async function isIngestPreviewApiAvailable(): Promise<boolean> {
-	const capabilities = await getApiCapabilities();
-	return capabilities.ingest_preview_enabled;
-}
-
-export async function isGhShareAvailable(): Promise<boolean> {
-	const capabilities = await getApiCapabilities();
-	return capabilities.gh_share_enabled;
-}
-
-async function postIngestPreview(req: ParsePreviewRequest): Promise<ParsePreviewResponse> {
-	const url = `${getBaseUrl()}/api/ingest/preview`;
+async function postParsePreview(req: ParsePreviewRequest): Promise<ParsePreviewResponse> {
+	const url = `${getBaseUrl()}/api/parse/preview`;
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	const auth = await getAuthHeader();
 	if (auth) headers.Authorization = auth;
@@ -370,7 +360,7 @@ async function postIngestPreview(req: ParsePreviewRequest): Promise<ParsePreview
 	}
 
 	if (!body.trim()) {
-		throw new ApiError(res.status, 'Empty ingest preview response');
+		throw new ApiError(res.status, 'Empty parse preview response');
 	}
 	return JSON.parse(body) as ParsePreviewResponse;
 }
@@ -389,7 +379,7 @@ export async function previewSessionFromGithubSource(params: {
 		ref: params.ref,
 		path: params.path,
 	};
-	return postIngestPreview({
+	return postParsePreview({
 		source,
 		parser_hint: params.parser_hint ?? null,
 	});
@@ -407,7 +397,7 @@ export async function previewSessionFromGitSource(params: {
 		ref: params.ref,
 		path: params.path,
 	};
-	return postIngestPreview({
+	return postParsePreview({
 		source,
 		parser_hint: params.parser_hint ?? null,
 	});
@@ -423,7 +413,7 @@ export async function previewSessionFromInlineSource(params: {
 		filename: params.filename,
 		content_base64: params.content_base64,
 	};
-	return postIngestPreview({
+	return postParsePreview({
 		source,
 		parser_hint: params.parser_hint ?? null,
 	});

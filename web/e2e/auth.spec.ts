@@ -63,9 +63,9 @@ test.describe('Authentication', () => {
 				contentType: 'application/json',
 				body: JSON.stringify({
 					auth_enabled: true,
-					upload_enabled: true,
-					ingest_preview_enabled: true,
-					gh_share_enabled: true,
+					parse_preview_enabled: true,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
 				}),
 			});
 		});
@@ -171,9 +171,9 @@ test.describe('Authentication', () => {
 				contentType: 'application/json',
 				body: JSON.stringify({
 					auth_enabled: true,
-					upload_enabled: false,
-					ingest_preview_enabled: false,
-					gh_share_enabled: true,
+					parse_preview_enabled: false,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
 				}),
 			});
 		});

@@ -83,6 +83,6 @@ export interface LinkedProvider { provider: string, provider_username: string, d
 
 export interface HealthResponse { status: string, version: string, }
 
-export interface CapabilitiesResponse { auth_enabled: boolean, upload_enabled: boolean, ingest_preview_enabled: boolean, gh_share_enabled: boolean, }
+export interface CapabilitiesResponse { auth_enabled: boolean, parse_preview_enabled: boolean, register_targets: Array<string>, share_modes: Array<string>, }
 
 export interface ApiError { code: string, message: string, }

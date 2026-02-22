@@ -48,6 +48,35 @@ impl NativeGitStorage {
     }
 }
 
+/// Store arbitrary blob content under a specific ref/path without touching the working tree.
+///
+/// This powers `opensession share --git`, which needs explicit ref/path control.
+pub fn store_blob_at_ref(
+    repo_path: &Path,
+    ref_name: &str,
+    rel_path: &str,
+    body: &[u8],
+    message: &str,
+) -> Result<ObjectId> {
+    let repo = ops::open_repo(repo_path)?;
+    let hash_kind = repo.object_hash();
+
+    let blob = repo.write_blob(body).map_err(gix_err)?.detach();
+    let tip = ops::find_ref_tip(&repo, ref_name)?;
+    let base_tree_id = match &tip {
+        Some(commit_id) => ops::commit_tree_id(&repo, commit_id.detach())?,
+        None => ObjectId::empty_tree(hash_kind),
+    };
+
+    let mut editor = repo.edit_tree(base_tree_id).map_err(gix_err)?;
+    editor
+        .upsert(rel_path, EntryKind::Blob, blob)
+        .map_err(gix_err)?;
+    let new_tree_id = editor.write().map_err(gix_err)?.detach();
+    let parent = tip.map(|id| id.detach());
+    ops::create_commit(&repo, ref_name, new_tree_id, parent, message)
+}
+
 impl NativeGitStorage {
     /// Store a session in the git repository at `repo_path`.
     ///
@@ -262,6 +291,26 @@ mod tests {
             matches!(err, GitStorageError::NotARepo(_)),
             "expected NotARepo, got: {err}"
         );
+    }
+
+    #[test]
+    fn store_blob_at_ref_writes_requested_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_test_repo(tmp.path());
+
+        let ref_name = "refs/heads/opensession/custom-share";
+        let rel_path = "sessions/hash.jsonl";
+        store_blob_at_ref(
+            tmp.path(),
+            ref_name,
+            rel_path,
+            b"hello",
+            "custom share write",
+        )
+        .expect("store blob at ref");
+
+        let output = run_git(tmp.path(), &["show", &format!("{ref_name}:{rel_path}")]);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "hello");
     }
 
     #[test]

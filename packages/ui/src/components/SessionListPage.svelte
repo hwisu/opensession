@@ -1,6 +1,5 @@
 <script lang="ts">
 import { listSessions } from '../api';
-import { groupSessionsByAgentCount } from '../session-presentation';
 import type { SessionSummary, SortOrder, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import SessionCard from './SessionCard.svelte';
@@ -10,8 +9,6 @@ const {
 }: {
 	onNavigate: (path: string) => void;
 } = $props();
-
-type ListLayout = 'single' | 'agent-columns';
 
 let sessions = $state<SessionSummary[]>([]);
 let total = $state(0);
@@ -23,31 +20,13 @@ let sortBy = $state<SortOrder>('recent');
 let timeRange = $state<TimeRange>('all');
 let currentPage = $state(1);
 let selectedIndex = $state(0);
-let listLayout = $state<ListLayout>('single');
 let renderLimit = $state(20);
 let searchInput: HTMLInputElement | undefined = $state();
 let fetchRequestId = 0;
 
 const perPage = 20;
-const layoutPreferenceKey = 'opensession_session_list_layout';
 const listCacheKey = 'opensession_public_list_cache_v1';
 const listCacheTtlMs = 30_000;
-const layoutTabs: ReadonlyArray<{
-	value: ListLayout;
-	label: string;
-	title: string;
-}> = [
-	{
-		value: 'single',
-		label: 'List',
-		title: 'Single feed across all sessions',
-	},
-	{
-		value: 'agent-columns',
-		label: 'Agents',
-		title: 'Group sessions by max active agents (parallel lanes)',
-	},
-];
 
 type SessionListCacheEntry = {
 	query: string;
@@ -59,20 +38,8 @@ type SessionListCacheEntry = {
 const hasMore = $derived(currentPage * perPage < total);
 const visibleSessions = $derived(sessions.slice(0, renderLimit));
 const hasHiddenRendered = $derived(renderLimit < sessions.length);
-const groupedByAgents = $derived(groupSessionsByAgentCount(visibleSessions));
-const visibleColumnCount = $derived(groupedByAgents.length);
 const navigableSessions = $derived(visibleSessions);
 const selectedSessionId = $derived(navigableSessions[selectedIndex]?.id ?? null);
-const layoutSummaryLabel = $derived(
-	listLayout === 'single'
-		? 'List = one chronological feed'
-		: 'Agents = grouped by max active agents',
-);
-const layoutSummaryDetail = $derived(
-	listLayout === 'single'
-		? 'Best for scanning overall flow with selected order.'
-		: 'Best for seeing parallelism and handoff density.',
-);
 const sessionOrder = $derived.by(() => {
 	const order = new Map<string, number>();
 	navigableSessions.forEach((session, idx) => {
@@ -92,23 +59,6 @@ const timeRangeTabs: ReadonlyArray<{ value: TimeRange; label: string }> = [
 
 function sessionIndex(sessionId: string): number {
 	return sessionOrder.get(sessionId) ?? -1;
-}
-
-function syncLayoutPreference() {
-	if (typeof window === 'undefined') return;
-	const stored = localStorage.getItem(layoutPreferenceKey);
-	if (stored === 'agent-columns' || stored === 'single') {
-		listLayout = stored;
-	}
-}
-
-function persistLayoutPreference() {
-	if (typeof window === 'undefined') return;
-	localStorage.setItem(layoutPreferenceKey, listLayout);
-}
-
-function toggleLayout() {
-	listLayout = listLayout === 'single' ? 'agent-columns' : 'single';
 }
 
 function currentListQueryFingerprint(page: number): string {
@@ -250,12 +200,7 @@ function focusSearchInput() {
 }
 
 $effect(() => {
-	syncLayoutPreference();
 	fetchSessions(true);
-});
-
-$effect(() => {
-	persistLayoutPreference();
 });
 
 $effect(() => {
@@ -301,9 +246,6 @@ function handleKeydown(e: KeyboardEvent) {
 		e.preventDefault();
 		timeRange = cycleFilterValue(timeRange, rangeCycle);
 		fetchSessions(true);
-	} else if (e.key === 'l') {
-		e.preventDefault();
-		toggleLayout();
 	}
 }
 
@@ -397,20 +339,6 @@ $effect(() => {
 			<option value="popular">Most Messages</option>
 			<option value="longest">Longest</option>
 		</select>
-		<div class="flex w-full items-center justify-center border border-border bg-bg-secondary p-0.5 sm:w-auto" role="tablist" aria-label="Session layout">
-			{#each layoutTabs as tab}
-				<button
-					role="tab"
-					aria-selected={listLayout === tab.value}
-					onclick={() => { listLayout = tab.value; }}
-					title={tab.title}
-					class="px-2 py-0.5 text-xs"
-					class:bg-bg-hover={listLayout === tab.value}
-				>
-					{tab.label}
-				</button>
-			{/each}
-		</div>
 		<div
 			data-testid="list-shortcut-legend"
 			class="flex w-full flex-wrap items-center gap-1 text-[11px] text-text-muted"
@@ -427,11 +355,6 @@ $effect(() => {
 				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">r</kbd>
 				<span>range</span>
 			</span>
-			<span class="text-text-secondary">|</span>
-			<span class="text-text-secondary">
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">l</kbd>
-				layout
-			</span>
 		</div>
 	</div>
 
@@ -444,9 +367,7 @@ $effect(() => {
 	<div class="flex-1 overflow-y-auto">
 		<div data-testid="session-layout-summary" class="border-b border-border px-3 py-1 text-xs text-text-muted">
 			Sessions ({total})
-			<span class="ml-2 text-text-secondary">[{layoutSummaryLabel}]</span>
-			<span class="ml-2 text-text-secondary">[cols:{visibleColumnCount}]</span>
-			<span class="ml-2 text-text-secondary">{layoutSummaryDetail}</span>
+			<span class="ml-2 text-text-secondary">[single chronological feed]</span>
 		</div>
 
 			{#if sessions.length === 0 && !loading}
@@ -456,41 +377,13 @@ $effect(() => {
 				</div>
 			{/if}
 
-		{#if listLayout === 'single'}
-			<div>
-				{#each visibleSessions as session (session.id)}
-					<div data-session-idx={sessionIndex(session.id)} data-session-id={session.id}>
-						<SessionCard session={session} selected={selectedSessionId === session.id} />
-					</div>
-				{/each}
-			</div>
-		{:else}
-			<div class="flex gap-3 overflow-x-auto px-2 py-2">
-				{#each groupedByAgents as group}
-					<section
-						class={`flex-1 border border-border bg-bg-secondary/30 ${
-							visibleColumnCount > 1 ? 'min-w-[300px] max-w-[420px]' : 'min-w-0'
-						}`}
-					>
-						<header class="flex items-center justify-between border-b border-border px-2 py-1 text-xs">
-							<span class="font-semibold" style="color: {group.color};">{group.label}</span>
-							<span class="text-text-muted">{group.sessions.length}</span>
-						</header>
-						<div>
-							{#each group.sessions as session (session.id)}
-								<div data-session-idx={sessionIndex(session.id)} data-session-id={session.id}>
-									<SessionCard
-										session={session}
-										selected={selectedSessionId === session.id}
-										compact={true}
-									/>
-								</div>
-							{/each}
-						</div>
-					</section>
-				{/each}
-			</div>
-		{/if}
+		<div>
+			{#each visibleSessions as session (session.id)}
+				<div data-session-idx={sessionIndex(session.id)} data-session-id={session.id}>
+					<SessionCard session={session} selected={selectedSessionId === session.id} />
+				</div>
+			{/each}
+		</div>
 
 		{#if loading}
 			<div class="py-4 text-center text-xs text-text-muted">Loading...</div>

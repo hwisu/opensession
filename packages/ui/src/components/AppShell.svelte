@@ -129,7 +129,6 @@ const shortcutHints = $derived.by(() => {
 			't tool',
 			'o order',
 			'r range',
-			'l layout',
 		];
 	}
 	return ['Cmd/Ctrl+K palette', 'Esc back'];
@@ -234,6 +233,17 @@ const allPaletteCommands = $derived.by(() => {
 				'Sign in to your account',
 				['login', 'auth', 'signin'],
 				() => onNavigate('/login'),
+			),
+		);
+	}
+	if (hasLocalAuth) {
+		commands.push(
+			createPaletteCommand(
+				'go-settings',
+				'Go to Settings',
+				'Open personal settings and API key controls',
+				['settings', 'account', 'profile', 'api key'],
+				() => onNavigate('/settings'),
 			),
 		);
 	}
@@ -466,10 +476,17 @@ function handleGlobalKey(e: KeyboardEvent) {
 								<p>Providers: <span class="text-text-primary">{linkedProvidersLabel(user)}</span></p>
 							</div>
 
-							<div class="border-b border-border px-2 py-1">
-								<button
-									type="button"
-									class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+								<div class="border-b border-border px-2 py-1">
+									<button
+										type="button"
+										class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+										onclick={() => handleAccountMenuNavigate('/settings')}
+									>
+										Settings
+									</button>
+									<button
+										type="button"
+										class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
 									onclick={() => handleAccountMenuNavigate('/sessions')}
 								>
 									Session Home

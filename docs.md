@@ -1,113 +1,138 @@
 # Documentation
 
-OpenSession is an online sharing site for AI coding sessions.
-Publish structured traces, review what happened, and keep handoffs reproducible across web, CLI, and TUI.
+OpenSession is a local-first workflow for registering, sharing, and inspecting AI session traces.
+The public contract is a single Source URI model shared by CLI, Web, and API.
 
-## Product Overview
+## Getting Started
 
-OpenSession is built for teams and communities that want to review real AI coding work.
+Core principles:
 
-| What you can do | Why it matters | Main surface |
-|---|---|---|
-| Publish sessions as structured artifacts | Keep full context, not screenshots | `POST /api/sessions`, `opensession publish upload` |
-| Review timelines and raw events | Audit tool calls, edits, and outcomes | `/sessions`, `/session/{id}` |
-| Share reproducible references | Keep collaboration tied to immutable refs | git refs (`opensession/sessions`) |
-| Generate handoffs from real sessions | Preserve execution context between owners | `opensession session handoff` + artifact refs |
+- One concept, one name.
+- One identity, one URI.
+- No implicit network mutation.
+- Defaults are allowed only when printed in output.
 
-Git-based sharing means storing session artifacts on the `opensession/sessions` branch so they can be reviewed and replayed through standard git refs.
-
-### Quick checks
+Quick path:
 
 ```bash
-curl -s https://opensession.io/api/health
-curl -H "Accept: text/markdown" https://opensession.io/docs
+# 1) Parse agent-native logs into canonical HAIL JSONL
+opensession parse --profile codex ./raw-session.jsonl > ./session.hail.jsonl
+
+# 2) Register canonical session in local object store
+opensession register ./session.hail.jsonl
+# -> os://src/local/<sha256>
+
+# 3) Read local canonical bytes back
+opensession cat os://src/local/<sha256>
+
+# 4) Inspect summary metadata
+opensession inspect os://src/local/<sha256>
 ```
 
-## Web Experience
+Local object storage:
 
-- Open `/sessions` to browse shared sessions.
-- Open `/session/{id}` to inspect the event timeline.
-- Open `/git` to preview a session source from `remote/ref/path`.
-- Use docs and session review flows to compare workflows with real evidence.
+- In repo: `.opensession/objects/sha256/ab/cd/<hash>.jsonl`
+- Outside repo: `~/.local/share/opensession/objects/sha256/ab/cd/<hash>.jsonl`
 
-## CLI Workflows
+Hash policy:
+
+- SHA-256 of canonical HAIL JSONL bytes.
+
+## Share via Git
+
+`register` is local-only. Remote sharing is explicit via `share`.
 
 ```bash
-# Upload one session to the online feed
-opensession publish upload ./session.jsonl
+# Local source -> remote-shareable source URI
+opensession share os://src/local/<sha256> --git --remote origin
 
-# Store one session on git branch sharing flow
-opensession publish upload ./session.jsonl --git
-
-# Build and validate handoff from recent sessions
-opensession session handoff --last --format json --validate
-
-# Save canonical handoff artifact to git refs
-opensession session handoff save --last --payload-format json
-
-# Inspect saved handoff artifacts
-opensession session handoff artifact list
+# Optional network side effect
+opensession share os://src/local/<sha256> --git --remote origin --push
 ```
 
-## TUI Workflows
+`share --git` rules:
 
-- Start TUI with `opensession` (or `opensession .` for current repo scope).
-- Browse sessions with list filters and quick search (`/`, `t`, `o`, `r`, `l`).
-- Open detail view to inspect timeline order, tool usage, and outputs.
-- Use the handoff view to generate and save handoff artifacts without leaving terminal.
+- Required: `--remote <name|url>`
+- Default ref: `refs/heads/opensession/sessions`
+- Default path: `sessions/<sha256>.jsonl`
+- `--push` omitted: no network mutation (prints runnable push command)
 
-## Handoff Storage Model
-
-- Canonical handoff storage is git refs: `refs/opensession/handoff/artifacts/<artifact_id>`.
-- Artifact payload is structured JSON/JSONL that points back to source sessions.
-- `HANDOFF.md` is a derived rendering, not source-of-truth.
-- Refresh updates stale artifacts when source sessions change.
-
-## Web Routes
-
-| Route | Purpose | Notes |
-|---|---|---|
-| `/` | Landing | Product overview for online sharing |
-| `/sessions` | Session feed | Public browsing |
-| `/session/{id}` | Session detail timeline | Raw event inspection |
-| `/git` | Git source preview | Query params: `remote`, `ref`, `path`, optional `parser_hint` |
-| `/gh/{owner}/{repo}/{ref}/{path...}` | Compatibility alias | Redirects to `/git` |
-| `/docs` | Structured docs view | Markdown-backed chapters |
-| `/login` | Account sign-in | Available when auth is enabled |
-
-## API Summary
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/health` | Runtime health |
-| GET | `/api/sessions` | List sessions |
-| GET | `/api/sessions/{id}` | Session detail |
-| GET | `/api/sessions/{id}/raw` | Raw HAIL JSONL |
-| POST | `/api/sessions` | Publish session |
-| DELETE | `/api/sessions/{id}` | Delete session (auth/runtime dependent) |
-| POST | `/api/ingest/preview` | Parser preview (server profile) |
-
-## Self-Hosting and Verification
+`share --web` rules:
 
 ```bash
-# Server profile
-cargo run -p opensession-server
-
-# Worker profile
-wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state
-
-# Browser verification (example)
-BASE_URL=http://127.0.0.1:8788 npm run test:e2e
+opensession config init --base-url https://opensession.io
+opensession config show
+opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 ```
 
-## Troubleshooting
+- `share --web` requires explicit `.opensession/config.toml`
+- Local URI with `--web` is rejected with follow-up action (`share --git`)
+- Human output prints canonical URL as first line
 
-1. Confirm the session exists and raw data is reachable.
-2. Validate `remote/ref/path` input when using `/git` preview.
-3. Re-run handoff validation when source sessions changed.
+## Inspect Timeline
+
+Canonical web routes:
+
+- `/src/gh/<owner>/<repo>/ref/<ref_enc>/path/<path...>`
+- `/src/gl/<project_b64>/ref/<ref_enc>/path/<path...>`
+- `/src/git/<remote_b64>/ref/<ref_enc>/path/<path...>`
+
+Legacy routes are removed:
+
+- `/git`
+- `/gh/*`
+- `/resolve/*`
+
+Server parse-preview endpoint:
+
+- `POST /api/parse/preview`
+
+## Handoff
+
+Handoff artifacts are immutable. Build creates a new artifact URI every time.
 
 ```bash
-curl -s https://opensession.io/api/health
-curl -L "https://opensession.io/api/sessions/<id>/raw" | head -n 5
-opensession session handoff --last --validate
+# Build immutable artifact
+opensession handoff build --from os://src/local/<sha256> --pin latest
+# -> os://artifact/<sha256>
+
+# Read payload representation
+opensession handoff artifacts get os://artifact/<sha256> --format canonical --encode jsonl
+
+# Verify deterministic hash
+opensession handoff artifacts verify os://artifact/<sha256>
+
+# Alias control
+opensession handoff artifacts pin latest os://artifact/<sha256>
+opensession handoff artifacts unpin latest
+
+# Removal policy (unpinned only)
+opensession handoff artifacts rm os://artifact/<sha256>
 ```
+
+No refresh/update command exists in v1. Rebuild and move pin aliases.
+
+## Optional UI
+
+CLI is the canonical operator surface.
+Web and TUI are optional interfaces over the same URI contract.
+
+## Concepts
+
+Source and artifact identifiers:
+
+- `os://src/local/<sha256>`
+- `os://src/gh/<owner>/<repo>/ref/<ref_enc>/path/<path...>`
+- `os://src/gl/<project_b64>/ref/<ref_enc>/path/<path...>`
+- `os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...>`
+- `os://artifact/<sha256>`
+
+Encoding rules:
+
+- `ref_enc`: RFC3986 percent-encoding
+- `project_b64`, `remote_b64`: base64url (no padding)
+
+API boundary:
+
+- `DELETE /api/admin/sessions/{id}`
+- Header: `X-OpenSession-Admin-Key`

@@ -1,108 +1,103 @@
 import { test, expect } from '@playwright/test';
-import { getAdmin, getCapabilities, injectAuth, uploadSession } from './helpers';
+import { createSessionFixture, mockSessionApis } from './helpers';
 
 test.describe('Sessions', () => {
-	test('upload and view session in list', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		const title = `PW List ${crypto.randomUUID().slice(0, 8)}`;
-		await uploadSession(request, admin.access_token, {
-			title,
+	test('shows session in list', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW List ${crypto.randomUUID().slice(0, 8)}`,
 		});
-
-		await injectAuth(page, admin);
+		await mockSessionApis(page, fixture);
 		await page.goto('/sessions');
-
-		// Session should appear in the list
-		await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText(fixture.title)).toBeVisible({ timeout: 10000 });
 	});
 
-	test('session list search filters correctly', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		const title = `PW Shortcut Search ${crypto.randomUUID().slice(0, 8)}`;
-		await uploadSession(request, admin.access_token, { title });
-
-		await injectAuth(page, admin);
+	test('session list search filters correctly', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Shortcut Search ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		await mockSessionApis(page, fixture);
 		await page.goto('/sessions');
 		const listSearchInput = page.locator('#session-search');
-		await listSearchInput.fill(title);
+		await listSearchInput.fill(fixture.title);
 		await page.keyboard.press('Enter');
-		await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText(fixture.title)).toBeVisible({ timeout: 10000 });
 	});
 
-	test('navigate to session detail', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		const sessionId = await uploadSession(request, admin.access_token, {
+	test('navigate to session detail', async ({ page }) => {
+		const fixture = createSessionFixture({
 			title: 'PW Detail Test',
+			events: [
+				{ type: 'UserMessage', text: 'Hello, write a test', task_id: crypto.randomUUID() },
+				{ type: 'AgentMessage', text: 'Sure, here is a test.', task_id: null },
+			],
 		});
-
-		await injectAuth(page, admin);
-		await page.goto(`/session/${sessionId}`);
-
-		// Should show session detail with events
+		await mockSessionApis(page, fixture);
+		await page.goto(`/session/${fixture.id}`);
 		await expect(page.getByText('Hello, write a test')).toBeVisible({ timeout: 10000 });
 		await expect(page.locator('[data-testid="session-flow-bar"]')).toBeVisible({ timeout: 10000 });
 	});
 
-	test('session detail shows agent info', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		const sessionId = await uploadSession(request, admin.access_token);
-
-		await injectAuth(page, admin);
-		await page.goto(`/session/${sessionId}`);
-
-		// Should show the tool/model info somewhere (UI renders display name "Claude Code")
+	test('session detail shows agent info', async ({ page }) => {
+		const fixture = createSessionFixture();
+		await mockSessionApis(page, fixture);
+		await page.goto(`/session/${fixture.id}`);
 		await expect(page.getByText('Claude Code').first()).toBeVisible({ timeout: 10000 });
 	});
 
-	test('session detail in-session search shortcuts work', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
+	test('session detail light mode uses theme-driven surfaces', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Light Theme ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		await mockSessionApis(page, fixture);
+		await page.addInitScript(() => {
+			localStorage.setItem('theme', 'light');
+			document.documentElement.classList.add('light');
+		});
+		await page.goto(`/session/${fixture.id}`);
 
-		const admin = await getAdmin(request);
-		const now = Date.now();
-		const sessionId = await uploadSession(request, admin.access_token, {
+		const hero = page.getByTestId('session-detail-hero');
+		const heroBackground = await hero.evaluate((el) => getComputedStyle(el).backgroundImage);
+		expect(heroBackground).not.toContain('24, 33, 50');
+		expect(heroBackground).not.toContain('15, 20, 31');
+
+		const sidebar = page.getByTestId('session-detail-sidebar');
+		await expect(sidebar).toBeVisible();
+		const sidebarBackground = await sidebar.evaluate((el) => getComputedStyle(el).backgroundImage);
+		expect(sidebarBackground).not.toContain('24, 33, 50');
+		expect(sidebarBackground).not.toContain('14, 19, 29');
+
+		const titleRgb = await hero.getByRole('heading', { level: 1 }).evaluate((el) => {
+			const match = getComputedStyle(el).color.match(/\d+/g);
+			if (!match || match.length < 3) return { r: 255, g: 255, b: 255 };
+			return {
+				r: Number(match[0]),
+				g: Number(match[1]),
+				b: Number(match[2]),
+			};
+		});
+		expect(titleRgb.r).toBeLessThan(90);
+		expect(titleRgb.g).toBeLessThan(90);
+		expect(titleRgb.b).toBeLessThan(90);
+	});
+
+	test('session detail in-session search shortcuts work', async ({ page }) => {
+		const fixture = createSessionFixture({
 			title: 'PW In-Session Search',
 			events: [
 				{
-					event_id: crypto.randomUUID(),
-					timestamp: new Date(now).toISOString(),
-					event_type: { type: 'UserMessage' },
+					type: 'UserMessage',
+					text: 'Find the session needle here',
 					task_id: crypto.randomUUID(),
-					content: { blocks: [{ type: 'Text', text: 'Find the session needle here' }] },
-					duration_ms: null,
-					attributes: {},
 				},
 				{
-					event_id: crypto.randomUUID(),
-					timestamp: new Date(now + 1000).toISOString(),
-					event_type: { type: 'AgentMessage' },
+					type: 'AgentMessage',
+					text: 'Second event for baseline visibility',
 					task_id: null,
-					content: { blocks: [{ type: 'Text', text: 'Second event for baseline visibility' }] },
-					duration_ms: null,
-					attributes: {},
 				},
 			],
 		});
-
-		await injectAuth(page, admin);
-		await page.goto(`/session/${sessionId}`);
+		await mockSessionApis(page, fixture);
+		await page.goto(`/session/${fixture.id}`);
 
 		const detailSearchInput = page.locator('#session-event-search');
 		await detailSearchInput.fill('needle');
@@ -119,54 +114,24 @@ test.describe('Sessions', () => {
 
 	test('session detail renders markdown and standalone fenced code for messages', async ({
 		page,
-		request,
 	}) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-		test.skip(!capabilities.upload_enabled, 'Upload API is disabled');
-
-		const admin = await getAdmin(request);
-		const now = Date.now();
-		const sessionId = await uploadSession(request, admin.access_token, {
+		const fixture = createSessionFixture({
 			title: 'PW Markdown/Code Render',
 			events: [
 				{
-					event_id: crypto.randomUUID(),
-					timestamp: new Date(now).toISOString(),
-					event_type: { type: 'UserMessage' },
+					type: 'UserMessage',
+					text: '# Plan\n\nRead the [guide](https://example.com) first.\n\n- Parse logs\n- Improve rendering',
 					task_id: crypto.randomUUID(),
-					content: {
-						blocks: [
-							{
-								type: 'Text',
-								text: '# Plan\n\nRead the [guide](https://example.com) first.\n\n- Parse logs\n- Improve rendering',
-							},
-						],
-					},
-					duration_ms: null,
-					attributes: {},
 				},
 				{
-					event_id: crypto.randomUUID(),
-					timestamp: new Date(now + 1000).toISOString(),
-					event_type: { type: 'AgentMessage' },
+					type: 'AgentMessage',
+					text: '```ts\nconst answer = 42;\nconsole.log(answer);\n```',
 					task_id: null,
-					content: {
-						blocks: [
-							{
-								type: 'Text',
-								text: '```ts\nconst answer = 42;\nconsole.log(answer);\n```',
-							},
-						],
-					},
-					duration_ms: null,
-					attributes: {},
 				},
 			],
 		});
-
-		await injectAuth(page, admin);
-		await page.goto(`/session/${sessionId}`);
+		await mockSessionApis(page, fixture);
+		await page.goto(`/session/${fixture.id}`);
 
 		await expect(page.locator('.md-content .md-h1').filter({ hasText: 'Plan' })).toBeVisible({
 			timeout: 10000,
@@ -180,7 +145,9 @@ test.describe('Sessions', () => {
 		await expect(
 			page.locator('.code-with-lines code').filter({ hasText: 'const answer = 42;' }).first(),
 		).toBeVisible({ timeout: 10000 });
-		await expect(page.locator('.code-header span').filter({ hasText: 'ts' }).first()).toBeVisible({
+		await expect(
+			page.locator('.code-header span').filter({ hasText: 'ts' }).first(),
+		).toBeVisible({
 			timeout: 10000,
 		});
 
@@ -199,16 +166,28 @@ test.describe('Sessions', () => {
 		expect(proseStyles.linkColor).not.toBe(proseStyles.paragraphColor);
 	});
 
-	test('empty session list shows appropriate state', async ({ page, request }) => {
-		const capabilities = await getCapabilities(request);
-		test.skip(!capabilities.auth_enabled, 'Auth API is disabled');
-
-		const admin = await getAdmin(request);
-		await injectAuth(page, admin);
+	test('empty session list shows appropriate state', async ({ page }) => {
+		const empty = {
+			sessions: [],
+			total: 0,
+			page: 1,
+			per_page: 50,
+		};
+		await page.route('**/api/sessions', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(empty),
+			});
+		});
+		await page.route('**/api/sessions?*', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(empty),
+			});
+		});
 		await page.goto('/sessions');
-
-		// Should be on the session list page.
 		await expect(page.locator('#session-search')).toBeVisible();
 	});
-
 });

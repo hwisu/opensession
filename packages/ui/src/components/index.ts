@@ -17,6 +17,7 @@ export { default as SessionDetailPage } from './SessionDetailPage.svelte';
 export { default as SessionListPage } from './SessionListPage.svelte';
 export { default as SessionRenderPage } from './SessionRenderPage.svelte';
 export { default as SessionSidebar } from './SessionSidebar.svelte';
+export { default as SettingsPage } from './SettingsPage.svelte';
 export { default as TaskGroup } from './TaskGroup.svelte';
 export { default as ThemeToggle } from './ThemeToggle.svelte';
 export { default as ThreadMinimap } from './ThreadMinimap.svelte';

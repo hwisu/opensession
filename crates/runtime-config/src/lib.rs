@@ -290,7 +290,7 @@ pub fn default_watch_paths() -> Vec<String> {
 
 /// Apply compatibility fallbacks after loading raw TOML.
 /// Returns true when any field was updated.
-pub fn apply_compat_fallbacks(config: &mut DaemonConfig, _root: Option<&toml::Value>) -> bool {
+pub fn apply_compat_fallbacks(config: &mut DaemonConfig, root: Option<&toml::Value>) -> bool {
     let mut changed = false;
 
     if config.git_storage.method == GitStorageMethod::Unknown {
@@ -303,7 +303,26 @@ pub fn apply_compat_fallbacks(config: &mut DaemonConfig, _root: Option<&toml::Va
         changed = true;
     }
 
+    // Legacy team model fields are obsolete and should be dropped from persisted config.
+    if root.is_some_and(has_legacy_team_fields) {
+        changed = true;
+    }
+
     changed
+}
+
+fn has_legacy_team_fields(root: &toml::Value) -> bool {
+    let top_level = root.get("team_id").is_some();
+    let server_team = root
+        .get("server")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|table| table.contains_key("team_id"));
+    let identity_team = root
+        .get("identity")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|table| table.contains_key("team_id"));
+
+    top_level || server_team || identity_team
 }
 
 #[cfg(test)]
@@ -371,6 +390,29 @@ method = "native"
         assert!(!changed);
         assert_eq!(cfg.watchers.custom_paths, before.watchers.custom_paths);
         assert_eq!(cfg.git_storage.method, before.git_storage.method);
+    }
+
+    #[test]
+    fn apply_compat_fallbacks_marks_legacy_team_fields_for_cleanup() {
+        let mut cfg = DaemonConfig::default();
+        let root: toml::Value = toml::from_str(
+            r#"
+[server]
+url = "https://opensession.io"
+team_id = "legacy-team"
+
+[identity]
+nickname = "user"
+team_id = "legacy-team"
+"#,
+        )
+        .expect("parse legacy team config");
+
+        let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
+        assert!(
+            changed,
+            "legacy team fields should trigger compat cleanup rewrite"
+        );
     }
 
     #[test]

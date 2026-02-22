@@ -11,13 +11,53 @@ export interface TestUser {
 
 export interface ApiCapabilities {
 	auth_enabled: boolean;
-	upload_enabled: boolean;
-	ingest_preview_enabled: boolean;
-	gh_share_enabled: boolean;
+	parse_preview_enabled: boolean;
+	register_targets: string[];
+	share_modes: string[];
+}
+
+export interface SessionEventSpec {
+	type: 'UserMessage' | 'AgentMessage' | 'SystemMessage';
+	text: string;
+	task_id?: string | null;
+}
+
+export interface SessionFixture {
+	id: string;
+	title: string;
+	summary: Record<string, unknown>;
+	raw_jsonl: string;
 }
 
 let _admin: TestUser | null = null;
 let _capabilities: ApiCapabilities | null = null;
+
+const DEFAULT_CAPABILITIES: ApiCapabilities = {
+	auth_enabled: false,
+	parse_preview_enabled: false,
+	register_targets: ['local', 'git'],
+	share_modes: ['web', 'git', 'json'],
+};
+
+export function buildCapabilities(overrides?: Partial<ApiCapabilities>): ApiCapabilities {
+	return {
+		...DEFAULT_CAPABILITIES,
+		...overrides,
+		register_targets: overrides?.register_targets ?? DEFAULT_CAPABILITIES.register_targets,
+		share_modes: overrides?.share_modes ?? DEFAULT_CAPABILITIES.share_modes,
+	};
+}
+
+export async function mockCapabilities(page: Page, overrides?: Partial<ApiCapabilities>) {
+	const capabilities = buildCapabilities(overrides);
+	await page.route('**/api/capabilities', async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify(capabilities),
+		});
+	});
+}
 
 export async function getCapabilities(request: APIRequestContext): Promise<ApiCapabilities> {
 	if (_capabilities) return _capabilities;
@@ -25,7 +65,13 @@ export async function getCapabilities(request: APIRequestContext): Promise<ApiCa
 	if (!resp.ok()) {
 		throw new Error(`Capabilities request failed: ${resp.status()} ${await resp.text()}`);
 	}
-	_capabilities = await resp.json();
+	const raw = (await resp.json()) as Partial<ApiCapabilities>;
+	_capabilities = {
+		auth_enabled: !!raw.auth_enabled,
+		parse_preview_enabled: !!raw.parse_preview_enabled,
+		register_targets: Array.isArray(raw.register_targets) ? raw.register_targets : [],
+		share_modes: Array.isArray(raw.share_modes) ? raw.share_modes : [],
+	};
 	return _capabilities;
 }
 
@@ -103,37 +149,67 @@ export async function injectAuth(page: Page, user: TestUser) {
 	);
 }
 
-/**
- * Upload a minimal HAIL session via the API. Returns the session_id.
- */
-export async function uploadSession(
-	request: APIRequestContext,
-	accessToken: string,
-	opts?: { title?: string; events?: Array<Record<string, unknown>> },
-): Promise<string> {
-	const sessionId = crypto.randomUUID();
+function eventTypeFromName(type: SessionEventSpec['type']) {
+	return { type };
+}
+
+function toHailJsonl(session: Record<string, unknown>, events: Array<Record<string, unknown>>) {
+	const header = {
+		type: 'header',
+		version: session.version,
+		session_id: session.session_id,
+		agent: session.agent,
+		context: session.context,
+	};
+	const eventRows = events.map((event) => ({
+		type: 'event',
+		...event,
+	}));
+	const stats = {
+		type: 'stats',
+		...(session.stats as Record<string, unknown>),
+	};
+	return [header, ...eventRows, stats].map((row) => JSON.stringify(row)).join('\n') + '\n';
+}
+
+export function createSessionFixture(opts?: {
+	id?: string;
+	title?: string;
+	tool?: string;
+	provider?: string;
+	model?: string;
+	events?: SessionEventSpec[];
+	nickname?: string;
+	user_id?: string;
+}): SessionFixture {
+	const sessionId = opts?.id ?? crypto.randomUUID();
 	const now = new Date().toISOString();
-	const defaultEvents = [
+	const title = opts?.title ?? `PW Test Session ${sessionId.slice(0, 8)}`;
+	const tool = opts?.tool ?? 'claude-code';
+	const provider = opts?.provider ?? 'anthropic';
+	const model = opts?.model ?? 'claude-opus-4-6';
+	const defaultEvents: SessionEventSpec[] = [
 		{
-			event_id: crypto.randomUUID(),
-			timestamp: now,
-			event_type: { type: 'UserMessage' },
+			type: 'UserMessage',
+			text: 'Hello, write a test',
 			task_id: crypto.randomUUID(),
-			content: { blocks: [{ type: 'Text', text: 'Hello, write a test' }] },
-			duration_ms: null,
-			attributes: {},
 		},
 		{
-			event_id: crypto.randomUUID(),
-			timestamp: new Date(Date.now() + 1000).toISOString(),
-			event_type: { type: 'AgentMessage' },
+			type: 'AgentMessage',
+			text: 'Sure, here is a test.',
 			task_id: null,
-			content: { blocks: [{ type: 'Text', text: 'Sure, here is a test.' }] },
-			duration_ms: null,
-			attributes: {},
 		},
 	];
-	const events = opts?.events ?? defaultEvents;
+	const sourceEvents = opts?.events ?? defaultEvents;
+	const events = sourceEvents.map((event, idx) => ({
+		event_id: crypto.randomUUID(),
+		timestamp: new Date(Date.now() + idx * 1000).toISOString(),
+		event_type: eventTypeFromName(event.type),
+		task_id: event.task_id === undefined ? null : event.task_id,
+		content: { blocks: [{ type: 'Text', text: event.text }] },
+		duration_ms: null,
+		attributes: {},
+	}));
 
 	const firstTs = new Date(String(events[0]?.['timestamp'] ?? now)).getTime();
 	const lastTs = new Date(String(events[events.length - 1]?.['timestamp'] ?? now)).getTime();
@@ -159,13 +235,13 @@ export async function uploadSession(
 		version: 'hail-1.0.0',
 		session_id: sessionId,
 		agent: {
-			provider: 'anthropic',
-			model: 'claude-opus-4-6',
-			tool: 'claude-code',
+			provider,
+			model,
+			tool,
 			tool_version: '1.0.0',
 		},
 		context: {
-			title: opts?.title || `PW Test Session ${sessionId.slice(0, 8)}`,
+			title,
 			description: 'Playwright test session',
 			tags: ['e2e', 'playwright'],
 			created_at: now,
@@ -189,15 +265,86 @@ export async function uploadSession(
 		},
 	};
 
-	let resp = await request.post(`${BASE_URL}/api/sessions`, {
-		data: { session },
-		headers: { Authorization: `Bearer ${accessToken}` },
+	const summary = {
+		id: sessionId,
+		user_id: opts?.user_id ?? 'u-e2e',
+		nickname: opts?.nickname ?? 'pw-e2e',
+		tool,
+		agent_provider: provider,
+		agent_model: model,
+		title,
+		description: session.context.description,
+		tags: session.context.tags.join(','),
+		created_at: now,
+		uploaded_at: now,
+		message_count: messageCount,
+		task_count: taskCount,
+		event_count: events.length,
+		duration_seconds: durationSeconds,
+		total_input_tokens: 100,
+		total_output_tokens: 50,
+		git_remote: null,
+		git_branch: null,
+		git_commit: null,
+		git_repo_name: null,
+		pr_number: null,
+		pr_url: null,
+		working_directory: null,
+		files_modified: null,
+		files_read: null,
+		has_errors: false,
+		max_active_agents: 1,
+		session_score: 0,
+		score_plugin: 'none',
+	};
+
+	return {
+		id: sessionId,
+		title,
+		summary,
+		raw_jsonl: toHailJsonl(session, events),
+	};
+}
+
+export async function mockSessionApis(
+	page: Page,
+	fixture: SessionFixture,
+	options?: { include_in_list?: boolean },
+) {
+	const includeInList = options?.include_in_list ?? true;
+	const listPayload = {
+		sessions: includeInList ? [fixture.summary] : [],
+		total: includeInList ? 1 : 0,
+		page: 1,
+		per_page: 50,
+	};
+
+	await page.route('**/api/sessions', async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify(listPayload),
+		});
 	});
-
-	if (!resp.ok()) {
-		throw new Error(`Upload failed: ${resp.status()} ${await resp.text()}`);
-	}
-
-	const result: { id: string; url: string } = await resp.json();
-	return result.id;
+	await page.route('**/api/sessions?*', async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify(listPayload),
+		});
+	});
+	await page.route(`**/api/sessions/${fixture.id}`, async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify(fixture.summary),
+		});
+	});
+	await page.route(`**/api/sessions/${fixture.id}/raw`, async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'text/plain; charset=utf-8',
+			body: fixture.raw_jsonl,
+		});
+	});
 }

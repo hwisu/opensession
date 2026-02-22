@@ -2,15 +2,12 @@
 	"docs": {
 		"path": "docs.md",
 		"required_chapters": [
-			"Product Overview",
-			"Web Experience",
-			"CLI Workflows",
-			"TUI Workflows",
-			"Handoff Storage Model",
-			"Web Routes",
-			"API Summary",
-			"Self-Hosting and Verification",
-			"Troubleshooting"
+			"Getting Started",
+			"Share via Git",
+			"Inspect Timeline",
+			"Handoff",
+			"Optional UI",
+			"Concepts"
 		],
 		"required_template_subheadings": [],
 		"minimum_code_blocks_per_chapter": 0

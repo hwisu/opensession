@@ -47,16 +47,16 @@ body {
 
 /* ─── Light theme overrides ─── */
 html.light {
-	--color-bg-primary: #fafaf5;
-	--color-bg-secondary: #f0f0ea;
-	--color-bg-tertiary: #e8e8e2;
-	--color-bg-hover: #ddddd7;
-	--color-border: #e0e0d8;
-	--color-border-light: #d0d0c8;
-	--color-text-primary: #1a1a1a;
-	--color-text-secondary: #555555;
-	--color-text-muted: #999999;
-	--color-accent: #2563eb;
+	--color-bg-primary: #e6e4d7;
+	--color-bg-secondary: #d9d6c8;
+	--color-bg-tertiary: #cdcab9;
+	--color-bg-hover: #c2beac;
+	--color-border: #8f8b78;
+	--color-border-light: #a8a390;
+	--color-text-primary: #1c1b18;
+	--color-text-secondary: #3f3b33;
+	--color-text-muted: #656053;
+	--color-accent: #0f5fd6;
 }
 
 /* ─── Scrollbar styles ─── */

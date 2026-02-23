@@ -1194,7 +1194,8 @@ mod tests {
         should_show_footer,
     };
     use crate::app::{
-        App, ConnectionContext, DetailViewMode, EventFilter, ServerInfo, ServerStatus, View,
+        App, ConnectionContext, DetailViewMode, EventFilter, ListLayout, ServerInfo, ServerStatus,
+        View,
     };
     use crate::theme::Theme;
     use chrono::Utc;
@@ -1441,6 +1442,18 @@ mod tests {
 
         let text = spans_to_text(&session_list_footer_line(&app, 180).spans);
         assert!(text.contains("search: rollout|"));
+    }
+
+    #[test]
+    fn session_list_footer_hides_page_shortcut_in_local_multi_column() {
+        let session = make_session(vec![make_event(EventType::UserMessage, "prompt")]);
+        let mut app = App::new(vec![session.clone(), session]);
+        app.per_page = 1;
+        app.list_layout = ListLayout::ByUser;
+
+        let text = spans_to_text(&session_list_footer_line(&app, 260).spans);
+        assert!(!text.contains("PgUp/PgDn"));
+        assert!(text.contains("page 1/1"));
     }
 
     #[test]

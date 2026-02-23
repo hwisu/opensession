@@ -1031,6 +1031,21 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn local_multi_column_uses_single_virtual_page() {
+        let mut app = App::new(vec![
+            make_live_session("mc-1", 2),
+            make_live_session("mc-2", 2),
+            make_live_session("mc-3", 2),
+        ]);
+        app.per_page = 1;
+        app.list_layout = ListLayout::ByUser;
+        app.apply_filter();
+
+        assert_eq!(app.total_pages(), 1);
+        assert_eq!(app.page_count(), app.filtered_sessions.len());
+    }
+
+    #[test]
     fn list_right_key_does_not_open_session_detail() {
         let mut app = App::new(vec![Session::new(
             "s1".to_string(),
@@ -3598,11 +3613,15 @@ impl App {
 
     /// Total pages for current session count.
     pub fn total_pages(&self) -> usize {
+        if self.is_unpaged_local_multi_column() {
+            return 1;
+        }
         let total = self.session_count();
+        let per_page = self.per_page.max(1);
         if total == 0 {
             1
         } else {
-            total.div_ceil(self.per_page)
+            total.div_ceil(per_page)
         }
     }
 
@@ -3611,9 +3630,13 @@ impl App {
         if self.is_db_view() {
             return 0..self.db_sessions.len();
         }
+        if self.is_unpaged_local_multi_column() {
+            return 0..self.filtered_sessions.len();
+        }
         let total = self.session_count();
-        let start = self.page * self.per_page;
-        let end = (start + self.per_page).min(total);
+        let per_page = self.per_page.max(1);
+        let start = self.page * per_page;
+        let end = (start + per_page).min(total);
         start..end
     }
 
@@ -4301,10 +4324,11 @@ impl App {
             let db_row = self.db_sessions.get(idx)?;
             self.sessions.iter().find(|s| s.session_id == db_row.id)
         } else {
+            let per_page = self.per_page.max(1);
             let abs_idx = self
                 .list_state
                 .selected()
-                .map(|i| self.page * self.per_page + i)?;
+                .map(|i| self.page * per_page + i)?;
             self.filtered_sessions
                 .get(abs_idx)
                 .and_then(|&idx| self.sessions.get(idx))
@@ -5684,6 +5708,10 @@ impl App {
 
     fn visible_event_count(&self, session: &Session) -> usize {
         self.get_visible_events(session).len()
+    }
+
+    fn is_unpaged_local_multi_column(&self) -> bool {
+        matches!(self.view_mode, ViewMode::Local) && self.list_layout == ListLayout::ByUser
     }
 
     fn apply_filter(&mut self) {

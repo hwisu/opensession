@@ -5,8 +5,6 @@ use anyhow::{Context, Result};
 /// Git hook types managed by opensession.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookType {
-    PrepareCommitMsg,
-    PostCommit,
     PrePush,
 }
 
@@ -14,8 +12,6 @@ impl HookType {
     /// The filename used in `.git/hooks/`.
     pub fn filename(&self) -> &'static str {
         match self {
-            Self::PrepareCommitMsg => "prepare-commit-msg",
-            Self::PostCommit => "post-commit",
             Self::PrePush => "pre-push",
         }
     }
@@ -28,18 +24,6 @@ impl HookType {
 // ---------------------------------------------------------------------------
 // Hook templates
 // ---------------------------------------------------------------------------
-
-const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
-# opensession-managed — do not edit
-# Disabled by default in Git-native V2.
-exit 0
-"#;
-
-const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
-# opensession-managed — do not edit
-# Disabled by default in Git-native V2.
-exit 0
-"#;
 
 const PRE_PUSH_HOOK: &str = r#"#!/bin/sh
 # opensession-managed — do not edit
@@ -172,6 +156,7 @@ exit 0
 // ---------------------------------------------------------------------------
 
 const HOOK_MARKER: &str = "# opensession-managed";
+const LEGACY_DISABLED_HOOKS: &[&str] = &["prepare-commit-msg", "post-commit"];
 
 // ---------------------------------------------------------------------------
 // Hook template accessor
@@ -180,8 +165,6 @@ const HOOK_MARKER: &str = "# opensession-managed";
 /// Generate the hook script content for a given hook type.
 pub fn hook_template(hook_type: HookType) -> &'static str {
     match hook_type {
-        HookType::PrepareCommitMsg => PREPARE_COMMIT_MSG_HOOK,
-        HookType::PostCommit => POST_COMMIT_HOOK,
         HookType::PrePush => PRE_PUSH_HOOK,
     }
 }
@@ -199,6 +182,8 @@ pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookTyp
             repo_root.display()
         );
     }
+
+    cleanup_legacy_disabled_hooks(&hooks_dir)?;
 
     let mut installed = Vec::new();
     for hook_type in hooks {
@@ -236,6 +221,39 @@ pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookTyp
     }
 
     Ok(installed)
+}
+
+/// Remove legacy opensession-managed disabled hooks from older V2 builds.
+///
+/// If a `*.pre-opensession` backup exists, it is restored.
+fn cleanup_legacy_disabled_hooks(hooks_dir: &Path) -> Result<()> {
+    for filename in LEGACY_DISABLED_HOOKS {
+        let hook_path = hooks_dir.join(filename);
+        if !hook_path.exists() {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
+        if !content.contains(HOOK_MARKER) {
+            continue;
+        }
+
+        std::fs::remove_file(&hook_path)
+            .with_context(|| format!("remove legacy hook {}", hook_path.display()))?;
+
+        let backup_path = hooks_dir.join(format!("{filename}.pre-opensession"));
+        if backup_path.exists() {
+            std::fs::rename(&backup_path, &hook_path).with_context(|| {
+                format!(
+                    "restore legacy backup {} -> {}",
+                    backup_path.display(),
+                    hook_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Uninstall opensession git hooks from a repository.
@@ -358,8 +376,6 @@ mod tests {
 
     #[test]
     fn test_hook_type_filename() {
-        assert_eq!(HookType::PrepareCommitMsg.filename(), "prepare-commit-msg");
-        assert_eq!(HookType::PostCommit.filename(), "post-commit");
         assert_eq!(HookType::PrePush.filename(), "pre-push");
     }
 
@@ -445,14 +461,14 @@ mod tests {
 
         // Write a pre-existing hook (not opensession-managed)
         let existing_content = "#!/bin/sh\necho 'my custom hook'\n";
-        let hook_path = hooks_dir.join("prepare-commit-msg");
+        let hook_path = hooks_dir.join("pre-push");
         fs::write(&hook_path, existing_content).unwrap();
 
         // Install opensession hooks
-        install_hooks(repo.path(), &[HookType::PrepareCommitMsg]).unwrap();
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
 
         // Original should be backed up
-        let backup_path = hooks_dir.join("prepare-commit-msg.pre-opensession");
+        let backup_path = hooks_dir.join("pre-push.pre-opensession");
         assert!(backup_path.exists(), "backup should exist");
         let backup_content = fs::read_to_string(&backup_path).unwrap();
         assert_eq!(backup_content, existing_content);
@@ -462,13 +478,38 @@ mod tests {
         assert!(new_content.contains(HOOK_MARKER));
 
         // Uninstall should restore the backup
-        uninstall_hooks(repo.path(), &[HookType::PrepareCommitMsg]).unwrap();
+        uninstall_hooks(repo.path(), &[HookType::PrePush]).unwrap();
         let restored_content = fs::read_to_string(&hook_path).unwrap();
         assert_eq!(restored_content, existing_content);
         assert!(
             !backup_path.exists(),
             "backup should be removed after restore"
         );
+    }
+
+    #[test]
+    fn test_install_cleans_legacy_disabled_hooks_and_restores_backup() {
+        let repo = create_fake_git_repo();
+        let hooks_dir = repo.path().join(".git/hooks");
+
+        let legacy_hook = hooks_dir.join("prepare-commit-msg");
+        fs::write(
+            &legacy_hook,
+            "#!/bin/sh\n# opensession-managed — do not edit\nexit 0\n",
+        )
+        .unwrap();
+
+        let backup_path = hooks_dir.join("prepare-commit-msg.pre-opensession");
+        fs::write(&backup_path, "#!/bin/sh\necho 'legacy custom'\n").unwrap();
+
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
+
+        let restored = fs::read_to_string(&legacy_hook).unwrap();
+        assert!(
+            restored.contains("legacy custom"),
+            "legacy backup should be restored"
+        );
+        assert!(!backup_path.exists(), "legacy backup should be consumed");
     }
 
     #[test]

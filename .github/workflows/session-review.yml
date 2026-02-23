@@ -91,6 +91,9 @@ jobs:
   cleanup:
     name: PR Session Cleanup
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     if: >
       (github.event_name == 'pull_request' &&
        github.event.action == 'closed' &&

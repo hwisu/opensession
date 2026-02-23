@@ -22,7 +22,7 @@ CLI/Web/API 계약은 3가지 동작으로 정리되었습니다.
 
 - `opensession publish ...` 제거
 - `opensession session handoff ...` 제거
-- `/git`, `/gh/*` 라우트 제거
+- 레거시 단축 라우트(`/git`, `/gh/*`, `/resolve/*`)는 더 이상 제공되지 않으며 의도적으로 404를 반환
 - `/api/ingest/preview` 제거 (`/api/parse/preview` 사용)
 
 ## URI 모델
@@ -37,6 +37,36 @@ CLI/Web/API 계약은 3가지 동작으로 정리되었습니다.
 
 - `ref_enc`: RFC3986 percent-encoding
 - `project_b64`, `remote_b64`: base64url(no padding)
+
+## 설치
+
+```bash
+cargo install opensession
+```
+
+사용자 표면은 `opensession` CLI입니다. 자동 세션 수집(auto-capture)을 쓰려면 daemon 프로세스가 추가로 실행 중이어야 합니다.
+
+## Install-and-Forget 설정
+
+```bash
+# 1) 현재 repo에 pre-push fanout 훅 + shim 설치/업데이트
+opensession setup
+
+# 2) 훅/shim/예상 ledger ref/daemon 상태 점검
+opensession setup --check
+```
+
+자동 수집을 위한 daemon 실행:
+
+```bash
+# opensession-daemon 바이너리가 있는 경우
+opensession-daemon run
+
+# 소스 체크아웃에서 실행하는 경우
+cargo run -p opensession-daemon -- run
+```
+
+daemon이 없으면 parse/register/share는 수동으로 사용할 수 있지만 백그라운드 자동 수집은 동작하지 않습니다.
 
 ## 빠른 시작
 

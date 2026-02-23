@@ -2556,6 +2556,7 @@ version = "0.2.25"
 dependencies = [
  "anyhow",
  "chrono",
+ "clap",
  "notify",
  "opensession-api",
  "opensession-api-client",

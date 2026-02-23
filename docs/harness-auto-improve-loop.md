@@ -32,7 +32,7 @@ Optional:
 Examples:
 - `cargo test -p opensession-parsers parser_name::case_name -- --nocapture`
 - `cargo test -p opensession-daemon --quiet`
-- `(cd /Users/hwisookim/ops/web && npm run check)`
+- `(cd /Users/hwisookim/opensession/web && npm run check)`
 
 ## Step 2: Build A Focused Harness
 
@@ -90,7 +90,7 @@ Rejected safeguard:
 
 When the same class of failure repeats:
 
-1. add/update a guardrail rule in `/Users/hwisookim/ops/AGENTS.md`
+1. add/update a guardrail rule in `/Users/hwisookim/opensession/AGENTS.md`
 2. add or refine harness coverage for that class
 3. remove obsolete rules when no longer applicable
 
@@ -98,8 +98,8 @@ When the same class of failure repeats:
 
 Repository-required validation gates:
 
-1. Fast gate: `/Users/hwisookim/ops/.githooks/pre-commit`
-2. Full gate: `/Users/hwisookim/ops/.githooks/pre-push`
+1. Fast gate: `/Users/hwisookim/opensession/.githooks/pre-commit`
+2. Full gate: `/Users/hwisookim/opensession/.githooks/pre-push`
 
 Current gate intent:
 

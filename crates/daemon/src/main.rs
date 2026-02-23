@@ -6,13 +6,32 @@ mod scheduler;
 mod watcher;
 
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use opensession_local_db::LocalDb;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info};
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "opensession-daemon",
+    about = "Background daemon for automatic session detection and upload"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<DaemonCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum DaemonCommand {
+    /// Start the daemon event loop.
+    Run,
+}
+
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -21,7 +40,11 @@ async fn main() {
         )
         .init();
 
-    if let Err(e) = run().await {
+    let result = match cli.command.unwrap_or(DaemonCommand::Run) {
+        DaemonCommand::Run => run().await,
+    };
+
+    if let Err(e) = result {
         error!("Daemon fatal error: {:#}", e);
         std::process::exit(1);
     }
@@ -129,5 +152,22 @@ async fn wait_for_shutdown() {
             .await
             .expect("Failed to register Ctrl+C handler");
         info!("Received Ctrl+C");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_defaults_to_run_when_no_subcommand() {
+        let cli = Cli::try_parse_from(["opensession-daemon"]).expect("parse cli");
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn cli_accepts_run_subcommand() {
+        let cli = Cli::try_parse_from(["opensession-daemon", "run"]).expect("parse cli");
+        assert!(matches!(cli.command, Some(DaemonCommand::Run)));
     }
 }

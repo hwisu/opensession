@@ -22,7 +22,7 @@ Legacy command trees and routes were removed:
 
 - `opensession publish ...` removed
 - `opensession session handoff ...` removed
-- `/git` and `/gh/*` routes removed
+- Legacy shortcut routes (`/git`, `/gh/*`, `/resolve/*`) are no longer served and return 404 by design
 - `/api/ingest/preview` removed in favor of `/api/parse/preview`
 
 ## URI Model
@@ -37,6 +37,36 @@ Notes:
 
 - `ref_enc` is RFC3986 percent-encoding.
 - `project_b64` / `remote_b64` are base64url without padding.
+
+## Install
+
+```bash
+cargo install opensession
+```
+
+`opensession` is the user-facing CLI. Session auto-capture additionally requires the daemon process to be running.
+
+## Install-and-Forget Setup
+
+```bash
+# 1) Install/update pre-push fanout hook + shim in this repo
+opensession setup
+
+# 2) Verify hook/shim + expected ledger ref + daemon status
+opensession setup --check
+```
+
+Start daemon (required for automatic session capture):
+
+```bash
+# if opensession-daemon binary is available
+opensession-daemon run
+
+# from source checkout
+cargo run -p opensession-daemon -- run
+```
+
+Without daemon, parse/register/share still work manually, but background auto-capture is not active.
 
 ## Quick Start
 

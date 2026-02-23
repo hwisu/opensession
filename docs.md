@@ -29,6 +29,17 @@ opensession cat os://src/local/<sha256>
 opensession inspect os://src/local/<sha256>
 ```
 
+Install:
+
+```bash
+cargo install opensession
+```
+
+Auto-capture note:
+
+- `opensession` covers parse/register/share/handoff.
+- Automatic background capture requires the daemon process (`opensession-daemon run`) to be running.
+
 Local object storage:
 
 - In repo: `.opensession/objects/sha256/ab/cd/<hash>.jsonl`
@@ -67,6 +78,8 @@ opensession setup --check
 
 - Installs/updates OpenSession-managed `pre-push` hook in the current repo.
 - Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
+- `setup --check` prints daemon status from `~/.config/opensession/daemon.pid`.
+- Start daemon with `opensession-daemon run` (or `cargo run -p opensession-daemon -- run` in a source checkout).
 - Does **not** modify `remote.<name>.push`.
 - Hook fanout push is best-effort and warning-only.
 - Set `OPENSESSION_STRICT=1` to fail push when fanout helper is unavailable or fanout push fails.
@@ -93,7 +106,7 @@ Canonical web routes:
 - `/src/gl/<project_b64>/ref/<ref_enc>/path/<path...>`
 - `/src/git/<remote_b64>/ref/<ref_enc>/path/<path...>`
 
-Legacy routes are removed:
+Legacy shortcut routes are reserved and return 404:
 
 - `/git`
 - `/gh/*`

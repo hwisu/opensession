@@ -12,7 +12,8 @@
 2. One concern per PR.
 3. Run before submitting:
    ```bash
-   cargo clippy --workspace && cargo test --workspace
+   ./.githooks/pre-commit
+   ./.githooks/pre-push
    ```
 4. API route changes: update the endpoint table in README.
 

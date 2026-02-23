@@ -25,7 +25,7 @@ pub struct ShareArgs {
     /// Git remote name or URL (required for `--git`).
     #[arg(long)]
     pub remote: Option<String>,
-    /// Git ref to write into (`refs/heads/...`).
+    /// Git ref to write into (default: hidden branch ledger ref).
     #[arg(long = "ref")]
     pub git_ref: Option<String>,
     /// Repo-relative target path in the ref.

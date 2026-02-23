@@ -55,7 +55,6 @@ pub fn get_by_nickname(nickname: &str) -> Built {
 pub fn insert_with_email(
     id: &str,
     nickname: &str,
-    api_key_placeholder: &str,
     email: &str,
     password_hash: &str,
     password_salt: &str,
@@ -65,7 +64,6 @@ pub fn insert_with_email(
         .columns([
             Users::Id,
             Users::Nickname,
-            Users::ApiKey,
             Users::Email,
             Users::PasswordHash,
             Users::PasswordSalt,
@@ -73,7 +71,6 @@ pub fn insert_with_email(
         .values_panic([
             id.into(),
             nickname.into(),
-            api_key_placeholder.into(),
             email.into(),
             password_hash.into(),
             password_salt.into(),
@@ -82,19 +79,13 @@ pub fn insert_with_email(
 }
 
 /// Insert user from OAuth (no password).
-pub fn insert_oauth(
-    id: &str,
-    nickname: &str,
-    api_key_placeholder: &str,
-    email: Option<&str>,
-) -> Built {
+pub fn insert_oauth(id: &str, nickname: &str, email: Option<&str>) -> Built {
     Query::insert()
         .into_table(Users::Table)
-        .columns([Users::Id, Users::Nickname, Users::ApiKey, Users::Email])
+        .columns([Users::Id, Users::Nickname, Users::Email])
         .values_panic([
             id.into(),
             nickname.into(),
-            api_key_placeholder.into(),
             email.map(|s| s.to_string()).into(),
         ])
         .build(SqliteQueryBuilder)
@@ -117,15 +108,6 @@ pub fn update_password(user_id: &str, password_hash: &str, password_salt: &str) 
         .table(Users::Table)
         .value(Users::PasswordHash, password_hash)
         .value(Users::PasswordSalt, password_salt)
-        .and_where(Expr::col(Users::Id).eq(user_id))
-        .build(SqliteQueryBuilder)
-}
-
-/// Regenerate API key.
-pub fn update_api_key(user_id: &str, api_key: &str) -> Built {
-    Query::update()
-        .table(Users::Table)
-        .value(Users::ApiKey, api_key)
         .and_where(Expr::col(Users::Id).eq(user_id))
         .build(SqliteQueryBuilder)
 }

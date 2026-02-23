@@ -30,4 +30,17 @@ mod tests {
         assert_eq!(LOCAL_MIGRATIONS.len(), 1);
         assert_eq!(LOCAL_MIGRATIONS[0].0, "local_0001_schema");
     }
+
+    #[test]
+    fn bootstrap_schema_drops_legacy_user_columns() {
+        let sql = MIGRATIONS[0].1;
+        assert!(
+            !sql.contains("api_key       TEXT NOT NULL UNIQUE"),
+            "users.api_key legacy column must not be present in bootstrap schema"
+        );
+        assert!(
+            !sql.contains("avatar_url    TEXT"),
+            "users.avatar_url legacy column must not be present in bootstrap schema"
+        );
+    }
 }

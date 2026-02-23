@@ -7,7 +7,6 @@ pub enum Users {
     Table,
     Id,
     Nickname,
-    ApiKey,
     CreatedAt,
     Email,
     PasswordHash,

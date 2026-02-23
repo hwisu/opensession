@@ -9,7 +9,7 @@ use uuid::Uuid;
 use opensession_api::{
     crypto, db as dbq,
     oauth::{self, AuthProvidersResponse, OAuthProviderConfig, OAuthProviderInfo},
-    service, OAuthLinkResponse,
+    OAuthLinkResponse,
 };
 
 use super::auth::AuthUser;
@@ -343,17 +343,11 @@ pub async fn callback(
             // Create new user
             let user_id = Uuid::new_v4().to_string();
             let username = user_info.username.clone();
-            let api_key_placeholder = service::generate_api_key_placeholder(&user_id);
 
             // OAuth users have no password — insert with email but empty hash/salt
             sq_execute(
                 &conn,
-                dbq::users::insert_oauth(
-                    &user_id,
-                    &username,
-                    &api_key_placeholder,
-                    user_info.email.as_deref(),
-                ),
+                dbq::users::insert_oauth(&user_id, &username, user_info.email.as_deref()),
             )
             .map_err(ApiErr::from_db("create user from oauth"))?;
 

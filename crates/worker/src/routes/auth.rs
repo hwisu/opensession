@@ -365,12 +365,10 @@ pub async fn auth_register(mut req: Request, ctx: RouteContext<()>) -> Result<Re
         }
 
         let user_id = Uuid::new_v4().to_string();
-        let api_key_placeholder = service::generate_api_key_placeholder(&user_id);
         let (password_hash, password_salt) = crypto::hash_password(&req.password)?;
         let insert = dbq::users::insert_with_email(
             &user_id,
             &nickname,
-            &api_key_placeholder,
             &email,
             &password_hash,
             &password_salt,
@@ -868,14 +866,12 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
             } else {
                 let user_id = Uuid::new_v4().to_string();
                 let nickname = user_info.username.clone();
-                let api_key_placeholder = service::generate_api_key_placeholder(&user_id);
 
                 d1_run(
                     &d1,
                     dbq::users::insert_oauth(
                         &user_id,
                         &nickname,
-                        &api_key_placeholder,
                         user_info.email.as_deref(),
                     ),
                     "insert oauth user",

@@ -155,7 +155,6 @@ pub async fn auth_register(
     }
 
     let user_id = Uuid::new_v4().to_string();
-    let api_key_placeholder = service::generate_api_key_placeholder(&user_id);
     let (password_hash, password_salt) =
         crypto::hash_password(&req.password).map_err(ApiErr::from)?;
 
@@ -166,7 +165,6 @@ pub async fn auth_register(
             dbq::users::insert_with_email(
                 &user_id,
                 &nickname,
-                &api_key_placeholder,
                 &email,
                 &password_hash,
                 &password_salt,

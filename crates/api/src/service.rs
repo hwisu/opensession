@@ -52,14 +52,6 @@ pub fn generate_api_key() -> String {
     format!("osk_{}", uuid::Uuid::new_v4().simple())
 }
 
-/// Build a non-secret placeholder stored in `users.api_key`.
-///
-/// `users.api_key` remains in schema for compatibility with the auth payload shape, but it must never
-/// store a usable secret.
-pub fn generate_api_key_placeholder(user_id: &str) -> String {
-    format!("stub:{user_id}")
-}
-
 /// Hash an API key for persistent storage and lookup.
 pub fn hash_api_key(api_key: &str) -> String {
     crate::crypto::hash_token(api_key)

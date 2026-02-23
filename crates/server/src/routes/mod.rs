@@ -4,6 +4,5 @@ pub mod capabilities;
 pub mod docs;
 pub mod health;
 pub mod ingest;
-pub mod legacy;
 pub mod oauth;
 pub mod sessions;

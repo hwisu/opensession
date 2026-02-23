@@ -78,7 +78,6 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 `share --web` requires explicit `.opensession/config.toml`.
 Git-native writes now target hidden ledger refs (`refs/opensession/branches/<branch_b64url>`); legacy fixed ref writes are removed.
 `opensession setup` also installs a shim at `~/.local/share/opensession/bin/opensession` for hook stability.
-`opensession setup` cleans up legacy OpenSession-managed disabled hooks (`prepare-commit-msg`, `post-commit`).
 
 ## Handoff
 

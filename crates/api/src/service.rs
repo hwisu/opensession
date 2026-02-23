@@ -54,7 +54,7 @@ pub fn generate_api_key() -> String {
 
 /// Build a non-secret placeholder stored in `users.api_key`.
 ///
-/// `users.api_key` remains in schema for migration safety, but it must never
+/// `users.api_key` remains in schema for compatibility with the auth payload shape, but it must never
 /// store a usable secret.
 pub fn generate_api_key_placeholder(user_id: &str) -> String {
     format!("stub:{user_id}")

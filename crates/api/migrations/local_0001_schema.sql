@@ -24,15 +24,5 @@ CREATE TABLE IF NOT EXISTS body_cache (
     cached_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Commit <-> session linking
-CREATE TABLE IF NOT EXISTS commit_session_links (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    commit_hash TEXT NOT NULL,
-    session_id  TEXT NOT NULL,
-    repo_path   TEXT,
-    branch      TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(commit_hash, session_id)
-);
-CREATE INDEX IF NOT EXISTS idx_commit_links_hash ON commit_session_links(commit_hash);
-CREATE INDEX IF NOT EXISTS idx_commit_links_session ON commit_session_links(session_id);
+-- Local auxiliary-session visibility marker.
+ALTER TABLE sessions ADD COLUMN is_auxiliary INTEGER NOT NULL DEFAULT 0;

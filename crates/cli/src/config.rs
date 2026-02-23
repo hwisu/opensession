@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use opensession_runtime_config::{apply_compat_fallbacks, DaemonConfig, CONFIG_FILE_NAME};
+use opensession_runtime_config::{DaemonConfig, CONFIG_FILE_NAME};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -117,13 +117,10 @@ fn get_bool(root: &toml::Value, path: &[&str]) -> Option<bool> {
     get_value(root, path).and_then(toml::Value::as_bool)
 }
 
-fn load_runtime_config_from_doc(doc: &toml::Value) -> (DaemonConfig, bool) {
-    let mut config = doc
-        .clone()
+fn load_runtime_config_from_doc(doc: &toml::Value) -> DaemonConfig {
+    doc.clone()
         .try_into::<DaemonConfig>()
-        .unwrap_or_else(|_| DaemonConfig::default());
-    let migrated = apply_compat_fallbacks(&mut config, Some(doc));
-    (config, migrated)
+        .unwrap_or_else(|_| DaemonConfig::default())
 }
 
 fn load_runtime_config_from_disk() -> Result<(DaemonConfig, bool)> {
@@ -133,12 +130,7 @@ fn load_runtime_config_from_disk() -> Result<(DaemonConfig, bool)> {
     let config = if path.exists() {
         let doc = read_config_doc(&path)?;
         auto_start = get_bool(&doc, &["cli", "auto_start"]).unwrap_or(true);
-        let (loaded, migrated) = load_runtime_config_from_doc(&doc);
-        if migrated {
-            // Persist compat rewrite so obsolete fields (e.g., legacy team_id) are dropped.
-            write_runtime_config(&loaded, auto_start)?;
-        }
-        loaded
+        load_runtime_config_from_doc(&doc)
     } else {
         DaemonConfig::default()
     };
@@ -266,32 +258,18 @@ mod tests {
     use super::load_runtime_config_from_doc;
 
     #[test]
-    fn legacy_team_fields_trigger_migration_flag() {
+    fn runtime_config_loads_server_table() {
         let doc: toml::Value = toml::from_str(
             r#"
 [server]
 url = "https://opensession.io"
-team_id = "legacy"
+api_key = "k"
 "#,
         )
-        .expect("parse legacy team config");
+        .expect("parse runtime config");
 
-        let (_cfg, migrated) = load_runtime_config_from_doc(&doc);
-        assert!(migrated, "legacy team_id should trigger config rewrite");
-    }
-
-    #[test]
-    fn modern_config_does_not_trigger_migration_flag() {
-        let doc: toml::Value = toml::from_str(
-            r#"
-[server]
-url = "https://opensession.io"
-api_key = ""
-"#,
-        )
-        .expect("parse modern config");
-
-        let (_cfg, migrated) = load_runtime_config_from_doc(&doc);
-        assert!(!migrated, "modern config should not trigger rewrite");
+        let cfg = load_runtime_config_from_doc(&doc);
+        assert_eq!(cfg.server.url, "https://opensession.io");
+        assert_eq!(cfg.server.api_key, "k");
     }
 }

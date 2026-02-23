@@ -6,7 +6,6 @@ use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_core::trace::Session;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -50,16 +49,6 @@ pub struct LocalSessionRow {
     pub has_errors: bool,
     pub max_active_agents: i64,
     pub is_auxiliary: bool,
-}
-
-/// A link between a git commit and an AI session.
-#[derive(Debug, Clone)]
-pub struct CommitLink {
-    pub commit_hash: String,
-    pub session_id: String,
-    pub repo_path: Option<String>,
-    pub branch: Option<String>,
-    pub created_at: String,
 }
 
 /// Return true when a cached row corresponds to an OpenCode child session.
@@ -336,8 +325,6 @@ pub struct LogFilter {
     pub working_directory: Option<String>,
     /// Filter by git repo name.
     pub git_repo_name: Option<String>,
-    /// Filter sessions linked to this git commit hash.
-    pub commit: Option<String>,
     /// Maximum number of results.
     pub limit: Option<u32>,
     /// Offset for pagination.
@@ -371,26 +358,11 @@ impl LocalDb {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create dir for {}", path.display()))?;
         }
-        match open_connection_with_latest_schema(path) {
-            Ok(conn) => Ok(Self {
-                conn: Mutex::new(conn),
-            }),
-            Err(err) => {
-                if !is_schema_compat_error(&err) {
-                    return Err(err);
-                }
-
-                // Local DB is a cache. If schema migration cannot safely reconcile
-                // an incompatible/corrupted file, rotate it out and recreate latest schema.
-                rotate_legacy_db(path)?;
-
-                let conn = open_connection_with_latest_schema(path)
-                    .with_context(|| format!("recreate db {}", path.display()))?;
-                Ok(Self {
-                    conn: Mutex::new(conn),
-                })
-            }
-        }
+        let conn = open_connection_with_latest_schema(path)
+            .with_context(|| format!("open local db {}", path.display()))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -427,8 +399,7 @@ impl LocalDb {
         let merged_git = merge_git_context(&git_from_session, git);
 
         let conn = self.conn();
-        // NOTE: `body_storage_key` is kept only for migration/schema parity.
-        // Runtime lookup uses canonical body URLs and local body cache tables.
+        // Body contents are resolved via canonical body URLs and local body cache.
         conn.execute(
             "INSERT INTO sessions \
              (id, team_id, tool, agent_provider, agent_model, \
@@ -500,8 +471,7 @@ impl LocalDb {
 
     pub fn upsert_remote_session(&self, summary: &RemoteSessionSummary) -> Result<()> {
         let conn = self.conn();
-        // NOTE: `body_storage_key` is kept only for migration/schema parity.
-        // Runtime lookup uses canonical body URLs and local body cache tables.
+        // Body contents are resolved via canonical body URLs and local body cache.
         conn.execute(
             "INSERT INTO sessions \
              (id, user_id, team_id, tool, agent_provider, agent_model, \
@@ -796,22 +766,12 @@ impl LocalDb {
             idx += 1;
         }
 
-        // Optional JOIN for commit hash filter
-        let mut extra_join = String::new();
-        if let Some(ref commit) = filter.commit {
-            extra_join =
-                " INNER JOIN commit_session_links csl ON csl.session_id = s.id".to_string();
-            where_clauses.push(format!("csl.commit_hash = ?{idx}"));
-            param_values.push(Box::new(commit.clone()));
-            idx += 1;
-        }
-
         let _ = idx; // suppress unused warning
 
         let where_str = where_clauses.join(" AND ");
         let mut sql = format!(
             "SELECT {LOCAL_SESSION_COLUMNS} \
-             {FROM_CLAUSE}{extra_join} WHERE {where_str} \
+             {FROM_CLAUSE} WHERE {where_str} \
              ORDER BY s.created_at DESC"
         );
 
@@ -1052,99 +1012,6 @@ impl LocalDb {
         Ok(body)
     }
 
-    // ── Migration helper ───────────────────────────────────────────────
-
-    /// Migrate entries from the old state.json UploadState into the local DB.
-    /// Marks them as `synced` with no metadata (we only know the file path was uploaded).
-    pub fn migrate_from_state_json(
-        &self,
-        uploaded: &std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
-    ) -> Result<usize> {
-        let mut count = 0;
-        for (path, uploaded_at) in uploaded {
-            let exists: bool = self
-                .conn()
-                .query_row(
-                    "SELECT COUNT(*) > 0 FROM session_sync WHERE source_path = ?1",
-                    params![path],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
-
-            if exists {
-                self.conn().execute(
-                    "UPDATE session_sync SET sync_status = 'synced', last_synced_at = ?1 \
-                     WHERE source_path = ?2 AND sync_status = 'local_only'",
-                    params![uploaded_at.to_rfc3339(), path],
-                )?;
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-
-    // ── Commit ↔ session linking ────────────────────────────────────
-
-    /// Link a git commit to an AI session.
-    pub fn link_commit_session(
-        &self,
-        commit_hash: &str,
-        session_id: &str,
-        repo_path: Option<&str>,
-        branch: Option<&str>,
-    ) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO commit_session_links (commit_hash, session_id, repo_path, branch) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT(commit_hash, session_id) DO NOTHING",
-            params![commit_hash, session_id, repo_path, branch],
-        )?;
-        Ok(())
-    }
-
-    /// Get all sessions linked to a git commit.
-    pub fn get_sessions_by_commit(&self, commit_hash: &str) -> Result<Vec<LocalSessionRow>> {
-        let sql = format!(
-            "SELECT {LOCAL_SESSION_COLUMNS} \
-             {FROM_CLAUSE} \
-             INNER JOIN commit_session_links csl ON csl.session_id = s.id \
-             WHERE csl.commit_hash = ?1 AND COALESCE(s.is_auxiliary, 0) = 0 \
-             ORDER BY s.created_at DESC"
-        );
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![commit_hash], row_to_local_session)?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    /// Get all commits linked to a session.
-    pub fn get_commits_by_session(&self, session_id: &str) -> Result<Vec<CommitLink>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT commit_hash, session_id, repo_path, branch, created_at \
-             FROM commit_session_links WHERE session_id = ?1 \
-             ORDER BY created_at DESC",
-        )?;
-        let rows = stmt.query_map(params![session_id], |row| {
-            Ok(CommitLink {
-                commit_hash: row.get(0)?,
-                session_id: row.get(1)?,
-                repo_path: row.get(2)?,
-                branch: row.get(3)?,
-                created_at: row.get(4)?,
-            })
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
     /// Find the most recently active session for a given repo path.
     /// "Active" means the session's working_directory matches the repo path
     /// and was created within the last `since_minutes` minutes.
@@ -1272,7 +1139,7 @@ impl LocalDb {
     }
 }
 
-// ── Schema backfill for existing local DB files ───────────────────────
+// ── Schema bootstrap ──────────────────────────────────────────────────
 
 fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
     let conn = Connection::open(path).with_context(|| format!("open db {}", path.display()))?;
@@ -1282,10 +1149,6 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
 
     apply_local_migrations(&conn)?;
-
-    // Backfill missing columns for existing local DB files where `sessions`
-    // existed before newer fields were introduced.
-    ensure_sessions_columns(&conn)?;
     repair_session_tools_from_source_path(&conn)?;
     validate_local_schema(&conn)?;
 
@@ -1315,12 +1178,8 @@ fn apply_local_migrations(conn: &Connection) -> Result<()> {
             continue;
         }
 
-        if let Err(e) = conn.execute_batch(sql) {
-            let msg = e.to_string().to_ascii_lowercase();
-            if !is_local_migration_compat_error(&msg) {
-                return Err(e).with_context(|| format!("apply local migration {name}"));
-            }
-        }
+        conn.execute_batch(sql)
+            .with_context(|| format!("apply local migration {name}"))?;
 
         conn.execute(
             "INSERT OR IGNORE INTO _migrations (name) VALUES (?1)",
@@ -1330,12 +1189,6 @@ fn apply_local_migrations(conn: &Connection) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn is_local_migration_compat_error(msg: &str) -> bool {
-    msg.contains("duplicate column name")
-        || msg.contains("no such column")
-        || msg.contains("already exists")
 }
 
 fn validate_local_schema(conn: &Connection) -> Result<()> {
@@ -1375,101 +1228,6 @@ fn repair_session_tools_from_source_path(conn: &Connection) -> Result<()> {
             "UPDATE sessions SET tool = ?1 WHERE id = ?2",
             params![tool, id],
         )?;
-    }
-
-    Ok(())
-}
-
-fn is_schema_compat_error(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}").to_ascii_lowercase();
-    msg.contains("no such column")
-        || msg.contains("no such table")
-        || msg.contains("cannot add a column")
-        || msg.contains("already exists")
-        || msg.contains("views may not be indexed")
-        || msg.contains("malformed database schema")
-        || msg.contains("duplicate column name")
-}
-
-fn rotate_legacy_db(path: &PathBuf) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
-    let backup_name = format!(
-        "{}.legacy-{}.bak",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("local.db"),
-        ts
-    );
-    let backup_path = path.with_file_name(backup_name);
-    std::fs::rename(path, &backup_path).with_context(|| {
-        format!(
-            "rotate local db backup {} -> {}",
-            path.display(),
-            backup_path.display()
-        )
-    })?;
-
-    let wal = PathBuf::from(format!("{}-wal", path.display()));
-    let shm = PathBuf::from(format!("{}-shm", path.display()));
-    let _ = std::fs::remove_file(wal);
-    let _ = std::fs::remove_file(shm);
-    Ok(())
-}
-
-const REQUIRED_SESSION_COLUMNS: &[(&str, &str)] = &[
-    ("user_id", "TEXT"),
-    ("team_id", "TEXT DEFAULT 'personal'"),
-    ("tool", "TEXT DEFAULT ''"),
-    ("agent_provider", "TEXT"),
-    ("agent_model", "TEXT"),
-    ("title", "TEXT"),
-    ("description", "TEXT"),
-    ("tags", "TEXT"),
-    ("created_at", "TEXT DEFAULT ''"),
-    ("uploaded_at", "TEXT DEFAULT ''"),
-    ("message_count", "INTEGER DEFAULT 0"),
-    ("user_message_count", "INTEGER DEFAULT 0"),
-    ("task_count", "INTEGER DEFAULT 0"),
-    ("event_count", "INTEGER DEFAULT 0"),
-    ("duration_seconds", "INTEGER DEFAULT 0"),
-    ("total_input_tokens", "INTEGER DEFAULT 0"),
-    ("total_output_tokens", "INTEGER DEFAULT 0"),
-    // Migration-only compatibility column from pre git-native body storage.
-    ("body_storage_key", "TEXT DEFAULT ''"),
-    ("body_url", "TEXT"),
-    ("git_remote", "TEXT"),
-    ("git_branch", "TEXT"),
-    ("git_commit", "TEXT"),
-    ("git_repo_name", "TEXT"),
-    ("pr_number", "INTEGER"),
-    ("pr_url", "TEXT"),
-    ("working_directory", "TEXT"),
-    ("files_modified", "TEXT"),
-    ("files_read", "TEXT"),
-    ("has_errors", "BOOLEAN DEFAULT 0"),
-    ("max_active_agents", "INTEGER DEFAULT 1"),
-    ("is_auxiliary", "INTEGER NOT NULL DEFAULT 0"),
-];
-
-fn ensure_sessions_columns(conn: &Connection) -> Result<()> {
-    let mut existing = HashSet::new();
-    let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    for row in rows {
-        existing.insert(row?);
-    }
-
-    for (name, decl) in REQUIRED_SESSION_COLUMNS {
-        if existing.contains(*name) {
-            continue;
-        }
-        let sql = format!("ALTER TABLE sessions ADD COLUMN {name} {decl};");
-        conn.execute_batch(&sql)
-            .with_context(|| format!("add sessions column '{name}'"))?;
     }
 
     Ok(())
@@ -1762,51 +1520,6 @@ mod tests {
     }
 
     #[test]
-    fn test_open_backfills_legacy_sessions_columns() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("legacy.db");
-        {
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE sessions (id TEXT PRIMARY KEY);
-                 INSERT INTO sessions (id) VALUES ('legacy-1');",
-            )
-            .unwrap();
-        }
-
-        let db = LocalDb::open_path(&path).unwrap();
-        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "legacy-1");
-        assert_eq!(rows[0].user_message_count, 0);
-    }
-
-    #[test]
-    fn test_open_rotates_incompatible_legacy_schema() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("broken.db");
-        {
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch("CREATE VIEW sessions AS SELECT 'x' AS id;")
-                .unwrap();
-        }
-
-        let db = LocalDb::open_path(&path).unwrap();
-        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
-        assert!(rows.is_empty());
-
-        let rotated = std::fs::read_dir(dir.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                name.starts_with("broken.db.legacy-") && name.ends_with(".bak")
-            });
-        assert!(rotated, "expected rotated legacy backup file");
-    }
-
-    #[test]
     fn test_is_opencode_child_session() {
         let root = temp_root();
         let dir = root.path().join("sessions");
@@ -1971,8 +1684,13 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert!(
-            migration_names.contains(&"local_0003_session_flags"),
-            "expected local_0003_session_flags migration from opensession-api"
+            migration_names.contains(&"local_0001_schema"),
+            "expected local_0001_schema migration from opensession-api"
+        );
+        assert_eq!(
+            migration_names.len(),
+            1,
+            "local schema should be single-step"
         );
 
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1992,102 +1710,21 @@ mod tests {
     }
 
     #[test]
-    fn test_local_0003_session_flags_backfills_known_auxiliary_rows() {
+    fn test_local_schema_bootstrap_includes_is_auxiliary_column() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("local-legacy.db");
-
-        {
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS _migrations (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE,
-                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );",
-            )
-            .unwrap();
-
-            for (name, sql) in super::MIGRATIONS.iter().chain(
-                super::LOCAL_MIGRATIONS
-                    .iter()
-                    .filter(|(name, _)| *name != "local_0003_session_flags"),
-            ) {
-                conn.execute_batch(sql).unwrap();
-                conn.execute(
-                    "INSERT OR IGNORE INTO _migrations (name) VALUES (?1)",
-                    params![name],
-                )
-                .unwrap();
-            }
-
-            conn.execute(
-                "INSERT INTO sessions \
-                 (id, team_id, tool, created_at, body_storage_key, message_count, user_message_count, task_count, event_count) \
-                 VALUES (?1, 'personal', 'codex', '2026-02-20T00:00:00Z', '', 12, 6, 6, 20)",
-                params!["primary-visible"],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO sessions \
-                 (id, team_id, tool, created_at, body_storage_key, message_count, user_message_count, task_count, event_count) \
-                 VALUES (?1, 'personal', 'opencode', '2026-02-20T00:00:00Z', '', 2, 0, 2, 6)",
-                params!["opencode-heuristic-child"],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO sessions \
-                 (id, team_id, tool, created_at, body_storage_key, message_count, user_message_count, task_count, event_count) \
-                 VALUES (?1, 'personal', 'claude-code', '2026-02-20T00:00:00Z', '', 3, 1, 3, 12)",
-                params!["claude-subagent-child"],
-            )
-            .unwrap();
-
-            conn.execute(
-                "INSERT INTO session_sync (session_id, source_path, sync_status) VALUES (?1, ?2, 'local_only')",
-                params![
-                    "opencode-heuristic-child",
-                    "/Users/test/.opencode/sessions/opencode-heuristic-child.json"
-                ],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO session_sync (session_id, source_path, sync_status) VALUES (?1, ?2, 'local_only')",
-                params![
-                    "claude-subagent-child",
-                    "/Users/test/.claude/projects/foo/subagents/agent-1.jsonl"
-                ],
-            )
-            .unwrap();
-        }
-
+        let path = dir.path().join("local.db");
         let db = LocalDb::open_path(&path).unwrap();
-
-        let flags = {
-            let conn = db.conn();
-            let mut stmt = conn
-                .prepare("SELECT id, COALESCE(is_auxiliary, 0) FROM sessions ORDER BY id")
-                .unwrap();
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                })
-                .unwrap();
-            rows.collect::<Result<Vec<_>, _>>().unwrap()
-        };
-
-        assert_eq!(
-            flags,
-            vec![
-                ("claude-subagent-child".to_string(), 1),
-                ("opencode-heuristic-child".to_string(), 1),
-                ("primary-visible".to_string(), 0),
-            ]
+        let conn = db.conn();
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)").unwrap();
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            columns.iter().any(|name| name == "is_auxiliary"),
+            "sessions schema must include is_auxiliary column in bootstrap migration"
         );
-
-        let visible = db.list_sessions(&LocalSessionFilter::default()).unwrap();
-        assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].id, "primary-visible");
     }
 
     #[test]
@@ -2592,100 +2229,5 @@ mod tests {
         assert_eq!(db.session_count().unwrap(), 0);
         seed_sessions(&db);
         assert_eq!(db.session_count().unwrap(), 5);
-    }
-
-    // ── Commit link tests ─────────────────────────────────────────────
-
-    #[test]
-    fn test_link_commit_session() {
-        let db = test_db();
-        seed_sessions(&db);
-        db.link_commit_session("abc123", "s1", Some("/tmp/repo"), Some("main"))
-            .unwrap();
-
-        let commits = db.get_commits_by_session("s1").unwrap();
-        assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].commit_hash, "abc123");
-        assert_eq!(commits[0].session_id, "s1");
-        assert_eq!(commits[0].repo_path.as_deref(), Some("/tmp/repo"));
-        assert_eq!(commits[0].branch.as_deref(), Some("main"));
-
-        let sessions = db.get_sessions_by_commit("abc123").unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, "s1");
-    }
-
-    #[test]
-    fn test_get_sessions_by_commit() {
-        let db = test_db();
-        seed_sessions(&db);
-        // Link multiple sessions to the same commit
-        db.link_commit_session("abc123", "s1", None, None).unwrap();
-        db.link_commit_session("abc123", "s2", None, None).unwrap();
-        db.link_commit_session("abc123", "s3", None, None).unwrap();
-
-        let sessions = db.get_sessions_by_commit("abc123").unwrap();
-        assert_eq!(sessions.len(), 3);
-        // Ordered by created_at DESC
-        assert_eq!(sessions[0].id, "s3");
-        assert_eq!(sessions[1].id, "s2");
-        assert_eq!(sessions[2].id, "s1");
-    }
-
-    #[test]
-    fn test_get_commits_by_session() {
-        let db = test_db();
-        seed_sessions(&db);
-        // Link multiple commits to the same session
-        db.link_commit_session("aaa111", "s1", Some("/repo"), Some("main"))
-            .unwrap();
-        db.link_commit_session("bbb222", "s1", Some("/repo"), Some("main"))
-            .unwrap();
-        db.link_commit_session("ccc333", "s1", Some("/repo"), Some("feat"))
-            .unwrap();
-
-        let commits = db.get_commits_by_session("s1").unwrap();
-        assert_eq!(commits.len(), 3);
-        // All linked to s1
-        assert!(commits.iter().all(|c| c.session_id == "s1"));
-    }
-
-    #[test]
-    fn test_duplicate_link_ignored() {
-        let db = test_db();
-        seed_sessions(&db);
-        db.link_commit_session("abc123", "s1", Some("/repo"), Some("main"))
-            .unwrap();
-        // Inserting the same link again should not error
-        db.link_commit_session("abc123", "s1", Some("/repo"), Some("main"))
-            .unwrap();
-
-        let commits = db.get_commits_by_session("s1").unwrap();
-        assert_eq!(commits.len(), 1);
-    }
-
-    #[test]
-    fn test_log_filter_by_commit() {
-        let db = test_db();
-        seed_sessions(&db);
-        db.link_commit_session("abc123", "s2", None, None).unwrap();
-        db.link_commit_session("abc123", "s4", None, None).unwrap();
-
-        let filter = LogFilter {
-            commit: Some("abc123".to_string()),
-            ..Default::default()
-        };
-        let results = db.list_sessions_log(&filter).unwrap();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].id, "s4");
-        assert_eq!(results[1].id, "s2");
-
-        // Non-existent commit returns nothing
-        let filter = LogFilter {
-            commit: Some("nonexistent".to_string()),
-            ..Default::default()
-        };
-        let results = db.list_sessions_log(&filter).unwrap();
-        assert_eq!(results.len(), 0);
     }
 }

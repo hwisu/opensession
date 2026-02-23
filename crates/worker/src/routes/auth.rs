@@ -53,17 +53,6 @@ struct SettingsRow {
 }
 
 #[derive(Debug, Deserialize)]
-struct LegacyApiKeyRow {
-    id: String,
-    api_key: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct MigrationMarkerRow {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct OAuthIdentityRow {
     provider: String,
     provider_username: Option<String>,
@@ -161,92 +150,11 @@ async fn d1_run(
     Ok(())
 }
 
-async fn ensure_api_key_backfill(d1: &D1Database) -> ServiceResult<()> {
-    const MARKER: &str = "0010_api_keys_hash_backfill_runtime";
-    d1_run(
-        d1,
-        (
-            "CREATE TABLE IF NOT EXISTS _runtime_migrations (
-                name TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )"
-            .to_string(),
-            sea_query::Values(vec![]),
-        ),
-        "create runtime migrations table",
-    )
-    .await?;
-
-    let marker_row: Option<MigrationMarkerRow> = d1_first(
-        d1,
-        (
-            "SELECT name FROM _runtime_migrations WHERE name = ? LIMIT 1".to_string(),
-            sea_query::Values(vec![MARKER.into()]),
-        ),
-        "check api key backfill marker",
-    )
-    .await?;
-    if marker_row.as_ref().is_some_and(|row| row.name == MARKER) {
-        return Ok(());
-    }
-
-    let legacy_rows: Vec<LegacyApiKeyRow> = d1_all(
-        d1,
-        (
-            "SELECT id, api_key FROM users
-             WHERE api_key IS NOT NULL
-               AND TRIM(api_key) <> ''
-               AND api_key NOT LIKE 'stub:%'
-               AND api_key NOT LIKE 'migrated:%'"
-                .to_string(),
-            sea_query::Values(vec![]),
-        ),
-        "load legacy api keys",
-    )
-    .await?;
-
-    for legacy in legacy_rows {
-        let key_id = Uuid::new_v4().to_string();
-        let key_hash = service::hash_api_key(&legacy.api_key);
-        let key_prefix = service::key_prefix(&legacy.api_key);
-
-        d1_run(
-            d1,
-            dbq::api_keys::insert_active_if_missing(&key_id, &legacy.id, &key_hash, &key_prefix),
-            "insert backfilled api key",
-        )
-        .await?;
-        d1_run(
-            d1,
-            dbq::users::update_api_key(
-                &legacy.id,
-                &service::generate_api_key_placeholder(&legacy.id),
-            ),
-            "replace legacy users.api_key with placeholder",
-        )
-        .await?;
-    }
-
-    d1_run(
-        d1,
-        (
-            "INSERT OR IGNORE INTO _runtime_migrations (name) VALUES (?)".to_string(),
-            sea_query::Values(vec![MARKER.into()]),
-        ),
-        "record api key backfill marker",
-    )
-    .await?;
-
-    Ok(())
-}
-
 pub(crate) async fn authenticate(
     req: &Request,
     d1: &D1Database,
     config: &WorkerConfig,
 ) -> std::result::Result<AuthUser, opensession_api::ServiceError> {
-    ensure_api_key_backfill(d1).await?;
-
     let token = req
         .headers()
         .get("Authorization")

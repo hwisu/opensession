@@ -47,9 +47,6 @@ else
     echo "WARNING: npm not found; skipping frontend checks."
 fi
 
-echo "=== Running migration parity check ==="
-"$ROOT_DIR/scripts/check-migration-parity.sh"
-
 echo "=== Running workspace tests ==="
 run_cargo test --workspace --exclude opensession-e2e
 

@@ -104,7 +104,7 @@ Repository-required validation gates:
 Current gate intent:
 
 1. pre-commit: formatting + daemon smoke-level tests
-2. pre-push: clippy, worker wasm checks, frontend check, migration parity, workspace tests, e2e compile smoke
+2. pre-push: clippy, worker wasm checks, frontend check, workspace tests, e2e compile smoke
 
 ## Stop Conditions
 

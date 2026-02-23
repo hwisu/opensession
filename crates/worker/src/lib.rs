@@ -67,13 +67,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         )
         // Docs (content negotiation: markdown for AI agents, HTML for browsers)
         .get_async("/docs", routes::docs::handle)
-        .get_async("/llms.txt", routes::docs::llms_txt)
-        // Removed legacy source routes
-        .get_async("/git", routes::legacy::removed_route)
-        .get_async("/gh", routes::legacy::removed_route)
-        .get_async("/gh/*path", routes::legacy::removed_route)
-        .get_async("/resolve", routes::legacy::removed_route)
-        .get_async("/resolve/*path", routes::legacy::removed_route);
+        .get_async("/llms.txt", routes::docs::llms_txt);
 
     let resp = router.run(req, env).await?;
 

@@ -7,8 +7,7 @@ use std::sync::{Mutex, OnceLock};
 
 // Re-export shared runtime config types
 pub use opensession_runtime_config::{
-    apply_compat_fallbacks, CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode,
-    CONFIG_FILE_NAME,
+    CalendarDisplayMode, DaemonConfig, GitStorageMethod, PublishMode, CONFIG_FILE_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +21,6 @@ impl GitStorageMode {
         match method {
             GitStorageMethod::Native => Self::Native,
             GitStorageMethod::Sqlite => Self::Sqlite,
-            GitStorageMethod::Unknown => Self::Native,
         }
     }
 
@@ -131,12 +129,8 @@ fn parse_git_storage_mode(
         .and_then(toml::Value::as_str);
 
     match value.map(|s| s.trim().to_ascii_lowercase()) {
-        Some(v) if v == "native" || v == "platform_api" || v == "platform-api" || v == "api" => {
-            GitStorageMode::Native
-        }
-        Some(v) if v == "sqlite" || v == "sqlite_local" || v == "sqlite-local" || v == "none" => {
-            GitStorageMode::Sqlite
-        }
+        Some(v) if v == "native" => GitStorageMode::Native,
+        Some(v) if v == "sqlite" => GitStorageMode::Sqlite,
         _ => GitStorageMode::from_core(fallback),
     }
 }
@@ -202,20 +196,12 @@ pub fn load_daemon_config() -> DaemonConfig {
     };
 
     let daemon_path = dir.join(CONFIG_FILE_NAME);
-    let mut migrated = false;
-
     if daemon_path.exists() {
         let content = std::fs::read_to_string(&daemon_path).unwrap_or_default();
         let parsed: Option<toml::Value> = toml::from_str(&content).ok();
         let mut config: DaemonConfig = toml::from_str(&content).unwrap_or_default();
-        if apply_compat_fallbacks(&mut config, parsed.as_ref()) {
-            migrated = true;
-        }
         normalize_fixed_runtime_tuning(&mut config);
         sync_runtime_config_extensions(parsed.as_ref(), &mut config);
-        if migrated {
-            let _ = save_daemon_config(&config);
-        }
         return config;
     }
 
@@ -675,10 +661,13 @@ impl SettingField {
             }
             Self::GitStorageMethod => {
                 let mode = match value.trim().to_ascii_lowercase().as_str() {
-                    "sqlite" | "sqlite_local" | "sqlite-local" | "none" => GitStorageMode::Sqlite,
-                    _ => GitStorageMode::Native,
+                    "sqlite" => Some(GitStorageMode::Sqlite),
+                    "native" => Some(GitStorageMode::Native),
+                    _ => None,
                 };
-                set_git_storage_mode(config, mode);
+                if let Some(mode) = mode {
+                    set_git_storage_mode(config, mode);
+                }
             }
             _ => {}
         }
@@ -870,13 +859,14 @@ mod tests {
     }
 
     #[test]
-    fn git_storage_method_set_value_accepts_compat_aliases() {
+    fn git_storage_method_set_value_accepts_only_canonical_values() {
         let mut cfg = DaemonConfig::default();
-
-        SettingField::GitStorageMethod.set_value(&mut cfg, "none");
-        assert_eq!(cfg.git_storage.method, GitStorageMethod::Sqlite);
+        set_git_storage_mode(&mut cfg, GitStorageMode::Native);
 
         SettingField::GitStorageMethod.set_value(&mut cfg, "platform_api");
         assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
+
+        SettingField::GitStorageMethod.set_value(&mut cfg, "sqlite");
+        assert_eq!(cfg.git_storage.method, GitStorageMethod::Sqlite);
     }
 }

@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 
 // Re-export shared runtime config types
 pub use opensession_runtime_config::{
-    apply_compat_fallbacks, DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode,
-    CONFIG_FILE_NAME,
+    DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode, CONFIG_FILE_NAME,
 };
 
 /// Get the config directory path
@@ -27,11 +26,6 @@ pub fn pid_file_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("daemon.pid"))
 }
 
-/// Get the state file path
-pub fn state_file_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("state.json"))
-}
-
 /// Load daemon config from disk
 pub fn load_config() -> Result<DaemonConfig> {
     let path = config_path()?;
@@ -43,10 +37,8 @@ pub fn load_config() -> Result<DaemonConfig> {
 
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read daemon config at {}", path.display()))?;
-    let parsed: Option<toml::Value> = toml::from_str(&content).ok();
     let mut config: DaemonConfig = toml::from_str(&content)
         .with_context(|| format!("Failed to parse daemon config at {}", path.display()))?;
-    apply_compat_fallbacks(&mut config, parsed.as_ref());
     normalize_fixed_runtime_tuning(&mut config);
     Ok(config)
 }
@@ -65,12 +57,7 @@ pub fn resolve_watch_paths(config: &DaemonConfig) -> Vec<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
 
-    let raw_paths = if config.watchers.custom_paths.is_empty() {
-        // Backward compatibility: older configs may not have custom_paths yet.
-        DaemonConfig::default().watchers.custom_paths
-    } else {
-        config.watchers.custom_paths.clone()
-    };
+    let raw_paths = config.watchers.custom_paths.clone();
 
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
@@ -126,31 +113,15 @@ pub struct ProjectIdentity {
 }
 
 /// Project-level git hook configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectHooks {
-    /// Add AI-Session trailer to commit messages (default: true)
-    #[serde(default = "default_true")]
-    pub prepare_commit_msg: bool,
-    /// Record commit-session links after commit (default: true)
-    #[serde(default = "default_true")]
-    pub post_commit: bool,
-    /// Scan for secrets before push (default: false)
-    #[serde(default)]
+    /// Run pre-push fanout + secret scan (default: false).
+    #[serde(default = "default_false")]
     pub pre_push: bool,
 }
 
-impl Default for ProjectHooks {
-    fn default() -> Self {
-        Self {
-            prepare_commit_msg: true,
-            post_commit: true,
-            pre_push: false,
-        }
-    }
-}
-
-fn default_true() -> bool {
-    true
+fn default_false() -> bool {
+    false
 }
 
 /// Find the repo root by walking up from `cwd` looking for `.git`.
@@ -302,9 +273,7 @@ pub fn generate_default_project_config() -> String {
 # nickname = ""          # Optional per-repo display handle override
 
 # [hooks]
-# prepare_commit_msg = true  # Add AI-Session trailer to commit messages
-# post_commit = true         # Record commit↔session links
-# pre_push = false           # Scan for secrets before push
+# pre_push = false           # Run pre-push fanout + secret scan
 "#
     .to_string()
 }
@@ -483,11 +452,7 @@ nickname = "repo-user"
             identity: Some(ProjectIdentity {
                 nickname: Some("shared-nick".to_string()),
             }),
-            hooks: Some(ProjectHooks {
-                prepare_commit_msg: true,
-                post_commit: true,
-                pre_push: false,
-            }),
+            hooks: Some(ProjectHooks { pre_push: false }),
             ..Default::default()
         };
 
@@ -501,11 +466,7 @@ nickname = "repo-user"
             identity: Some(ProjectIdentity {
                 nickname: Some("me".to_string()), // add
             }),
-            hooks: Some(ProjectHooks {
-                prepare_commit_msg: false, // override entire hooks
-                post_commit: true,
-                pre_push: true,
-            }),
+            hooks: Some(ProjectHooks { pre_push: true }),
             ..Default::default()
         };
 
@@ -522,7 +483,6 @@ nickname = "repo-user"
         assert_eq!(identity.nickname, Some("me".to_string())); // local override
 
         let hooks = merged.hooks.unwrap();
-        assert!(!hooks.prepare_commit_msg); // local override
         assert!(hooks.pre_push); // local override
     }
 

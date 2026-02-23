@@ -67,7 +67,6 @@ opensession setup --check
 
 - Installs/updates OpenSession-managed `pre-push` hook in the current repo.
 - Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
-- Cleans up legacy OpenSession-managed disabled hooks (`prepare-commit-msg`, `post-commit`) from older V2 installs.
 - Does **not** modify `remote.<name>.push`.
 - Hook fanout push is best-effort and warning-only.
 - Set `OPENSESSION_STRICT=1` to fail push when fanout helper is unavailable or fanout push fails.

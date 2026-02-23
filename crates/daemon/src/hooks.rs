@@ -156,7 +156,6 @@ exit 0
 // ---------------------------------------------------------------------------
 
 const HOOK_MARKER: &str = "# opensession-managed";
-const LEGACY_DISABLED_HOOKS: &[&str] = &["prepare-commit-msg", "post-commit"];
 
 // ---------------------------------------------------------------------------
 // Hook template accessor
@@ -182,8 +181,6 @@ pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookTyp
             repo_root.display()
         );
     }
-
-    cleanup_legacy_disabled_hooks(&hooks_dir)?;
 
     let mut installed = Vec::new();
     for hook_type in hooks {
@@ -221,39 +218,6 @@ pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookTyp
     }
 
     Ok(installed)
-}
-
-/// Remove legacy opensession-managed disabled hooks from older V2 builds.
-///
-/// If a `*.pre-opensession` backup exists, it is restored.
-fn cleanup_legacy_disabled_hooks(hooks_dir: &Path) -> Result<()> {
-    for filename in LEGACY_DISABLED_HOOKS {
-        let hook_path = hooks_dir.join(filename);
-        if !hook_path.exists() {
-            continue;
-        }
-
-        let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
-        if !content.contains(HOOK_MARKER) {
-            continue;
-        }
-
-        std::fs::remove_file(&hook_path)
-            .with_context(|| format!("remove legacy hook {}", hook_path.display()))?;
-
-        let backup_path = hooks_dir.join(format!("{filename}.pre-opensession"));
-        if backup_path.exists() {
-            std::fs::rename(&backup_path, &hook_path).with_context(|| {
-                format!(
-                    "restore legacy backup {} -> {}",
-                    backup_path.display(),
-                    hook_path.display()
-                )
-            })?;
-        }
-    }
-
-    Ok(())
 }
 
 /// Uninstall opensession git hooks from a repository.
@@ -485,31 +449,6 @@ mod tests {
             !backup_path.exists(),
             "backup should be removed after restore"
         );
-    }
-
-    #[test]
-    fn test_install_cleans_legacy_disabled_hooks_and_restores_backup() {
-        let repo = create_fake_git_repo();
-        let hooks_dir = repo.path().join(".git/hooks");
-
-        let legacy_hook = hooks_dir.join("prepare-commit-msg");
-        fs::write(
-            &legacy_hook,
-            "#!/bin/sh\n# opensession-managed — do not edit\nexit 0\n",
-        )
-        .unwrap();
-
-        let backup_path = hooks_dir.join("prepare-commit-msg.pre-opensession");
-        fs::write(&backup_path, "#!/bin/sh\necho 'legacy custom'\n").unwrap();
-
-        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
-
-        let restored = fs::read_to_string(&legacy_hook).unwrap();
-        assert!(
-            restored.contains("legacy custom"),
-            "legacy backup should be restored"
-        );
-        assert!(!backup_path.exists(), "legacy backup should be consumed");
     }
 
     #[test]

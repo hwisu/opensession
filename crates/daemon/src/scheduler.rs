@@ -13,7 +13,6 @@ use opensession_git_native::{
 };
 use opensession_local_db::LocalDb;
 use opensession_parsers::parse_with_default_parsers;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,25 +24,6 @@ use tracing::{debug, error, info, warn};
 use crate::config::{DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode};
 use crate::repo_registry::RepoRegistry;
 use crate::watcher::FileChangeEvent;
-
-/// Legacy state – kept only for migration from state.json.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UploadState {
-    pub uploaded: HashMap<String, DateTime<Utc>>,
-    #[serde(default)]
-    pub offsets: HashMap<String, u64>,
-}
-
-impl UploadState {
-    pub fn load(path: &PathBuf) -> Option<Self> {
-        if !path.exists() {
-            return None;
-        }
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-    }
-}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -263,25 +243,6 @@ pub async fn run_scheduler(
     db: std::sync::Arc<LocalDb>,
 ) {
     let debounce_duration = Duration::from_secs(config.daemon.debounce_secs);
-
-    // Migrate from state.json if it exists
-    let state_path =
-        crate::config::state_file_path().unwrap_or_else(|_| PathBuf::from("state.json"));
-    if let Some(legacy) = UploadState::load(&state_path) {
-        if !legacy.uploaded.is_empty() {
-            match db.migrate_from_state_json(&legacy.uploaded) {
-                Ok(count) => {
-                    info!("Migrated {count} entries from state.json to local DB");
-                    // Rename the old file so we don't re-migrate
-                    let bak = state_path.with_extension("json.bak");
-                    if let Err(e) = std::fs::rename(&state_path, &bak) {
-                        warn!("Could not rename state.json to .bak: {e}");
-                    }
-                }
-                Err(e) => warn!("state.json migration failed: {e}"),
-            }
-        }
-    }
 
     let effective_mode = resolve_publish_mode(&config.daemon);
     let mut repo_registry = match RepoRegistry::load_default() {

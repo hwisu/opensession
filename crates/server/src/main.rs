@@ -173,13 +173,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api", api)
         // Docs (content negotiation: markdown for AI agents, HTML for browsers)
         .route("/docs", get(routes::docs::handle))
-        .route("/llms.txt", get(routes::docs::llms_txt))
-        // Removed legacy source routes
-        .route("/git", get(routes::legacy::removed_route))
-        .route("/gh", get(routes::legacy::removed_route))
-        .route("/gh/*path", get(routes::legacy::removed_route))
-        .route("/resolve", get(routes::legacy::removed_route))
-        .route("/resolve/*path", get(routes::legacy::removed_route));
+        .route("/llms.txt", get(routes::docs::llms_txt));
 
     // Serve static files from web build if present
     let web_dir = std::env::var("OPENSESSION_WEB_DIR")

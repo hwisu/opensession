@@ -209,16 +209,11 @@ impl Default for GitRetentionSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GitStorageMethod {
-    /// Store sessions as git objects on an orphan branch (branch-based git-native).
+    /// Store sessions as git objects on hidden refs (git-native).
     #[default]
-    #[serde(alias = "platform_api", alias = "platform-api", alias = "api")]
     Native,
     /// Store session bodies in SQLite-backed storage.
-    #[serde(alias = "none", alias = "sqlite_local", alias = "sqlite-local")]
     Sqlite,
-    /// Unknown/invalid values are normalized by compatibility fallbacks.
-    #[serde(other)]
-    Unknown,
 }
 
 // ── Serde default functions ─────────────────────────────────────────────
@@ -288,131 +283,19 @@ pub fn default_watch_paths() -> Vec<String> {
         .collect()
 }
 
-/// Apply compatibility fallbacks after loading raw TOML.
-/// Returns true when any field was updated.
-pub fn apply_compat_fallbacks(config: &mut DaemonConfig, root: Option<&toml::Value>) -> bool {
-    let mut changed = false;
-
-    if config.git_storage.method == GitStorageMethod::Unknown {
-        config.git_storage.method = GitStorageMethod::Native;
-        changed = true;
-    }
-
-    if config.watchers.custom_paths.is_empty() {
-        config.watchers.custom_paths = default_watch_paths();
-        changed = true;
-    }
-
-    // Legacy team model fields are obsolete and should be dropped from persisted config.
-    if root.is_some_and(has_legacy_team_fields) {
-        changed = true;
-    }
-
-    changed
-}
-
-fn has_legacy_team_fields(root: &toml::Value) -> bool {
-    let top_level = root.get("team_id").is_some();
-    let server_team = root
-        .get("server")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|table| table.contains_key("team_id"));
-    let identity_team = root
-        .get("identity")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|table| table.contains_key("team_id"));
-
-    top_level || server_team || identity_team
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn apply_compat_fallbacks_populates_missing_fields() {
-        let mut cfg = DaemonConfig::default();
-        cfg.git_storage.method = GitStorageMethod::Unknown;
-        cfg.watchers.custom_paths.clear();
-
-        let root: toml::Value = toml::from_str(
-            r#"
-[git_storage]
-"#,
-        )
-        .expect("parse toml");
-
-        let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
-        assert!(changed);
-        assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
-        assert!(!cfg.watchers.custom_paths.is_empty());
-    }
-
-    #[test]
-    fn git_storage_method_compat_aliases_are_accepted() {
-        let compat_none: DaemonConfig = toml::from_str(
-            r#"
-[git_storage]
-method = "none"
-"#,
-        )
-        .expect("parse toml");
-        assert_eq!(compat_none.git_storage.method, GitStorageMethod::Sqlite);
-
-        let compat_platform_api: DaemonConfig = toml::from_str(
+    fn git_storage_method_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
             r#"
 [git_storage]
 method = "platform_api"
 "#,
-        )
-        .expect("parse toml");
-        assert_eq!(
-            compat_platform_api.git_storage.method,
-            GitStorageMethod::Native
         );
-    }
-
-    #[test]
-    fn apply_compat_fallbacks_is_noop_for_modern_values() {
-        let mut cfg = DaemonConfig::default();
-        cfg.watchers.custom_paths = vec!["/tmp/one".to_string()];
-
-        let root: toml::Value = toml::from_str(
-            r#"
-[git_storage]
-method = "native"
-"#,
-        )
-        .expect("parse toml");
-
-        let before = cfg.clone();
-        let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
-        assert!(!changed);
-        assert_eq!(cfg.watchers.custom_paths, before.watchers.custom_paths);
-        assert_eq!(cfg.git_storage.method, before.git_storage.method);
-    }
-
-    #[test]
-    fn apply_compat_fallbacks_marks_legacy_team_fields_for_cleanup() {
-        let mut cfg = DaemonConfig::default();
-        let root: toml::Value = toml::from_str(
-            r#"
-[server]
-url = "https://opensession.io"
-team_id = "legacy-team"
-
-[identity]
-nickname = "user"
-team_id = "legacy-team"
-"#,
-        )
-        .expect("parse legacy team config");
-
-        let changed = apply_compat_fallbacks(&mut cfg, Some(&root));
-        assert!(
-            changed,
-            "legacy team fields should trigger compat cleanup rewrite"
-        );
+        assert!(parsed.is_err(), "legacy aliases must be rejected");
     }
 
     #[test]

@@ -1,5 +1,5 @@
--- OpenSession schema (consolidated)
--- This is the canonical schema for both server (SQLite) and worker (D1).
+-- OpenSession schema (single bootstrap, no compatibility migrations)
+-- Canonical schema for server (SQLite) and worker (D1).
 
 -- Users
 CREATE TABLE IF NOT EXISTS users (
@@ -14,31 +14,11 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
 
--- Teams
-CREATE TABLE IF NOT EXISTS teams (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    description TEXT,
-    is_public   BOOLEAN NOT NULL DEFAULT 0,
-    created_by  TEXT NOT NULL REFERENCES users(id),
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Team members
-CREATE TABLE IF NOT EXISTS team_members (
-    team_id   TEXT NOT NULL REFERENCES teams(id),
-    user_id   TEXT NOT NULL REFERENCES users(id),
-    role      TEXT NOT NULL DEFAULT 'member',
-    joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (team_id, user_id)
-);
-CREATE INDEX IF NOT EXISTS idx_team_members_user_id ON team_members(user_id);
-
 -- Sessions
 CREATE TABLE IF NOT EXISTS sessions (
     id                  TEXT PRIMARY KEY,
-    user_id             TEXT REFERENCES users(id),
-    team_id             TEXT NOT NULL REFERENCES teams(id),
+    user_id             TEXT,
+    team_id             TEXT NOT NULL,
     tool                TEXT NOT NULL,
     agent_provider      TEXT,
     agent_model         TEXT,
@@ -65,11 +45,26 @@ CREATE TABLE IF NOT EXISTS sessions (
     working_directory   TEXT,
     files_modified      TEXT,
     files_read          TEXT,
-    has_errors          BOOLEAN DEFAULT 0
+    has_errors          BOOLEAN DEFAULT 0,
+    max_active_agents   INTEGER NOT NULL DEFAULT 1,
+    session_score       INTEGER NOT NULL DEFAULT 0,
+    score_plugin        TEXT NOT NULL DEFAULT 'heuristic_v1'
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_team_id ON sessions(team_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_uploaded_at ON sessions(uploaded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_tool ON sessions(tool);
+CREATE INDEX IF NOT EXISTS idx_sessions_visible_created_at
+ON sessions(created_at DESC)
+WHERE event_count > 0 OR message_count > 0;
+CREATE INDEX IF NOT EXISTS idx_sessions_visible_tool_created_at
+ON sessions(tool, created_at DESC)
+WHERE event_count > 0 OR message_count > 0;
+CREATE INDEX IF NOT EXISTS idx_sessions_visible_popular
+ON sessions(message_count DESC, created_at DESC)
+WHERE event_count > 0 OR message_count > 0;
+CREATE INDEX IF NOT EXISTS idx_sessions_visible_longest
+ON sessions(duration_seconds DESC, created_at DESC)
+WHERE event_count > 0 OR message_count > 0;
+CREATE INDEX IF NOT EXISTS idx_sessions_session_score ON sessions(session_score DESC);
 
 -- Session links (handoff chains, etc.)
 CREATE TABLE IF NOT EXISTS session_links (
@@ -112,19 +107,17 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Team invitations
-CREATE TABLE IF NOT EXISTS team_invitations (
-    id                      TEXT PRIMARY KEY,
-    team_id                 TEXT NOT NULL REFERENCES teams(id),
-    email                   TEXT,
-    oauth_provider          TEXT,
-    oauth_provider_username TEXT,
-    invited_by              TEXT NOT NULL REFERENCES users(id),
-    role                    TEXT NOT NULL DEFAULT 'member',
-    status                  TEXT NOT NULL DEFAULT 'pending',
-    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at              TEXT NOT NULL
+-- API key issuance table (hash-only persistence).
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key_hash     TEXT NOT NULL UNIQUE,
+    key_prefix   TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'active',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    grace_until  TEXT,
+    revoked_at   TEXT,
+    last_used_at TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_invitations_email ON team_invitations(email) WHERE email IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_invitations_oauth ON team_invitations(oauth_provider, oauth_provider_username) WHERE oauth_provider IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_invitations_team ON team_invitations(team_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user_status ON api_keys(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_api_keys_grace_until ON api_keys(grace_until);

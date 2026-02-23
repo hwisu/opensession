@@ -174,14 +174,4 @@ test.describe('Source Route', () => {
 		await expect(page.getByText('does not support source parse preview')).toBeVisible({ timeout: 10000 });
 	});
 
-	test('/git, /gh, and /resolve legacy routes are removed', async ({ page }) => {
-		const gitResp = await page.request.get('/git?remote=x&ref=y&path=z');
-		expect(gitResp.status()).toBe(404);
-
-		const ghResp = await page.request.get('/gh/hwisu/opensession/main/sessions/demo.hail.jsonl');
-		expect(ghResp.status()).toBe(404);
-
-		const resolveResp = await page.request.get('/resolve/Zm9v');
-		expect(resolveResp.status()).toBe(404);
-	});
 });

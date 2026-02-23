@@ -5,6 +5,12 @@
 3. Everything is testable. If testing is not possible in the current setup, add tools to make it possible.
 4. Prefer execution over suggestions: if an additional actionable fix is found in the same scope, continue and implement it immediately instead of proposing it first.
 
+## Legacy Reset Policy (Until 1.0.0)
+1. Do not preserve legacy compatibility by default.
+2. Remove legacy code paths, compatibility fallbacks, and migration shims when touching related areas.
+3. Treat each change like a day-one design unless the user explicitly requests backward compatibility.
+4. Prefer schema/bootstrap replacement over incremental migration chains when feasible.
+
 ## Auto-Continue Policy
 After completing the requested change, immediately continue fixing any build/test/runtime errors discovered during verification in the same scope.
 

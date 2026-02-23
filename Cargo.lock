@@ -2486,6 +2486,7 @@ dependencies = [
  "libc",
  "opensession-api-client",
  "opensession-core",
+ "opensession-daemon",
  "opensession-e2e",
  "opensession-git-native",
  "opensession-local-db",
@@ -2598,6 +2599,7 @@ name = "opensession-git-native"
 version = "0.2.23"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "gix",
  "serde",

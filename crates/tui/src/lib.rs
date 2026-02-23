@@ -15,10 +15,10 @@ use crossterm::{
     ExecutableCommand,
 };
 use opensession_core::session::{
-    build_git_storage_meta_json, is_auxiliary_session, working_directory,
+    build_git_storage_meta_json_with_git, is_auxiliary_session, working_directory, GitMeta,
 };
 use opensession_core::trace::{Agent, Session, SessionContext, Stats};
-use opensession_local_db::git::extract_git_context;
+use opensession_git_native::extract_git_context;
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow};
 use ratatui::prelude::*;
 use std::collections::HashMap;
@@ -404,7 +404,7 @@ fn cache_sessions_to_db(db: &LocalDb, sessions: &[LoadedSession]) {
             if cwd.is_some() {
                 // Existing rows can miss repo/cwd metadata. When cwd exists in parsed data,
                 // re-upsert to backfill git context as well as stats.
-                let git = cwd.as_deref().map(extract_git_context).unwrap_or_default();
+                let git = local_git_context_for_cwd(cwd.as_deref());
                 let _ = db.upsert_local_session(session, &source, &git);
             } else {
                 // Legacy fallback when no cwd is present in parsed data.
@@ -415,9 +415,19 @@ fn cache_sessions_to_db(db: &LocalDb, sessions: &[LoadedSession]) {
         }
 
         // New session → full insert with git context extraction
-        let git = cwd.as_deref().map(extract_git_context).unwrap_or_default();
+        let git = local_git_context_for_cwd(cwd.as_deref());
 
         let _ = db.upsert_local_session(session, &source, &git);
+    }
+}
+
+fn local_git_context_for_cwd(cwd: Option<&str>) -> opensession_local_db::git::GitContext {
+    let git = cwd.map(extract_git_context).unwrap_or_default();
+    opensession_local_db::git::GitContext {
+        remote: git.remote,
+        branch: git.branch,
+        commit: git.commit,
+        repo_name: git.repo_name,
     }
 }
 
@@ -588,21 +598,38 @@ fn try_git_store(
     let cwd = working_directory(session)?;
 
     let repo_root = opensession_git_native::ops::find_repo_root(Path::new(cwd))?;
-    let git_ctx = opensession_local_db::git::extract_git_context(cwd);
+    let git_ctx = opensession_git_native::extract_git_context(cwd);
     let remote_url = git_ctx.remote?;
 
     let jsonl = session.to_jsonl().ok()?;
-    let meta_json = build_git_storage_meta_json(session);
+    let branch = git_ctx
+        .branch
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "detached".to_string());
+    let commit_shas: Vec<String> = git_ctx.commit.clone().into_iter().collect();
+    let git_meta = GitMeta {
+        remote: Some(remote_url.clone()),
+        repo_name: git_ctx.repo_name.clone(),
+        branch: Some(branch.clone()),
+        head: git_ctx.commit.clone(),
+        commits: commit_shas.clone(),
+    };
+    let target_ref = opensession_git_native::branch_ledger_ref(&branch);
+    let meta_json = build_git_storage_meta_json_with_git(session, Some(&git_meta));
     let storage = opensession_git_native::NativeGitStorage;
-    match storage.store(
+    match storage.store_session_at_ref(
         &repo_root,
+        &target_ref,
         &session.session_id,
         jsonl.as_bytes(),
         &meta_json,
+        &commit_shas,
     ) {
-        Ok(rel_path) => Some(opensession_git_native::generate_raw_url(
+        Ok(stored) => Some(opensession_git_native::generate_raw_url(
             &remote_url,
-            &rel_path,
+            &stored.commit_id,
+            &stored.hail_path,
         )),
         Err(e) => {
             eprintln!("git-native storage: {e}");

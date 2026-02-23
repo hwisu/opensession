@@ -21,7 +21,7 @@ impl HookType {
     }
 
     pub fn all() -> &'static [HookType] {
-        &[Self::PrepareCommitMsg, Self::PostCommit, Self::PrePush]
+        &[Self::PrePush]
     }
 }
 
@@ -31,94 +31,55 @@ impl HookType {
 
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # opensession-managed — do not edit
-# Adds AI-Session trailer to commit messages when an AI session is active.
-
-COMMIT_MSG_FILE="$1"
-COMMIT_SOURCE="$2"
-
-# Only modify user-initiated commits (not merge, squash, etc.)
-case "$COMMIT_SOURCE" in
-    merge|squash) exit 0 ;;
-esac
-
-# Check if sqlite3 is available
-command -v sqlite3 >/dev/null 2>&1 || exit 0
-
-DB="$HOME/.local/share/opensession/local.db"
-[ -f "$DB" ] || exit 0
-
-# Get repo working directory
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
-
-# Find the most recent session active in this repo (within last 30 minutes)
-SESSION_ID=$(sqlite3 "$DB" "
-    SELECT s.id FROM sessions s
-    LEFT JOIN session_sync ss ON ss.session_id = s.id
-    WHERE s.working_directory LIKE '${REPO_ROOT}%'
-    AND s.created_at >= datetime('now', '-30 minutes')
-    ORDER BY s.created_at DESC
-    LIMIT 1;
-" 2>/dev/null)
-
-[ -z "$SESSION_ID" ] && exit 0
-
-# Don't add if trailer already exists
-grep -q "^AI-Session:" "$COMMIT_MSG_FILE" 2>/dev/null && exit 0
-
-# Append trailer (with blank line separator if needed)
-if [ -s "$COMMIT_MSG_FILE" ]; then
-    # Check if last non-empty line is already a trailer
-    LAST_LINE=$(sed '/^$/d' "$COMMIT_MSG_FILE" | tail -1)
-    case "$LAST_LINE" in
-        *:*) ;; # Already has a trailer-like line
-        *) echo "" >> "$COMMIT_MSG_FILE" ;;
-    esac
-fi
-echo "AI-Session: $SESSION_ID" >> "$COMMIT_MSG_FILE"
+# Disabled by default in Git-native V2.
+exit 0
 "#;
 
 const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
 # opensession-managed — do not edit
-# Records commit<->session links after each commit.
-
-command -v sqlite3 >/dev/null 2>&1 || exit 0
-
-DB="$HOME/.local/share/opensession/local.db"
-[ -f "$DB" ] || exit 0
-
-COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null) || exit 0
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || BRANCH=""
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-
-# Extract AI-Session trailer from the commit message
-SESSION_ID=$(git log -1 --format='%(trailers:key=AI-Session,valueonly)' "$COMMIT_HASH" 2>/dev/null)
-
-[ -z "$SESSION_ID" ] && exit 0
-
-# Record the link in the local DB
-sqlite3 "$DB" "
-    INSERT INTO commit_session_links (commit_hash, session_id, repo_path, branch)
-    VALUES ('$COMMIT_HASH', '$SESSION_ID', '$REPO_ROOT', '$BRANCH')
-    ON CONFLICT(commit_hash, session_id) DO NOTHING;
-" 2>/dev/null
-
+# Disabled by default in Git-native V2.
 exit 0
 "#;
 
 const PRE_PUSH_HOOK: &str = r#"#!/bin/sh
 # opensession-managed — do not edit
-# Scans for potential secrets in commits being pushed.
+# Best-effort ledger fanout + secret scan.
 
 remote="$1"
-url="$2"
+_url="$2"
 
 YELLOW='\033[1;33m'
 RED='\033[1;31m'
 NC='\033[0m'
 
 found_secrets=0
+fanout_failed=0
+
+if [ "${OPENSESSION_INTERNAL_PUSH:-}" = "1" ]; then
+    exit 0
+fi
+
+tmp_fanout="/tmp/opensession-ledger-fanout.$$"
+: > "$tmp_fanout"
+
+fanout_enabled=1
+if ! command -v opensession >/dev/null 2>&1; then
+    fanout_enabled=0
+fi
 
 while read local_ref local_oid remote_ref remote_oid; do
+    case "$local_ref" in
+        refs/heads/*)
+            if [ "$fanout_enabled" -eq 1 ]; then
+                branch="${local_ref#refs/heads/}"
+                ledger_ref=$(opensession setup --print-ledger-ref "$branch" 2>/dev/null || true)
+                if [ -n "$ledger_ref" ]; then
+                    printf '%s\n' "$ledger_ref" >> "$tmp_fanout"
+                fi
+            fi
+            ;;
+    esac
+
     # Skip delete pushes
     if [ "$local_oid" = "0000000000000000000000000000000000000000" ]; then
         continue
@@ -150,6 +111,23 @@ while read local_ref local_oid remote_ref remote_oid; do
     rm -f /tmp/opensession-secret-scan.$$
 done
 
+if [ "$fanout_enabled" -eq 0 ]; then
+    printf "${YELLOW}[opensession]${NC} Warning: opensession CLI not found; skipping ledger fanout.\n"
+else
+    tmp_sorted="${tmp_fanout}.sorted"
+    sort -u "$tmp_fanout" > "$tmp_sorted" 2>/dev/null
+    while IFS= read -r ledger_ref; do
+        [ -z "$ledger_ref" ] && continue
+        if ! OPENSESSION_INTERNAL_PUSH=1 git push --no-verify "$remote" "$ledger_ref:$ledger_ref" >/dev/null 2>&1; then
+            fanout_failed=1
+            printf "${YELLOW}[opensession]${NC} Warning: failed to push ledger ref %s\n" "$ledger_ref"
+        fi
+    done < "$tmp_sorted"
+    rm -f "$tmp_sorted"
+fi
+
+rm -f "$tmp_fanout"
+
 if [ "$found_secrets" -eq 1 ]; then
     printf "${YELLOW}[opensession]${NC} Warning: potential secrets detected. Review before pushing.\n"
     echo "  To push anyway: git push --no-verify"
@@ -157,6 +135,10 @@ if [ "$found_secrets" -eq 1 ]; then
     # Warning only — don't block the push by default
     # To make it blocking, uncomment: exit 1
     exit 0
+fi
+
+if [ "$fanout_failed" -eq 1 ]; then
+    printf "${YELLOW}[opensession]${NC} Warning: one or more ledger fanout pushes failed.\n"
 fi
 
 exit 0
@@ -361,9 +343,7 @@ mod tests {
     #[test]
     fn test_hook_type_all() {
         let all = HookType::all();
-        assert_eq!(all.len(), 3);
-        assert!(all.contains(&HookType::PrepareCommitMsg));
-        assert!(all.contains(&HookType::PostCommit));
+        assert_eq!(all.len(), 1);
         assert!(all.contains(&HookType::PrePush));
     }
 
@@ -397,7 +377,7 @@ mod tests {
         let hooks = HookType::all();
 
         let installed = install_hooks(repo.path(), hooks).unwrap();
-        assert_eq!(installed.len(), 3);
+        assert_eq!(installed.len(), hooks.len());
 
         // Verify files exist
         for hook_type in hooks {
@@ -426,7 +406,7 @@ mod tests {
         // Install then uninstall
         install_hooks(repo.path(), hooks).unwrap();
         let uninstalled = uninstall_hooks(repo.path(), hooks).unwrap();
-        assert_eq!(uninstalled.len(), 3);
+        assert_eq!(uninstalled.len(), hooks.len());
 
         // Verify files are gone
         for hook_type in hooks {
@@ -475,18 +455,11 @@ mod tests {
         // Initially empty
         assert!(list_installed_hooks(repo.path()).is_empty());
 
-        // Install two hooks
-        install_hooks(
-            repo.path(),
-            &[HookType::PrepareCommitMsg, HookType::PostCommit],
-        )
-        .unwrap();
+        install_hooks(repo.path(), HookType::all()).unwrap();
 
         let installed = list_installed_hooks(repo.path());
-        assert_eq!(installed.len(), 2);
-        assert!(installed.contains(&HookType::PrepareCommitMsg));
-        assert!(installed.contains(&HookType::PostCommit));
-        assert!(!installed.contains(&HookType::PrePush));
+        assert_eq!(installed.len(), 1);
+        assert!(installed.contains(&HookType::PrePush));
     }
 
     #[test]
@@ -517,17 +490,31 @@ mod tests {
         let repo = create_fake_git_repo();
 
         // Install once
-        install_hooks(repo.path(), &[HookType::PostCommit]).unwrap();
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
 
         // Install again — should succeed without backup (it's already ours)
-        install_hooks(repo.path(), &[HookType::PostCommit]).unwrap();
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
 
         let hooks_dir = repo.path().join(".git/hooks");
-        let backup_path = hooks_dir.join("post-commit.pre-opensession");
+        let backup_path = hooks_dir.join("pre-push.pre-opensession");
         assert!(
             !backup_path.exists(),
             "should not create backup for opensession-managed hooks"
         );
+    }
+
+    #[test]
+    fn test_pre_push_template_has_no_sqlite_dependency() {
+        let template = hook_template(HookType::PrePush);
+        assert!(!template.contains("sqlite3"));
+        assert!(!template.contains("local.db"));
+    }
+
+    #[test]
+    fn test_pre_push_template_contains_fanout_guard() {
+        let template = hook_template(HookType::PrePush);
+        assert!(template.contains("OPENSESSION_INTERNAL_PUSH"));
+        assert!(template.contains("opensession setup --print-ledger-ref"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::trace::Session;
+use serde::{Deserialize, Serialize};
 
 pub const ATTR_CWD: &str = "cwd";
 pub const ATTR_WORKING_DIRECTORY: &str = "working_directory";
@@ -56,28 +57,60 @@ pub fn is_auxiliary_session(session: &Session) -> bool {
     session_role(session) == SessionRole::Auxiliary
 }
 
-pub fn build_git_storage_meta_json(session: &Session) -> Vec<u8> {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMeta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<String>,
+}
+
+pub fn build_git_storage_meta_json_with_git(session: &Session, git: Option<&GitMeta>) -> Vec<u8> {
     let role = match session_role(session) {
         SessionRole::Primary => "primary",
         SessionRole::Auxiliary => "auxiliary",
     };
 
-    serde_json::to_vec_pretty(&serde_json::json!({
+    let mut payload = serde_json::json!({
+        "schema_version": 2,
         "session_id": session.session_id,
         "title": session.context.title,
         "tool": session.agent.tool,
         "model": session.agent.model,
         "session_role": role,
         "stats": session.stats,
-    }))
-    .unwrap_or_default()
+    });
+
+    if let Some(git_meta) = git {
+        let has_git = git_meta.remote.is_some()
+            || git_meta.repo_name.is_some()
+            || git_meta.branch.is_some()
+            || git_meta.head.is_some()
+            || !git_meta.commits.is_empty();
+        if has_git {
+            payload["git"] = serde_json::to_value(git_meta).unwrap_or_default();
+        }
+    }
+
+    serde_json::to_vec_pretty(&payload).unwrap_or_default()
+}
+
+pub fn build_git_storage_meta_json(session: &Session) -> Vec<u8> {
+    build_git_storage_meta_json_with_git(session, None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        is_auxiliary_session, session_role, source_path, working_directory, SessionRole,
-        ATTR_PARENT_SESSION_ID, ATTR_SESSION_ROLE,
+        build_git_storage_meta_json, build_git_storage_meta_json_with_git, is_auxiliary_session,
+        session_role, source_path, working_directory, GitMeta, SessionRole, ATTR_PARENT_SESSION_ID,
+        ATTR_SESSION_ROLE,
     };
     use crate::trace::{Agent, Session};
     use serde_json::Value;
@@ -168,5 +201,31 @@ mod tests {
     fn session_role_defaults_to_primary() {
         let session = make_session();
         assert_eq!(session_role(&session), SessionRole::Primary);
+    }
+
+    #[test]
+    fn git_storage_meta_defaults_to_schema_v2_without_git() {
+        let session = make_session();
+        let bytes = build_git_storage_meta_json(&session);
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).expect("valid json");
+        assert_eq!(parsed["schema_version"], 2);
+        assert!(parsed.get("git").is_none());
+    }
+
+    #[test]
+    fn git_storage_meta_includes_git_block_when_present() {
+        let session = make_session();
+        let git = GitMeta {
+            remote: Some("git@github.com:org/repo.git".to_string()),
+            repo_name: Some("org/repo".to_string()),
+            branch: Some("feature/x".to_string()),
+            head: Some("abcd1234".to_string()),
+            commits: vec!["abcd1234".to_string(), "beef5678".to_string()],
+        };
+        let bytes = build_git_storage_meta_json_with_git(&session, Some(&git));
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).expect("valid json");
+        assert_eq!(parsed["schema_version"], 2);
+        assert_eq!(parsed["git"]["repo_name"], "org/repo");
+        assert_eq!(parsed["git"]["commits"][0], "abcd1234");
     }
 }

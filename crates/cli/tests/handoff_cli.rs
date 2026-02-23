@@ -189,7 +189,10 @@ fn share_git_without_push_prints_push_command() {
         &repo,
         &[
             "show",
-            &format!("refs/heads/opensession/sessions:sessions/{hash}.jsonl"),
+            &format!(
+                "{}:sessions/{hash}.jsonl",
+                opensession_git_native::branch_ledger_ref("main")
+            ),
         ],
     );
 }
@@ -318,6 +321,53 @@ fn handoff_build_get_verify_pin_unpin_rm() {
         &["handoff", "artifacts", "rm", &artifact_uri],
     );
     assert!(rm.status.success());
+}
+
+#[test]
+fn setup_installs_pre_push_hook_with_backup() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    write_file(
+        &repo.join(".git").join("hooks").join("pre-push"),
+        "#!/bin/sh\necho custom\n",
+    );
+
+    let out = run(tmp.path(), &repo, &["setup"]);
+    assert!(
+        out.status.success(),
+        "setup failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let backup = repo
+        .join(".git")
+        .join("hooks")
+        .join("pre-push.pre-opensession");
+    assert!(backup.exists(), "expected backup hook");
+
+    let hook_body = fs::read_to_string(repo.join(".git").join("hooks").join("pre-push"))
+        .expect("read pre-push hook");
+    assert!(hook_body.contains("opensession-managed"));
+    assert!(hook_body.contains("opensession setup --print-ledger-ref"));
+}
+
+#[test]
+fn setup_check_prints_expected_ledger_ref() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(tmp.path(), &repo, &["setup", "--check"]);
+    assert!(
+        out.status.success(),
+        "setup --check failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("current branch: main"));
+    assert!(stdout.contains(&opensession_git_native::branch_ledger_ref("main")));
 }
 
 #[test]

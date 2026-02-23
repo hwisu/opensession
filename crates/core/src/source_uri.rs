@@ -397,7 +397,7 @@ mod tests {
     fn parses_git_roundtrip() {
         let uri = SourceUri::Src(SourceSpec::Git {
             remote: "https://example.com/a/b.git".to_string(),
-            r#ref: "refs/heads/opensession/sessions".to_string(),
+            r#ref: "refs/opensession/branches/bWFpbg".to_string(),
             path: "sessions/hash.jsonl".to_string(),
         });
         let rendered = uri.to_string();

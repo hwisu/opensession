@@ -1,6 +1,7 @@
 mod config;
 mod health;
 pub mod hooks;
+mod repo_registry;
 mod scheduler;
 mod watcher;
 

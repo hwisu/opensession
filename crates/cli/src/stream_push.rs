@@ -6,7 +6,7 @@
 
 use anyhow::{bail, Context, Result};
 use opensession_core::session::{is_auxiliary_session, working_directory};
-use opensession_local_db::git::extract_git_context;
+use opensession_git_native::extract_git_context;
 use opensession_local_db::LocalDb;
 use opensession_parsers::is_auxiliary_session_path;
 use serde::{Deserialize, Serialize};
@@ -147,13 +147,17 @@ pub fn run_stream_push(agent: &str) -> Result<()> {
     }
 
     // Extract git context from session's working directory
-    let git = working_directory(&session)
-        .map(extract_git_context)
-        .unwrap_or_default();
+    let git = working_directory(&session).map(extract_git_context).unwrap_or_default();
+    let local_git = opensession_local_db::git::GitContext {
+        remote: git.remote.clone(),
+        branch: git.branch.clone(),
+        commit: git.commit.clone(),
+        repo_name: git.repo_name.clone(),
+    };
 
     // Upsert to local DB
     let db = LocalDb::open()?;
-    db.upsert_local_session(&session, &file_path_str, &git)?;
+    db.upsert_local_session(&session, &file_path_str, &local_git)?;
 
     // Save updated offset
     state.byte_offset = file_len;

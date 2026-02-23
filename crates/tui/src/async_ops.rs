@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use opensession_api::{
-    IssueApiKeyResponse, SessionListQuery, SessionListResponse, UploadRequest, UserSettingsResponse,
-};
+use opensession_api::{IssueApiKeyResponse, UploadRequest, UserSettingsResponse};
 
 use crate::config::DaemonConfig;
 
@@ -19,10 +17,6 @@ pub enum AsyncCommand {
     FetchProfile,
     RegenerateApiKey,
 
-    // ── Server Sessions ───────────────────────────────────────────────
-    #[allow(dead_code)]
-    FetchServerSessions(SessionListQuery),
-
     // ── Delete ────────────────────────────────────────────────────────
     DeleteSession {
         session_id: String,
@@ -37,9 +31,6 @@ pub enum CommandResult {
     // Profile / Account
     Profile(Result<UserSettingsResponse, String>),
     ApiKey(Result<IssueApiKeyResponse, String>),
-
-    // Server Sessions
-    ServerSessions(Result<SessionListResponse, String>),
 
     // Delete
     DeleteSession(Result<String, String>), // Ok(session_id) or Err(msg)
@@ -120,19 +111,6 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
             }
             .await;
             CommandResult::DeleteSession(result)
-        }
-
-        // ── Server Sessions ───────────────────────────────────────────
-        AsyncCommand::FetchServerSessions(query) => {
-            let result = async {
-                let client = make_client(config)?;
-                client
-                    .list_sessions(&query)
-                    .await
-                    .map_err(|e| format!("{e}"))
-            }
-            .await;
-            CommandResult::ServerSessions(result)
         }
     }
 }

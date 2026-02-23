@@ -3296,16 +3296,6 @@ impl App {
                 self.flash_error(format!("Error: {e}"));
             }
 
-            CommandResult::ServerSessions(Ok(resp)) => {
-                self.flash_success(format!(
-                    "Loaded {} sessions from server",
-                    resp.sessions.len()
-                ));
-            }
-            CommandResult::ServerSessions(Err(e)) => {
-                self.flash_error(format!("Error: {e}"));
-            }
-
             CommandResult::DeleteSession(Ok(session_id)) => {
                 if let Some(ref db) = self.db {
                     let _ = db.delete_session(&session_id);

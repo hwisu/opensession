@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.24](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.23...opensession-git-native-v0.2.24) - 2026-02-23
+
+### Other
+
+- codex/git native v2 hidden ref cleanup ([#9](https://github.com/hwisu/opensession/pull/9))
+
 ## [0.2.23](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.22...opensession-git-native-v0.2.23) - 2026-02-22
 
 ### Other

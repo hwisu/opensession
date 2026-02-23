@@ -786,6 +786,109 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn mouse_scroll_debounces_repeated_list_navigation() {
+        let mut app = App::new(vec![
+            make_live_session("ms-1", 2),
+            make_live_session("ms-2", 2),
+            make_live_session("ms-3", 2),
+        ]);
+        app.per_page = 1;
+        app.apply_filter();
+        app.mouse_scroll_debounce = Duration::from_secs(1);
+
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(scroll_down);
+        assert_eq!(app.page, 1);
+
+        app.handle_mouse(scroll_down);
+        assert_eq!(app.page, 1);
+    }
+
+    #[test]
+    fn mouse_scroll_applies_after_debounce_window() {
+        let mut app = App::new(vec![
+            make_live_session("msw-1", 2),
+            make_live_session("msw-2", 2),
+            make_live_session("msw-3", 2),
+        ]);
+        app.per_page = 1;
+        app.apply_filter();
+        app.mouse_scroll_debounce = Duration::from_millis(500);
+
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(scroll_down);
+        assert_eq!(app.page, 1);
+
+        app.last_mouse_scroll_at =
+            Instant::now().checked_sub(app.mouse_scroll_debounce + Duration::from_millis(10));
+
+        app.handle_mouse(scroll_down);
+        assert_eq!(app.page, 2);
+    }
+
+    #[test]
+    fn mouse_scroll_burst_is_throttled() {
+        let mut app = App::new(vec![
+            make_live_session("msb-1", 2),
+            make_live_session("msb-2", 2),
+            make_live_session("msb-3", 2),
+            make_live_session("msb-4", 2),
+        ]);
+        app.per_page = 1;
+        app.apply_filter();
+        app.mouse_scroll_debounce = Duration::from_secs(1);
+
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        for _ in 0..100 {
+            app.handle_mouse(scroll_down);
+        }
+
+        assert_eq!(app.page, 1);
+    }
+
+    #[test]
+    fn mouse_drag_burst_does_not_trigger_navigation() {
+        let mut app = App::new(vec![
+            make_live_session("md-1", 2),
+            make_live_session("md-2", 2),
+            make_live_session("md-3", 2),
+        ]);
+        app.per_page = 1;
+        app.apply_filter();
+
+        let drag = MouseEvent {
+            kind: MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        for _ in 0..100 {
+            app.handle_mouse(drag);
+        }
+
+        assert_eq!(app.page, 0);
+    }
+
+    #[test]
     fn get_base_visible_events_keeps_claude_merged_subagent_events() {
         let mut session = Session::new(
             "s-hidden".to_string(),
@@ -1941,6 +2044,8 @@ pub struct App {
     // ── Pagination ───────────────────────────────────────────────
     pub page: usize,
     pub per_page: usize,
+    pub mouse_scroll_debounce: Duration,
+    pub last_mouse_scroll_at: Option<Instant>,
 
     // ── Multi-column layout ──────────────────────────────────────
     pub list_layout: ListLayout,
@@ -2133,6 +2238,8 @@ impl App {
             session_sort_order: SortOrder::Recent,
             page: 0,
             per_page: 50,
+            mouse_scroll_debounce: Duration::from_millis(45),
+            last_mouse_scroll_at: None,
             list_layout: ListLayout::default(),
             column_focus: 0,
             column_list_states: Vec::new(),
@@ -2252,32 +2359,53 @@ impl App {
             return false;
         }
         match mouse.kind {
-            MouseEventKind::ScrollUp => match self.view {
-                View::SessionList => self.list_prev(),
-                View::SessionDetail => {
-                    self.detail_event_index = self.detail_event_index.saturating_sub(2);
-                    self.detach_live_follow_linear();
-                    self.update_detail_selection_anchor();
+            MouseEventKind::ScrollUp => {
+                if !self.should_process_mouse_scroll() {
+                    return false;
                 }
-                _ => {}
-            },
-            MouseEventKind::ScrollDown => match self.view {
-                View::SessionList => self.list_next(),
-                View::SessionDetail => {
-                    if let Some(session) = self.selected_session() {
-                        let visible = self.visible_event_count(session);
-                        if visible > 0 {
-                            self.detail_event_index =
-                                (self.detail_event_index + 2).min(visible - 1);
-                            self.update_detail_selection_anchor();
+                match self.view {
+                    View::SessionList => self.list_prev(),
+                    View::SessionDetail => {
+                        self.detail_event_index = self.detail_event_index.saturating_sub(2);
+                        self.detach_live_follow_linear();
+                        self.update_detail_selection_anchor();
+                    }
+                    _ => {}
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if !self.should_process_mouse_scroll() {
+                    return false;
+                }
+                match self.view {
+                    View::SessionList => self.list_next(),
+                    View::SessionDetail => {
+                        if let Some(session) = self.selected_session() {
+                            let visible = self.visible_event_count(session);
+                            if visible > 0 {
+                                self.detail_event_index =
+                                    (self.detail_event_index + 2).min(visible - 1);
+                                self.update_detail_selection_anchor();
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
         false
+    }
+
+    fn should_process_mouse_scroll(&mut self) -> bool {
+        let now = Instant::now();
+        if let Some(last) = self.last_mouse_scroll_at {
+            if now.duration_since(last) < self.mouse_scroll_debounce {
+                return false;
+            }
+        }
+        self.last_mouse_scroll_at = Some(now);
+        true
     }
 
     fn switch_tab(&mut self, tab: Tab) {

@@ -25,6 +25,8 @@ LOCK_HASH_BEFORE=$(shasum Cargo.lock 2>/dev/null || echo "none")
 if command -v node >/dev/null 2>&1; then
   echo "Running content contract check..."
   node scripts/verify-content-contract.mjs --check
+  echo "Running session-review workflow check..."
+  node scripts/check-session-review-workflow.mjs
 else
   echo "WARNING: node not found; skipping content contract check."
 fi

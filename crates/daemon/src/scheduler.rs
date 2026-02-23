@@ -5,22 +5,25 @@ use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_api_client::ApiClient;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_core::session::{
-    build_git_storage_meta_json, is_auxiliary_session, working_directory,
+    build_git_storage_meta_json_with_git, is_auxiliary_session, working_directory, GitMeta,
 };
 use opensession_core::Session;
-use opensession_git_native::PruneStats;
-use opensession_local_db::git::extract_git_context;
+use opensession_git_native::{
+    branch_ledger_ref, extract_git_context, resolve_ledger_branch, PruneStats,
+};
 use opensession_local_db::LocalDb;
 use opensession_parsers::parse_with_default_parsers;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::config::{DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode};
+use crate::repo_registry::RepoRegistry;
 use crate::watcher::FileChangeEvent;
 
 /// Legacy state – kept only for migration from state.json.
@@ -50,8 +53,8 @@ fn session_cwd(session: &Session) -> Option<&str> {
 }
 
 /// Build a JSON metadata blob for git storage from a session.
-fn build_session_meta_json(session: &Session) -> Vec<u8> {
-    build_git_storage_meta_json(session)
+fn build_session_meta_json(session: &Session, git: Option<&GitMeta>) -> Vec<u8> {
+    build_git_storage_meta_json_with_git(session, git)
 }
 
 fn session_to_hail_jsonl_bytes(session: &Session) -> Option<Vec<u8>> {
@@ -86,61 +89,170 @@ fn resolve_git_retention_schedule(config: &DaemonConfig) -> Option<(u32, Duratio
     Some((keep_days, Duration::from_secs(interval_secs)))
 }
 
-fn run_git_retention_once(db: &LocalDb, keep_days: u32) -> Result<()> {
-    let workdirs = db.list_working_directories()?;
-    if workdirs.is_empty() {
-        debug!("Git retention: no working directories in local DB");
-        return Ok(());
-    }
-
-    let mut repo_roots = HashSet::new();
-    for wd in workdirs {
-        if let Some(root) = crate::config::find_repo_root(&wd) {
-            repo_roots.insert(root);
-        }
-    }
-
+fn run_git_retention_once(registry: &RepoRegistry, keep_days: u32) -> Result<()> {
+    let repo_roots = registry.repo_roots();
     if repo_roots.is_empty() {
-        debug!("Git retention: no repo roots found from working directories");
+        debug!("Git retention: no tracked repositories");
         return Ok(());
     }
 
     let storage = opensession_git_native::NativeGitStorage;
     for repo_root in repo_roots {
-        match storage.prune_by_age(&repo_root, keep_days) {
-            Ok(PruneStats {
-                scanned_sessions,
-                expired_sessions,
-                rewritten,
-            }) => {
-                if rewritten {
-                    info!(
+        let refs = list_branch_ledger_refs(&repo_root);
+        if refs.is_empty() {
+            continue;
+        }
+        for ref_name in refs {
+            match storage.prune_by_age_at_ref(&repo_root, &ref_name, keep_days) {
+                Ok(PruneStats {
+                    scanned_sessions,
+                    expired_sessions,
+                    rewritten,
+                }) => {
+                    if rewritten {
+                        info!(
+                            repo = %repo_root.display(),
+                            ref_name,
+                            keep_days,
+                            scanned_sessions,
+                            expired_sessions,
+                            "Git retention: pruned expired sessions"
+                        );
+                    } else {
+                        debug!(
+                            repo = %repo_root.display(),
+                            ref_name,
+                            keep_days,
+                            scanned_sessions,
+                            "Git retention: no expired sessions"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
                         repo = %repo_root.display(),
+                        ref_name,
                         keep_days,
-                        scanned_sessions,
-                        expired_sessions,
-                        "Git retention: pruned expired sessions"
-                    );
-                } else {
-                    debug!(
-                        repo = %repo_root.display(),
-                        keep_days,
-                        scanned_sessions,
-                        "Git retention: no expired sessions"
+                        "Git retention failed: {e}"
                     );
                 }
-            }
-            Err(e) => {
-                warn!(
-                    repo = %repo_root.display(),
-                    keep_days,
-                    "Git retention failed: {e}"
-                );
             }
         }
     }
 
     Ok(())
+}
+
+fn list_branch_ledger_refs(repo_root: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("for-each-ref")
+        .arg("--format=%(refname)")
+        .arg(opensession_git_native::BRANCH_LEDGER_REF_PREFIX)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn commit_shas_from_reflog(repo_root: &Path, start_ts: i64, end_ts: i64) -> Vec<String> {
+    let git_dir_output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("rev-parse")
+        .arg("--git-dir")
+        .output();
+    let Ok(git_dir_output) = git_dir_output else {
+        return Vec::new();
+    };
+    if !git_dir_output.status.success() {
+        return Vec::new();
+    }
+    let git_dir = String::from_utf8_lossy(&git_dir_output.stdout)
+        .trim()
+        .to_string();
+    if git_dir.is_empty() {
+        return Vec::new();
+    }
+    let git_dir_path = if Path::new(&git_dir).is_absolute() {
+        PathBuf::from(git_dir)
+    } else {
+        repo_root.join(git_dir)
+    };
+    let reflog_path = git_dir_path.join("logs").join("HEAD");
+    let raw = std::fs::read_to_string(&reflog_path);
+    let Ok(raw) = raw else {
+        return Vec::new();
+    };
+
+    let mut seen = HashSet::new();
+    let mut commits = Vec::new();
+    for line in raw.lines() {
+        let Some((left, _msg)) = line.split_once('\t') else {
+            continue;
+        };
+        let mut pieces = left.split_whitespace();
+        let _old = pieces.next();
+        let new = pieces.next();
+        let Some(new_sha) = new else {
+            continue;
+        };
+        if new_sha.len() < 7 || !new_sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        let mut tail = left.split_whitespace().rev();
+        let _tz = tail.next();
+        let ts_raw = tail.next();
+        let Some(ts_raw) = ts_raw else {
+            continue;
+        };
+        let Ok(ts) = ts_raw.parse::<i64>() else {
+            continue;
+        };
+        if ts < start_ts || ts > end_ts {
+            continue;
+        }
+        if seen.insert(new_sha.to_string()) {
+            commits.push(new_sha.to_string());
+        }
+    }
+    commits
+}
+
+fn collect_commit_shas_for_session(repo_root: &Path, session: &Session) -> Vec<String> {
+    let created = session.context.created_at.timestamp();
+    let updated = session.context.updated_at.timestamp();
+    let start = created.min(updated);
+    let end = created.max(updated);
+
+    let mut commits = commit_shas_from_reflog(repo_root, start, end);
+    if commits.is_empty() {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .arg("rev-parse")
+            .arg("HEAD")
+            .output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !head.is_empty() {
+                    commits.push(head);
+                }
+            }
+        }
+    }
+    commits
 }
 
 /// Run the scheduler loop: receives file change events, debounces, parses, and uploads.
@@ -172,6 +284,13 @@ pub async fn run_scheduler(
     }
 
     let effective_mode = resolve_publish_mode(&config.daemon);
+    let mut repo_registry = match RepoRegistry::load_default() {
+        Ok(registry) => registry,
+        Err(e) => {
+            warn!("failed to load repo registry: {e}");
+            RepoRegistry::default()
+        }
+    };
 
     // Pending changes: path -> when we last saw a change
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
@@ -209,7 +328,7 @@ pub async fn run_scheduler(
                             debug!("Manual mode, skipping auto-publish: {}", path.display());
                         }
                         PublishMode::SessionEnd | PublishMode::Realtime => {
-                            if let Err(e) = process_file(&path, &config, &db).await {
+                            if let Err(e) = process_file(&path, &config, &db, &mut repo_registry).await {
                                 error!("Failed to process {}: {:#}", path.display(), e);
                             }
                         }
@@ -220,7 +339,7 @@ pub async fn run_scheduler(
                     (retention_schedule, next_retention_run)
                 {
                     if now >= next_at {
-                        if let Err(e) = run_git_retention_once(&db, keep_days) {
+                        if let Err(e) = run_git_retention_once(&repo_registry, keep_days) {
                             warn!("Git retention scan failed: {e}");
                         }
                         next_retention_run = Some(now + interval);
@@ -245,7 +364,12 @@ pub async fn run_scheduler(
 // ---------------------------------------------------------------------------
 
 /// Process a single file: parse, store in local DB, sanitize, upload.
-async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Result<()> {
+async fn process_file(
+    path: &PathBuf,
+    config: &DaemonConfig,
+    db: &LocalDb,
+    repo_registry: &mut RepoRegistry,
+) -> Result<()> {
     if was_already_uploaded(path, db)? {
         return Ok(());
     }
@@ -266,9 +390,25 @@ async fn process_file(path: &PathBuf, config: &DaemonConfig, db: &LocalDb) -> Re
 
     sanitize(&mut session, &effective_config);
 
-    let body_url = maybe_git_store(&session, &effective_config);
+    let git_store = maybe_git_store(&session, &effective_config);
+    if let Some(ref stored) = git_store {
+        if let Err(e) = repo_registry.add(&stored.repo_root) {
+            warn!(
+                repo = %stored.repo_root.display(),
+                "failed to update repo registry: {e}"
+            );
+        }
+    }
 
-    upload_to_server(&session, &effective_config, db, body_url.as_deref()).await
+    upload_to_server(
+        &session,
+        &effective_config,
+        db,
+        git_store
+            .as_ref()
+            .and_then(|stored| stored.body_url.as_deref()),
+    )
+    .await
 }
 
 fn resolve_effective_config(session: &Session, config: &DaemonConfig) -> DaemonConfig {
@@ -331,8 +471,14 @@ fn store_locally(session: &Session, path: &Path, db: &LocalDb) -> Result<()> {
     let git = session_cwd(session)
         .map(extract_git_context)
         .unwrap_or_default();
+    let local_git = opensession_local_db::git::GitContext {
+        remote: git.remote.clone(),
+        branch: git.branch.clone(),
+        commit: git.commit.clone(),
+        repo_name: git.repo_name.clone(),
+    };
 
-    db.upsert_local_session(session, &path_str, &git)?;
+    db.upsert_local_session(session, &path_str, &local_git)?;
     Ok(())
 }
 
@@ -347,30 +493,59 @@ fn sanitize(session: &mut Session, config: &DaemonConfig) {
 
 /// Store a session to the local git-native branch when Git-Native mode is enabled.
 /// Returns the body_url (raw content URL) on success, or None on failure/not configured.
-fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<String> {
+struct GitStoreOutcome {
+    body_url: Option<String>,
+    repo_root: PathBuf,
+}
+
+fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<GitStoreOutcome> {
     if config.git_storage.method == GitStorageMethod::Sqlite {
         return None;
     }
 
     let cwd = session_cwd(session)?;
     let repo_root = crate::config::find_repo_root(cwd)?;
+    let git_ctx = extract_git_context(cwd);
+    let branch = resolve_ledger_branch(git_ctx.branch.as_deref(), git_ctx.commit.as_deref());
+    let ref_name = branch_ledger_ref(&branch);
+    let commit_shas = collect_commit_shas_for_session(&repo_root, session);
 
     let hail_jsonl = session_to_hail_jsonl_bytes(session)?;
-    let meta_json = build_session_meta_json(session);
+    let git_meta = GitMeta {
+        remote: git_ctx.remote.clone(),
+        repo_name: git_ctx.repo_name.clone(),
+        branch: Some(branch),
+        head: git_ctx.commit.clone(),
+        commits: commit_shas.clone(),
+    };
+    let meta_json = build_session_meta_json(session, Some(&git_meta));
 
     let storage = opensession_git_native::NativeGitStorage;
-    match storage.store(&repo_root, &session.session_id, &hail_jsonl, &meta_json) {
-        Ok(rel_path) => {
+    match storage.store_session_at_ref(
+        &repo_root,
+        &ref_name,
+        &session.session_id,
+        &hail_jsonl,
+        &meta_json,
+        &commit_shas,
+    ) {
+        Ok(stored) => {
             info!(
-                "Stored session {} to git branch at {}",
-                session.session_id, rel_path
+                "Stored session {} to git ref {} at {}",
+                session.session_id, stored.ref_name, stored.hail_path
             );
             // Try to generate raw URL from git remote
-            let git_ctx = extract_git_context(cwd);
-            git_ctx
-                .remote
-                .as_ref()
-                .map(|remote| opensession_git_native::generate_raw_url(remote, &rel_path))
+            let body_url = git_ctx.remote.as_ref().map(|remote| {
+                opensession_git_native::generate_raw_url(
+                    remote,
+                    &stored.commit_id,
+                    &stored.hail_path,
+                )
+            });
+            Some(GitStoreOutcome {
+                body_url,
+                repo_root,
+            })
         }
         Err(e) => {
             warn!(
@@ -508,10 +683,11 @@ mod tests {
         let mut session = make_session_with_attrs(HashMap::new());
         session.context.title = Some("My Session Title".into());
 
-        let bytes = build_session_meta_json(&session);
+        let bytes = build_session_meta_json(&session, None);
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(parsed["session_id"], "test-session-id");
+        assert_eq!(parsed["schema_version"], 2);
         assert_eq!(parsed["title"], "My Session Title");
         assert_eq!(parsed["tool"], "claude-code");
         assert_eq!(parsed["model"], "claude-opus-4-6");
@@ -522,13 +698,31 @@ mod tests {
     fn test_build_session_meta_json_no_title() {
         let session = make_session_with_attrs(HashMap::new());
 
-        let bytes = build_session_meta_json(&session);
+        let bytes = build_session_meta_json(&session, None);
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(parsed["session_id"], "test-session-id");
         assert!(parsed["title"].is_null());
         assert_eq!(parsed["tool"], "claude-code");
         assert_eq!(parsed["model"], "claude-opus-4-6");
+    }
+
+    #[test]
+    fn test_build_session_meta_json_includes_git_block() {
+        let session = make_session_with_attrs(HashMap::new());
+        let git = GitMeta {
+            remote: Some("git@github.com:org/repo.git".to_string()),
+            repo_name: Some("org/repo".to_string()),
+            branch: Some("feature/x".to_string()),
+            head: Some("abcd1234".to_string()),
+            commits: vec!["abcd1234".to_string()],
+        };
+
+        let bytes = build_session_meta_json(&session, Some(&git));
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["schema_version"], 2);
+        assert_eq!(parsed["git"]["repo_name"], "org/repo");
+        assert_eq!(parsed["git"]["head"], "abcd1234");
     }
 
     #[test]

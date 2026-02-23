@@ -53,9 +53,25 @@ opensession share os://src/local/<sha256> --git --remote origin --push
 `share --git` rules:
 
 - Required: `--remote <name|url>`
-- Default ref: `refs/heads/opensession/sessions`
+- Default ref: `refs/opensession/branches/<branch_b64url>`
 - Default path: `sessions/<sha256>.jsonl`
 - `--push` omitted: no network mutation (prints runnable push command)
+- Legacy fixed ref `refs/heads/opensession/sessions` is no longer used for new writes.
+
+Install-and-forget setup:
+
+```bash
+opensession setup
+opensession setup --check
+```
+
+- Installs/updates OpenSession-managed `pre-push` hook in the current repo.
+- Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
+- Does **not** modify `remote.<name>.push`.
+- Hook fanout push is best-effort and warning-only.
+- Set `OPENSESSION_STRICT=1` to fail push when fanout helper is unavailable or fanout push fails.
+- PR automation currently targets same-repo PRs only.
+- Merge/branch-delete cleanup removes ledger refs immediately; physical object removal follows remote GC policy.
 
 `share --web` rules:
 

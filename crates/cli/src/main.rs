@@ -4,6 +4,7 @@ mod handoff_v1;
 mod inspect;
 mod parse_cmd;
 mod register;
+mod setup_cmd;
 mod share;
 #[cfg(feature = "e2e")]
 mod test_cmd;
@@ -36,6 +37,8 @@ enum Commands {
     Parse(parse_cmd::ParseArgs),
     /// Manage explicit repo config (`.opensession/config.toml`).
     Config(config_cmd::ConfigArgs),
+    /// Install/update OpenSession git hooks and diagnostics.
+    Setup(setup_cmd::SetupArgs),
     /// Generate shell completion scripts.
     Docs {
         #[command(subcommand)]
@@ -68,6 +71,7 @@ async fn main() {
         Commands::Handoff(args) => handoff_v1::run(args),
         Commands::Parse(args) => parse_cmd::run(args),
         Commands::Config(args) => config_cmd::run(args),
+        Commands::Setup(args) => setup_cmd::run(args),
         Commands::Docs { action } => run_docs(action),
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,

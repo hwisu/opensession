@@ -1,11 +1,12 @@
 use anyhow::{bail, Context, Result};
 use opensession_core::session::{
-    build_git_storage_meta_json, is_auxiliary_session, working_directory,
+    build_git_storage_meta_json_with_git, is_auxiliary_session, working_directory, GitMeta,
 };
+use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::config::load_config;
+use crate::config::{load_config, load_daemon_config};
 use opensession_api_client::ApiClient;
 use opensession_parsers::{all_parsers, parser_for_path};
 
@@ -16,6 +17,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
     }
 
     let config = load_config()?;
+    let daemon_config = load_daemon_config()?;
 
     // Find a parser that can handle this file
     let parsers = all_parsers();
@@ -61,7 +63,7 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
     );
 
     if use_git {
-        return upload_to_git(&session);
+        return upload_to_git(&session, &daemon_config);
     }
 
     println!("Uploading to {}...", config.server.url);
@@ -99,7 +101,10 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
 }
 
 /// Store session to the git branch in the current repo.
-fn upload_to_git(session: &opensession_core::Session) -> Result<()> {
+fn upload_to_git(
+    session: &opensession_core::Session,
+    config: &opensession_runtime_config::DaemonConfig,
+) -> Result<()> {
     let repo_root = resolve_repo_root_for_session(session);
 
     let repo_root = match repo_root {
@@ -108,19 +113,53 @@ fn upload_to_git(session: &opensession_core::Session) -> Result<()> {
     };
 
     println!(
-        "Storing to git branch opensession/sessions in {}...",
+        "Storing to git-native ledger in {}...",
         repo_root.display()
     );
 
-    let hail_jsonl = session_to_hail_jsonl_bytes(session)?;
-    let meta_json = build_git_storage_meta_json(session);
+    let repo_root_owned;
+    let cwd = if let Some(cwd) = working_directory(session) {
+        cwd
+    } else {
+        repo_root_owned = repo_root.to_string_lossy().to_string();
+        repo_root_owned.as_str()
+    };
+    let git_ctx = opensession_git_native::extract_git_context(cwd);
+    let branch =
+        opensession_git_native::resolve_ledger_branch(git_ctx.branch.as_deref(), git_ctx.commit.as_deref());
+    let target_ref = opensession_git_native::branch_ledger_ref(&branch);
+
+    let mut sanitized = session.clone();
+    let sanitize_config = SanitizeConfig {
+        strip_paths: config.privacy.strip_paths,
+        strip_env_vars: config.privacy.strip_env_vars,
+        exclude_patterns: config.privacy.exclude_patterns.clone(),
+    };
+    sanitize_session(&mut sanitized, &sanitize_config);
+
+    let hail_jsonl = session_to_hail_jsonl_bytes(&sanitized)?;
+    let git_meta = GitMeta {
+        remote: git_ctx.remote.clone(),
+        repo_name: git_ctx.repo_name.clone(),
+        branch: Some(branch),
+        head: git_ctx.commit.clone(),
+        commits: git_ctx.commit.clone().into_iter().collect(),
+    };
+    let meta_json = build_git_storage_meta_json_with_git(&sanitized, Some(&git_meta));
 
     let storage = opensession_git_native::NativeGitStorage;
-    let rel_path = storage
-        .store(&repo_root, &session.session_id, &hail_jsonl, &meta_json)
+    let stored = storage
+        .store_session_at_ref(
+            &repo_root,
+            &target_ref,
+            &session.session_id,
+            &hail_jsonl,
+            &meta_json,
+            &git_meta.commits,
+        )
         .map_err(|e| anyhow::anyhow!("Git storage failed: {e}"))?;
 
-    println!("Stored at: {} (branch: opensession/sessions)", rel_path);
+    println!("Stored at: {} (ref: {})", stored.hail_path, stored.ref_name);
     println!("Session ID: {}", session.session_id);
 
     Ok(())

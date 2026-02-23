@@ -4,12 +4,7 @@ use worker::*;
 use crate::config::WorkerConfig;
 
 fn capabilities_from_config(config: &WorkerConfig) -> CapabilitiesResponse {
-    CapabilitiesResponse {
-        auth_enabled: config.auth_enabled(),
-        parse_preview_enabled: false,
-        register_targets: vec!["local".to_string(), "git".to_string()],
-        share_modes: vec!["web".to_string(), "git".to_string(), "json".to_string()],
-    }
+    CapabilitiesResponse::for_runtime(config.auth_enabled(), false)
 }
 
 pub async fn handle(_req: Request, ctx: RouteContext<()>) -> Result<Response> {

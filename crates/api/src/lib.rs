@@ -562,6 +562,27 @@ pub struct CapabilitiesResponse {
     pub share_modes: Vec<String>,
 }
 
+pub const DEFAULT_REGISTER_TARGETS: &[&str] = &["local", "git"];
+pub const DEFAULT_SHARE_MODES: &[&str] = &["web", "git", "json"];
+
+impl CapabilitiesResponse {
+    /// Build runtime capability payload with shared defaults.
+    pub fn for_runtime(auth_enabled: bool, parse_preview_enabled: bool) -> Self {
+        Self {
+            auth_enabled,
+            parse_preview_enabled,
+            register_targets: DEFAULT_REGISTER_TARGETS
+                .iter()
+                .map(|target| (*target).to_string())
+                .collect(),
+            share_modes: DEFAULT_SHARE_MODES
+                .iter()
+                .map(|mode| (*mode).to_string())
+                .collect(),
+        }
+    }
+}
+
 // ─── Service Error ───────────────────────────────────────────────────────────
 
 /// Framework-agnostic service error.
@@ -742,12 +763,7 @@ mod schema_tests {
 
     #[test]
     fn capabilities_response_round_trip_includes_new_fields() {
-        let caps = CapabilitiesResponse {
-            auth_enabled: true,
-            parse_preview_enabled: true,
-            register_targets: vec!["local".to_string(), "git".to_string()],
-            share_modes: vec!["web".to_string(), "git".to_string(), "json".to_string()],
-        };
+        let caps = CapabilitiesResponse::for_runtime(true, true);
 
         let json = serde_json::to_string(&caps).expect("capabilities should serialize");
         let decoded: CapabilitiesResponse =
@@ -757,6 +773,12 @@ mod schema_tests {
         assert!(decoded.parse_preview_enabled);
         assert_eq!(decoded.register_targets, vec!["local", "git"]);
         assert_eq!(decoded.share_modes, vec!["web", "git", "json"]);
+    }
+
+    #[test]
+    fn capabilities_defaults_are_stable() {
+        assert_eq!(DEFAULT_REGISTER_TARGETS, &["local", "git"]);
+        assert_eq!(DEFAULT_SHARE_MODES, &["web", "git", "json"]);
     }
 }
 

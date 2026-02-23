@@ -6,8 +6,6 @@ use opensession_core::source_uri::{SourceSpec, SourceUri};
 use std::path::Path;
 use std::process::Command;
 
-const DEFAULT_GIT_REF: &str = "refs/heads/opensession/sessions";
-
 #[derive(Debug, Clone, Args)]
 pub struct ShareArgs {
     /// Source URI (`os://src/...`).
@@ -116,7 +114,7 @@ fn run_git(uri: SourceUri, args: &ShareArgs) -> Result<()> {
     let target_ref = args
         .git_ref
         .clone()
-        .unwrap_or_else(|| DEFAULT_GIT_REF.to_string());
+        .unwrap_or(default_ledger_ref(&repo_root)?);
     let target_path = args
         .path
         .clone()
@@ -224,6 +222,16 @@ fn validate_rel_path(path: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn default_ledger_ref(repo_root: &Path) -> Result<String> {
+    let cwd = repo_root.to_string_lossy().to_string();
+    let git_ctx = opensession_git_native::extract_git_context(&cwd);
+    let branch = opensession_git_native::resolve_ledger_branch(
+        git_ctx.branch.as_deref(),
+        git_ctx.commit.as_deref(),
+    );
+    Ok(opensession_git_native::branch_ledger_ref(&branch))
 }
 
 fn run_push(repo_root: &Path, remote: &str, target_ref: &str) -> Result<()> {

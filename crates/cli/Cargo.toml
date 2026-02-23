@@ -28,6 +28,7 @@ opensession-parsers = { workspace = true }
 opensession-api-client = { workspace = true }
 opensession-local-db = { workspace = true }
 opensession-git-native = { workspace = true }
+opensession-daemon = { workspace = true }
 opensession-e2e = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -54,6 +54,7 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/verify-content-contract.mjs --check
+      - run: node scripts/check-session-review-workflow.mjs
 
   fmt:
     name: Format

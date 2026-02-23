@@ -1,6 +1,6 @@
 use anyhow::Result;
 use opensession_core::session::{is_auxiliary_session, working_directory};
-use opensession_local_db::git::extract_git_context;
+use opensession_git_native::extract_git_context;
 use opensession_local_db::LocalDb;
 use opensession_parsers::discover::discover_sessions;
 use std::path::Path;
@@ -51,10 +51,14 @@ fn index_one_file(db: &LocalDb, path: &Path) -> Result<bool> {
     }
     let path_str = path.to_string_lossy().to_string();
 
-    let git = working_directory(&session)
-        .map(extract_git_context)
-        .unwrap_or_default();
+    let git = working_directory(&session).map(extract_git_context).unwrap_or_default();
+    let local_git = opensession_local_db::git::GitContext {
+        remote: git.remote.clone(),
+        branch: git.branch.clone(),
+        commit: git.commit.clone(),
+        repo_name: git.repo_name.clone(),
+    };
 
-    db.upsert_local_session(&session, &path_str, &git)?;
+    db.upsert_local_session(&session, &path_str, &local_git)?;
     Ok(true)
 }

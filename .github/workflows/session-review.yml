@@ -1,0 +1,176 @@
+name: Session Review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+  delete:
+
+concurrency:
+  group: session-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: PR Session Review
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request' &&
+      (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'synchronize') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute ledger ref
+        id: ledger
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          ref="$(node scripts/branch_ledger_ref.mjs --branch "$BRANCH")"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch ledger ref
+        env:
+          LEDGER_REF: ${{ steps.ledger.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "+${LEDGER_REF}:${LEDGER_REF}" || true
+
+      - name: Build session report
+        env:
+          LEDGER_REF: ${{ steps.ledger.outputs.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/pr_session_report.mjs \
+            --mode update \
+            --ledger-ref "$LEDGER_REF" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            > /tmp/opensession-pr-report.md
+
+      - name: Upsert sticky review comment
+        uses: actions/github-script@v7
+        env:
+          REPORT_PATH: /tmp/opensession-pr-report.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- opensession-session-review -->';
+            const body = fs.readFileSync(process.env.REPORT_PATH, 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 }
+            );
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+  cleanup:
+    name: PR Session Cleanup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    if: >
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'closed' &&
+       github.event.pull_request.merged == true &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'delete' && github.event.ref_type == 'branch')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve branch and ledger ref
+        id: ledger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          DELETE_BRANCH: ${{ github.event.ref }}
+        run: |
+          set -euo pipefail
+          branch=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            branch="$PR_BRANCH"
+          else
+            branch="$DELETE_BRANCH"
+          fi
+          encoded="$(node scripts/branch_ledger_ref.mjs --branch "$branch")"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "ref=${encoded}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch ledger ref
+        env:
+          LEDGER_REF: ${{ steps.ledger.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "+${LEDGER_REF}:${LEDGER_REF}" || true
+
+      - name: Build final report (merged PR only)
+        if: github.event_name == 'pull_request'
+        env:
+          LEDGER_REF: ${{ steps.ledger.outputs.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/pr_session_report.mjs \
+            --mode final \
+            --ledger-ref "$LEDGER_REF" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            > /tmp/opensession-pr-final.md
+
+      - name: Post final snapshot comment (merged PR only)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          REPORT_PATH: /tmp/opensession-pr-final.md
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.REPORT_PATH, 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+      - name: Delete ledger ref with retry
+        env:
+          LEDGER_REF: ${{ steps.ledger.outputs.ref }}
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in 1 2; do
+            if git push origin ":$LEDGER_REF"; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::warning::Failed to delete ledger ref $LEDGER_REF after retry"
+          fi

@@ -125,11 +125,8 @@ fn upload_to_git(
         repo_root_owned.as_str()
     };
     let git_ctx = opensession_git_native::extract_git_context(cwd);
-    let branch = git_ctx
-        .branch
-        .clone()
-        .filter(|b| !b.trim().is_empty())
-        .unwrap_or_else(|| "detached".to_string());
+    let branch =
+        opensession_git_native::resolve_ledger_branch(git_ctx.branch.as_deref(), git_ctx.commit.as_deref());
     let target_ref = opensession_git_native::branch_ledger_ref(&branch);
 
     let mut sanitized = session.clone();

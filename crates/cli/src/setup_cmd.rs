@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use opensession_daemon::hooks::{install_hooks, list_installed_hooks, HookType};
-use opensession_git_native::branch_ledger_ref;
+use opensession_git_native::{branch_ledger_ref, extract_git_context, resolve_ledger_branch};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -32,6 +32,7 @@ pub fn run(args: SetupArgs) -> Result<()> {
 }
 
 fn run_install(repo_root: &PathBuf) -> Result<()> {
+    let shim_path = install_cli_shim()?;
     let installed = install_hooks(repo_root, HookType::all())?;
     if installed.is_empty() {
         println!("No hooks installed.");
@@ -42,10 +43,15 @@ fn run_install(repo_root: &PathBuf) -> Result<()> {
     for hook in installed {
         println!("  - {}", hook.filename());
     }
+    println!("opensession shim: {}", shim_path.display());
 
     if let Ok(branch) = current_branch(repo_root) {
-        let ledger = branch_ledger_ref(&branch);
+        let ledger_branch = ledger_branch_name(repo_root);
+        let ledger = branch_ledger_ref(&ledger_branch);
         println!("current branch: {branch}");
+        if branch != ledger_branch {
+            println!("ledger branch: {ledger_branch}");
+        }
         println!("ledger ref: {ledger}");
     }
     Ok(())
@@ -63,14 +69,31 @@ fn run_check(repo_root: &PathBuf) -> Result<()> {
         }
     }
 
-    let branch = current_branch(repo_root)?;
-    if branch.trim().is_empty() {
-        bail!("could not resolve current branch");
+    match shim_path() {
+        Ok(path) => {
+            let status = if path.exists() { "present" } else { "missing" };
+            println!("opensession shim: {} ({status})", path.display());
+        }
+        Err(err) => {
+            println!("opensession shim: unavailable ({err})");
+        }
     }
-    let ledger = branch_ledger_ref(&branch);
+
+    let branch = current_branch(repo_root)?;
+    let ledger_branch = ledger_branch_name(repo_root);
+    let ledger = branch_ledger_ref(&ledger_branch);
     println!("current branch: {branch}");
+    if branch != ledger_branch {
+        println!("ledger branch: {ledger_branch}");
+    }
     println!("expected ledger ref: {ledger}");
     Ok(())
+}
+
+fn ledger_branch_name(repo_root: &std::path::Path) -> String {
+    let cwd = repo_root.to_string_lossy().to_string();
+    let git_ctx = extract_git_context(&cwd);
+    resolve_ledger_branch(git_ctx.branch.as_deref(), git_ctx.commit.as_deref())
 }
 
 fn current_branch(repo_root: &PathBuf) -> Result<String> {
@@ -89,6 +112,54 @@ fn current_branch(repo_root: &PathBuf) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn shim_path() -> Result<PathBuf> {
+    let home = std::env::var("HOME")
+        .context("HOME environment variable is not set; cannot resolve shim path")?;
+    Ok(PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("opensession")
+        .join("bin")
+        .join("opensession"))
+}
+
+fn install_cli_shim() -> Result<PathBuf> {
+    let shim = shim_path()?;
+    let exe = std::env::current_exe().context("resolve current opensession executable path")?;
+    if let Some(parent) = shim.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create shim directory {}", parent.display()))?;
+    }
+
+    let existing_matches = if shim.exists() {
+        std::fs::canonicalize(&shim).ok() == std::fs::canonicalize(&exe).ok()
+    } else {
+        false
+    };
+    if existing_matches {
+        return Ok(shim);
+    }
+
+    if shim.exists() {
+        std::fs::remove_file(&shim)
+            .with_context(|| format!("remove existing shim {}", shim.display()))?;
+    }
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&exe, &shim)
+            .with_context(|| format!("create shim symlink {}", shim.display()))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::copy(&exe, &shim)
+            .with_context(|| format!("create shim copy {}", shim.display()))?;
+    }
+
+    Ok(shim)
 }
 
 #[cfg(test)]

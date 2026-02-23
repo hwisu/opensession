@@ -14,6 +14,27 @@ pub fn branch_ledger_ref(branch: &str) -> String {
     format!("{BRANCH_LEDGER_REF_PREFIX}/{encoded}")
 }
 
+/// Normalize branch identity for ledger storage.
+///
+/// Rules:
+/// - Normal branch names are used as-is.
+/// - Detached HEAD (`HEAD`/empty branch) maps to `detached@<head8>` when HEAD exists.
+/// - Falls back to `detached` if no usable HEAD hash is available.
+pub fn resolve_ledger_branch(branch: Option<&str>, head: Option<&str>) -> String {
+    let branch = branch.unwrap_or("").trim();
+    if !branch.is_empty() && !branch.eq_ignore_ascii_case("HEAD") {
+        return branch.to_string();
+    }
+
+    let head = head.unwrap_or("").trim();
+    let hex: String = head.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() >= 8 {
+        return format!("detached@{}", &hex[..8]);
+    }
+
+    "detached".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -28,5 +49,23 @@ mod tests {
     fn branch_ledger_ref_builds_hidden_ref() {
         let ref_name = branch_ledger_ref("main");
         assert_eq!(ref_name, "refs/opensession/branches/bWFpbg");
+    }
+
+    #[test]
+    fn resolve_ledger_branch_keeps_named_branch() {
+        let branch = resolve_ledger_branch(Some("feature/x"), Some("abcd1234"));
+        assert_eq!(branch, "feature/x");
+    }
+
+    #[test]
+    fn resolve_ledger_branch_uses_detached_with_head_prefix() {
+        let branch = resolve_ledger_branch(Some("HEAD"), Some("aabbccddeeff0011"));
+        assert_eq!(branch, "detached@aabbccdd");
+    }
+
+    #[test]
+    fn resolve_ledger_branch_falls_back_when_head_missing() {
+        let branch = resolve_ledger_branch(Some("HEAD"), None);
+        assert_eq!(branch, "detached");
     }
 }

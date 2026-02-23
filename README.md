@@ -67,6 +67,8 @@ opensession share os://src/local/<sha256> --git --remote origin --push
 # Install/update OpenSession pre-push hook (best-effort fanout)
 opensession setup
 opensession setup --check
+# Optional: fail push when fanout is unavailable/fails
+OPENSESSION_STRICT=1 git push
 
 # Web URL generation from remote-resolvable URI
 opensession config init --base-url https://opensession.io
@@ -75,6 +77,7 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 
 `share --web` requires explicit `.opensession/config.toml`.
 Git-native writes now target hidden ledger refs (`refs/opensession/branches/<branch_b64url>`); legacy fixed ref writes are removed.
+`opensession setup` also installs a shim at `~/.local/share/opensession/bin/opensession` for hook stability.
 
 ## Handoff
 

@@ -602,11 +602,10 @@ fn try_git_store(
     let remote_url = git_ctx.remote?;
 
     let jsonl = session.to_jsonl().ok()?;
-    let branch = git_ctx
-        .branch
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "detached".to_string());
+    let branch = opensession_git_native::resolve_ledger_branch(
+        git_ctx.branch.as_deref(),
+        git_ctx.commit.as_deref(),
+    );
     let commit_shas: Vec<String> = git_ctx.commit.clone().into_iter().collect();
     let git_meta = GitMeta {
         remote: Some(remote_url.clone()),

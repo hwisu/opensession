@@ -346,11 +346,20 @@ fn setup_installs_pre_push_hook_with_backup() {
         .join("hooks")
         .join("pre-push.pre-opensession");
     assert!(backup.exists(), "expected backup hook");
+    let shim = tmp
+        .path()
+        .join(".local")
+        .join("share")
+        .join("opensession")
+        .join("bin")
+        .join("opensession");
+    assert!(shim.exists(), "expected setup to install opensession shim");
 
     let hook_body = fs::read_to_string(repo.join(".git").join("hooks").join("pre-push"))
         .expect("read pre-push hook");
     assert!(hook_body.contains("opensession-managed"));
-    assert!(hook_body.contains("opensession setup --print-ledger-ref"));
+    assert!(hook_body.contains("setup --print-ledger-ref"));
+    assert!(hook_body.contains(".local/share/opensession/bin/opensession"));
 }
 
 #[test]

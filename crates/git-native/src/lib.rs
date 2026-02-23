@@ -14,7 +14,7 @@ pub use error::{GitStorageError, Result};
 pub use handoff_artifact_store::{
     artifact_ref_name, list_handoff_artifact_refs, load_handoff_artifact, store_handoff_artifact,
 };
-pub use refs::{branch_ledger_ref, encode_branch_component};
+pub use refs::{branch_ledger_ref, encode_branch_component, resolve_ledger_branch};
 pub use store::{store_blob_at_ref, NativeGitStorage, PruneStats};
 pub use url::generate_raw_url;
 

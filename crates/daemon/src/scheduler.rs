@@ -8,7 +8,9 @@ use opensession_core::session::{
     build_git_storage_meta_json_with_git, is_auxiliary_session, working_directory, GitMeta,
 };
 use opensession_core::Session;
-use opensession_git_native::{branch_ledger_ref, extract_git_context, PruneStats};
+use opensession_git_native::{
+    branch_ledger_ref, extract_git_context, resolve_ledger_branch, PruneStats,
+};
 use opensession_local_db::LocalDb;
 use opensession_parsers::parse_with_default_parsers;
 use serde::{Deserialize, Serialize};
@@ -504,11 +506,7 @@ fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<GitStoreO
     let cwd = session_cwd(session)?;
     let repo_root = crate::config::find_repo_root(cwd)?;
     let git_ctx = extract_git_context(cwd);
-    let branch = git_ctx
-        .branch
-        .clone()
-        .filter(|b| !b.trim().is_empty())
-        .unwrap_or_else(|| "detached".to_string());
+    let branch = resolve_ledger_branch(git_ctx.branch.as_deref(), git_ctx.commit.as_deref());
     let ref_name = branch_ledger_ref(&branch);
     let commit_shas = collect_commit_shas_for_session(&repo_root, session);
 

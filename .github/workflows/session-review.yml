@@ -5,6 +5,10 @@ on:
     types: [opened, reopened, synchronize, closed]
   delete:
 
+concurrency:
+  group: session-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.ref || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -22,17 +26,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch ledger refs
-        run: git fetch origin "+refs/opensession/branches/*:refs/opensession/branches/*"
-
       - name: Compute ledger ref
         id: ledger
         env:
           BRANCH: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          encoded="$(node -e "const b=process.env.BRANCH || 'detached'; process.stdout.write(Buffer.from(b, 'utf8').toString('base64url'));")"
-          echo "ref=refs/opensession/branches/${encoded}" >> "$GITHUB_OUTPUT"
+          ref="$(node scripts/branch_ledger_ref.mjs --branch "$BRANCH")"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch ledger ref
+        env:
+          LEDGER_REF: ${{ steps.ledger.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "+${LEDGER_REF}:${LEDGER_REF}" || true
 
       - name: Build session report
         env:
@@ -108,12 +116,16 @@ jobs:
           else
             branch="$DELETE_BRANCH"
           fi
-          encoded="$(BRANCH="$branch" node -e "const b=process.env.BRANCH || 'detached'; process.stdout.write(Buffer.from(b, 'utf8').toString('base64url'));")"
+          encoded="$(node scripts/branch_ledger_ref.mjs --branch "$branch")"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
-          echo "ref=refs/opensession/branches/${encoded}" >> "$GITHUB_OUTPUT"
+          echo "ref=${encoded}" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch ledger refs
-        run: git fetch origin "+refs/opensession/branches/*:refs/opensession/branches/*"
+      - name: Fetch ledger ref
+        env:
+          LEDGER_REF: ${{ steps.ledger.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "+${LEDGER_REF}:${LEDGER_REF}" || true
 
       - name: Build final report (merged PR only)
         if: github.event_name == 'pull_request'

@@ -54,6 +54,13 @@ NC='\033[0m'
 
 found_secrets=0
 fanout_failed=0
+strict_mode=0
+
+case "${OPENSESSION_STRICT:-0}" in
+    1|true|TRUE|yes|on)
+        strict_mode=1
+        ;;
+esac
 
 if [ "${OPENSESSION_INTERNAL_PUSH:-}" = "1" ]; then
     exit 0
@@ -62,9 +69,17 @@ fi
 tmp_fanout="/tmp/opensession-ledger-fanout.$$"
 : > "$tmp_fanout"
 
-fanout_enabled=1
-if ! command -v opensession >/dev/null 2>&1; then
-    fanout_enabled=0
+opsession_bin=""
+shim_bin="${HOME}/.local/share/opensession/bin/opensession"
+if [ -x "$shim_bin" ]; then
+    opsession_bin="$shim_bin"
+elif command -v opensession >/dev/null 2>&1; then
+    opsession_bin="$(command -v opensession)"
+fi
+
+fanout_enabled=0
+if [ -n "$opsession_bin" ]; then
+    fanout_enabled=1
 fi
 
 while read local_ref local_oid remote_ref remote_oid; do
@@ -72,7 +87,7 @@ while read local_ref local_oid remote_ref remote_oid; do
         refs/heads/*)
             if [ "$fanout_enabled" -eq 1 ]; then
                 branch="${local_ref#refs/heads/}"
-                ledger_ref=$(opensession setup --print-ledger-ref "$branch" 2>/dev/null || true)
+                ledger_ref=$("$opsession_bin" setup --print-ledger-ref "$branch" 2>/dev/null || true)
                 if [ -n "$ledger_ref" ]; then
                     printf '%s\n' "$ledger_ref" >> "$tmp_fanout"
                 fi
@@ -112,7 +127,11 @@ while read local_ref local_oid remote_ref remote_oid; do
 done
 
 if [ "$fanout_enabled" -eq 0 ]; then
-    printf "${YELLOW}[opensession]${NC} Warning: opensession CLI not found; skipping ledger fanout.\n"
+    printf "${YELLOW}[opensession]${NC} Warning: opensession CLI/shim not found; skipping ledger fanout.\n"
+    if [ "$strict_mode" -eq 1 ]; then
+        printf "${RED}[opensession]${NC} Error: OPENSESSION_STRICT=1 and fanout helper is unavailable.\n"
+        exit 1
+    fi
 else
     tmp_sorted="${tmp_fanout}.sorted"
     sort -u "$tmp_fanout" > "$tmp_sorted" 2>/dev/null
@@ -139,6 +158,10 @@ fi
 
 if [ "$fanout_failed" -eq 1 ]; then
     printf "${YELLOW}[opensession]${NC} Warning: one or more ledger fanout pushes failed.\n"
+    if [ "$strict_mode" -eq 1 ]; then
+        printf "${RED}[opensession]${NC} Error: OPENSESSION_STRICT=1 and fanout push failed.\n"
+        exit 1
+    fi
 fi
 
 exit 0
@@ -514,7 +537,9 @@ mod tests {
     fn test_pre_push_template_contains_fanout_guard() {
         let template = hook_template(HookType::PrePush);
         assert!(template.contains("OPENSESSION_INTERNAL_PUSH"));
-        assert!(template.contains("opensession setup --print-ledger-ref"));
+        assert!(template.contains("setup --print-ledger-ref"));
+        assert!(template.contains(".local/share/opensession/bin/opensession"));
+        assert!(template.contains("OPENSESSION_STRICT"));
     }
 
     #[test]

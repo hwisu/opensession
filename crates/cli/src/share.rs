@@ -225,26 +225,12 @@ fn validate_rel_path(path: &str) -> Result<()> {
 }
 
 fn default_ledger_ref(repo_root: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .arg("rev-parse")
-        .arg("--abbrev-ref")
-        .arg("HEAD")
-        .output()
-        .context("resolve current branch for default ledger ref")?;
-    if !output.status.success() {
-        bail!(
-            "failed to determine current git branch: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let branch = if branch.is_empty() {
-        "detached".to_string()
-    } else {
-        branch
-    };
+    let cwd = repo_root.to_string_lossy().to_string();
+    let git_ctx = opensession_git_native::extract_git_context(&cwd);
+    let branch = opensession_git_native::resolve_ledger_branch(
+        git_ctx.branch.as_deref(),
+        git_ctx.commit.as_deref(),
+    );
     Ok(opensession_git_native::branch_ledger_ref(&branch))
 }
 

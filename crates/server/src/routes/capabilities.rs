@@ -5,12 +5,10 @@ use crate::AppConfig;
 
 /// GET /api/capabilities — runtime feature availability.
 pub async fn capabilities(State(config): State<AppConfig>) -> Json<CapabilitiesResponse> {
-    Json(CapabilitiesResponse {
-        auth_enabled: !config.jwt_secret.is_empty(),
-        parse_preview_enabled: true,
-        register_targets: vec!["local".to_string(), "git".to_string()],
-        share_modes: vec!["web".to_string(), "git".to_string(), "json".to_string()],
-    })
+    Json(CapabilitiesResponse::for_runtime(
+        !config.jwt_secret.is_empty(),
+        true,
+    ))
 }
 
 #[cfg(test)]

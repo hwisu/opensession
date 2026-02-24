@@ -5,4 +5,5 @@ pub mod docs;
 pub mod health;
 pub mod ingest;
 pub mod oauth;
+pub mod review;
 pub mod sessions;

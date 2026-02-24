@@ -10,6 +10,7 @@ export {
 	getApiCapabilities,
 	getAuthProviders,
 	getOAuthUrl,
+	getLocalReviewBundle,
 	isParsePreviewApiAvailable,
 	getSession,
 	getSettings,

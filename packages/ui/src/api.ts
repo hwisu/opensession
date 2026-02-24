@@ -8,6 +8,7 @@ import type {
 	ParsePreviewResponse,
 	ParseSource,
 	IssueApiKeyResponse,
+	LocalReviewBundle,
 	Session,
 	SessionListResponse,
 	UserSettings,
@@ -200,6 +201,10 @@ export async function listSessions(params?: {
 
 export async function getSession(id: string): Promise<Session> {
 	return requestRaw(`/api/sessions/${encodeURIComponent(id)}/raw`).then(parseHailJsonl);
+}
+
+export async function getLocalReviewBundle(reviewId: string): Promise<LocalReviewBundle> {
+	return request<LocalReviewBundle>(`/api/review/local/${encodeURIComponent(reviewId)}`);
 }
 
 async function requestRaw(path: string): Promise<string> {

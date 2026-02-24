@@ -31,6 +31,7 @@ pub struct AppConfig {
     pub admin_key: String,
     pub oauth_providers: Vec<OAuthProviderConfig>,
     pub public_feed_enabled: bool,
+    pub local_review_root: Option<PathBuf>,
 }
 
 impl FromRef<AppState> for Db {
@@ -129,6 +130,9 @@ async fn main() -> anyhow::Result<()> {
         admin_key,
         oauth_providers,
         public_feed_enabled,
+        local_review_root: std::env::var("OPENSESSION_LOCAL_REVIEW_ROOT")
+            .ok()
+            .map(PathBuf::from),
     };
 
     let state = AppState { db, config };
@@ -139,6 +143,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(routes::health::health))
         .route("/capabilities", get(routes::capabilities::capabilities))
         .route("/parse/preview", post(routes::ingest::preview))
+        .route(
+            "/review/local/{review_id}",
+            get(routes::review::get_local_review_bundle),
+        )
         // Auth
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))

@@ -39,6 +39,8 @@ NC='\033[0m'
 found_secrets=0
 fanout_failed=0
 strict_mode=0
+fanout_mode="hidden_ref"
+notes_ref="refs/notes/opensession"
 
 case "${OPENSESSION_STRICT:-0}" in
     1|true|TRUE|yes|on)
@@ -52,6 +54,8 @@ fi
 
 tmp_fanout="/tmp/opensession-ledger-fanout.$$"
 : > "$tmp_fanout"
+tmp_notes="/tmp/opensession-notes-fanout.$$"
+: > "$tmp_notes"
 
 opsession_bin=""
 shim_bin="${HOME}/.local/share/opensession/bin/opensession"
@@ -64,9 +68,20 @@ fi
 fanout_enabled=0
 if [ -n "$opsession_bin" ]; then
     fanout_enabled=1
+    detected_mode=$("$opsession_bin" setup --print-fanout-mode 2>/dev/null || true)
+    case "$detected_mode" in
+        hidden_ref|git_notes)
+            fanout_mode="$detected_mode"
+            ;;
+    esac
 fi
 
 while read local_ref local_oid remote_ref remote_oid; do
+    # Skip delete pushes
+    if [ "$local_oid" = "0000000000000000000000000000000000000000" ]; then
+        continue
+    fi
+
     case "$local_ref" in
         refs/heads/*)
             if [ "$fanout_enabled" -eq 1 ]; then
@@ -75,14 +90,12 @@ while read local_ref local_oid remote_ref remote_oid; do
                 if [ -n "$ledger_ref" ]; then
                     printf '%s\n' "$ledger_ref" >> "$tmp_fanout"
                 fi
+                if [ "$fanout_mode" = "git_notes" ]; then
+                    printf '%s\t%s\t%s\n' "$branch" "$local_ref" "$local_oid" >> "$tmp_notes"
+                fi
             fi
             ;;
     esac
-
-    # Skip delete pushes
-    if [ "$local_oid" = "0000000000000000000000000000000000000000" ]; then
-        continue
-    fi
 
     # Determine the range to check
     if [ "$remote_oid" = "0000000000000000000000000000000000000000" ]; then
@@ -127,9 +140,71 @@ else
         fi
     done < "$tmp_sorted"
     rm -f "$tmp_sorted"
+
+    if [ "$fanout_mode" = "git_notes" ]; then
+        tmp_notes_sorted="${tmp_notes}.sorted"
+        sort -u "$tmp_notes" > "$tmp_notes_sorted" 2>/dev/null
+        while IFS="$(printf '\t')" read -r branch local_ref local_oid; do
+            [ -z "$local_oid" ] && continue
+
+            # Keep existing commit notes stable across repeated pushes.
+            if git notes --ref=opensession show "$local_oid" >/dev/null 2>&1; then
+                continue
+            fi
+
+            copied_from=""
+            parent_oids=$(git show -s --format=%P "$local_oid" 2>/dev/null || true)
+            if [ -n "$parent_oids" ]; then
+                first_parent=$(printf '%s\n' "$parent_oids" | awk '{print $1}')
+                other_parents=$(printf '%s\n' "$parent_oids" | cut -d' ' -f2-)
+
+                # Prefer non-first parents for merge commits (PR head side).
+                for parent_oid in $other_parents; do
+                    if git notes --ref=opensession show "$parent_oid" >/dev/null 2>&1; then
+                        if git notes --ref=opensession copy -f "$parent_oid" "$local_oid" >/dev/null 2>&1; then
+                            copied_from="$parent_oid"
+                            break
+                        fi
+                    fi
+                done
+
+                if [ -z "$copied_from" ] && [ -n "$first_parent" ]; then
+                    if git notes --ref=opensession show "$first_parent" >/dev/null 2>&1; then
+                        if git notes --ref=opensession copy -f "$first_parent" "$local_oid" >/dev/null 2>&1; then
+                            copied_from="$first_parent"
+                        fi
+                    fi
+                fi
+            fi
+
+            if [ -z "$copied_from" ]; then
+                note_body=$(cat <<EOF
+opensession fanout mode: git_notes
+branch: $branch
+local_ref: $local_ref
+commit: $local_oid
+generated_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+EOF
+)
+                if ! git notes --ref=opensession add -f -m "$note_body" "$local_oid" >/dev/null 2>&1; then
+                    fanout_failed=1
+                    printf "${YELLOW}[opensession]${NC} Warning: failed to write git note for %s\n" "$local_oid"
+                fi
+            fi
+        done < "$tmp_notes_sorted"
+        rm -f "$tmp_notes_sorted"
+
+        if git show-ref --verify --quiet "$notes_ref"; then
+            if ! OPENSESSION_INTERNAL_PUSH=1 git push --no-verify "$remote" "$notes_ref:$notes_ref" >/dev/null 2>&1; then
+                fanout_failed=1
+                printf "${YELLOW}[opensession]${NC} Warning: failed to push notes ref %s\n" "$notes_ref"
+            fi
+        fi
+    fi
 fi
 
 rm -f "$tmp_fanout"
+rm -f "$tmp_notes"
 
 if [ "$found_secrets" -eq 1 ]; then
     printf "${YELLOW}[opensession]${NC} Warning: potential secrets detected. Review before pushing.\n"
@@ -518,8 +593,29 @@ mod tests {
         let template = hook_template(HookType::PrePush);
         assert!(template.contains("OPENSESSION_INTERNAL_PUSH"));
         assert!(template.contains("setup --print-ledger-ref"));
+        assert!(template.contains("setup --print-fanout-mode"));
+        assert!(template.contains("git notes --ref=opensession"));
+        assert!(template.contains("git notes --ref=opensession copy -f"));
+        assert!(template.contains("git show -s --format=%P"));
+        assert!(template.contains("refs/notes/opensession"));
         assert!(template.contains(".local/share/opensession/bin/opensession"));
         assert!(template.contains("OPENSESSION_STRICT"));
+    }
+
+    #[test]
+    fn test_pre_push_template_pushes_hidden_refs_before_notes_branch() {
+        let template = hook_template(HookType::PrePush);
+        let hidden_push = template
+            .find("sort -u \"$tmp_fanout\"")
+            .expect("hidden fanout loop must exist");
+        let notes_branch = template[hidden_push..]
+            .find("if [ \"$fanout_mode\" = \"git_notes\" ]; then")
+            .map(|idx| idx + hidden_push)
+            .expect("notes branch guard after hidden fanout must exist");
+        assert!(
+            hidden_push < notes_branch,
+            "hidden refs must be pushed regardless of notes mode"
+        );
     }
 
     #[test]

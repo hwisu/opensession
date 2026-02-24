@@ -4,6 +4,7 @@ mod handoff_v1;
 mod inspect;
 mod parse_cmd;
 mod register;
+mod review;
 mod setup_cmd;
 mod share;
 #[cfg(feature = "e2e")]
@@ -31,6 +32,8 @@ enum Commands {
     Inspect(inspect::InspectArgs),
     /// Resolve sharing outputs from a source URI.
     Share(share::ShareArgs),
+    /// Review a GitHub PR using local hidden refs and grouped commit sessions.
+    Review(review::ReviewArgs),
     /// Build and manage immutable handoff artifacts.
     Handoff(handoff_v1::HandoffArgs),
     /// Parse agent-native logs into canonical HAIL JSONL.
@@ -68,6 +71,7 @@ async fn main() {
         Commands::Cat(args) => cat_cmd::run(args),
         Commands::Inspect(args) => inspect::run(args),
         Commands::Share(args) => share::run(args),
+        Commands::Review(args) => review::run(args).await,
         Commands::Handoff(args) => handoff_v1::run(args),
         Commands::Parse(args) => parse_cmd::run(args),
         Commands::Config(args) => config_cmd::run(args),

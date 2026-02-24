@@ -24,6 +24,7 @@ mod tests {
             admin_key: "adminkey".to_string(),
             oauth_providers: Vec::new(),
             public_feed_enabled: true,
+            local_review_root: None,
         };
 
         let Json(caps) = capabilities(State(config)).await;

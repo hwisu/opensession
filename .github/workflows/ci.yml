@@ -76,7 +76,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install mold linker
         run: sudo apt-get update && sudo apt-get install -y mold
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --quiet -- -D warnings
 
   test:
     name: Test
@@ -93,7 +93,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install mold linker
         run: sudo apt-get update && sudo apt-get install -y mold
-      - run: cargo test --workspace --exclude opensession-e2e
+      - run: cargo test --workspace --exclude opensession-e2e --quiet
 
   audit:
     name: Audit
@@ -118,8 +118,7 @@ jobs:
         with:
           shared-key: wasm-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown
-      - run: cargo clippy --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown --quiet -- -D warnings
 
   frontend:
     name: Frontend
@@ -134,9 +133,9 @@ jobs:
             web/package-lock.json
             packages/ui/package-lock.json
       - name: Install UI package deps
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund --silent
         working-directory: packages/ui
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund --silent
         working-directory: web
       - name: Symlink @opensession/ui
         run: mkdir -p node_modules/@opensession && ln -sf ${{ github.workspace }}/packages/ui node_modules/@opensession/ui

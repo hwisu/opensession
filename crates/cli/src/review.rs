@@ -325,8 +325,13 @@ fn fetch_pr_and_hidden_refs(
     .with_context(|| format!("failed to fetch hidden refs from remote `{remote}`"))?;
 
     // Refresh remote HEAD metadata used to resolve default branch.
-    let _ = run_git(repo_root, &["fetch".into(), remote.into()]);
+    let _ = run_git(repo_root, &refresh_remote_head_fetch_args(remote));
     Ok(())
+}
+
+fn refresh_remote_head_fetch_args(remote: &str) -> Vec<String> {
+    // Keep hidden refs fetched in this run even when fetch.prune=true globally.
+    vec!["fetch".into(), "--no-prune".into(), remote.into()]
 }
 
 fn resolve_default_remote_ref(repo_root: &Path, remote: &str) -> Result<String> {
@@ -1111,8 +1116,9 @@ fn run_git(repo_root: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_review_id, parse_github_pr_url, parse_remote_repo_triplet, sanitize_path_component,
-        sanitize_review_id_component, GithubPrSpec,
+        build_review_id, parse_github_pr_url, parse_remote_repo_triplet,
+        refresh_remote_head_fetch_args, sanitize_path_component, sanitize_review_id_component,
+        GithubPrSpec,
     };
 
     #[test]
@@ -1168,5 +1174,18 @@ mod tests {
     #[test]
     fn sanitize_path_component_replaces_unsafe_chars() {
         assert_eq!(sanitize_path_component("ab/cd:ef"), "ab_cd_ef");
+    }
+
+    #[test]
+    fn refresh_remote_fetch_disables_prune() {
+        let args = refresh_remote_head_fetch_args("origin");
+        assert_eq!(
+            args,
+            vec![
+                "fetch".to_string(),
+                "--no-prune".to_string(),
+                "origin".to_string()
+            ]
+        );
     }
 }

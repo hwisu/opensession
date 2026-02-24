@@ -56,6 +56,8 @@ opensession setup
 opensession setup --check
 ```
 
+On first setup, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
+
 Start daemon (required for automatic session capture):
 
 ```bash

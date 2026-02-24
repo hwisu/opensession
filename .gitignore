@@ -12,6 +12,7 @@ web/.svelte-kit/
 # Data & DB
 /data/
 web/data/
+/.opensession/
 *.db
 *.db-shm
 *.db-wal

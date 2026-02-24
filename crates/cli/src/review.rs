@@ -21,10 +21,11 @@ use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::fs::OpenOptions;
 use std::io::{stdout, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const LOCAL_REVIEW_ROOT_DIR: &str = ".opensession/review";
 const LOCAL_REVIEW_SERVER_BASE_URL: &str = "http://127.0.0.1:8788";
@@ -143,7 +144,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
 
     let effective_view = resolve_view_mode(args.view);
     match effective_view {
-        ReviewView::Tui => run_review_tui(&bundle)?,
+        ReviewView::Tui => run_review_tui(&bundle, &repo_root)?,
         ReviewView::Web => {
             let url = ensure_web_review_server(
                 &repo_root,
@@ -657,7 +658,7 @@ fn resolve_view_mode(requested: ReviewView) -> ReviewView {
     }
 }
 
-fn run_review_tui(bundle: &LocalReviewBundle) -> Result<()> {
+fn run_review_tui(bundle: &LocalReviewBundle, repo_root: &Path) -> Result<()> {
     enable_raw_mode().context("enable raw terminal mode")?;
     let mut out = stdout();
     out.execute(EnterAlternateScreen)
@@ -665,7 +666,7 @@ fn run_review_tui(bundle: &LocalReviewBundle) -> Result<()> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend).context("initialize terminal backend")?;
 
-    let run_result = run_review_tui_loop(&mut terminal, bundle);
+    let run_result = run_review_tui_loop(&mut terminal, bundle, repo_root);
 
     disable_raw_mode().ok();
     terminal.backend_mut().execute(LeaveAlternateScreen).ok();
@@ -677,6 +678,7 @@ fn run_review_tui(bundle: &LocalReviewBundle) -> Result<()> {
 fn run_review_tui_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     bundle: &LocalReviewBundle,
+    repo_root: &Path,
 ) -> Result<()> {
     let mut state = ReviewTuiState::default();
 
@@ -697,6 +699,17 @@ fn run_review_tui_loop(
 
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+            KeyCode::Enter => {
+                let Some(commit) = bundle.commits.get(state.selected_commit) else {
+                    continue;
+                };
+                let Some(session) =
+                    resolve_selected_session(bundle, commit, state.selected_session)
+                else {
+                    continue;
+                };
+                with_suspended_tui(terminal, || open_session_in_tui(repo_root, session))?;
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 state.selected_commit = state.selected_commit.saturating_sub(1);
                 state.selected_session = 0;
@@ -733,7 +746,7 @@ struct ReviewTuiState {
 fn render_review_tui(frame: &mut Frame<'_>, bundle: &LocalReviewBundle, state: &ReviewTuiState) {
     let outer = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(frame.area());
     let title = format!(
-        " PR #{} {}/{}  commits:{}  sessions:{}  (q: quit, j/k: commits, h/l: sessions) ",
+        " PR #{} {}/{}  commits:{}  sessions:{}  (q: quit, j/k: commits, h/l: sessions, Enter: open) ",
         bundle.pr.number,
         bundle.pr.owner,
         bundle.pr.repo,
@@ -753,6 +766,106 @@ fn render_review_tui(frame: &mut Frame<'_>, bundle: &LocalReviewBundle, state: &
         state.selected_commit,
         state.selected_session,
     );
+}
+
+fn with_suspended_tui<F>(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    op: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    disable_raw_mode().ok();
+    terminal.backend_mut().execute(LeaveAlternateScreen).ok();
+    terminal.show_cursor().ok();
+
+    let op_result = op();
+
+    terminal.backend_mut().execute(EnterAlternateScreen).ok();
+    enable_raw_mode().ok();
+    terminal.clear().ok();
+
+    op_result
+}
+
+fn open_session_in_tui(repo_root: &Path, session: &LocalReviewSession) -> Result<()> {
+    let hail = session
+        .session
+        .to_jsonl()
+        .context("serialize selected review session as canonical HAIL JSONL")?;
+    let temp_path = write_temp_review_session(&session.session_id, &hail)?;
+
+    let status = if let Some(bin) = resolve_review_tui_binary(repo_root) {
+        Command::new(bin)
+            .arg(&temp_path)
+            .status()
+            .context("launch opensession-tui for selected review session")?
+    } else if repo_root.join("Cargo.toml").exists() {
+        Command::new("cargo")
+            .current_dir(repo_root)
+            .arg("run")
+            .arg("-p")
+            .arg("opensession-tui")
+            .arg("--")
+            .arg(&temp_path)
+            .status()
+            .context("launch opensession-tui via cargo fallback")?
+    } else {
+        let _ = std::fs::remove_file(&temp_path);
+        bail!(
+            "could not find `opensession-tui`; install it or run from a workspace build directory"
+        );
+    };
+
+    let _ = std::fs::remove_file(&temp_path);
+    if !status.success() {
+        bail!("opensession-tui exited with non-zero status: {}", status);
+    }
+    Ok(())
+}
+
+fn resolve_review_tui_binary(repo_root: &Path) -> Option<PathBuf> {
+    if let Some(bin) = find_executable_in_path_or_sibling("opensession-tui") {
+        return Some(bin);
+    }
+
+    let local_debug = repo_root
+        .join("target")
+        .join("debug")
+        .join("opensession-tui");
+    if local_debug.exists() {
+        return Some(local_debug);
+    }
+
+    #[cfg(windows)]
+    {
+        let local_debug_exe = repo_root
+            .join("target")
+            .join("debug")
+            .join("opensession-tui.exe");
+        if local_debug_exe.exists() {
+            return Some(local_debug_exe);
+        }
+    }
+
+    None
+}
+
+fn write_temp_review_session(session_id: &str, body: &str) -> Result<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let file_name = format!(
+        "opensession-review-{}-{}-{}.hail.jsonl",
+        sanitize_path_component(session_id),
+        std::process::id(),
+        nonce
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(&path, body)
+        .with_context(|| format!("write temporary review session file {}", path.display()))?;
+    Ok(path)
 }
 
 fn render_commit_panel(
@@ -929,22 +1042,30 @@ async fn ensure_web_review_server(
     bundle_dir: &Path,
 ) -> Result<String> {
     let review_api_url = format!("{LOCAL_REVIEW_SERVER_BASE_URL}/api/review/local/{review_id}");
+    let health_url = format!("{LOCAL_REVIEW_SERVER_BASE_URL}/api/health");
+    let static_version_url = format!("{LOCAL_REVIEW_SERVER_BASE_URL}/_app/version.json");
 
-    if !endpoint_ok(&review_api_url).await
-        && !endpoint_ok(&format!("{LOCAL_REVIEW_SERVER_BASE_URL}/api/health")).await
-    {
+    let mut review_ok = endpoint_ok(&review_api_url).await;
+    let mut static_ok = endpoint_ok(&static_version_url).await;
+    let health_ok = endpoint_ok(&health_url).await;
+
+    if !(health_ok || (review_ok && static_ok)) {
         spawn_local_review_server(repo_root, review_root, bundle_dir)?;
         for _ in 0..40 {
-            if endpoint_ok(&review_api_url).await {
+            review_ok = endpoint_ok(&review_api_url).await;
+            static_ok = endpoint_ok(&static_version_url).await;
+            if review_ok && static_ok {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
 
-    if !endpoint_ok(&review_api_url).await {
+    review_ok = endpoint_ok(&review_api_url).await;
+    static_ok = endpoint_ok(&static_version_url).await;
+    if !(review_ok && static_ok) {
         bail!(
-            "local review server is unavailable at {LOCAL_REVIEW_SERVER_BASE_URL}; ensure opensession-server is installed and supports /api/review/local/{{id}}"
+            "local review server is unavailable or incomplete at {LOCAL_REVIEW_SERVER_BASE_URL} (api_ok={review_ok}, static_ok={static_ok}); see .opensession/server-data/logs/review-server.log and ensure opensession-server serves /api/review/local/{{id}} plus static assets"
         );
     }
 
@@ -962,9 +1083,20 @@ fn spawn_local_review_server(
     let data_dir = repo_root.join(".opensession").join("server-data");
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("create server data directory {}", data_dir.display()))?;
+    let logs_dir = data_dir.join("logs");
+    std::fs::create_dir_all(&logs_dir)
+        .with_context(|| format!("create server logs directory {}", logs_dir.display()))?;
+    let log_path = logs_dir.join("review-server.log");
+    let stdout_log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("open server log file {}", log_path.display()))?;
+    let stderr_log = stdout_log
+        .try_clone()
+        .with_context(|| format!("clone server log file {}", log_path.display()))?;
 
-    let mut cmd = if let Some(server_bin) = find_executable_in_path_or_sibling("opensession-server")
-    {
+    let mut cmd = if let Some(server_bin) = resolve_review_server_binary(repo_root) {
         Command::new(server_bin)
     } else if repo_root.join("Cargo.toml").exists() {
         let mut cargo = Command::new("cargo");
@@ -985,12 +1117,39 @@ fn spawn_local_review_server(
         .env("OPENSESSION_WEB_DIR", &web_dir)
         .env("OPENSESSION_LOCAL_REVIEW_ROOT", review_root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log))
         .spawn()
         .context("spawn local review server")?;
 
     Ok(())
+}
+
+fn resolve_review_server_binary(repo_root: &Path) -> Option<PathBuf> {
+    if let Some(bin) = find_executable_in_path_or_sibling("opensession-server") {
+        return Some(bin);
+    }
+
+    let local_debug = repo_root
+        .join("target")
+        .join("debug")
+        .join("opensession-server");
+    if local_debug.exists() {
+        return Some(local_debug);
+    }
+
+    #[cfg(windows)]
+    {
+        let local_debug_exe = repo_root
+            .join("target")
+            .join("debug")
+            .join("opensession-server.exe");
+        if local_debug_exe.exists() {
+            return Some(local_debug_exe);
+        }
+    }
+
+    None
 }
 
 async fn endpoint_ok(url: &str) -> bool {
@@ -1187,5 +1346,19 @@ mod tests {
                 "origin".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn write_temp_review_session_creates_hail_jsonl_file() {
+        let body = r#"{"type":"header","version":"hail-1.0.0","session_id":"s"}"#;
+        let path = super::write_temp_review_session("session/id", body).expect("write temp file");
+        let file_name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default();
+        assert!(file_name.ends_with(".hail.jsonl"));
+        let loaded = std::fs::read_to_string(&path).expect("read temp file");
+        assert_eq!(loaded, body);
+        let _ = std::fs::remove_file(path);
     }
 }

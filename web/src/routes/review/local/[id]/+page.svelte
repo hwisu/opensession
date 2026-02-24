@@ -202,6 +202,7 @@ $effect(() => {
 					<SessionRenderPage
 						session={selectedSession.session as Session}
 						viewMode={viewMode}
+						nativeAdapter={(selectedSession.session as Session).agent.tool}
 						unifiedFilters={unifiedFilters}
 						nativeFilters={nativeFilters}
 						onViewModeChange={changeViewMode}

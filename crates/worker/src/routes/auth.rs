@@ -869,11 +869,7 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
 
                 d1_run(
                     &d1,
-                    dbq::users::insert_oauth(
-                        &user_id,
-                        &nickname,
-                        user_info.email.as_deref(),
-                    ),
+                    dbq::users::insert_oauth(&user_id, &nickname, user_info.email.as_deref()),
                     "insert oauth user",
                 )
                 .await?;

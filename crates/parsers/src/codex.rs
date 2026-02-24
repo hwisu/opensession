@@ -1,4 +1,7 @@
-use crate::common::{attach_semantic_attrs, attach_source_attrs, infer_tool_kind, set_first};
+use crate::common::{
+    attach_semantic_attrs, attach_source_attrs, canonical_tool_name, infer_tool_kind, set_first,
+    INTERACTIVE_USER_INPUT_TOOL,
+};
 use crate::SessionParser;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -742,11 +745,11 @@ fn process_item_with_options(
             }
         }
         "function_call" | "custom_tool_call" => {
-            let name = item
+            let raw_name = item
                 .get("name")
                 .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
+                .unwrap_or("unknown");
+            let name = canonical_tool_name(raw_name);
             let custom_input = item.get("input").and_then(|v| v.as_str()).unwrap_or("");
             // function_call: arguments is a JSON string
             // custom_tool_call: input is a raw string (patch content, etc.)
@@ -764,7 +767,7 @@ fn process_item_with_options(
                 .get("call_id")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            if name == "request_user_input" {
+            if name == INTERACTIVE_USER_INPUT_TOOL {
                 if let Some(call_id) = call_id.as_ref() {
                     let meta = parse_request_user_input_call_meta(&args);
                     if !meta.questions.is_empty() {
@@ -837,7 +840,7 @@ fn process_item_with_options(
                     (prev_id, last_function_name.clone())
                 };
 
-            if call_name == "request_user_input" {
+            if call_name == INTERACTIVE_USER_INPUT_TOOL {
                 let call_meta = item
                     .get("call_id")
                     .and_then(|v| v.as_str())
@@ -2052,7 +2055,7 @@ fn classify_codex_function(name: &str, args: &serde_json::Value) -> EventType {
             EventType::FileRead { path }
         }
         _ => EventType::ToolCall {
-            name: normalized_name.to_string(),
+            name: canonical_tool_name(normalized_name),
         },
     }
 }

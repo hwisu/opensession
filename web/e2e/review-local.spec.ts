@@ -56,6 +56,69 @@ function buildReviewBundle(overrides?: Partial<Record<string, unknown>>) {
 							attributes: {},
 						},
 						{
+							event_id: 'tool-call-1',
+							timestamp: now,
+							event_type: { type: 'ToolCall', data: { name: 'request_user_input' } },
+							content: {
+								blocks: [
+									{
+										type: 'Json',
+										data: {
+											questions: [
+												{
+													id: 'review_mode',
+													header: 'Review Mode',
+													question: 'Choose review mode',
+													options: [
+														{
+															label: 'TUI (Recommended)',
+															description: 'Terminal-first review flow',
+														},
+														{
+															label: 'Web',
+															description: 'Browser-based review flow',
+														},
+													],
+												},
+											],
+										},
+									},
+								],
+							},
+							attributes: {
+								'semantic.call_id': 'call-review-1',
+							},
+						},
+						{
+							event_id: 'tool-result-1',
+							timestamp: now,
+							event_type: {
+								type: 'ToolResult',
+								data: {
+									name: 'request_user_input',
+									is_error: false,
+									call_id: 'call-review-1',
+								},
+							},
+							content: {
+								blocks: [
+									{
+										type: 'Text',
+										text: JSON.stringify({
+											answers: {
+												review_mode: {
+													answers: ['TUI (Recommended)'],
+												},
+											},
+										}),
+									},
+								],
+							},
+							attributes: {
+								'semantic.call_id': 'call-review-1',
+							},
+						},
+						{
 							event_id: 'a1',
 							timestamp: now,
 							event_type: { type: 'AgentMessage' },
@@ -64,9 +127,9 @@ function buildReviewBundle(overrides?: Partial<Record<string, unknown>>) {
 						},
 					],
 					stats: {
-						event_count: 2,
+						event_count: 4,
 						message_count: 2,
-						tool_call_count: 0,
+						tool_call_count: 1,
 						task_count: 0,
 						duration_seconds: 1,
 						total_input_tokens: 10,
@@ -97,6 +160,17 @@ test.describe('Local Review Route', () => {
 		await expect(page.getByText('PR #7 acme/private-repo')).toBeVisible({ timeout: 10000 });
 		await expect(page.getByText('feat: add review flow')).toBeVisible();
 		await expect(page.getByRole('heading', { name: 'Review Fixture Session' })).toBeVisible();
+		await expect(page.getByRole('tab', { name: 'Native (codex)' })).toBeVisible();
+		await page.getByRole('tab', { name: 'Native (codex)' }).click();
+		await expect(page.getByRole('tab', { name: 'Native (codex)' })).toHaveAttribute(
+			'aria-selected',
+			'true',
+		);
+
+		await page.getByRole('button', { name: /request_user_input/ }).first().click();
+		await expect(page.locator('text=review_mode').first()).toBeVisible();
+		await expect(page.locator('text=Choose review mode').first()).toBeVisible();
+		await expect(page.locator('text=TUI (Recommended)').first()).toBeVisible();
 	});
 
 	test('shows error state when bundle API fails', async ({ page }) => {

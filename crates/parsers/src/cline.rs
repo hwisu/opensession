@@ -1,5 +1,6 @@
 use crate::common::{
-    build_tool_result_content, extract_tag_content, set_first, strip_system_reminders, ToolUseInfo,
+    build_tool_result_content, canonical_tool_name, extract_tag_content, set_first,
+    strip_system_reminders, ToolUseInfo, INTERACTIVE_USER_INPUT_TOOL,
 };
 use crate::SessionParser;
 use anyhow::{Context, Result};
@@ -138,6 +139,103 @@ fn parse_tool_result_text(text: &str) -> Option<(String, Option<String>, String)
     let prefix_end = caps.get(0)?.end();
     let result_text = text[prefix_end..].to_string();
     Some((tool_name, file_path, result_text))
+}
+
+fn normalize_interactive_options(input: &serde_json::Value) -> Vec<serde_json::Value> {
+    let options = input
+        .get("options")
+        .or_else(|| input.get("choices"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    options
+        .into_iter()
+        .filter_map(|entry| match entry {
+            serde_json::Value::String(label) if !label.trim().is_empty() => {
+                Some(serde_json::json!({ "label": label }))
+            }
+            serde_json::Value::Object(obj) => {
+                let label = obj
+                    .get("label")
+                    .or_else(|| obj.get("title"))
+                    .or_else(|| obj.get("text"))
+                    .or_else(|| obj.get("value"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())?;
+                let mut out = serde_json::Map::new();
+                out.insert(
+                    "label".to_string(),
+                    serde_json::Value::String(label.to_string()),
+                );
+                if let Some(description) = obj
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    out.insert(
+                        "description".to_string(),
+                        serde_json::Value::String(description.to_string()),
+                    );
+                }
+                Some(serde_json::Value::Object(out))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn interactive_tool_call_content(input: &serde_json::Value) -> Content {
+    let question_text = input
+        .get("question")
+        .or_else(|| input.get("ask"))
+        .or_else(|| input.get("prompt"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("(no question text)");
+    let question_id = input
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("question");
+    let header = input
+        .get("header")
+        .or_else(|| input.get("title"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+
+    let mut question = serde_json::Map::new();
+    question.insert(
+        "id".to_string(),
+        serde_json::Value::String(question_id.to_string()),
+    );
+    question.insert(
+        "question".to_string(),
+        serde_json::Value::String(question_text.to_string()),
+    );
+    if let Some(header) = header {
+        question.insert(
+            "header".to_string(),
+            serde_json::Value::String(header.to_string()),
+        );
+    }
+    let options = normalize_interactive_options(input);
+    if !options.is_empty() {
+        question.insert("options".to_string(), serde_json::Value::Array(options));
+    }
+
+    Content {
+        blocks: vec![ContentBlock::Json {
+            data: serde_json::json!({
+                "questions": [serde_json::Value::Object(question)]
+            }),
+        }],
+    }
 }
 
 // ── Parsing logic ───────────────────────────────────────────────────────────
@@ -321,6 +419,7 @@ fn process_user_msg(
                         continue;
                     }
 
+                    let tool_name = canonical_tool_name(&tool_name);
                     // Regular tool result — transform content like Read results into Code blocks
                     let info = ToolUseInfo {
                         name: tool_name.clone(),
@@ -462,6 +561,7 @@ fn process_assistant_msg(
             ApiContentBlock::ToolUse {
                 id, name, input, ..
             } => {
+                let canonical_name = canonical_tool_name(name);
                 // Extract file_path for ToolResult content transformation
                 let file_path = match name.as_str() {
                     "read_file" => input
@@ -477,7 +577,7 @@ fn process_assistant_msg(
                 };
 
                 let info = ToolUseInfo {
-                    name: name.clone(),
+                    name: canonical_name,
                     file_path,
                 };
 
@@ -504,25 +604,6 @@ fn process_assistant_msg(
                         }
                     }
                     continue; // Don't also emit a ToolCall for attempt_completion
-                }
-
-                // Special: ask_followup_question → AgentMessage from question
-                if name == "ask_followup_question" {
-                    if let Some(q) = input.get("question").and_then(|v| v.as_str()) {
-                        if !q.is_empty() {
-                            *counter += 1;
-                            events.push(Event {
-                                event_id: format!("cline-{}", counter),
-                                timestamp: ts,
-                                event_type: EventType::AgentMessage,
-                                task_id: None,
-                                content: Content::text(q),
-                                duration_ms: None,
-                                attributes: HashMap::new(),
-                            });
-                        }
-                    }
-                    continue;
                 }
 
                 // Special: plan_mode_respond → AgentMessage from response
@@ -600,6 +681,11 @@ fn find_task_title(task_dir: &Path, task_id: &str) -> Option<String> {
 }
 
 fn classify_cline_tool(name: &str, input: &serde_json::Value) -> EventType {
+    if canonical_tool_name(name) == INTERACTIVE_USER_INPUT_TOOL {
+        return EventType::ToolCall {
+            name: INTERACTIVE_USER_INPUT_TOOL.to_string(),
+        };
+    }
     match name {
         "execute_command" | "spawn_process" => {
             let cmd = input
@@ -674,6 +760,9 @@ fn classify_cline_tool(name: &str, input: &serde_json::Value) -> EventType {
 }
 
 fn cline_tool_content(name: &str, input: &serde_json::Value) -> Content {
+    if canonical_tool_name(name) == INTERACTIVE_USER_INPUT_TOOL {
+        return interactive_tool_call_content(input);
+    }
     match name {
         "execute_command" | "spawn_process" => {
             let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -802,6 +891,51 @@ mod tests {
         match et {
             EventType::FileSearch { pattern } => assert_eq!(pattern, "src/"),
             _ => panic!("Expected FileSearch"),
+        }
+    }
+
+    #[test]
+    fn test_classify_ask_followup_question_as_request_user_input() {
+        let input = serde_json::json!({"question": "Need your preference?"});
+        let et = classify_cline_tool("ask_followup_question", &input);
+        match et {
+            EventType::ToolCall { name } => {
+                assert_eq!(name, INTERACTIVE_USER_INPUT_TOOL);
+            }
+            _ => panic!("Expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn test_cline_tool_content_normalizes_interactive_question_shape() {
+        let input = serde_json::json!({
+            "question": "Select mode",
+            "options": [
+                {"label": "Web", "description": "Browser flow"},
+                "TUI"
+            ]
+        });
+        let content = cline_tool_content("ask_followup_question", &input);
+        assert_eq!(content.blocks.len(), 1);
+        match &content.blocks[0] {
+            ContentBlock::Json { data } => {
+                let questions = data
+                    .get("questions")
+                    .and_then(|v| v.as_array())
+                    .expect("questions array");
+                assert_eq!(questions.len(), 1);
+                let question = questions[0].as_object().expect("question object");
+                assert_eq!(
+                    question.get("question").and_then(|v| v.as_str()),
+                    Some("Select mode")
+                );
+                let options = question
+                    .get("options")
+                    .and_then(|v| v.as_array())
+                    .expect("options array");
+                assert_eq!(options.len(), 2);
+            }
+            _ => panic!("Expected Json block"),
         }
     }
 

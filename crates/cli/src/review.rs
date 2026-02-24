@@ -498,11 +498,6 @@ fn build_review_bundle(
     commits: Vec<CommitInfo>,
 ) -> Result<LocalReviewBundle> {
     let ledger_refs = list_remote_ledger_refs(repo_root, remote)?;
-    if ledger_refs.is_empty() {
-        bail!(
-            "no hidden refs found for remote `{remote}`; fetch `+refs/opensession/*:refs/remotes/{remote}/opensession/*` or rerun without --no-fetch"
-        );
-    }
     let mut session_rows: Vec<LocalReviewSession> = Vec::new();
     let mut session_key_to_index: HashMap<String, usize> = HashMap::new();
     let mut commit_rows = Vec::with_capacity(commits.len());

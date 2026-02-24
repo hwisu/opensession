@@ -693,7 +693,7 @@ fn review_json_builds_commit_grouped_bundle_from_hidden_refs() {
 }
 
 #[test]
-fn review_no_fetch_reports_missing_hidden_refs() {
+fn review_no_fetch_succeeds_with_empty_session_groups_when_hidden_refs_missing() {
     let tmp = make_home();
     let (reviewer_repo, pr_link) = setup_review_fixture(&tmp, false);
 
@@ -703,10 +703,14 @@ fn review_no_fetch_reports_missing_hidden_refs() {
         &["review", &pr_link, "--json", "--no-fetch"],
     );
     assert!(
-        !out.status.success(),
-        "review should fail without hidden refs"
+        out.status.success(),
+        "review should succeed without hidden refs: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("no hidden refs found"));
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("review json payload");
+    assert_eq!(payload["commit_count"].as_u64().unwrap_or(0), 1);
+    assert_eq!(payload["mapped_commit_count"].as_u64().unwrap_or(0), 0);
+    assert_eq!(payload["session_count"].as_u64().unwrap_or(0), 0);
 }
 
 #[test]

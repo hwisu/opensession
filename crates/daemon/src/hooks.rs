@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 /// Git hook types managed by opensession.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +51,11 @@ esac
 
 if [ "${OPENSESSION_INTERNAL_PUSH:-}" = "1" ]; then
     exit 0
+fi
+
+backup_hook="$(dirname "$0")/pre-push.pre-opensession"
+if [ -f "$backup_hook" ]; then
+    sh "$backup_hook" "$@" || exit $?
 fi
 
 tmp_fanout="/tmp/opensession-ledger-fanout.$$"
@@ -243,19 +249,55 @@ pub fn hook_template(hook_type: HookType) -> &'static str {
     }
 }
 
+fn ensure_git_repo(repo_root: &Path) -> Result<()> {
+    if repo_root.join(".git").exists() {
+        return Ok(());
+    }
+    bail!(
+        "Not a git repository: {} (missing .git metadata)",
+        repo_root.display()
+    );
+}
+
+fn configured_hooks_path(repo_root: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("config")
+        .arg("--local")
+        .arg("--get")
+        .arg("core.hooksPath")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(repo_root.join(path))
+    }
+}
+
+fn hooks_dir(repo_root: &Path) -> PathBuf {
+    configured_hooks_path(repo_root).unwrap_or_else(|| repo_root.join(".git").join("hooks"))
+}
+
 // ---------------------------------------------------------------------------
 // Hook installer
 // ---------------------------------------------------------------------------
 
 /// Install opensession git hooks into a repository.
 pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookType>> {
-    let hooks_dir = repo_root.join(".git").join("hooks");
-    if !hooks_dir.exists() {
-        anyhow::bail!(
-            "Not a git repository: {} (no .git/hooks)",
-            repo_root.display()
-        );
-    }
+    ensure_git_repo(repo_root)?;
+    let hooks_dir = hooks_dir(repo_root);
+    std::fs::create_dir_all(&hooks_dir)
+        .with_context(|| format!("create hooks directory {}", hooks_dir.display()))?;
 
     let mut installed = Vec::new();
     for hook_type in hooks {
@@ -297,7 +339,10 @@ pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookTyp
 
 /// Uninstall opensession git hooks from a repository.
 pub fn uninstall_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookType>> {
-    let hooks_dir = repo_root.join(".git").join("hooks");
+    if !repo_root.join(".git").exists() {
+        return Ok(Vec::new());
+    }
+    let hooks_dir = hooks_dir(repo_root);
     let mut uninstalled = Vec::new();
 
     for hook_type in hooks {
@@ -327,7 +372,10 @@ pub fn uninstall_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookT
 
 /// Check which opensession hooks are installed in a repository.
 pub fn list_installed_hooks(repo_root: &Path) -> Vec<HookType> {
-    let hooks_dir = repo_root.join(".git").join("hooks");
+    if !repo_root.join(".git").exists() {
+        return Vec::new();
+    }
+    let hooks_dir = hooks_dir(repo_root);
     let mut installed = Vec::new();
 
     for hook_type in HookType::all() {
@@ -527,6 +575,34 @@ mod tests {
     }
 
     #[test]
+    fn test_installed_hook_invokes_backed_up_pre_push() {
+        let repo = create_fake_git_repo();
+        let hooks_dir = repo.path().join(".git/hooks");
+        let marker = repo.path().join("backup-ran.txt");
+        let custom_hook = format!("#!/bin/sh\necho backup-ran > \"{}\"\n", marker.display());
+        let hook_path = hooks_dir.join("pre-push");
+        fs::write(&hook_path, custom_hook).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
+
+        let installed_hook = hooks_dir.join("pre-push");
+        let status = std::process::Command::new("sh")
+            .arg(&installed_hook)
+            .arg("origin")
+            .arg("https://example.com/repo.git")
+            .current_dir(repo.path())
+            .status()
+            .expect("run installed pre-push");
+        assert!(status.success());
+        assert!(marker.exists(), "backed up pre-push should be invoked");
+    }
+
+    #[test]
     fn test_list_installed_hooks() {
         let repo = create_fake_git_repo();
 
@@ -561,6 +637,45 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Not a git repository"));
+    }
+
+    #[test]
+    fn test_install_hooks_respects_core_hooks_path() {
+        let repo = TempDir::new().unwrap();
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .arg("init")
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "{}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        let config = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .arg("config")
+            .arg("--local")
+            .arg("core.hooksPath")
+            .arg(".githooks")
+            .output()
+            .expect("git config core.hooksPath");
+        assert!(
+            config.status.success(),
+            "{}",
+            String::from_utf8_lossy(&config.stderr)
+        );
+
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
+
+        let configured_hook = repo.path().join(".githooks").join("pre-push");
+        let legacy_hook = repo.path().join(".git").join("hooks").join("pre-push");
+        assert!(configured_hook.exists());
+        assert!(!legacy_hook.exists());
+        let installed = list_installed_hooks(repo.path());
+        assert_eq!(installed, vec![HookType::PrePush]);
     }
 
     #[test]

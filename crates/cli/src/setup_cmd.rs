@@ -400,14 +400,7 @@ fn install_cli_shim(name: &str, exe: &std::path::Path) -> Result<PathBuf> {
 }
 
 fn print_review_readiness(repo_root: &PathBuf) -> Result<()> {
-    let hook_path = repo_root.join(".git").join("hooks").join("pre-push");
-    let hidden_fanout_ready = std::fs::read_to_string(&hook_path)
-        .ok()
-        .map(|body| {
-            body.contains("setup --print-ledger-ref")
-                && body.contains("refs/opensession/*:refs/remotes/")
-        })
-        .unwrap_or(false);
+    let hidden_fanout_ready = list_installed_hooks(repo_root).contains(&HookType::PrePush);
 
     let remote_hidden_refs = Command::new("git")
         .arg("-C")

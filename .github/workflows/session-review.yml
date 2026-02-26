@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
@@ -43,6 +43,12 @@ jobs:
           set -euo pipefail
           git fetch --no-tags --depth=1 origin "+${LEDGER_REF}:${LEDGER_REF}" || true
 
+      - name: Configure git author for artifact branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Build session report
         env:
           LEDGER_REF: ${{ steps.ledger.outputs.ref }}
@@ -59,6 +65,7 @@ jobs:
             --head "$HEAD_SHA" \
             --repo "$REPO_FULL_NAME" \
             --pr-number "$PR_NUMBER" \
+            --publish-artifacts true \
             > /tmp/opensession-pr-report.md
 
       - name: Upsert sticky review comment
@@ -197,4 +204,22 @@ jobs:
           done
           if [ "$ok" -ne 1 ]; then
             echo "::warning::Failed to delete ledger ref $LEDGER_REF after retry"
+          fi
+
+      - name: Delete artifact branch with retry (merged PR only)
+        if: github.event_name == 'pull_request'
+        env:
+          ARTIFACT_BRANCH: opensession/pr-${{ github.event.pull_request.number }}-sessions
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in 1 2; do
+            if git push origin ":refs/heads/$ARTIFACT_BRANCH"; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::warning::Failed to delete artifact branch $ARTIFACT_BRANCH after retry"
           fi

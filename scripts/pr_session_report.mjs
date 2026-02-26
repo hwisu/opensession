@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 function run(cmd) {
   return execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
@@ -30,6 +33,22 @@ function unique(items) {
   return Array.from(new Set(items));
 }
 
+function runGit(args, options = {}) {
+  const { cwd = process.cwd(), allowFail = false } = options;
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    }).trim();
+  } catch (error) {
+    if (allowFail) return '';
+    const stderr = error?.stderr ? String(error.stderr).trim() : '';
+    const suffix = stderr ? `: ${stderr}` : '';
+    throw new Error(`git ${args.join(' ')} failed${suffix}`);
+  }
+}
+
 function sanitizeReviewIdComponent(value) {
   return String(value)
     .toLowerCase()
@@ -47,12 +66,33 @@ function buildReviewId(repoFullName, prNumber, head) {
   return `gh-${owner}-${repo}-pr${prNumber}-${shortSha(head)}`;
 }
 
+function buildArtifactBranchName(prNumber) {
+  if (!prNumber) return null;
+  return `opensession/pr-${prNumber}-sessions`;
+}
+
+function buildArtifactRoot(reviewId) {
+  if (!reviewId) return null;
+  return `reviews/${reviewId}`;
+}
+
 function localReviewLink(reviewId, sessionId = '', commitSha = '') {
   if (!reviewId) return null;
   const url = new URL(`http://127.0.0.1:8788/review/local/${reviewId}`);
   if (sessionId) url.searchParams.set('session', sessionId);
   if (commitSha) url.searchParams.set('commit', commitSha);
   return url.toString();
+}
+
+function githubBlobLink(repoFullName, branchName, filePath) {
+  if (!repoFullName || !branchName || !filePath) return null;
+  return `https://github.com/${repoFullName}/blob/${branchName}/${filePath}`;
+}
+
+function githubTreeLink(repoFullName, branchName, filePath = '') {
+  if (!repoFullName || !branchName) return null;
+  if (!filePath) return `https://github.com/${repoFullName}/tree/${branchName}`;
+  return `https://github.com/${repoFullName}/tree/${branchName}/${filePath}`;
 }
 
 function shortSha(sha) {
@@ -116,6 +156,161 @@ function collectIndexedSessions(ledgerRef, commits) {
   return Array.from(bySession.values()).sort((a, b) => a.session_id.localeCompare(b.session_id));
 }
 
+function writeFileAt(worktreeDir, relPath, body) {
+  const normalized = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalized) return;
+  const abs = path.join(worktreeDir, normalized);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, body, 'utf8');
+}
+
+function ensureTrailingNewline(value) {
+  if (value.length === 0) return '\n';
+  return value.endsWith('\n') ? value : `${value}\n`;
+}
+
+function publishArtifactsBranch({
+  enabled,
+  repoFullName,
+  prNumber,
+  head,
+  base,
+  ledgerRef,
+  reviewId,
+  generatedAt,
+  commits,
+  sessions,
+}) {
+  const branchName = buildArtifactBranchName(prNumber);
+  const artifactRoot = buildArtifactRoot(reviewId);
+  if (!branchName || !artifactRoot) {
+    return {
+      enabled: false,
+      branchName: null,
+      artifactRoot: null,
+      manifestPath: null,
+      error: null,
+      treeLink: null,
+    };
+  }
+
+  const manifestPath = `${artifactRoot}/manifest.json`;
+  const treeLink = githubTreeLink(repoFullName, branchName, artifactRoot);
+  if (!enabled) {
+    return {
+      enabled: false,
+      branchName,
+      artifactRoot,
+      manifestPath,
+      error: null,
+      treeLink,
+    };
+  }
+
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'opensession-pr-artifacts-'));
+  const worktreeDir = path.join(tmpBase, 'worktree');
+  const manifestSessions = [];
+  let publishError = null;
+  try {
+    runGit(['worktree', 'add', '--detach', worktreeDir]);
+    runGit(['checkout', '--orphan', branchName], { cwd: worktreeDir });
+    runGit(['rm', '-rf', '.'], { cwd: worktreeDir, allowFail: true });
+
+    for (const entry of fs.readdirSync(worktreeDir)) {
+      if (entry === '.git') continue;
+      fs.rmSync(path.join(worktreeDir, entry), { recursive: true, force: true });
+    }
+
+    for (const session of sessions) {
+      const metaArtifactPath = session.meta_path
+        ? `${artifactRoot}/${session.meta_path}`
+        : null;
+      const hailArtifactPath = session.hail_path
+        ? `${artifactRoot}/${session.hail_path}`
+        : null;
+
+      if (session.meta_path) {
+        const metaBody = tryRun(`git show ${ledgerRef}:${session.meta_path}`);
+        if (metaBody) writeFileAt(worktreeDir, metaArtifactPath, ensureTrailingNewline(metaBody));
+      }
+      if (session.hail_path) {
+        const hailBody = tryRun(`git show ${ledgerRef}:${session.hail_path}`);
+        if (hailBody) writeFileAt(worktreeDir, hailArtifactPath, ensureTrailingNewline(hailBody));
+      }
+
+      manifestSessions.push({
+        session_id: session.session_id,
+        commits: session.commits,
+        meta_path: session.meta_path ?? null,
+        hail_path: session.hail_path ?? null,
+        artifact_meta_path: metaArtifactPath,
+        artifact_hail_path: hailArtifactPath,
+      });
+    }
+
+    const manifest = {
+      generated_at: generatedAt,
+      repo: repoFullName,
+      pr_number: prNumber,
+      base_sha: base || null,
+      head_sha: head || null,
+      ledger_ref: ledgerRef,
+      review_id: reviewId,
+      branch: branchName,
+      artifact_root: artifactRoot,
+      commit_count: commits.length,
+      session_count: sessions.length,
+      sessions: manifestSessions,
+    };
+
+    writeFileAt(worktreeDir, manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileAt(
+      worktreeDir,
+      `${artifactRoot}/README.md`,
+      [
+        '# OpenSession PR Artifacts',
+        '',
+        `- Repo: \`${repoFullName}\``,
+        `- PR: #${prNumber}`,
+        `- Review ID: \`${reviewId}\``,
+        `- Generated at (UTC): ${generatedAt}`,
+        '',
+        'This branch is generated by the Session Review workflow.',
+        'It mirrors review JSONL/meta files for linkable inspection in GitHub UI.',
+        '',
+      ].join('\n'),
+    );
+
+    runGit(['add', '.'], { cwd: worktreeDir });
+    const staged = runGit(['status', '--porcelain'], { cwd: worktreeDir });
+    if (staged) {
+      runGit(
+        ['commit', '-m', `opensession review artifacts pr#${prNumber} ${shortSha(head)}`],
+        { cwd: worktreeDir },
+      );
+    } else {
+      runGit(['commit', '--allow-empty', '-m', `opensession review artifacts pr#${prNumber} ${shortSha(head)}`], {
+        cwd: worktreeDir,
+      });
+    }
+    runGit(['push', '--force', 'origin', `${branchName}:${branchName}`], { cwd: worktreeDir });
+  } catch (error) {
+    publishError = error instanceof Error ? error.message : String(error);
+  } finally {
+    runGit(['worktree', 'remove', '--force', worktreeDir], { allowFail: true });
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+
+  return {
+    enabled: true,
+    branchName,
+    artifactRoot,
+    manifestPath,
+    error: publishError,
+    treeLink,
+  };
+}
+
 function renderReport({
   marker,
   mode,
@@ -128,6 +323,7 @@ function renderReport({
   commits,
   sessions,
   missingLedgerRef = false,
+  artifact = null,
 }) {
   const title = mode === 'final'
     ? 'OpenSession Review (final snapshot)'
@@ -152,6 +348,22 @@ function renderReport({
   if (reviewId && prLinks) {
     lines.push(`- Local review: [Open in UI](${localReviewLink(reviewId)})`);
     lines.push(`- CLI: \`ops review ${prLinks.files.replace('/files', '')}\``);
+  }
+  if (artifact?.branchName && artifact?.treeLink) {
+    lines.push(`- Artifact branch: [\`${artifact.branchName}\`](${artifact.treeLink})`);
+  }
+  if (artifact?.manifestPath && artifact?.branchName) {
+    const manifestLink = githubBlobLink(
+      repoFullName,
+      artifact.branchName,
+      artifact.manifestPath,
+    );
+    if (manifestLink) {
+      lines.push(`- Artifact manifest: [manifest.json](${manifestLink})`);
+    }
+  }
+  if (artifact?.error) {
+    lines.push(`- Artifact publish: failed (\`${artifact.error}\`)`);
   }
   if (missingLedgerRef) {
     lines.push(`- Ledger status: missing (\`${ledgerRef}\`)`);
@@ -179,8 +391,8 @@ function renderReport({
     return lines.join('\n');
   }
 
-  lines.push('| Session ID | Commits | Open | Meta |');
-  lines.push('| --- | ---: | --- | --- |');
+  lines.push('| Session ID | Commits | Open | JSONL | Meta |');
+  lines.push('| --- | ---: | --- | --- | --- |');
   for (const session of sessions.slice(0, 50)) {
     const commitCell = session.commits.length > 0
       ? session.commits
@@ -191,8 +403,24 @@ function renderReport({
     const suffix = session.commits.length > 4 ? ` +${session.commits.length - 4}` : '';
     const primaryCommit = session.commits[0] ?? '';
     const openLink = localReviewLink(reviewId, session.session_id, primaryCommit);
+    const hailLink =
+      artifact?.branchName && artifact?.artifactRoot && session.hail_path
+        ? githubBlobLink(
+            repoFullName,
+            artifact.branchName,
+            `${artifact.artifactRoot}/${session.hail_path}`,
+          )
+        : null;
+    const metaLink =
+      artifact?.branchName && artifact?.artifactRoot && session.meta_path
+        ? githubBlobLink(
+            repoFullName,
+            artifact.branchName,
+            `${artifact.artifactRoot}/${session.meta_path}`,
+          )
+        : null;
     lines.push(
-      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | \`${session.meta_path ?? ''}\` |`,
+      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} |`,
     );
   }
   if (sessions.length > 50) {
@@ -209,6 +437,7 @@ function main() {
   const repoFullName = args.repo ?? '';
   const prNumberRaw = args['pr-number'] ?? '';
   const prNumber = /^\d+$/.test(prNumberRaw) ? Number(prNumberRaw) : null;
+  const publishArtifacts = (args['publish-artifacts'] ?? 'false') === 'true';
   const base = args.base ?? '';
   const head = args.head ?? '';
   const generatedAt = new Date().toISOString();
@@ -224,6 +453,19 @@ function main() {
   const refExists = tryRun(`git show-ref ${ledgerRef}`);
   const commits = collectCommitRange(base, head);
   const sessions = refExists ? collectIndexedSessions(ledgerRef, commits) : [];
+  const reviewId = buildReviewId(repoFullName, prNumber, head);
+  const artifact = publishArtifactsBranch({
+    enabled: publishArtifacts,
+    repoFullName,
+    prNumber,
+    head,
+    base,
+    ledgerRef,
+    reviewId,
+    generatedAt,
+    commits,
+    sessions,
+  });
   const report = renderReport({
     marker,
     mode,
@@ -236,6 +478,7 @@ function main() {
     commits,
     sessions,
     missingLedgerRef: !refExists,
+    artifact,
   });
   console.log(report);
 }

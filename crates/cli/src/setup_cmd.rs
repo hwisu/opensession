@@ -10,11 +10,15 @@ use opensession_git_native::{
 use opensession_parsers::{discover::discover_sessions, parse_with_default_parsers};
 use opensession_runtime_config::{DaemonConfig, CONFIG_FILE_NAME};
 use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const FANOUT_MODE_GIT_CONFIG_KEY: &str = "opensession.fanout-mode";
+const SYNC_MAX_CANDIDATES: usize = 128;
+const SYNC_BRANCH_COMMITS_MAX: usize = 4096;
+const COMMIT_HINT_GRACE_SECONDS: i64 = 6 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FanoutMode {
@@ -53,7 +57,7 @@ pub struct SetupArgs {
     /// Ingest the latest local session for this branch into the hidden ledger (internal use).
     #[arg(long, hide = true)]
     pub sync_branch_session: Option<String>,
-    /// Commit SHA to index when syncing branch session (internal use).
+    /// Commit SHA hint used to improve commit mapping when syncing branch sessions (internal use).
     #[arg(long, hide = true)]
     pub sync_branch_commit: Option<String>,
 }
@@ -147,7 +151,7 @@ fn collect_recent_candidates() -> Vec<SessionCandidate> {
     }
 
     candidates.sort_by_key(|candidate| Reverse(candidate.modified));
-    candidates
+    candidates.into_iter().take(SYNC_MAX_CANDIDATES).collect()
 }
 
 fn same_repo_root(left: &Path, right: &Path) -> bool {
@@ -173,32 +177,154 @@ fn parse_session_candidate(path: &Path) -> Option<Session> {
     }
 }
 
-fn commit_hint_or_head(repo_root: &Path, commit_hint: Option<String>) -> Result<Vec<String>> {
-    if let Some(hint) = commit_hint {
-        let trimmed = hint.trim().to_string();
-        if !trimmed.is_empty() {
-            return Ok(vec![trimmed]);
-        }
-    }
+fn normalize_commit_hint(commit_hint: Option<String>) -> Option<String> {
+    commit_hint
+        .and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .filter(|sha| sha != "0000000000000000000000000000000000000000")
+}
 
+fn list_branch_commits(repo_root: &Path, branch: &str, max_count: usize) -> HashSet<String> {
+    let rev = format!("refs/heads/{branch}");
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
-        .arg("rev-parse")
-        .arg("HEAD")
-        .output()
-        .context("resolve HEAD commit")?;
+        .arg("rev-list")
+        .arg("--max-count")
+        .arg(max_count.to_string())
+        .arg(rev)
+        .output();
+    let Ok(output) = output else {
+        return HashSet::new();
+    };
     if !output.status.success() {
-        bail!(
-            "failed to resolve HEAD commit: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+        return HashSet::new();
     }
-    let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if head.is_empty() {
-        bail!("HEAD commit is empty");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn commit_time_unix(repo_root: &Path, commit: &str) -> Option<i64> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("show")
+        .arg("-s")
+        .arg("--format=%ct")
+        .arg(commit)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    Ok(vec![head])
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    raw.parse::<i64>().ok()
+}
+
+fn commit_shas_from_reflog(repo_root: &Path, start_ts: i64, end_ts: i64) -> Vec<String> {
+    let git_dir_output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("rev-parse")
+        .arg("--git-dir")
+        .output();
+    let Ok(git_dir_output) = git_dir_output else {
+        return Vec::new();
+    };
+    if !git_dir_output.status.success() {
+        return Vec::new();
+    }
+    let git_dir = String::from_utf8_lossy(&git_dir_output.stdout)
+        .trim()
+        .to_string();
+    if git_dir.is_empty() {
+        return Vec::new();
+    }
+
+    let git_dir_path = if Path::new(&git_dir).is_absolute() {
+        PathBuf::from(git_dir)
+    } else {
+        repo_root.join(git_dir)
+    };
+    let reflog_path = git_dir_path.join("logs").join("HEAD");
+    let raw = std::fs::read_to_string(reflog_path);
+    let Ok(raw) = raw else {
+        return Vec::new();
+    };
+
+    let mut seen = HashSet::new();
+    let mut commits = Vec::new();
+    for line in raw.lines() {
+        let Some((left, _)) = line.split_once('\t') else {
+            continue;
+        };
+        let mut parts = left.split_whitespace();
+        let _old = parts.next();
+        let Some(new_sha) = parts.next() else {
+            continue;
+        };
+        if new_sha.len() < 7 || !new_sha.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            continue;
+        }
+        let mut tail = left.split_whitespace().rev();
+        let _tz = tail.next();
+        let Some(ts_raw) = tail.next() else {
+            continue;
+        };
+        let Ok(ts) = ts_raw.parse::<i64>() else {
+            continue;
+        };
+        if ts < start_ts || ts > end_ts {
+            continue;
+        }
+        if seen.insert(new_sha.to_string()) {
+            commits.push(new_sha.to_string());
+        }
+    }
+    commits
+}
+
+fn session_commit_links(
+    repo_root: &Path,
+    branch_commits: &HashSet<String>,
+    session: &Session,
+    commit_hint: Option<&str>,
+) -> Vec<String> {
+    let created = session.context.created_at.timestamp();
+    let updated = session.context.updated_at.timestamp();
+    let (start, end) = if created <= updated {
+        (created, updated)
+    } else {
+        (updated, created)
+    };
+    let mut commits = commit_shas_from_reflog(repo_root, start, end)
+        .into_iter()
+        .filter(|sha| branch_commits.contains(sha))
+        .collect::<Vec<_>>();
+
+    if let Some(hint) = commit_hint {
+        if branch_commits.contains(hint) && !commits.iter().any(|sha| sha == hint) {
+            if let Some(hint_ts) = commit_time_unix(repo_root, hint) {
+                let window_start = start.saturating_sub(COMMIT_HINT_GRACE_SECONDS);
+                let window_end = end.saturating_add(COMMIT_HINT_GRACE_SECONDS);
+                if hint_ts >= window_start && hint_ts <= window_end {
+                    commits.push(hint.to_string());
+                }
+            }
+        }
+    }
+
+    commits
 }
 
 fn load_daemon_config() -> DaemonConfig {
@@ -228,9 +354,13 @@ fn sync_branch_session_to_hidden_ledger(
     }
 
     let config = load_daemon_config();
-    let commit_shas = commit_hint_or_head(repo_root, commit_hint)?;
-    let head_sha = commit_shas.first().cloned();
-    let mut synced = false;
+    let branch_commits = list_branch_commits(repo_root, branch, SYNC_BRANCH_COMMITS_MAX);
+    if branch_commits.is_empty() {
+        return Ok(());
+    }
+    let commit_hint = normalize_commit_hint(commit_hint);
+    let mut synced_any = false;
+    let mut seen_sessions = HashSet::new();
 
     for candidate in candidates {
         let Some(mut session) = parse_session_candidate(&candidate.path) else {
@@ -255,6 +385,15 @@ fn sync_branch_session_to_hidden_ledger(
         {
             continue;
         }
+        if !seen_sessions.insert(session.session_id.clone()) {
+            continue;
+        }
+
+        let commit_shas =
+            session_commit_links(repo_root, &branch_commits, &session, commit_hint.as_deref());
+        if commit_shas.is_empty() {
+            continue;
+        }
 
         sanitize_session(
             &mut session,
@@ -272,7 +411,10 @@ fn sync_branch_session_to_hidden_ledger(
                 remote: git_ctx.remote.clone(),
                 repo_name: git_ctx.repo_name.clone(),
                 branch: Some(branch.to_string()),
-                head: head_sha.clone().or(git_ctx.commit.clone()),
+                head: commit_hint
+                    .clone()
+                    .or_else(|| commit_shas.last().cloned())
+                    .or(git_ctx.commit.clone()),
                 commits: commit_shas.clone(),
             }),
         );
@@ -288,14 +430,10 @@ fn sync_branch_session_to_hidden_ledger(
             &meta,
             &commit_shas,
         )?;
-        synced = true;
-        break;
+        synced_any = true;
     }
 
-    if !synced {
-        return Ok(());
-    }
-
+    let _ = synced_any;
     Ok(())
 }
 

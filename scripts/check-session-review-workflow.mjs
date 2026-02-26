@@ -46,6 +46,12 @@ function main() {
   if (!reportScript.includes('Quick links: [Files changed]')) {
     fail('Report must include PR quick links to files/commits.');
   }
+  if (!reportScript.includes('Local review: [Open in UI]')) {
+    fail('Report must include local review deep-link.');
+  }
+  if (!reportScript.includes('| Session ID | Commits | Open | Meta |')) {
+    fail('Report must include Open column for per-session navigation.');
+  }
   if (!reportScript.includes('#### Commit trail')) {
     fail('Report must include commit trail for direct change navigation.');
   }

@@ -30,6 +30,31 @@ function unique(items) {
   return Array.from(new Set(items));
 }
 
+function sanitizeReviewIdComponent(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function buildReviewId(repoFullName, prNumber, head) {
+  if (!repoFullName || !prNumber || !head) return null;
+  const [ownerRaw, repoRaw] = String(repoFullName).split('/');
+  if (!ownerRaw || !repoRaw) return null;
+  const owner = sanitizeReviewIdComponent(ownerRaw);
+  const repo = sanitizeReviewIdComponent(repoRaw);
+  if (!owner || !repo) return null;
+  return `gh-${owner}-${repo}-pr${prNumber}-${shortSha(head)}`;
+}
+
+function localReviewLink(reviewId, sessionId = '', commitSha = '') {
+  if (!reviewId) return null;
+  const url = new URL(`http://127.0.0.1:8788/review/local/${reviewId}`);
+  if (sessionId) url.searchParams.set('session', sessionId);
+  if (commitSha) url.searchParams.set('commit', commitSha);
+  return url.toString();
+}
+
 function shortSha(sha) {
   return String(sha).slice(0, 7);
 }
@@ -117,10 +142,15 @@ function renderReport({
   lines.push(`- Commit range size: ${commits.length}`);
   lines.push(`- Linked sessions: ${sessions.length}`);
   const prLinks = pullRequestLinks(repoFullName, prNumber, base, head);
+  const reviewId = buildReviewId(repoFullName, prNumber, head);
   if (prLinks) {
     lines.push(
       `- Quick links: [Files changed](${prLinks.files}) · [Commits](${prLinks.commits})${prLinks.compare ? ` · [Compare](${prLinks.compare})` : ''}`,
     );
+  }
+  if (reviewId && prLinks) {
+    lines.push(`- Local review: [Open in UI](${localReviewLink(reviewId)})`);
+    lines.push(`- CLI: \`ops review ${prLinks.files.replace('/files', '')}\``);
   }
   lines.push('');
 
@@ -140,8 +170,8 @@ function renderReport({
     return lines.join('\n');
   }
 
-  lines.push('| Session ID | Commits | Meta |');
-  lines.push('| --- | ---: | --- |');
+  lines.push('| Session ID | Commits | Open | Meta |');
+  lines.push('| --- | ---: | --- | --- |');
   for (const session of sessions.slice(0, 50)) {
     const commitCell = session.commits.length > 0
       ? session.commits
@@ -150,8 +180,10 @@ function renderReport({
           .join(', ')
       : String(session.commits.length);
     const suffix = session.commits.length > 4 ? ` +${session.commits.length - 4}` : '';
+    const primaryCommit = session.commits[0] ?? '';
+    const openLink = localReviewLink(reviewId, session.session_id, primaryCommit);
     lines.push(
-      `| \`${session.session_id}\` | ${commitCell}${suffix} | \`${session.meta_path ?? ''}\` |`,
+      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | \`${session.meta_path ?? ''}\` |`,
     );
   }
   if (sessions.length > 50) {

@@ -26,6 +26,11 @@ let nativeFilters = $state(new Set<string>());
 let routeVersion = $state(0);
 let lastObservedHref = '';
 
+type ReviewSelection = {
+	commitIndex: number;
+	sessionIndex: number;
+};
+
 const selectedCommit = $derived.by((): LocalReviewCommit | null => {
 	if (!bundle || bundle.commits.length === 0) return null;
 	const idx = Math.min(selectedCommitIndex, bundle.commits.length - 1);
@@ -84,6 +89,44 @@ function changeViewMode(mode: SessionViewMode) {
 	viewMode = mode;
 }
 
+function resolveSelectionFromQuery(
+	loaded: LocalReviewBundle,
+	sessionId: string | null,
+	commitSha: string | null,
+): ReviewSelection | null {
+	const normalizedSession = sessionId?.trim();
+	const normalizedCommit = commitSha?.trim();
+	if (!normalizedSession && !normalizedCommit) return null;
+
+	if (normalizedCommit) {
+		const commitIndex = loaded.commits.findIndex((commit) => commit.sha === normalizedCommit);
+		if (commitIndex >= 0) {
+			const commit = loaded.commits[commitIndex];
+			if (!commit) return null;
+			if (normalizedSession) {
+				const sessionIndex = commit.session_ids.findIndex((id) => id === normalizedSession);
+				if (sessionIndex >= 0) {
+					return { commitIndex, sessionIndex };
+				}
+			}
+			return { commitIndex, sessionIndex: 0 };
+		}
+	}
+
+	if (normalizedSession) {
+		for (let commitIndex = 0; commitIndex < loaded.commits.length; commitIndex += 1) {
+			const commit = loaded.commits[commitIndex];
+			if (!commit) continue;
+			const sessionIndex = commit.session_ids.findIndex((id) => id === normalizedSession);
+			if (sessionIndex >= 0) {
+				return { commitIndex, sessionIndex };
+			}
+		}
+	}
+
+	return null;
+}
+
 async function loadReviewBundle() {
 	const activeVersion = ++routeVersion;
 	pageState = 'loading';
@@ -100,6 +143,15 @@ async function loadReviewBundle() {
 		bundle = loaded;
 		selectedCommitIndex = 0;
 		selectedSessionIndex = 0;
+		const querySelection = resolveSelectionFromQuery(
+			loaded,
+			$page.url.searchParams.get('session'),
+			$page.url.searchParams.get('commit'),
+		);
+		if (querySelection) {
+			selectedCommitIndex = querySelection.commitIndex;
+			selectedSessionIndex = querySelection.sessionIndex;
+		}
 		applyFiltersFromSession((selectedSession?.session as Session) ?? null);
 		pageState = 'ready';
 	} catch (error) {

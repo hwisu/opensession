@@ -173,6 +173,116 @@ test.describe('Local Review Route', () => {
 		await expect(page.locator('text=TUI (Recommended)').first()).toBeVisible();
 	});
 
+	test('query params deep-link to target commit/session', async ({ page }) => {
+		const now = new Date().toISOString();
+		const commitA = 'a'.repeat(40);
+		const commitB = 'b'.repeat(40);
+		const bundle = buildReviewBundle({
+			commits: [
+				{
+					sha: commitA,
+					title: 'feat: commit-a',
+					author_name: 'Alice',
+					author_email: 'alice@example.com',
+					authored_at: now,
+					session_ids: ['s-review-1'],
+				},
+				{
+					sha: commitB,
+					title: 'feat: commit-b',
+					author_name: 'Bob',
+					author_email: 'bob@example.com',
+					authored_at: now,
+					session_ids: ['s-review-2'],
+				},
+			],
+			sessions: [
+				{
+					session_id: 's-review-1',
+					ledger_ref: 'refs/remotes/origin/opensession/branches/ZmVhdHVyZS9yZXZpZXc',
+					hail_path: 'v1/sr/s-review-1.hail.jsonl',
+					commit_shas: [commitA],
+					session: {
+						version: 'hail-1.0.0',
+						session_id: 's-review-1',
+						agent: { provider: 'openai', model: 'gpt-5', tool: 'codex' },
+						context: {
+							title: 'First Session',
+							description: 'first',
+							tags: ['review'],
+							created_at: now,
+							updated_at: now,
+							related_session_ids: [],
+							attributes: {},
+						},
+						events: [],
+						stats: {
+							event_count: 0,
+							message_count: 0,
+							tool_call_count: 0,
+							task_count: 0,
+							duration_seconds: 0,
+							total_input_tokens: 0,
+							total_output_tokens: 0,
+							user_message_count: 0,
+							files_changed: 0,
+							lines_added: 0,
+							lines_removed: 0,
+						},
+					},
+				},
+				{
+					session_id: 's-review-2',
+					ledger_ref: 'refs/remotes/origin/opensession/branches/ZmVhdHVyZS9yZXZpZXc',
+					hail_path: 'v1/sr/s-review-2.hail.jsonl',
+					commit_shas: [commitB],
+					session: {
+						version: 'hail-1.0.0',
+						session_id: 's-review-2',
+						agent: { provider: 'openai', model: 'gpt-5', tool: 'codex' },
+						context: {
+							title: 'Second Session',
+							description: 'second',
+							tags: ['review'],
+							created_at: now,
+							updated_at: now,
+							related_session_ids: [],
+							attributes: {},
+						},
+						events: [],
+						stats: {
+							event_count: 0,
+							message_count: 0,
+							tool_call_count: 0,
+							task_count: 0,
+							duration_seconds: 0,
+							total_input_tokens: 0,
+							total_output_tokens: 0,
+							user_message_count: 0,
+							files_changed: 0,
+							lines_added: 0,
+							lines_removed: 0,
+						},
+					},
+				},
+			],
+		});
+
+		await page.route('**/api/review/local/*', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(bundle),
+			});
+		});
+
+		await page.goto(
+			`/review/local/gh-acme-private-repo-pr7-abc1234?session=s-review-2&commit=${commitB}`,
+		);
+		await expect(page.getByText('feat: commit-b')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByRole('heading', { name: 'Second Session' })).toBeVisible();
+	});
+
 	test('shows error state when bundle API fails', async ({ page }) => {
 		await page.route('**/api/review/local/*', async (route) => {
 			await route.fulfill({

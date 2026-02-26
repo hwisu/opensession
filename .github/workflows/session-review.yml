@@ -117,6 +117,8 @@ jobs:
   cleanup:
     name: PR Session Cleanup
     runs-on: ubuntu-latest
+    env:
+      OPENSESSION_KEEP_ARTIFACT_BRANCH: ${{ vars.OPENSESSION_KEEP_ARTIFACT_BRANCH || 'false' }}
     permissions:
       contents: write
       pull-requests: write
@@ -207,7 +209,7 @@ jobs:
           fi
 
       - name: Delete artifact branch with retry (merged PR only)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && env.OPENSESSION_KEEP_ARTIFACT_BRANCH != 'true'
         env:
           ARTIFACT_BRANCH: opensession/pr-${{ github.event.pull_request.number }}-sessions
         run: |
@@ -223,3 +225,11 @@ jobs:
           if [ "$ok" -ne 1 ]; then
             echo "::warning::Failed to delete artifact branch $ARTIFACT_BRANCH after retry"
           fi
+
+      - name: Keep artifact branch (configured)
+        if: github.event_name == 'pull_request' && env.OPENSESSION_KEEP_ARTIFACT_BRANCH == 'true'
+        env:
+          ARTIFACT_BRANCH: opensession/pr-${{ github.event.pull_request.number }}-sessions
+        run: |
+          set -euo pipefail
+          echo "Skipping artifact branch deletion by config: $ARTIFACT_BRANCH"

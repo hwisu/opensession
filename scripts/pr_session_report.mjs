@@ -349,10 +349,10 @@ function renderReport({
     lines.push(`- Local review: [Open in UI](${localReviewLink(reviewId)})`);
     lines.push(`- CLI: \`ops review ${prLinks.files.replace('/files', '')}\``);
   }
-  if (artifact?.branchName && artifact?.treeLink) {
+  if (artifact?.enabled && artifact?.branchName && artifact?.treeLink) {
     lines.push(`- Artifact branch: [\`${artifact.branchName}\`](${artifact.treeLink})`);
   }
-  if (artifact?.manifestPath && artifact?.branchName) {
+  if (artifact?.enabled && artifact?.manifestPath && artifact?.branchName) {
     const manifestLink = githubBlobLink(
       repoFullName,
       artifact.branchName,
@@ -362,7 +362,7 @@ function renderReport({
       lines.push(`- Artifact manifest: [manifest.json](${manifestLink})`);
     }
   }
-  if (artifact?.error) {
+  if (artifact?.enabled && artifact?.error) {
     lines.push(`- Artifact publish: failed (\`${artifact.error}\`)`);
   }
   if (missingLedgerRef) {
@@ -404,7 +404,7 @@ function renderReport({
     const primaryCommit = session.commits[0] ?? '';
     const openLink = localReviewLink(reviewId, session.session_id, primaryCommit);
     const hailLink =
-      artifact?.branchName && artifact?.artifactRoot && session.hail_path
+      artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.hail_path
         ? githubBlobLink(
             repoFullName,
             artifact.branchName,
@@ -412,7 +412,7 @@ function renderReport({
           )
         : null;
     const metaLink =
-      artifact?.branchName && artifact?.artifactRoot && session.meta_path
+      artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.meta_path
         ? githubBlobLink(
             repoFullName,
             artifact.branchName,

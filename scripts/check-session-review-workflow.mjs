@@ -101,6 +101,12 @@ function main() {
   if (!workflow.includes('Delete artifact branch with retry')) {
     fail('cleanup must delete artifact branch for merged PRs.');
   }
+  if (!workflow.includes('OPENSESSION_KEEP_ARTIFACT_BRANCH')) {
+    fail('cleanup must support repository-level artifact retention toggle.');
+  }
+  if (!workflow.includes("env.OPENSESSION_KEEP_ARTIFACT_BRANCH != 'true'")) {
+    fail('artifact branch deletion must stay default-on when no repo variable is set.');
+  }
   if (!workflow.includes('github.rest.issues.deleteComment')) {
     fail('sticky comment upsert must dedupe stale marker comments.');
   }

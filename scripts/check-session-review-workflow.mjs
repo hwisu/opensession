@@ -98,14 +98,17 @@ function main() {
   if (!workflow.includes('Configure git author for artifact branch')) {
     fail('workflow must configure git author before publishing artifact branch.');
   }
-  if (!workflow.includes('Delete artifact branch with retry')) {
-    fail('cleanup must delete artifact branch for merged PRs.');
+  if (!workflow.includes('Apply artifact retention policy (merged PR only)')) {
+    fail('cleanup must apply artifact retention policy for merged PRs.');
   }
-  if (!workflow.includes('OPENSESSION_KEEP_ARTIFACT_BRANCH')) {
-    fail('cleanup must support repository-level artifact retention toggle.');
+  if (!workflow.includes('OPENSESSION_ARTIFACT_RETENTION')) {
+    fail('cleanup must support repository-level OPENSESSION_ARTIFACT_RETENTION variable.');
   }
-  if (!workflow.includes("env.OPENSESSION_KEEP_ARTIFACT_BRANCH != 'true'")) {
-    fail('artifact branch deletion must stay default-on when no repo variable is set.');
+  if (!workflow.includes("vars.OPENSESSION_ARTIFACT_RETENTION || 'next_commit'")) {
+    fail('artifact retention must default to next_commit when repo variable is unset.');
+  }
+  if (!workflow.includes('--publish-artifacts "$publish_artifacts"')) {
+    fail('final report builder must toggle artifact publishing based on retention mode.');
   }
   if (!workflow.includes('github.rest.issues.deleteComment')) {
     fail('sticky comment upsert must dedupe stale marker comments.');

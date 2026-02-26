@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.27](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.26...opensession-parsers-v0.2.27) - 2026-02-26
+
+### Other
+
+- Unify interactive input events and stabilize local PR review
+
 ## [0.2.21](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.20...opensession-parsers-v0.2.21) - 2026-02-20
 
 ### Other

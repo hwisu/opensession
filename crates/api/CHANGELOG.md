@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.27](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.26...opensession-api-v0.2.27) - 2026-02-26
+
+### Other
+
+- Add local PR review workflow via ops review
+
 ## [0.2.26](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.25...opensession-api-v0.2.26) - 2026-02-23
 
 ### Other

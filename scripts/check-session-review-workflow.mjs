@@ -46,6 +46,21 @@ function main() {
   if (!reportScript.includes('Quick links: [Files changed]')) {
     fail('Report must include PR quick links to files/commits.');
   }
+  if (!reportScript.includes('Local review: [Open in UI]')) {
+    fail('Report must include local review deep-link.');
+  }
+  if (!reportScript.includes('Artifact branch:')) {
+    fail('Report must include artifact branch summary link.');
+  }
+  if (!reportScript.includes('| Session ID | Commits | Open | JSONL | Meta |')) {
+    fail('Report must include Open/JSONL/Meta columns for per-session navigation.');
+  }
+  if (!reportScript.includes('[jsonl](')) {
+    fail('Report must include direct jsonl file links.');
+  }
+  if (!reportScript.includes('buildArtifactBranchName')) {
+    fail('Report script must derive a dedicated artifact branch name.');
+  }
   if (!reportScript.includes('#### Commit trail')) {
     fail('Report must include commit trail for direct change navigation.');
   }
@@ -76,6 +91,15 @@ function main() {
   }
   if (!workflow.includes('--pr-number "$PR_NUMBER"')) {
     fail('workflow must pass PR number context to report builder.');
+  }
+  if (!workflow.includes('--publish-artifacts true')) {
+    fail('workflow must request artifact publication for review reports.');
+  }
+  if (!workflow.includes('Configure git author for artifact branch')) {
+    fail('workflow must configure git author before publishing artifact branch.');
+  }
+  if (!workflow.includes('Delete artifact branch with retry')) {
+    fail('cleanup must delete artifact branch for merged PRs.');
   }
   if (!workflow.includes('github.rest.issues.deleteComment')) {
     fail('sticky comment upsert must dedupe stale marker comments.');

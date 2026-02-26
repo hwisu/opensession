@@ -140,7 +140,22 @@ else
     sort -u "$tmp_fanout" > "$tmp_sorted" 2>/dev/null
     while IFS= read -r ledger_ref; do
         [ -z "$ledger_ref" ] && continue
-        if ! OPENSESSION_INTERNAL_PUSH=1 git push --no-verify "$remote" "$ledger_ref:$ledger_ref" >/dev/null 2>&1; then
+        # No local ledger yet for this branch; skip silently.
+        if ! git show-ref --verify --quiet "$ledger_ref"; then
+            continue
+        fi
+
+        push_ok=0
+        for attempt in 1 2; do
+            if OPENSESSION_INTERNAL_PUSH=1 git push --no-verify "$remote" "$ledger_ref:$ledger_ref" >/dev/null 2>&1; then
+                push_ok=1
+                break
+            fi
+            # Best-effort retry for transient network/remote races.
+            sleep 1
+        done
+
+        if [ "$push_ok" -ne 1 ]; then
             fanout_failed=1
             printf "${YELLOW}[opensession]${NC} Warning: failed to push ledger ref %s\n" "$ledger_ref"
         fi
@@ -715,6 +730,8 @@ mod tests {
         assert!(template.contains("refs/notes/opensession"));
         assert!(template.contains(".local/share/opensession/bin/opensession"));
         assert!(template.contains("OPENSESSION_STRICT"));
+        assert!(template.contains("git show-ref --verify --quiet \"$ledger_ref\""));
+        assert!(template.contains("for attempt in 1 2; do"));
     }
 
     #[test]

@@ -12,6 +12,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
   review:
@@ -47,6 +48,8 @@ jobs:
           LEDGER_REF: ${{ steps.ledger.outputs.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           node scripts/pr_session_report.mjs \
@@ -54,6 +57,8 @@ jobs:
             --ledger-ref "$LEDGER_REF" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
+            --repo "$REPO_FULL_NAME" \
+            --pr-number "$PR_NUMBER" \
             > /tmp/opensession-pr-report.md
 
       - name: Upsert sticky review comment
@@ -71,7 +76,14 @@ jobs:
               github.rest.issues.listComments,
               { owner, repo, issue_number, per_page: 100 }
             );
-            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            const matching = comments
+              .filter((c) => c.body && c.body.includes(marker))
+              .sort((a, b) => {
+                const left = Date.parse(a.updated_at || a.created_at || 0);
+                const right = Date.parse(b.updated_at || b.created_at || 0);
+                return right - left;
+              });
+            const existing = matching[0];
             if (existing) {
               await github.rest.issues.updateComment({
                 owner,
@@ -79,6 +91,13 @@ jobs:
                 comment_id: existing.id,
                 body,
               });
+              for (const duplicate of matching.slice(1)) {
+                await github.rest.issues.deleteComment({
+                  owner,
+                  repo,
+                  comment_id: duplicate.id,
+                });
+              }
             } else {
               await github.rest.issues.createComment({
                 owner,
@@ -94,6 +113,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     if: >
       (github.event_name == 'pull_request' &&
        github.event.action == 'closed' &&
@@ -136,6 +156,8 @@ jobs:
           LEDGER_REF: ${{ steps.ledger.outputs.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           node scripts/pr_session_report.mjs \
@@ -143,6 +165,8 @@ jobs:
             --ledger-ref "$LEDGER_REF" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
+            --repo "$REPO_FULL_NAME" \
+            --pr-number "$PR_NUMBER" \
             > /tmp/opensession-pr-final.md
 
       - name: Post final snapshot comment (merged PR only)

@@ -49,14 +49,18 @@ cargo install opensession
 ## Install-and-Forget 설정
 
 ```bash
-# 1) 현재 repo에 pre-push fanout 훅 + shim 설치/업데이트
-opensession setup
+# 1) 로컬 설정 진단 (flutter doctor 스타일)
+opensession doctor
 
-# 2) 훅/shim/예상 ledger ref/daemon 상태 점검
-opensession setup --check
+# 2) 권장 설치값 자동 적용 (hooks/shims/fanout defaults)
+opensession doctor --fix
+
+# 3) 선택: fanout 모드를 명시적으로 지정
+opensession doctor --fix --fanout-mode hidden_ref
 ```
 
-첫 `setup` 실행 시 fanout 저장 모드(`hidden_ref` 또는 `git_notes`)를 선택하며, 선택값은 로컬 git 설정(`.git/config`)의 `opensession.fanout-mode`에 저장됩니다.
+`doctor`는 내부적으로 기존 setup 파이프라인(`opensession setup` / `opensession setup --check`)을 재사용합니다.
+첫 적용 시 fanout 저장 모드(`hidden_ref` 또는 `git_notes`)를 선택하며, 선택값은 로컬 git 설정(`.git/config`)의 `opensession.fanout-mode`에 저장됩니다.
 
 자동 수집을 위한 daemon 실행:
 

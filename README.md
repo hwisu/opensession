@@ -49,14 +49,18 @@ cargo install opensession
 ## Install-and-Forget Setup
 
 ```bash
-# 1) Install/update pre-push fanout hook + shim in this repo
-opensession setup
+# 1) Diagnose local setup (flutter doctor style)
+opensession doctor
 
-# 2) Verify hook/shim + expected ledger ref + daemon status
-opensession setup --check
+# 2) Apply recommended setup values (hooks/shims/fanout defaults)
+opensession doctor --fix
+
+# 3) Optional: pin fanout storage mode while fixing
+opensession doctor --fix --fanout-mode hidden_ref
 ```
 
-On first setup, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
+`doctor` reuses the existing setup pipeline under the hood (`opensession setup` / `opensession setup --check`).
+On first apply, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
 
 Start daemon (required for automatic session capture):
 
@@ -97,8 +101,8 @@ opensession share os://src/local/<sha256> --git --remote origin
 opensession share os://src/local/<sha256> --git --remote origin --push
 
 # Install/update OpenSession pre-push hook (best-effort fanout)
-opensession setup
-opensession setup --check
+opensession doctor
+opensession doctor --fix
 # Optional: fail push when fanout is unavailable/fails
 OPENSESSION_STRICT=1 git push
 
@@ -109,7 +113,7 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 
 `share --web` requires explicit `.opensession/config.toml`.
 Git-native writes now target hidden ledger refs (`refs/opensession/branches/<branch_b64url>`); legacy fixed ref writes are removed.
-`opensession setup` also installs a shim at `~/.local/share/opensession/bin/opensession` for hook stability.
+`opensession doctor --fix` installs the shim at `~/.local/share/opensession/bin/opensession` for hook stability.
 
 ## Handoff
 

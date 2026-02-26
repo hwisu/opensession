@@ -1,5 +1,6 @@
 mod cat_cmd;
 mod config_cmd;
+mod doctor_cmd;
 mod handoff_v1;
 mod inspect;
 mod parse_cmd;
@@ -45,6 +46,8 @@ enum Commands {
     Config(config_cmd::ConfigArgs),
     /// Install/update OpenSession git hooks and diagnostics.
     Setup(setup_cmd::SetupArgs),
+    /// Diagnose and optionally fix local OpenSession setup.
+    Doctor(doctor_cmd::DoctorArgs),
     /// Generate shell completion scripts.
     Docs {
         #[command(subcommand)]
@@ -80,6 +83,7 @@ async fn main() {
         Commands::Parse(args) => parse_cmd::run(args),
         Commands::Config(args) => config_cmd::run(args),
         Commands::Setup(args) => setup_cmd::run(args),
+        Commands::Doctor(args) => doctor_cmd::run(args),
         Commands::Docs { action } => run_docs(action),
         #[cfg(feature = "e2e")]
         Commands::Test(args) => test_cmd::run_test(args).await,

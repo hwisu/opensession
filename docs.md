@@ -72,14 +72,17 @@ opensession share os://src/local/<sha256> --git --remote origin --push
 Install-and-forget setup:
 
 ```bash
-opensession setup
-opensession setup --check
+opensession doctor
+opensession doctor --fix
+# optional
+opensession doctor --fix --fanout-mode hidden_ref
 ```
 
+- `doctor` check mode maps to `setup --check`; `doctor --fix` maps to `setup`.
 - Installs/updates OpenSession-managed `pre-push` hook in the current repo.
 - Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
-- On first setup, prompts for fanout mode (`hidden_ref` or `git_notes`) and stores it in local git config (`opensession.fanout-mode`).
-- `setup --check` prints daemon status from `~/.config/opensession/daemon.pid`.
+- On first apply, prompts for fanout mode (`hidden_ref` or `git_notes`) and stores it in local git config (`opensession.fanout-mode`).
+- `doctor` check output includes daemon status from `~/.config/opensession/daemon.pid`.
 - Start daemon with `opensession-daemon run` (or `cargo run -p opensession-daemon -- run` in a source checkout).
 - Does **not** modify `remote.<name>.push`.
 - Hook fanout push is best-effort and warning-only.

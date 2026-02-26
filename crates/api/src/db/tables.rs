@@ -91,6 +91,7 @@ pub enum OauthProviderTokens {
     Id,
     UserId,
     Provider,
+    ProviderHost,
     AccessTokenEnc,
     ExpiresAt,
     CreatedAt,

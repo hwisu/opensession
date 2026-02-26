@@ -188,6 +188,13 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         }
     }
 
+    if !oauth_provider_tokens_has_provider_host(conn)? {
+        tracing::warn!(
+            "rebuilding oauth_provider_tokens table for provider_host security upgrade (stored provider tokens will be removed)"
+        );
+        rebuild_oauth_provider_tokens_table(conn)?;
+    }
+
     // Bootstrap schema is single-file; ensure newer tables also exist for already-initialized DBs.
     conn.execute_batch(
         r#"
@@ -211,16 +218,56 @@ CREATE TABLE IF NOT EXISTS oauth_provider_tokens (
     id               TEXT PRIMARY KEY,
     user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider         TEXT NOT NULL,
+    provider_host    TEXT NOT NULL,
     access_token_enc TEXT NOT NULL,
     expires_at       TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (user_id, provider)
+    UNIQUE (user_id, provider, provider_host)
 );
-CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider
-ON oauth_provider_tokens(user_id, provider);
+DROP INDEX IF EXISTS idx_oauth_provider_tokens_user_provider;
+CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider_host
+ON oauth_provider_tokens(user_id, provider, provider_host);
 "#,
     )?;
 
     Ok(())
+}
+
+fn oauth_provider_tokens_has_provider_host(conn: &Connection) -> Result<bool> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(oauth_provider_tokens)")
+        .context("prepare oauth_provider_tokens schema inspection")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("query oauth_provider_tokens schema inspection")?;
+    for row in rows {
+        if row.unwrap_or_default() == "provider_host" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn rebuild_oauth_provider_tokens_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+DROP TABLE IF EXISTS oauth_provider_tokens;
+CREATE TABLE oauth_provider_tokens (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider         TEXT NOT NULL,
+    provider_host    TEXT NOT NULL,
+    access_token_enc TEXT NOT NULL,
+    expires_at       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, provider, provider_host)
+);
+DROP INDEX IF EXISTS idx_oauth_provider_tokens_user_provider;
+CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider_host
+ON oauth_provider_tokens(user_id, provider, provider_host);
+"#,
+    )
+    .context("rebuild oauth_provider_tokens table")
 }

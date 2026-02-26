@@ -1,6 +1,7 @@
 import { type Page, type APIRequestContext } from '@playwright/test';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const TEST_PASSWORD = 'testpass99!!';
 
 export interface TestUser {
 	user_id: string;
@@ -84,7 +85,7 @@ export async function getAdmin(request: APIRequestContext): Promise<TestUser> {
 
 	const email = 'pw-admin@e2e.local';
 	const nickname = 'pw-admin';
-	const password = 'testpass99';
+	const password = TEST_PASSWORD;
 
 	// Try registering first
 	const regResp = await request.post(`${BASE_URL}/api/auth/register`, {
@@ -117,7 +118,7 @@ export async function registerUser(request: APIRequestContext): Promise<TestUser
 	const id = crypto.randomUUID().slice(0, 8);
 	const email = `pw-test-${id}@e2e.local`;
 	const nickname = `pw-${id}`;
-	const password = 'testpass99';
+	const password = TEST_PASSWORD;
 
 	const regResp = await request.post(`${BASE_URL}/api/auth/register`, {
 		data: { email, password, nickname },
@@ -132,21 +133,46 @@ export async function registerUser(request: APIRequestContext): Promise<TestUser
 }
 
 /**
- * Inject auth tokens into localStorage so the SPA treats the user as authenticated.
+ * Inject auth cookies so the SPA treats the user as authenticated.
  */
 export async function injectAuth(page: Page, user: TestUser) {
-	await page.goto('/sessions');
-	await page.evaluate(
-		({ accessToken, refreshToken }) => {
-			localStorage.setItem('opensession_access_token', accessToken);
-			localStorage.setItem('opensession_refresh_token', refreshToken);
-			localStorage.setItem(
-				'opensession_token_expiry',
-				String(Date.now() + 3600 * 1000),
-			);
+	const secure = BASE_URL.startsWith('https://');
+	const domain = new URL(BASE_URL).hostname;
+	const now = Math.floor(Date.now() / 1000);
+	const csrf = `csrf-${crypto.randomUUID().replace(/-/g, '')}`;
+	await page.context().addCookies([
+		{
+			name: 'opensession_access_token',
+			value: user.access_token,
+			domain,
+			path: '/api',
+			httpOnly: true,
+			secure,
+			sameSite: 'Lax',
+			expires: now + 3600,
 		},
-		{ accessToken: user.access_token, refreshToken: user.refresh_token },
-	);
+		{
+			name: 'opensession_refresh_token',
+			value: user.refresh_token,
+			domain,
+			path: '/api',
+			httpOnly: true,
+			secure,
+			sameSite: 'Lax',
+			expires: now + 7 * 24 * 3600,
+		},
+		{
+			name: 'opensession_csrf_token',
+			value: csrf,
+			domain,
+			path: '/',
+			httpOnly: false,
+			secure,
+			sameSite: 'Lax',
+			expires: now + 7 * 24 * 3600,
+		},
+	]);
+	await page.goto('/sessions');
 }
 
 function eventTypeFromName(type: SessionEventSpec['type']) {

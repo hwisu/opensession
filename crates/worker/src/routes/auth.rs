@@ -18,10 +18,16 @@ use crate::storage;
 
 type ServiceResult<T> = std::result::Result<T, opensession_api::ServiceError>;
 
+const ACCESS_COOKIE_NAME: &str = "opensession_access_token";
+const REFRESH_COOKIE_NAME: &str = "opensession_refresh_token";
+const CSRF_COOKIE_NAME: &str = "opensession_csrf_token";
+const CSRF_HEADER_NAME: &str = "x-csrf-token";
+
 #[derive(Debug)]
 pub(crate) struct AuthUser {
     pub(crate) user_id: String,
     pub(crate) nickname: String,
+    pub(crate) auth_via_cookie: bool,
     pub(crate) email: Option<String>,
 }
 
@@ -97,12 +103,171 @@ fn now_sqlite_datetime() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+fn parse_cookie_value(headers: &Headers, name: &str) -> Option<String> {
+    headers.get("Cookie").ok().flatten().and_then(|raw| {
+        raw.split(';').find_map(|entry| {
+            let mut parts = entry.trim().splitn(2, '=');
+            let key = parts.next()?.trim();
+            let value = parts.next()?.trim();
+            if key == name {
+                Some(value.to_string())
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn constant_time_eq(lhs: &str, rhs: &str) -> bool {
+    let left = lhs.as_bytes();
+    let right = rhs.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+fn secure_cookie_mode(req: &Request, config: &WorkerConfig) -> bool {
+    if let Ok(Some(proto)) = req.headers().get("x-forwarded-proto") {
+        if proto
+            .split(',')
+            .next()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
+        {
+            return true;
+        }
+    }
+    if let Ok(url) = req.url() {
+        if url.scheme().eq_ignore_ascii_case("https") {
+            return true;
+        }
+    }
+    config
+        .base_url
+        .as_deref()
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("https://"))
+}
+
+fn build_set_cookie(
+    name: &str,
+    value: &str,
+    max_age_secs: i64,
+    path: &str,
+    http_only: bool,
+    secure: bool,
+) -> String {
+    let mut cookie = format!("{name}={value}; Path={path}; Max-Age={max_age_secs}; SameSite=Lax");
+    if http_only {
+        cookie.push_str("; HttpOnly");
+    }
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn auth_cookie_values(
+    req: &Request,
+    config: &WorkerConfig,
+    tokens: &AuthTokenResponse,
+) -> ServiceResult<Vec<String>> {
+    let secure = secure_cookie_mode(req, config);
+    let csrf = crypto::generate_token()?;
+    Ok(vec![
+        build_set_cookie(
+            ACCESS_COOKIE_NAME,
+            &tokens.access_token,
+            tokens.expires_in as i64,
+            "/api",
+            true,
+            secure,
+        ),
+        build_set_cookie(
+            REFRESH_COOKIE_NAME,
+            &tokens.refresh_token,
+            crypto::REFRESH_EXPIRY_SECS as i64,
+            "/api",
+            true,
+            secure,
+        ),
+        build_set_cookie(
+            CSRF_COOKIE_NAME,
+            &csrf,
+            crypto::REFRESH_EXPIRY_SECS as i64,
+            "/",
+            false,
+            secure,
+        ),
+    ])
+}
+
+fn clear_auth_cookie_values(req: &Request, config: &WorkerConfig) -> Vec<String> {
+    let secure = secure_cookie_mode(req, config);
+    vec![
+        build_set_cookie(ACCESS_COOKIE_NAME, "", 0, "/api", true, secure),
+        build_set_cookie(REFRESH_COOKIE_NAME, "", 0, "/api", true, secure),
+        build_set_cookie(CSRF_COOKIE_NAME, "", 0, "/", false, secure),
+    ]
+}
+
+fn enforce_csrf_if_cookie_auth(
+    req: &Request,
+    config: &WorkerConfig,
+    using_cookie_auth: bool,
+) -> ServiceResult<()> {
+    if !using_cookie_auth {
+        return Ok(());
+    }
+    let origin = req
+        .headers()
+        .get("Origin")
+        .map_err(|e| service_internal("read origin header", e))?
+        .ok_or_else(|| {
+            opensession_api::ServiceError::Unauthorized("missing request origin".into())
+        })?;
+    if !config.allowed_origins.iter().any(|value| value == &origin) {
+        return Err(opensession_api::ServiceError::Unauthorized(
+            "request origin is not allowed".into(),
+        ));
+    }
+    let csrf_cookie = parse_cookie_value(req.headers(), CSRF_COOKIE_NAME)
+        .ok_or_else(|| opensession_api::ServiceError::Unauthorized("missing csrf cookie".into()))?;
+    let csrf_header = req
+        .headers()
+        .get(CSRF_HEADER_NAME)
+        .map_err(|e| service_internal("read csrf header", e))?
+        .ok_or_else(|| opensession_api::ServiceError::Unauthorized("missing csrf header".into()))?;
+    if !constant_time_eq(&csrf_cookie, &csrf_header) {
+        return Err(opensession_api::ServiceError::Unauthorized(
+            "csrf token mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn service_internal(context: &str, err: impl std::fmt::Display) -> opensession_api::ServiceError {
     opensession_api::ServiceError::Internal(format!("{context}: {err}"))
 }
 
 fn json_response<T: Serialize>(value: &T, status: u16) -> Result<Response> {
     Response::from_json(value).map(|resp| resp.with_status(status))
+}
+
+fn json_response_with_cookies<T: Serialize>(
+    value: &T,
+    status: u16,
+    cookies: &[String],
+) -> Result<Response> {
+    let resp = json_response(value, status)?;
+    let headers = Headers::new();
+    for cookie in cookies {
+        headers.append("Set-Cookie", cookie)?;
+    }
+    Ok(resp.with_headers(headers))
 }
 
 async fn parse_json<T: for<'de> Deserialize<'de>>(req: &mut Request) -> ServiceResult<T> {
@@ -168,7 +333,7 @@ pub(crate) async fn authenticate(
     d1: &D1Database,
     config: &WorkerConfig,
 ) -> std::result::Result<AuthUser, opensession_api::ServiceError> {
-    let token = req
+    let header_token = req
         .headers()
         .get("Authorization")
         .map_err(|_| {
@@ -176,12 +341,17 @@ pub(crate) async fn authenticate(
                 "missing or invalid Authorization header".into(),
             )
         })?
-        .and_then(|raw| raw.strip_prefix("Bearer ").map(str::to_owned))
-        .ok_or_else(|| {
-            opensession_api::ServiceError::Unauthorized(
-                "missing or invalid Authorization header".into(),
-            )
-        })?;
+        .and_then(|raw| raw.strip_prefix("Bearer ").map(str::to_owned));
+    let cookie_token = parse_cookie_value(req.headers(), ACCESS_COOKIE_NAME);
+    let (token, auth_via_cookie) = if let Some(token) = header_token {
+        (token, false)
+    } else if let Some(token) = cookie_token {
+        (token, true)
+    } else {
+        return Err(opensession_api::ServiceError::Unauthorized(
+            "missing authentication token".into(),
+        ));
+    };
 
     let resolved = service::resolve_auth_token(&token, &config.jwt_secret, now_unix())?;
     match resolved {
@@ -199,6 +369,7 @@ pub(crate) async fn authenticate(
             Ok(AuthUser {
                 user_id: row.id,
                 nickname: row.nickname,
+                auth_via_cookie,
                 email: row.email,
             })
         }
@@ -211,6 +382,7 @@ pub(crate) async fn authenticate(
             Ok(AuthUser {
                 user_id: row.id,
                 nickname: row.nickname,
+                auth_via_cookie,
                 email: row.email,
             })
         }
@@ -223,17 +395,22 @@ pub(crate) async fn authenticate_optional(
     config: &WorkerConfig,
 ) -> std::result::Result<Option<AuthUser>, opensession_api::ServiceError> {
     let header = req.headers().get("Authorization").map_err(|_| {
-        opensession_api::ServiceError::Unauthorized("missing or invalid Authorization header".into())
-    })?;
-    let Some(raw) = header else {
-        return Ok(None);
-    };
-    if !raw.starts_with("Bearer ") {
-        return Err(opensession_api::ServiceError::Unauthorized(
+        opensession_api::ServiceError::Unauthorized(
             "missing or invalid Authorization header".into(),
-        ));
+        )
+    })?;
+    if let Some(raw) = header {
+        if !raw.starts_with("Bearer ") {
+            return Err(opensession_api::ServiceError::Unauthorized(
+                "missing or invalid Authorization header".into(),
+            ));
+        }
+        return authenticate(req, d1, config).await.map(Some);
     }
-    authenticate(req, d1, config).await.map(Some)
+    if parse_cookie_value(req.headers(), ACCESS_COOKIE_NAME).is_some() {
+        return authenticate(req, d1, config).await.map(Some);
+    }
+    Ok(None)
 }
 
 async fn issue_tokens(
@@ -286,6 +463,16 @@ fn provider_display_name(provider_id: &str) -> String {
     }
 }
 
+fn oauth_provider_host(provider: &OAuthProviderConfig) -> ServiceResult<String> {
+    let parsed = Url::parse(&provider.token_url).map_err(|_| {
+        opensession_api::ServiceError::Internal("invalid OAuth provider token URL".into())
+    })?;
+    let host = parsed.host_str().ok_or_else(|| {
+        opensession_api::ServiceError::Internal("OAuth provider token URL missing host".into())
+    })?;
+    Ok(host.to_ascii_lowercase())
+}
+
 fn resolve_base_url(req: &Request, config: &WorkerConfig) -> String {
     if let Some(base_url) = config.base_url.as_ref() {
         return base_url.trim_end_matches('/').to_string();
@@ -306,6 +493,15 @@ fn resolve_base_url(req: &Request, config: &WorkerConfig) -> String {
 fn redirect_response(location: &str) -> Result<Response> {
     let headers = Headers::new();
     headers.set("Location", location)?;
+    Ok(Response::empty()?.with_status(302).with_headers(headers))
+}
+
+fn redirect_response_with_cookies(location: &str, cookies: &[String]) -> Result<Response> {
+    let headers = Headers::new();
+    headers.set("Location", location)?;
+    for cookie in cookies {
+        headers.append("Set-Cookie", cookie)?;
+    }
     Ok(Response::empty()?.with_status(302).with_headers(headers))
 }
 
@@ -428,7 +624,10 @@ pub async fn auth_register(mut req: Request, ctx: RouteContext<()>) -> Result<Re
     .await;
 
     match result {
-        Ok(tokens) => json_response(&tokens, 201),
+        Ok(tokens) => match auth_cookie_values(&req, &config, &tokens) {
+            Ok(cookies) => json_response_with_cookies(&tokens, 201, &cookies),
+            Err(err) => err.into_err_response(),
+        },
         Err(err) => err.into_err_response(),
     }
 }
@@ -480,7 +679,10 @@ pub async fn login(mut req: Request, ctx: RouteContext<()>) -> Result<Response> 
     .await;
 
     match result {
-        Ok(tokens) => json_response(&tokens, 200),
+        Ok(tokens) => match auth_cookie_values(&req, &config, &tokens) {
+            Ok(cookies) => json_response_with_cookies(&tokens, 200, &cookies),
+            Err(err) => err.into_err_response(),
+        },
         Err(err) => err.into_err_response(),
     }
 }
@@ -499,8 +701,36 @@ pub async fn refresh(mut req: Request, ctx: RouteContext<()>) -> Result<Response
             ));
         }
 
-        let req: RefreshRequest = parse_json(&mut req).await?;
-        let token_hash = crypto::hash_token(&req.refresh_token);
+        let body_text = req
+            .text()
+            .await
+            .map_err(|e| service_internal("read refresh body", e))?;
+        let body_token = if body_text.trim().is_empty() {
+            None
+        } else {
+            let payload: RefreshRequest = serde_json::from_str(&body_text).map_err(|_| {
+                opensession_api::ServiceError::BadRequest("invalid request body".into())
+            })?;
+            let token = payload.refresh_token.trim().to_string();
+            if token.is_empty() {
+                return Err(opensession_api::ServiceError::BadRequest(
+                    "refresh_token is required".into(),
+                ));
+            }
+            Some(token)
+        };
+        let cookie_token = parse_cookie_value(req.headers(), REFRESH_COOKIE_NAME);
+        let (refresh_token, using_cookie_refresh) = match (body_token, cookie_token) {
+            (Some(token), _) => (token, false),
+            (None, Some(token)) => (token, true),
+            (None, None) => {
+                return Err(opensession_api::ServiceError::Unauthorized(
+                    "missing refresh token".into(),
+                ));
+            }
+        };
+        enforce_csrf_if_cookie_auth(&req, &config, using_cookie_refresh)?;
+        let token_hash = crypto::hash_token(&refresh_token);
 
         let row: Option<RefreshRow> = d1_first(
             &d1,
@@ -536,32 +766,65 @@ pub async fn refresh(mut req: Request, ctx: RouteContext<()>) -> Result<Response
     .await;
 
     match result {
-        Ok(tokens) => json_response(&tokens, 200),
+        Ok(tokens) => match auth_cookie_values(&req, &config, &tokens) {
+            Ok(cookies) => json_response_with_cookies(&tokens, 200, &cookies),
+            Err(err) => err.into_err_response(),
+        },
         Err(err) => err.into_err_response(),
     }
 }
 
 pub async fn logout(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let config = WorkerConfig::from_env(&ctx.env);
     let d1 = match storage::get_d1(&ctx.env) {
         Ok(db) => db,
         Err(err) => return service_internal("load d1 binding", err).into_err_response(),
     };
 
     let result: ServiceResult<OkResponse> = async {
-        let req: LogoutRequest = parse_json(&mut req).await?;
-        let token_hash = crypto::hash_token(&req.refresh_token);
-        let _ = d1_run(
-            &d1,
-            dbq::users::delete_refresh_token(&token_hash),
-            "logout refresh token delete",
-        )
-        .await;
+        let body_text = req
+            .text()
+            .await
+            .map_err(|e| service_internal("read logout body", e))?;
+        let body_token = if body_text.trim().is_empty() {
+            None
+        } else {
+            let payload: LogoutRequest = serde_json::from_str(&body_text).map_err(|_| {
+                opensession_api::ServiceError::BadRequest("invalid request body".into())
+            })?;
+            let token = payload.refresh_token.trim().to_string();
+            if token.is_empty() {
+                return Err(opensession_api::ServiceError::BadRequest(
+                    "refresh_token is required".into(),
+                ));
+            }
+            Some(token)
+        };
+        let cookie_token = parse_cookie_value(req.headers(), REFRESH_COOKIE_NAME);
+        let token_and_source = match (body_token, cookie_token) {
+            (Some(token), _) => Some((token, false)),
+            (None, Some(token)) => Some((token, true)),
+            (None, None) => None,
+        };
+        if let Some((refresh_token, using_cookie_refresh)) = token_and_source {
+            enforce_csrf_if_cookie_auth(&req, &config, using_cookie_refresh)?;
+            let token_hash = crypto::hash_token(&refresh_token);
+            let _ = d1_run(
+                &d1,
+                dbq::users::delete_refresh_token(&token_hash),
+                "logout refresh token delete",
+            )
+            .await;
+        }
         Ok(OkResponse { ok: true })
     }
     .await;
 
     match result {
-        Ok(body) => json_response(&body, 200),
+        Ok(body) => {
+            let cookies = clear_auth_cookie_values(&req, &config);
+            json_response_with_cookies(&body, 200, &cookies)
+        }
         Err(err) => err.into_err_response(),
     }
 }
@@ -651,6 +914,7 @@ pub async fn issue_api_key(req: Request, ctx: RouteContext<()>) -> Result<Respon
 
     let result: ServiceResult<IssueApiKeyResponse> = async {
         let user = authenticate(&req, &d1, &config).await?;
+        enforce_csrf_if_cookie_auth(&req, &config, user.auth_via_cookie)?;
         let now = now_unix();
         let grace_until = service::grace_until_sqlite(now)?;
         let key = service::generate_api_key();
@@ -739,7 +1003,9 @@ fn normalize_host(raw: &str) -> ServiceResult<String> {
     {
         return Ok(trimmed);
     }
-    Err(ServiceError::BadRequest("host contains invalid characters".into()))
+    Err(ServiceError::BadRequest(
+        "host contains invalid characters".into(),
+    ))
 }
 
 fn normalize_path_prefix(raw: Option<&str>) -> ServiceResult<String> {
@@ -815,12 +1081,12 @@ pub async fn create_git_credential(mut req: Request, ctx: RouteContext<()>) -> R
 
     let result: ServiceResult<GitCredentialSummary> = async {
         let user = authenticate(&req, &d1, &config).await?;
+        enforce_csrf_if_cookie_auth(&req, &config, user.auth_via_cookie)?;
         let payload: CreateGitCredentialRequest = parse_json(&mut req).await?;
 
-        let keyring = config
-            .credential_keyring
-            .as_ref()
-            .ok_or_else(|| ServiceError::Internal("credential encryption is not configured".into()))?;
+        let keyring = config.credential_keyring.as_ref().ok_or_else(|| {
+            ServiceError::Internal("credential encryption is not configured".into())
+        })?;
 
         let label = payload.label.trim().to_string();
         if label.is_empty() {
@@ -892,6 +1158,7 @@ pub async fn delete_git_credential(req: Request, ctx: RouteContext<()>) -> Resul
 
     let result: ServiceResult<OkResponse> = async {
         let user = authenticate(&req, &d1, &config).await?;
+        enforce_csrf_if_cookie_auth(&req, &config, user.auth_via_cookie)?;
         let id = ctx
             .param("id")
             .ok_or_else(|| ServiceError::BadRequest("missing credential id".into()))?;
@@ -972,7 +1239,7 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
         Err(err) => return service_internal("load d1 binding", err).into_err_response(),
     };
 
-    let result: ServiceResult<String> = async {
+    let result: ServiceResult<(String, Vec<String>)> = async {
         let provider_id = ctx
             .param("provider")
             .ok_or_else(|| opensession_api::ServiceError::BadRequest("missing provider".into()))?
@@ -1174,6 +1441,7 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
                     &token_id,
                     &user_id,
                     &provider_id,
+                    &oauth_provider_host(provider)?,
                     &access_token_enc,
                     None,
                 ),
@@ -1183,15 +1451,13 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
         }
 
         let tokens = issue_tokens(&d1, &config, &user_id, &nickname).await?;
-        Ok(format!(
-            "{base_url}/auth/callback#access_token={}&refresh_token={}&expires_in={}",
-            tokens.access_token, tokens.refresh_token, tokens.expires_in
-        ))
+        let cookies = auth_cookie_values(&req, &config, &tokens)?;
+        Ok((format!("{base_url}/auth/callback"), cookies))
     }
     .await;
 
     match result {
-        Ok(location) => redirect_response(&location),
+        Ok((location, cookies)) => redirect_response_with_cookies(&location, &cookies),
         Err(err) => err.into_err_response(),
     }
 }

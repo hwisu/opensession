@@ -48,8 +48,7 @@ pub fn verify_password(password: &str, hash_hex: &str, salt_hex: &str) -> bool {
     let mut hash = [0u8; HASH_LEN];
     pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut hash);
 
-    // Constant-time comparison
-    hash.len() == expected.len() && hash.iter().zip(expected.iter()).all(|(a, b)| a == b)
+    constant_time_eq(hash.as_slice(), expected.as_slice())
 }
 
 // ── JWT (HMAC-SHA256) ───────────────────────────────────────────────────────
@@ -96,12 +95,7 @@ pub fn verify_jwt(token: &str, secret: &str, now_unix: u64) -> Result<String, Se
         .decode(parts[2])
         .map_err(|_| ServiceError::Unauthorized("invalid JWT signature encoding".into()))?;
 
-    if expected_sig.len() != actual_sig.len()
-        || !expected_sig
-            .iter()
-            .zip(actual_sig.iter())
-            .all(|(a, b)| a == b)
-    {
+    if !constant_time_eq(expected_sig.as_slice(), actual_sig.as_slice()) {
         return Err(ServiceError::Unauthorized("invalid JWT signature".into()));
     }
 
@@ -326,9 +320,20 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
+fn constant_time_eq(lhs: &[u8], rhs: &[u8]) -> bool {
+    if lhs.len() != rhs.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&a, &b) in lhs.iter().zip(rhs.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::CredentialKeyring;
+    use super::{constant_time_eq, CredentialKeyring};
 
     #[test]
     fn credential_keyring_round_trip_encrypt_decrypt() {
@@ -352,5 +357,12 @@ mod tests {
         assert!(err
             .message()
             .contains("active credential key id `missing` is missing"));
+    }
+
+    #[test]
+    fn constant_time_eq_matches_expected_behavior() {
+        assert!(constant_time_eq(b"abc123", b"abc123"));
+        assert!(!constant_time_eq(b"abc123", b"abc124"));
+        assert!(!constant_time_eq(b"abc123", b"abc1234"));
     }
 }

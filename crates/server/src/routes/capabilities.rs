@@ -19,6 +19,7 @@ mod tests {
     async fn server_capabilities_enable_parse_and_share_modes() {
         let config = AppConfig {
             base_url: "http://localhost:3000".to_string(),
+            allowed_origins: vec!["http://localhost:3000".to_string()],
             oauth_use_request_host: false,
             jwt_secret: "secret".to_string(),
             admin_key: "adminkey".to_string(),

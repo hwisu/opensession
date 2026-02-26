@@ -142,11 +142,12 @@ CREATE TABLE IF NOT EXISTS oauth_provider_tokens (
     id               TEXT PRIMARY KEY,
     user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider         TEXT NOT NULL,
+    provider_host    TEXT NOT NULL,
     access_token_enc TEXT NOT NULL,
     expires_at       TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (user_id, provider)
+    UNIQUE (user_id, provider, provider_host)
 );
-CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider
-ON oauth_provider_tokens(user_id, provider);
+CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider_host
+ON oauth_provider_tokens(user_id, provider, provider_host);

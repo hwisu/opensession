@@ -1,3 +1,4 @@
+import DOMPurify from 'isomorphic-dompurify';
 import { Marked, type RendererThis, type Token, type Tokens } from 'marked';
 import { LONG_CONTENT_CHAR_THRESHOLD, LONG_TEXT_LINE_THRESHOLD } from './constants';
 import { highlightCode } from './highlight';
@@ -5,12 +6,49 @@ import { highlightCode } from './highlight';
 const MARKDOWN_CACHE_MAX_ENTRIES = 256;
 const MARKDOWN_CACHE_MAX_CHARS = 150_000;
 const markdownCache = new Map<string, string>();
+const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
+
+const MARKDOWN_SANITIZE_CONFIG = {
+	ALLOWED_TAGS: [
+		'a',
+		'b',
+		'blockquote',
+		'br',
+		'code',
+		'div',
+		'em',
+		'h1',
+		'h2',
+		'h3',
+		'h4',
+		'h5',
+		'h6',
+		'hr',
+		'i',
+		'img',
+		'li',
+		'ol',
+		'p',
+		'pre',
+		'span',
+		'strong',
+		'table',
+		'tbody',
+		'td',
+		'th',
+		'thead',
+		'tr',
+		'ul',
+	],
+	ALLOWED_ATTR: ['class', 'href', 'src', 'alt', 'target', 'rel'],
+	ALLOW_DATA_ATTR: false,
+};
 
 function parseInlineText(ctx: RendererThis, token: { text: string; tokens?: Token[] }): string {
 	if (token.tokens && ctx.parser?.parseInline) {
 		return ctx.parser.parseInline(token.tokens);
 	}
-	return token.text;
+	return escapeHtml(token.text);
 }
 
 function parseListItem(ctx: RendererThis, item: Tokens.ListItem): string {
@@ -22,7 +60,45 @@ function parseListItem(ctx: RendererThis, item: Tokens.ListItem): string {
 	if (item.tokens && ctx.parser?.parseInline) {
 		return ctx.parser.parseInline(item.tokens);
 	}
-	return item.text ?? '';
+	return escapeHtml(item.text ?? '');
+}
+
+function sanitizeUrl(raw: string | null | undefined): string | null {
+	if (!raw) return null;
+	const trimmed = raw.trim();
+	if (!trimmed) return null;
+
+	// Allow root-relative and same-document paths.
+	if (
+		trimmed.startsWith('/') ||
+		trimmed.startsWith('./') ||
+		trimmed.startsWith('../') ||
+		trimmed.startsWith('#')
+	) {
+		return trimmed;
+	}
+
+	try {
+		const parsed = new URL(trimmed);
+		const protocol = parsed.protocol.toLowerCase();
+		return ALLOWED_SCHEMES.has(protocol) ? trimmed : null;
+	} catch {
+		return null;
+	}
+}
+
+function sanitizeRenderedHtml(rendered: string): string {
+	const clean = DOMPurify.sanitize(rendered, MARKDOWN_SANITIZE_CONFIG) as string;
+	// Preserve opener isolation for all explicit new-tab links.
+	return clean.replace(
+		/<a([^>]*?)target="_blank"([^>]*?)rel="([^"]*)"([^>]*)>/gi,
+		(_, before: string, mid: string, relValue: string, after: string) => {
+			const relTokens = new Set(relValue.split(/\s+/).filter(Boolean).map((value) => value.toLowerCase()));
+			relTokens.add('noopener');
+			relTokens.add('noreferrer');
+			return `<a${before}target="_blank"${mid}rel="${Array.from(relTokens).join(' ')}"${after}>`;
+		},
+	);
 }
 
 const marked = new Marked({
@@ -37,7 +113,7 @@ const marked = new Marked({
 			return `<div class="md-code-block">${langLabel}<pre><code class="hljs">${highlighted}</code></pre></div>`;
 		},
 		codespan({ text }: Tokens.Codespan) {
-			return `<code class="md-inline-code">${text}</code>`;
+			return `<code class="md-inline-code">${escapeHtml(text)}</code>`;
 		},
 		heading(this: RendererThis, token: Tokens.Heading) {
 			const text = parseInlineText(this, token);
@@ -56,11 +132,19 @@ const marked = new Marked({
 		},
 		blockquote(this: RendererThis, token: Tokens.Blockquote) {
 			const text =
-				token.tokens && this.parser?.parse ? this.parser.parse(token.tokens) : token.text;
+				token.tokens && this.parser?.parse ? this.parser.parse(token.tokens) : escapeHtml(token.text);
 			return `<blockquote class="md-blockquote">${text}</blockquote>`;
 		},
-		link({ href, text }: Tokens.Link) {
-			return `<a href="${href}" class="md-link" target="_blank" rel="noopener">${text}</a>`;
+		link(this: RendererThis, token: Tokens.Link) {
+			const safeHref = sanitizeUrl(token.href);
+			const label =
+				token.tokens && this.parser?.parseInline
+					? this.parser.parseInline(token.tokens)
+					: escapeHtml(token.text ?? '');
+			if (!safeHref) {
+				return `<span class="md-link">${label}</span>`;
+			}
+			return `<a href="${escapeHtml(safeHref)}" class="md-link" target="_blank" rel="noopener noreferrer">${label}</a>`;
 		},
 		table(this: RendererThis, token: Tokens.Table) {
 			const headerCells = token.header
@@ -78,7 +162,14 @@ const marked = new Marked({
 			return '<hr class="md-hr" />';
 		},
 		image({ href, text }: Tokens.Image) {
-			return `<img src="${href}" alt="${text ?? ''}" class="md-img" />`;
+			const safeSrc = sanitizeUrl(href);
+			if (!safeSrc || safeSrc.startsWith('mailto:')) {
+				return '';
+			}
+			return `<img src="${escapeHtml(safeSrc)}" alt="${escapeHtml(text ?? '')}" class="md-img" />`;
+		},
+		html({ text }: Tokens.HTML | Tokens.Tag) {
+			return escapeHtml(text);
 		},
 	},
 });
@@ -106,15 +197,16 @@ export function renderMarkdown(text: string): string {
 	} catch {
 		rendered = escapeHtml(text);
 	}
+	const sanitized = sanitizeRenderedHtml(rendered);
 
 	if (cacheable) {
 		if (markdownCache.size >= MARKDOWN_CACHE_MAX_ENTRIES) {
 			const firstKey = markdownCache.keys().next().value;
 			if (firstKey !== undefined) markdownCache.delete(firstKey);
 		}
-		markdownCache.set(text, rendered);
+		markdownCache.set(text, sanitized);
 	}
-	return rendered;
+	return sanitized;
 }
 
 /**

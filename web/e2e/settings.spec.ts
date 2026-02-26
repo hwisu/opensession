@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+
 test.describe('Settings', () => {
 	test('settings page requires auth when no token exists', async ({ page }) => {
 		await page.goto('/settings');
@@ -10,12 +12,21 @@ test.describe('Settings', () => {
 	});
 
 	test('can issue personal api key from settings page', async ({ page }) => {
-		const expiry = Math.floor(Date.now() / 1000) + 3600;
-		await page.addInitScript((nextExpiry) => {
-			localStorage.setItem('opensession_access_token', 'settings-access');
-			localStorage.setItem('opensession_refresh_token', 'settings-refresh');
-			localStorage.setItem('opensession_token_expiry', String(nextExpiry));
-		}, expiry);
+		const secure = BASE_URL.startsWith('https://');
+		const domain = new URL(BASE_URL).hostname;
+		const now = Math.floor(Date.now() / 1000);
+		await page.context().addCookies([
+			{
+				name: 'opensession_csrf_token',
+				value: 'settings-csrf-token',
+				domain,
+				path: '/',
+				httpOnly: false,
+				secure,
+				sameSite: 'Lax',
+				expires: now + 3600,
+			},
+		]);
 
 		await page.route('**/api/capabilities', async (route) => {
 			await route.fulfill({

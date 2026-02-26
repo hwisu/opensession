@@ -25,49 +25,26 @@ function getBaseUrl(): string {
 	return '';
 }
 
-function getAccessToken(): string | null {
-	if (typeof window !== 'undefined') {
-		return localStorage.getItem('opensession_access_token');
-	}
-	return null;
+function getApiKey(): string | null {
+	if (typeof window === 'undefined') return null;
+	return localStorage.getItem('opensession_api_key');
 }
 
-function getRefreshToken(): string | null {
-	if (typeof window !== 'undefined') {
-		return localStorage.getItem('opensession_refresh_token');
-	}
-	return null;
-}
-
-function getTokenExpiry(): number {
-	if (typeof window !== 'undefined') {
-		const v = localStorage.getItem('opensession_token_expiry');
-		if (!v) return 0;
-		const parsed = parseInt(v, 10);
-		if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-		// Legacy clients stored token expiry as epoch milliseconds.
-		const normalized = parsed > 100_000_000_000 ? Math.floor(parsed / 1000) : parsed;
-		if (normalized !== parsed) {
-			localStorage.setItem('opensession_token_expiry', String(normalized));
+function getCookie(name: string): string | null {
+	if (typeof window === 'undefined') return null;
+	const encodedName = `${name}=`;
+	const parts = document.cookie.split(';');
+	for (const raw of parts) {
+		const trimmed = raw.trim();
+		if (trimmed.startsWith(encodedName)) {
+			return trimmed.slice(encodedName.length);
 		}
-		return normalized;
 	}
-	return 0;
+	return null;
 }
 
-function storeTokens(tokens: AuthTokenResponse) {
-	localStorage.setItem('opensession_access_token', tokens.access_token);
-	localStorage.setItem('opensession_refresh_token', tokens.refresh_token);
-	localStorage.setItem(
-		'opensession_token_expiry',
-		String(Math.floor(Date.now() / 1000) + tokens.expires_in - 60),
-	);
-}
-
-function clearTokens() {
-	localStorage.removeItem('opensession_access_token');
-	localStorage.removeItem('opensession_refresh_token');
-	localStorage.removeItem('opensession_token_expiry');
+function getCsrfToken(): string | null {
+	return getCookie('opensession_csrf_token');
 }
 
 export function setBaseUrl(url: string) {
@@ -75,40 +52,32 @@ export function setBaseUrl(url: string) {
 }
 
 export function isAuthenticated(): boolean {
-	// UI login state is token-session based; API keys are treated as request credentials only.
-	return !!getAccessToken();
+	if (typeof window === 'undefined') return false;
+	return getCsrfToken() != null;
 }
 
 export async function verifyAuth(): Promise<boolean> {
-	const token = getAccessToken();
-	if (!token) return false;
-
-	const expiry = getTokenExpiry();
-	if (expiry > 0 && Math.floor(Date.now() / 1000) >= expiry) {
-		const refreshed = await tryRefreshToken();
-		if (!refreshed) {
-			clearTokens();
-			return false;
+	try {
+		await request<unknown>('/api/auth/verify', { method: 'POST' });
+		return true;
+	} catch (error) {
+		if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+			const refreshed = await tryRefreshToken();
+			if (!refreshed) return false;
+			try {
+				await request<unknown>('/api/auth/verify', { method: 'POST' });
+				return true;
+			} catch {
+				return false;
+			}
 		}
+		return false;
 	}
-	return true;
 }
 
 async function getAuthHeader(): Promise<string | null> {
-	let token = getAccessToken();
-	if (token) {
-		const expiry = getTokenExpiry();
-		if (expiry > 0 && Math.floor(Date.now() / 1000) >= expiry) {
-			const refreshed = await tryRefreshToken();
-			if (refreshed) {
-				token = getAccessToken();
-			} else {
-				clearTokens();
-				token = null;
-			}
-		}
-		if (token) return `Bearer ${token}`;
-	}
+	const apiKey = getApiKey();
+	if (apiKey) return `Bearer ${apiKey}`;
 	return null;
 }
 
@@ -143,6 +112,8 @@ export class PreviewApiError extends Error {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 	const url = `${getBaseUrl()}${path}`;
+	const method = (options.method ?? 'GET').toUpperCase();
+	const needsCsrf = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
 	const headers: Record<string, string> = {
 		'Content-Type': 'application/json',
 		...(options.headers as Record<string, string>),
@@ -152,10 +123,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 	if (auth) {
 		headers.Authorization = auth;
 	}
+	if (needsCsrf) {
+		const csrf = getCsrfToken();
+		if (csrf) headers['X-CSRF-Token'] = csrf;
+	}
 
 	const res = await fetch(url, {
 		...options,
 		headers,
+		credentials: 'include',
 	});
 
 	if (!res.ok) {
@@ -215,7 +191,7 @@ async function requestRaw(path: string): Promise<string> {
 	const auth = await getAuthHeader();
 	if (auth) headers.Authorization = auth;
 
-	const res = await fetch(url, { headers });
+	const res = await fetch(url, { headers, credentials: 'include' });
 	if (!res.ok) {
 		const body = await res.text();
 		throw new ApiError(res.status, body);
@@ -274,14 +250,13 @@ export async function authRegister(
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ email, password, nickname }),
+		credentials: 'include',
 	});
 	if (!res.ok) {
 		const body = await res.text();
 		throw new ApiError(res.status, body);
 	}
-	const tokens: AuthTokenResponse = await res.json();
-	storeTokens(tokens);
-	return tokens;
+	return (await res.json()) as AuthTokenResponse;
 }
 
 export async function authLogin(email: string, password: string): Promise<AuthTokenResponse> {
@@ -290,30 +265,28 @@ export async function authLogin(email: string, password: string): Promise<AuthTo
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ email, password }),
+		credentials: 'include',
 	});
 	if (!res.ok) {
 		const body = await res.text();
 		throw new ApiError(res.status, body);
 	}
-	const tokens: AuthTokenResponse = await res.json();
-	storeTokens(tokens);
-	return tokens;
+	return (await res.json()) as AuthTokenResponse;
 }
 
 async function tryRefreshToken(): Promise<boolean> {
-	const refreshToken = getRefreshToken();
-	if (!refreshToken) return false;
-
 	try {
 		const url = `${getBaseUrl()}/api/auth/refresh`;
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		const csrf = getCsrfToken();
+		if (csrf) headers['X-CSRF-Token'] = csrf;
 		const res = await fetch(url, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ refresh_token: refreshToken }),
+			headers,
+			credentials: 'include',
 		});
 		if (!res.ok) return false;
-		const tokens: AuthTokenResponse = await res.json();
-		storeTokens(tokens);
+		await res.json();
 		return true;
 	} catch {
 		return false;
@@ -321,23 +294,18 @@ async function tryRefreshToken(): Promise<boolean> {
 }
 
 export async function authLogout(): Promise<void> {
-	const refreshToken = getRefreshToken();
-	if (refreshToken) {
-		try {
-			await request('/api/auth/logout', {
-				method: 'POST',
-				body: JSON.stringify({ refresh_token: refreshToken }),
-			});
-		} catch {
-			// ignore errors on logout
-		}
+	try {
+		await request('/api/auth/logout', {
+			method: 'POST',
+		});
+	} catch {
+		// ignore errors on logout
 	}
-	clearTokens();
 }
 
 export async function getAuthProviders(): Promise<AuthProvidersResponse> {
 	const url = `${getBaseUrl()}/api/auth/providers`;
-	const res = await fetch(url);
+	const res = await fetch(url, { credentials: 'include' });
 	if (!res.ok) return { email_password: false, oauth: [] };
 	return res.json();
 }
@@ -345,7 +313,7 @@ export async function getAuthProviders(): Promise<AuthProvidersResponse> {
 export async function getApiCapabilities(): Promise<CapabilitiesResponse> {
 	const url = `${getBaseUrl()}/api/capabilities`;
 	try {
-		const res = await fetch(url);
+		const res = await fetch(url, { credentials: 'include' });
 		if (res.ok) {
 			return res.json();
 		}
@@ -375,11 +343,14 @@ async function postParsePreview(req: ParsePreviewRequest): Promise<ParsePreviewR
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	const auth = await getAuthHeader();
 	if (auth) headers.Authorization = auth;
+	const csrf = getCsrfToken();
+	if (csrf) headers['X-CSRF-Token'] = csrf;
 
 	const res = await fetch(url, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify(req),
+		credentials: 'include',
 	});
 
 	const body = await res.text();
@@ -475,28 +446,15 @@ export function getOAuthUrl(provider: string): string {
 	return `${getBaseUrl()}/api/auth/oauth/${encodeURIComponent(provider)}`;
 }
 
-export function handleAuthCallback(): AuthTokenResponse | null {
-	if (typeof window === 'undefined') return null;
-
-	const hash = window.location.hash.slice(1);
-	if (!hash) return null;
-
-	const params = new URLSearchParams(hash);
-	const accessToken = params.get('access_token');
-	const refreshToken = params.get('refresh_token');
-	const expiresIn = params.get('expires_in');
-
-	if (!accessToken || !refreshToken || !expiresIn) return null;
-
-	const tokens: AuthTokenResponse = {
-		access_token: accessToken,
-		refresh_token: refreshToken,
-		expires_in: parseInt(expiresIn, 10),
-		user_id: '',
-		nickname: '',
-	};
-
-	storeTokens(tokens);
-	window.history.replaceState(null, '', window.location.pathname);
-	return tokens;
+export async function handleAuthCallback(): Promise<boolean> {
+	if (typeof window === 'undefined') return false;
+	if (window.location.hash) {
+		window.history.replaceState(null, '', window.location.pathname);
+	}
+	try {
+		await request<unknown>('/api/auth/verify', { method: 'POST' });
+		return true;
+	} catch {
+		return false;
+	}
 }

@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap},
-    response::Redirect,
+    http::{header, HeaderMap, HeaderValue},
+    response::{IntoResponse, Redirect, Response},
     Json,
 };
 use uuid::Uuid;
@@ -71,23 +71,38 @@ fn maybe_store_provider_access_token(
     db: &Db,
     config: &AppConfig,
     user_id: &str,
-    provider: &str,
+    provider: &OAuthProviderConfig,
     access_token: &str,
 ) -> Result<(), ApiErr> {
     let Some(keyring) = config.credential_keyring.as_ref() else {
         return Ok(());
     };
+    let provider_host = oauth_provider_host(provider)?;
     let encrypted = keyring.encrypt(access_token).map_err(ApiErr::from)?;
     let token_id = Uuid::new_v4().to_string();
     let conn = db.conn();
     sq_execute(
         &conn,
         dbq::oauth_provider_tokens::upsert_access_token(
-            &token_id, user_id, provider, &encrypted, None,
+            &token_id,
+            user_id,
+            &provider.id,
+            &provider_host,
+            &encrypted,
+            None,
         ),
     )
     .map_err(ApiErr::from_db("oauth provider token upsert"))?;
     Ok(())
+}
+
+fn oauth_provider_host(provider: &OAuthProviderConfig) -> Result<String, ApiErr> {
+    let parsed = reqwest::Url::parse(&provider.token_url)
+        .map_err(|_| ApiErr::internal("invalid OAuth provider token URL"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| ApiErr::internal("OAuth provider token URL missing host"))?;
+    Ok(host.to_ascii_lowercase())
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +170,7 @@ pub async fn callback(
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
-) -> Result<Redirect, ApiErr> {
+) -> Result<Response, ApiErr> {
     let db = state.db.clone();
     let config = state.config.clone();
     let provider = find_provider(&config, &provider_id)?;
@@ -283,7 +298,8 @@ pub async fn callback(
                 return Ok(Redirect::temporary(&format!(
                     "{}/settings?error=oauth_already_linked",
                     base_url
-                )));
+                ))
+                .into_response());
             }
         }
 
@@ -299,12 +315,12 @@ pub async fn callback(
             ),
         )
         .map_err(ApiErr::from_db("oauth link upsert"))?;
-        maybe_store_provider_access_token(&db, &config, link_uid, &provider_id, &access_token)?;
+        maybe_store_provider_access_token(&db, &config, link_uid, provider, &access_token)?;
 
-        return Ok(Redirect::temporary(&format!(
-            "{}/settings?oauth_linked=true",
-            base_url
-        )));
+        return Ok(
+            Redirect::temporary(&format!("{}/settings?oauth_linked=true", base_url))
+                .into_response(),
+        );
     }
 
     // ── Normal login/register flow ──
@@ -392,18 +408,21 @@ pub async fn callback(
         }
     };
     drop(conn);
-    maybe_store_provider_access_token(&db, &config, &user_id, &provider_id, &access_token)?;
+    maybe_store_provider_access_token(&db, &config, &user_id, provider, &access_token)?;
 
     // Issue tokens
     let tokens = super::auth::issue_tokens_pub(&db, &config.jwt_secret, &user_id, &nickname)?;
 
-    // Redirect to frontend with tokens in URL fragment
-    let redirect_url = format!(
-        "{}/auth/callback#access_token={}&refresh_token={}&expires_in={}",
-        base_url, tokens.access_token, tokens.refresh_token, tokens.expires_in,
-    );
-
-    Ok(Redirect::temporary(&redirect_url))
+    // Redirect to frontend without exposing tokens in URL fragments.
+    let redirect_url = format!("{}/auth/callback", base_url);
+    let mut response = Redirect::temporary(&redirect_url).into_response();
+    let cookies = super::auth::set_cookie_headers_for_auth(&tokens, &headers, &config)?;
+    for cookie in cookies {
+        let value = HeaderValue::from_str(&cookie)
+            .map_err(|_| ApiErr::internal("failed to set auth cookie"))?;
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +437,7 @@ pub async fn link(
     headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<OAuthLinkResponse>, ApiErr> {
+    super::auth::enforce_csrf_if_cookie_auth(&headers, &config, user.auth_via_cookie)?;
     let provider = find_provider(&config, &provider_id)?;
 
     if config.jwt_secret.is_empty() {

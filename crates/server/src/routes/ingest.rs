@@ -1,4 +1,5 @@
-use std::net::{IpAddr, Ipv6Addr};
+use std::collections::HashSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use axum::{
@@ -499,10 +500,8 @@ fn validate_remote_url(remote: &str) -> Result<reqwest::Url, PreviewRouteError> 
         .map_err(|_| PreviewRouteError::invalid_source("remote must be an absolute http(s) URL"))?;
 
     let scheme = parsed.scheme().to_ascii_lowercase();
-    if scheme != "https" && scheme != "http" {
-        return Err(PreviewRouteError::invalid_source(
-            "remote must use http or https",
-        ));
+    if scheme != "https" {
+        return Err(PreviewRouteError::invalid_source("remote must use https"));
     }
 
     if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -565,30 +564,53 @@ fn is_disallowed_remote_host(host: &str) -> bool {
     }
 
     match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => {
-            v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_multicast()
-                || v4.is_unspecified()
-        }
-        Ok(IpAddr::V6(v6)) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_unique_local()
-                || v6.is_unicast_link_local()
-                || v6.is_multicast()
-                || is_ipv6_documentation(v6)
-        }
+        Ok(IpAddr::V4(v4)) => is_disallowed_ipv4(v4),
+        Ok(IpAddr::V6(v6)) => is_disallowed_ipv6(v6),
         Err(_) => false,
     }
+}
+
+fn is_disallowed_ipv4(ip: Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_multicast()
+        || ip.is_unspecified()
+}
+
+fn is_disallowed_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || ip.is_multicast()
+        || is_ipv6_documentation(ip)
 }
 
 fn is_ipv6_documentation(ip: Ipv6Addr) -> bool {
     let segments = ip.segments();
     segments[0] == 0x2001 && segments[1] == 0x0db8
+}
+
+fn oauth_provider_host_from_url(raw: &str) -> Option<String> {
+    reqwest::Url::parse(raw)
+        .ok()
+        .and_then(|url| url.host_str().map(|value| value.to_ascii_lowercase()))
+}
+
+fn configured_gitlab_hosts(config: &AppConfig) -> HashSet<String> {
+    config
+        .oauth_providers
+        .iter()
+        .filter(|provider| provider.id == "gitlab")
+        .filter_map(|provider| oauth_provider_host_from_url(&provider.token_url))
+        .collect()
+}
+
+fn is_gitlab_host(host: &str, gitlab_hosts: &HashSet<String>) -> bool {
+    host == "gitlab.com" || gitlab_hosts.contains(host)
 }
 
 fn origin_from_url(url: &reqwest::Url) -> Result<String, PreviewRouteError> {
@@ -694,7 +716,10 @@ fn build_generic_raw_url(
     ))
 }
 
-fn build_git_raw_url(source: &GitSource) -> Result<String, PreviewRouteError> {
+fn build_git_raw_url(
+    source: &GitSource,
+    gitlab_hosts: &HashSet<String>,
+) -> Result<String, PreviewRouteError> {
     let remote = validate_remote_url(&source.remote)?;
     let host = remote
         .host_str()
@@ -704,7 +729,7 @@ fn build_git_raw_url(source: &GitSource) -> Result<String, PreviewRouteError> {
     if host == "github.com" {
         return build_github_raw_url(&remote, &source.r#ref, &source.path);
     }
-    if host == "gitlab.com" || host.contains("gitlab") {
+    if is_gitlab_host(&host, gitlab_hosts) {
         return build_gitlab_raw_url(&remote, &source.r#ref, &source.path);
     }
 
@@ -727,11 +752,11 @@ struct GitFetchAuthHeader {
     source: GitCredentialSource,
 }
 
-fn provider_for_host(host: &str) -> Option<&'static str> {
+fn provider_for_host(host: &str, gitlab_hosts: &HashSet<String>) -> Option<&'static str> {
     if host == "github.com" {
         return Some("github");
     }
-    if host == "gitlab.com" || host.contains("gitlab") {
+    if is_gitlab_host(host, gitlab_hosts) {
         return Some("gitlab");
     }
     None
@@ -749,6 +774,41 @@ fn path_prefix_matches(repo_path: &str, prefix: &str) -> bool {
         || repo_path
             .strip_prefix(prefix)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+async fn ensure_remote_resolves_public(remote: &reqwest::Url) -> Result<(), PreviewRouteError> {
+    let host = remote
+        .host_str()
+        .ok_or_else(|| PreviewRouteError::invalid_source("remote host is required"))?;
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    let port = remote.port_or_known_default().unwrap_or(443);
+    let mut resolved = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| PreviewRouteError::fetch_failed("remote host DNS lookup failed"))?;
+    let mut found_any = false;
+    for addr in &mut resolved {
+        found_any = true;
+        let ip = addr.ip();
+        let disallowed = match ip {
+            IpAddr::V4(v4) => is_disallowed_ipv4(v4),
+            IpAddr::V6(v6) => is_disallowed_ipv6(v6),
+        };
+        if disallowed {
+            tracing::warn!(host = %host, ip = %ip, "blocked remote host resolving to disallowed IP");
+            return Err(PreviewRouteError::invalid_source(
+                "remote host resolves to a disallowed address",
+            ));
+        }
+    }
+    if !found_any {
+        return Err(PreviewRouteError::fetch_failed(
+            "remote host DNS lookup returned no addresses",
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_fetch_auth_header(
@@ -771,18 +831,19 @@ fn resolve_fetch_auth_header(
         .to_ascii_lowercase();
     let repo_path = repo_path_from_remote(&remote)?;
     let conn = db.conn();
+    let gitlab_hosts = configured_gitlab_hosts(config);
 
-    if let Some(provider) = provider_for_host(&host) {
+    if let Some(provider) = provider_for_host(&host, &gitlab_hosts) {
         let provider_token_enc: Option<String> = sq_query_row(
             &conn,
-            dbq::oauth_provider_tokens::get_by_user_provider(user_id, provider),
+            dbq::oauth_provider_tokens::get_by_user_provider_host(user_id, provider, &host),
             |row| row.get(1),
         )
         .ok();
         if let Some(enc) = provider_token_enc {
-            let token = keyring
-                .decrypt(&enc)
-                .map_err(|e| PreviewRouteError::fetch_failed(e.message()))?;
+            let token = keyring.decrypt(&enc).map_err(|_| {
+                PreviewRouteError::fetch_failed("failed to decrypt provider credential")
+            })?;
             return Ok(Some(GitFetchAuthHeader {
                 header_name: "Authorization".to_string(),
                 header_value: format!("Bearer {token}"),
@@ -803,7 +864,7 @@ fn resolve_fetch_auth_header(
             ))
         },
     )
-    .map_err(|e| PreviewRouteError::fetch_failed(format!("failed loading git credentials: {e}")))?;
+    .map_err(|_| PreviewRouteError::fetch_failed("failed loading git credentials"))?;
 
     for (credential_id, path_prefix, header_name, secret_enc) in manual_rows {
         if !path_prefix_matches(&repo_path, &path_prefix) {
@@ -811,7 +872,7 @@ fn resolve_fetch_auth_header(
         }
         let secret = keyring
             .decrypt(&secret_enc)
-            .map_err(|e| PreviewRouteError::fetch_failed(e.message()))?;
+            .map_err(|_| PreviewRouteError::fetch_failed("failed to decrypt git credential"))?;
         return Ok(Some(GitFetchAuthHeader {
             header_name,
             header_value: secret,
@@ -831,15 +892,16 @@ async fn fetch_git_source(
     config: &AppConfig,
     user_id: Option<&str>,
 ) -> Result<Vec<u8>, PreviewRouteError> {
-    let url = build_git_raw_url(source)?;
+    let remote = validate_remote_url(&source.remote)?;
+    ensure_remote_resolves_public(&remote).await?;
+    let gitlab_hosts = configured_gitlab_hosts(config);
+    let url = build_git_raw_url(source, &gitlab_hosts)?;
     let fetch_auth = resolve_fetch_auth_header(source, db, config, user_id)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
         .build()
-        .map_err(|e| {
-            PreviewRouteError::fetch_failed(format!("failed to initialize fetch client: {e}"))
-        })?;
+        .map_err(|_| PreviewRouteError::fetch_failed("failed to initialize fetch client"))?;
 
     let mut request = client
         .get(&url)
@@ -854,15 +916,22 @@ async fn fetch_git_source(
     let response = request
         .send()
         .await
-        .map_err(|e| PreviewRouteError::fetch_failed(format!("failed to fetch source: {e}")))?;
+        .map_err(|_| PreviewRouteError::fetch_failed("failed to fetch source"))?;
 
     if response.status().is_redirection() {
+        tracing::warn!(url = %url, status = %response.status(), "blocked redirect response from remote source");
         return Err(PreviewRouteError::fetch_failed(
             "redirect responses are not allowed",
         ));
     }
 
     if matches!(response.status().as_u16(), 401 | 403) && user_id.is_some() {
+        tracing::warn!(
+            url = %url,
+            status = response.status().as_u16(),
+            has_auth = fetch_auth.is_some(),
+            "remote source authentication failed"
+        );
         return Err(match fetch_auth {
             Some(_) => PreviewRouteError::git_credential_forbidden(response.status().as_u16()),
             None => PreviewRouteError::missing_git_credential(response.status().as_u16()),
@@ -897,7 +966,7 @@ async fn fetch_git_source(
     let body = response
         .bytes()
         .await
-        .map_err(|e| PreviewRouteError::fetch_failed(format!("failed reading source body: {e}")))?;
+        .map_err(|_| PreviewRouteError::fetch_failed("failed reading source body"))?;
 
     if body.len() > MAX_SOURCE_SIZE_BYTES {
         return Err(PreviewRouteError::file_too_large(body.len()));
@@ -1063,44 +1132,60 @@ mod tests {
 
     #[test]
     fn build_git_raw_url_uses_provider_aware_patterns() {
-        let github = build_git_raw_url(&GitSource {
-            remote: "https://github.com/hwisu/opensession".to_string(),
-            r#ref: "main".to_string(),
-            path: "sessions/demo.hail.jsonl".to_string(),
-        })
+        let no_gitlab_hosts = HashSet::new();
+        let mut configured_gitlab_hosts = HashSet::new();
+        configured_gitlab_hosts.insert("gitlab.internal.example.com".to_string());
+
+        let github = build_git_raw_url(
+            &GitSource {
+                remote: "https://github.com/hwisu/opensession".to_string(),
+                r#ref: "main".to_string(),
+                path: "sessions/demo.hail.jsonl".to_string(),
+            },
+            &no_gitlab_hosts,
+        )
         .expect("github raw url should build");
         assert_eq!(
             github,
             "https://raw.githubusercontent.com/hwisu/opensession/main/sessions/demo.hail.jsonl"
         );
 
-        let gitlab = build_git_raw_url(&GitSource {
-            remote: "https://gitlab.com/group/subgroup/repo".to_string(),
-            r#ref: "main".to_string(),
-            path: "sessions/demo.hail.jsonl".to_string(),
-        })
+        let gitlab = build_git_raw_url(
+            &GitSource {
+                remote: "https://gitlab.com/group/subgroup/repo".to_string(),
+                r#ref: "main".to_string(),
+                path: "sessions/demo.hail.jsonl".to_string(),
+            },
+            &no_gitlab_hosts,
+        )
         .expect("gitlab raw url should build");
         assert_eq!(
             gitlab,
             "https://gitlab.com/group/subgroup/repo/-/raw/main/sessions/demo.hail.jsonl"
         );
 
-        let gitlab_self_managed = build_git_raw_url(&GitSource {
-            remote: "https://gitlab.internal.example.com/group/subgroup/repo.git".to_string(),
-            r#ref: "main".to_string(),
-            path: "sessions/demo.hail.jsonl".to_string(),
-        })
+        let gitlab_self_managed = build_git_raw_url(
+            &GitSource {
+                remote: "https://gitlab.internal.example.com/group/subgroup/repo.git".to_string(),
+                r#ref: "main".to_string(),
+                path: "sessions/demo.hail.jsonl".to_string(),
+            },
+            &configured_gitlab_hosts,
+        )
         .expect("self-managed gitlab raw url should build");
         assert_eq!(
             gitlab_self_managed,
             "https://gitlab.internal.example.com/group/subgroup/repo/-/raw/main/sessions/demo.hail.jsonl"
         );
 
-        let generic = build_git_raw_url(&GitSource {
-            remote: "https://code.example.com/team/repo.git".to_string(),
-            r#ref: "main".to_string(),
-            path: "sessions/demo.hail.jsonl".to_string(),
-        })
+        let generic = build_git_raw_url(
+            &GitSource {
+                remote: "https://code.example.com/team/repo.git".to_string(),
+                r#ref: "main".to_string(),
+                path: "sessions/demo.hail.jsonl".to_string(),
+            },
+            &no_gitlab_hosts,
+        )
         .expect("generic raw url should build");
         assert_eq!(
             generic,
@@ -1170,19 +1255,51 @@ mod tests {
 
     #[test]
     fn provider_detection_and_path_prefix_matching_are_stable() {
-        assert_eq!(provider_for_host("github.com"), Some("github"));
-        assert_eq!(provider_for_host("gitlab.com"), Some("gitlab"));
+        let no_gitlab_hosts = HashSet::new();
+        let mut configured_gitlab_hosts = HashSet::new();
+        configured_gitlab_hosts.insert("gitlab.internal.example.com".to_string());
+
         assert_eq!(
-            provider_for_host("gitlab.internal.example.com"),
+            provider_for_host("github.com", &no_gitlab_hosts),
+            Some("github")
+        );
+        assert_eq!(
+            provider_for_host("gitlab.com", &no_gitlab_hosts),
             Some("gitlab")
         );
-        assert_eq!(provider_for_host("code.example.com"), None);
+        assert_eq!(
+            provider_for_host("gitlab.internal.example.com", &no_gitlab_hosts),
+            None
+        );
+        assert_eq!(
+            provider_for_host("gitlab.internal.example.com", &configured_gitlab_hosts),
+            Some("gitlab")
+        );
+        assert_eq!(
+            provider_for_host("evil-gitlab.example", &no_gitlab_hosts),
+            None
+        );
+        assert_eq!(
+            provider_for_host("code.example.com", &no_gitlab_hosts),
+            None
+        );
 
         assert!(path_prefix_matches("group/sub/repo", ""));
         assert!(path_prefix_matches("group/sub/repo", "group/sub"));
         assert!(path_prefix_matches("group/sub/repo", "group/sub/repo"));
         assert!(!path_prefix_matches("group/sub/repo", "group/su"));
         assert!(!path_prefix_matches("group/sub/repo", "group/sub/repo2"));
+    }
+
+    #[test]
+    fn git_source_rejects_http_remote() {
+        let err = normalize_git_source(
+            "http://code.example.com/team/repo",
+            "main",
+            "sessions/demo.hail.jsonl",
+        )
+        .expect_err("http remote must be rejected");
+        assert_eq!(err.code, "invalid_source");
     }
 
     #[test]

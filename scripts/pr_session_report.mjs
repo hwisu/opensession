@@ -5,13 +5,32 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-function run(cmd) {
-  return execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
+const DEFAULT_MAX_BUFFER = 128 * 1024 * 1024;
+
+function runRaw(cmd, options = {}) {
+  const { maxBuffer = DEFAULT_MAX_BUFFER } = options;
+  return execSync(cmd, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer,
+  });
+}
+
+function run(cmd, options = {}) {
+  return runRaw(cmd, options).trim();
 }
 
 function tryRun(cmd) {
   try {
     return run(cmd);
+  } catch {
+    return '';
+  }
+}
+
+function tryRunRaw(cmd, options = {}) {
+  try {
+    return runRaw(cmd, options);
   } catch {
     return '';
   }
@@ -34,12 +53,13 @@ function unique(items) {
 }
 
 function runGit(args, options = {}) {
-  const { cwd = process.cwd(), allowFail = false } = options;
+  const { cwd = process.cwd(), allowFail = false, maxBuffer = DEFAULT_MAX_BUFFER } = options;
   try {
     return execFileSync('git', args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
+      maxBuffer,
     }).trim();
   } catch (error) {
     if (allowFail) return '';
@@ -230,11 +250,11 @@ function publishArtifactsBranch({
         : null;
 
       if (session.meta_path) {
-        const metaBody = tryRun(`git show ${ledgerRef}:${session.meta_path}`);
+        const metaBody = tryRunRaw(`git show ${ledgerRef}:${session.meta_path}`);
         if (metaBody) writeFileAt(worktreeDir, metaArtifactPath, ensureTrailingNewline(metaBody));
       }
       if (session.hail_path) {
-        const hailBody = tryRun(`git show ${ledgerRef}:${session.hail_path}`);
+        const hailBody = tryRunRaw(`git show ${ledgerRef}:${session.hail_path}`);
         if (hailBody) writeFileAt(worktreeDir, hailArtifactPath, ensureTrailingNewline(hailBody));
       }
 

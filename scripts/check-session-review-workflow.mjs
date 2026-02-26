@@ -61,6 +61,12 @@ function main() {
   if (!reportScript.includes('buildArtifactBranchName')) {
     fail('Report script must derive a dedicated artifact branch name.');
   }
+  if (!reportScript.includes('DEFAULT_MAX_BUFFER = 128 * 1024 * 1024')) {
+    fail('Report script must set a large git output buffer for artifact hydration.');
+  }
+  if (!reportScript.includes('tryRunRaw(`git show ${ledgerRef}:${session.hail_path}`)')) {
+    fail('Report script must read hail artifact payload via raw git show path.');
+  }
   if (!reportScript.includes('#### Commit trail')) {
     fail('Report must include commit trail for direct change navigation.');
   }

@@ -127,6 +127,7 @@ function renderReport({
   head,
   commits,
   sessions,
+  missingLedgerRef = false,
 }) {
   const title = mode === 'final'
     ? 'OpenSession Review (final snapshot)'
@@ -152,6 +153,9 @@ function renderReport({
     lines.push(`- Local review: [Open in UI](${localReviewLink(reviewId)})`);
     lines.push(`- CLI: \`ops review ${prLinks.files.replace('/files', '')}\``);
   }
+  if (missingLedgerRef) {
+    lines.push(`- Ledger status: missing (\`${ledgerRef}\`)`);
+  }
   lines.push('');
 
   if (commits.length > 0) {
@@ -163,6 +167,11 @@ function renderReport({
       lines.push(`- ...and ${commits.length - 20} more`);
     }
     lines.push('');
+  }
+
+  if (missingLedgerRef) {
+    lines.push('No ledger ref found for this branch yet. Push at least one tracked session and retry.');
+    return lines.join('\n');
   }
 
   if (sessions.length === 0) {
@@ -213,15 +222,8 @@ function main() {
   }
 
   const refExists = tryRun(`git show-ref ${ledgerRef}`);
-  if (!refExists) {
-    console.log(
-      `${marker}\n### OpenSession Review\n\nNo ledger ref found for this branch (\`${ledgerRef}\`).`,
-    );
-    return;
-  }
-
   const commits = collectCommitRange(base, head);
-  const sessions = collectIndexedSessions(ledgerRef, commits);
+  const sessions = refExists ? collectIndexedSessions(ledgerRef, commits) : [];
   const report = renderReport({
     marker,
     mode,
@@ -233,6 +235,7 @@ function main() {
     head,
     commits,
     sessions,
+    missingLedgerRef: !refExists,
   });
   console.log(report);
 }

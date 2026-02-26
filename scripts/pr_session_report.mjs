@@ -5,13 +5,32 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-function run(cmd) {
-  return execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
+const DEFAULT_MAX_BUFFER = 128 * 1024 * 1024;
+
+function runRaw(cmd, options = {}) {
+  const { maxBuffer = DEFAULT_MAX_BUFFER } = options;
+  return execSync(cmd, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer,
+  });
+}
+
+function run(cmd, options = {}) {
+  return runRaw(cmd, options).trim();
 }
 
 function tryRun(cmd) {
   try {
     return run(cmd);
+  } catch {
+    return '';
+  }
+}
+
+function tryRunRaw(cmd, options = {}) {
+  try {
+    return runRaw(cmd, options);
   } catch {
     return '';
   }
@@ -34,12 +53,13 @@ function unique(items) {
 }
 
 function runGit(args, options = {}) {
-  const { cwd = process.cwd(), allowFail = false } = options;
+  const { cwd = process.cwd(), allowFail = false, maxBuffer = DEFAULT_MAX_BUFFER } = options;
   try {
     return execFileSync('git', args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
+      maxBuffer,
     }).trim();
   } catch (error) {
     if (allowFail) return '';
@@ -93,6 +113,24 @@ function githubTreeLink(repoFullName, branchName, filePath = '') {
   if (!repoFullName || !branchName) return null;
   if (!filePath) return `https://github.com/${repoFullName}/tree/${branchName}`;
   return `https://github.com/${repoFullName}/tree/${branchName}/${filePath}`;
+}
+
+function encodeRepoPath(pathValue) {
+  return String(pathValue)
+    .split('/')
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+function opensessionSourceLink(repoFullName, rRef, repoPath) {
+  if (!repoFullName || !rRef || !repoPath) return null;
+  const [owner, repo] = String(repoFullName).split('/');
+  if (!owner || !repo) return null;
+  const refSegment = encodeURIComponent(String(rRef));
+  const pathSegment = encodeRepoPath(repoPath);
+  if (!pathSegment) return null;
+  return `https://opensession.io/src/gh/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/ref/${refSegment}/path/${pathSegment}`;
 }
 
 function shortSha(sha) {
@@ -230,11 +268,11 @@ function publishArtifactsBranch({
         : null;
 
       if (session.meta_path) {
-        const metaBody = tryRun(`git show ${ledgerRef}:${session.meta_path}`);
+        const metaBody = tryRunRaw(`git show ${ledgerRef}:${session.meta_path}`);
         if (metaBody) writeFileAt(worktreeDir, metaArtifactPath, ensureTrailingNewline(metaBody));
       }
       if (session.hail_path) {
-        const hailBody = tryRun(`git show ${ledgerRef}:${session.hail_path}`);
+        const hailBody = tryRunRaw(`git show ${ledgerRef}:${session.hail_path}`);
         if (hailBody) writeFileAt(worktreeDir, hailArtifactPath, ensureTrailingNewline(hailBody));
       }
 
@@ -349,10 +387,10 @@ function renderReport({
     lines.push(`- Local review: [Open in UI](${localReviewLink(reviewId)})`);
     lines.push(`- CLI: \`ops review ${prLinks.files.replace('/files', '')}\``);
   }
-  if (artifact?.branchName && artifact?.treeLink) {
+  if (artifact?.enabled && artifact?.branchName && artifact?.treeLink) {
     lines.push(`- Artifact branch: [\`${artifact.branchName}\`](${artifact.treeLink})`);
   }
-  if (artifact?.manifestPath && artifact?.branchName) {
+  if (artifact?.enabled && artifact?.manifestPath && artifact?.branchName) {
     const manifestLink = githubBlobLink(
       repoFullName,
       artifact.branchName,
@@ -362,7 +400,7 @@ function renderReport({
       lines.push(`- Artifact manifest: [manifest.json](${manifestLink})`);
     }
   }
-  if (artifact?.error) {
+  if (artifact?.enabled && artifact?.error) {
     lines.push(`- Artifact publish: failed (\`${artifact.error}\`)`);
   }
   if (missingLedgerRef) {
@@ -391,8 +429,8 @@ function renderReport({
     return lines.join('\n');
   }
 
-  lines.push('| Session ID | Commits | Open | JSONL | Meta |');
-  lines.push('| --- | ---: | --- | --- | --- |');
+  lines.push('| Session ID | Commits | Open | OpenSession | JSONL | Meta |');
+  lines.push('| --- | ---: | --- | --- | --- | --- |');
   for (const session of sessions.slice(0, 50)) {
     const commitCell = session.commits.length > 0
       ? session.commits
@@ -403,8 +441,16 @@ function renderReport({
     const suffix = session.commits.length > 4 ? ` +${session.commits.length - 4}` : '';
     const primaryCommit = session.commits[0] ?? '';
     const openLink = localReviewLink(reviewId, session.session_id, primaryCommit);
+    const webLink =
+      artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.hail_path
+        ? opensessionSourceLink(
+            repoFullName,
+            artifact.branchName,
+            `${artifact.artifactRoot}/${session.hail_path}`,
+          )
+        : null;
     const hailLink =
-      artifact?.branchName && artifact?.artifactRoot && session.hail_path
+      artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.hail_path
         ? githubBlobLink(
             repoFullName,
             artifact.branchName,
@@ -412,7 +458,7 @@ function renderReport({
           )
         : null;
     const metaLink =
-      artifact?.branchName && artifact?.artifactRoot && session.meta_path
+      artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.meta_path
         ? githubBlobLink(
             repoFullName,
             artifact.branchName,
@@ -420,7 +466,7 @@ function renderReport({
           )
         : null;
     lines.push(
-      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} |`,
+      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${webLink ? `[web](${webLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} |`,
     );
   }
   if (sessions.length > 50) {

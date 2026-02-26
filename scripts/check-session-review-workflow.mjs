@@ -52,14 +52,29 @@ function main() {
   if (!reportScript.includes('Artifact branch:')) {
     fail('Report must include artifact branch summary link.');
   }
-  if (!reportScript.includes('| Session ID | Commits | Open | JSONL | Meta |')) {
-    fail('Report must include Open/JSONL/Meta columns for per-session navigation.');
+  if (!reportScript.includes('| Session ID | Commits | Open | OpenSession | JSONL | Meta |')) {
+    fail('Report must include Open/OpenSession/JSONL/Meta columns for per-session navigation.');
+  }
+  if (!reportScript.includes('opensessionSourceLink(')) {
+    fail('Report must build opensession.io source links for web review.');
+  }
+  if (!reportScript.includes('https://opensession.io/src/gh/')) {
+    fail('Report must include opensession.io /src/gh link template.');
+  }
+  if (!reportScript.includes('[web](')) {
+    fail('Report must include direct web viewer links.');
   }
   if (!reportScript.includes('[jsonl](')) {
     fail('Report must include direct jsonl file links.');
   }
   if (!reportScript.includes('buildArtifactBranchName')) {
     fail('Report script must derive a dedicated artifact branch name.');
+  }
+  if (!reportScript.includes('DEFAULT_MAX_BUFFER = 128 * 1024 * 1024')) {
+    fail('Report script must set a large git output buffer for artifact hydration.');
+  }
+  if (!reportScript.includes('tryRunRaw(`git show ${ledgerRef}:${session.hail_path}`)')) {
+    fail('Report script must read hail artifact payload via raw git show path.');
   }
   if (!reportScript.includes('#### Commit trail')) {
     fail('Report must include commit trail for direct change navigation.');
@@ -98,8 +113,17 @@ function main() {
   if (!workflow.includes('Configure git author for artifact branch')) {
     fail('workflow must configure git author before publishing artifact branch.');
   }
-  if (!workflow.includes('Delete artifact branch with retry')) {
-    fail('cleanup must delete artifact branch for merged PRs.');
+  if (!workflow.includes('Apply artifact retention policy (merged PR only)')) {
+    fail('cleanup must apply artifact retention policy for merged PRs.');
+  }
+  if (!workflow.includes('OPENSESSION_ARTIFACT_RETENTION')) {
+    fail('cleanup must support repository-level OPENSESSION_ARTIFACT_RETENTION variable.');
+  }
+  if (!workflow.includes("vars.OPENSESSION_ARTIFACT_RETENTION || 'next_commit'")) {
+    fail('artifact retention must default to next_commit when repo variable is unset.');
+  }
+  if (!workflow.includes('--publish-artifacts "$publish_artifacts"')) {
+    fail('final report builder must toggle artifact publishing based on retention mode.');
   }
   if (!workflow.includes('github.rest.issues.deleteComment')) {
     fail('sticky comment upsert must dedupe stale marker comments.');

@@ -4,7 +4,7 @@ use worker::*;
 use crate::config::WorkerConfig;
 
 fn capabilities_from_config(config: &WorkerConfig) -> CapabilitiesResponse {
-    CapabilitiesResponse::for_runtime(config.auth_enabled(), false)
+    CapabilitiesResponse::for_runtime(config.auth_enabled(), true)
 }
 
 pub async fn handle(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -26,7 +26,7 @@ mod tests {
 
         let caps = capabilities_from_config(&config);
         assert!(caps.auth_enabled);
-        assert!(!caps.parse_preview_enabled);
+        assert!(caps.parse_preview_enabled);
         assert_eq!(caps.register_targets, vec!["local", "git"]);
         assert_eq!(caps.share_modes, vec!["web", "git", "json"]);
     }

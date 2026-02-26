@@ -92,6 +92,7 @@ while read local_ref local_oid remote_ref remote_oid; do
         refs/heads/*)
             if [ "$fanout_enabled" -eq 1 ]; then
                 branch="${local_ref#refs/heads/}"
+                "$opsession_bin" setup --sync-branch-session "$branch" --sync-branch-commit "$local_oid" >/dev/null 2>&1 || true
                 ledger_ref=$("$opsession_bin" setup --print-ledger-ref "$branch" 2>/dev/null || true)
                 if [ -n "$ledger_ref" ]; then
                     printf '%s\n' "$ledger_ref" >> "$tmp_fanout"
@@ -722,6 +723,8 @@ mod tests {
     fn test_pre_push_template_contains_fanout_guard() {
         let template = hook_template(HookType::PrePush);
         assert!(template.contains("OPENSESSION_INTERNAL_PUSH"));
+        assert!(template.contains("setup --sync-branch-session"));
+        assert!(template.contains("--sync-branch-commit"));
         assert!(template.contains("setup --print-ledger-ref"));
         assert!(template.contains("setup --print-fanout-mode"));
         assert!(template.contains("git notes --ref=opensession"));

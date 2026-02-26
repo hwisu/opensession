@@ -1,9 +1,17 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
+use opensession_core::session::{build_git_storage_meta_json_with_git, working_directory, GitMeta};
+use opensession_core::Session;
 use opensession_daemon::hooks::{install_hooks, list_installed_hooks, HookType};
-use opensession_git_native::{branch_ledger_ref, extract_git_context, resolve_ledger_branch};
+use opensession_git_native::{
+    branch_ledger_ref, extract_git_context, resolve_ledger_branch, NativeGitStorage,
+};
+use opensession_parsers::{discover::discover_sessions, parse_with_default_parsers};
+use opensession_runtime_config::{DaemonConfig, CONFIG_FILE_NAME};
+use std::cmp::Reverse;
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const FANOUT_MODE_GIT_CONFIG_KEY: &str = "opensession.fanout-mode";
@@ -42,11 +50,29 @@ pub struct SetupArgs {
     /// Print configured fanout mode (`hidden_ref` | `git_notes`) for this repo.
     #[arg(long, hide = true)]
     pub print_fanout_mode: bool,
+    /// Ingest the latest local session for this branch into the hidden ledger (internal use).
+    #[arg(long, hide = true)]
+    pub sync_branch_session: Option<String>,
+    /// Commit SHA to index when syncing branch session (internal use).
+    #[arg(long, hide = true)]
+    pub sync_branch_commit: Option<String>,
 }
 
 pub fn run(args: SetupArgs) -> Result<()> {
     if let Some(branch) = args.print_ledger_ref {
         println!("{}", branch_ledger_ref(&branch));
+        return Ok(());
+    }
+
+    if args.sync_branch_session.is_none() && args.sync_branch_commit.is_some() {
+        bail!("--sync-branch-commit requires --sync-branch-session");
+    }
+
+    if let Some(branch) = args.sync_branch_session {
+        let cwd = std::env::current_dir().context("read current directory")?;
+        let repo_root = opensession_git_native::ops::find_repo_root(&cwd)
+            .ok_or_else(|| anyhow::anyhow!("current directory is not inside a git repository"))?;
+        sync_branch_session_to_hidden_ledger(&repo_root, &branch, args.sync_branch_commit)?;
         return Ok(());
     }
 
@@ -97,6 +123,179 @@ fn run_install(repo_root: &PathBuf) -> Result<()> {
         }
         println!("ledger ref: {ledger}");
     }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct SessionCandidate {
+    path: PathBuf,
+    modified: std::time::SystemTime,
+}
+
+fn collect_recent_candidates() -> Vec<SessionCandidate> {
+    let mut candidates = Vec::new();
+    for location in discover_sessions() {
+        for path in location.paths {
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            candidates.push(SessionCandidate { path, modified });
+        }
+    }
+
+    candidates.sort_by_key(|candidate| Reverse(candidate.modified));
+    candidates
+}
+
+fn same_repo_root(left: &Path, right: &Path) -> bool {
+    let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
+fn parse_session_candidate(path: &Path) -> Option<Session> {
+    match parse_with_default_parsers(path) {
+        Ok(Some(session)) => {
+            if working_directory(&session).is_some() {
+                Some(session)
+            } else {
+                std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|content| Session::from_jsonl(&content).ok())
+            }
+        }
+        Ok(None) | Err(_) => std::fs::read_to_string(path)
+            .ok()
+            .and_then(|content| Session::from_jsonl(&content).ok()),
+    }
+}
+
+fn commit_hint_or_head(repo_root: &Path, commit_hint: Option<String>) -> Result<Vec<String>> {
+    if let Some(hint) = commit_hint {
+        let trimmed = hint.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(vec![trimmed]);
+        }
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .context("resolve HEAD commit")?;
+    if !output.status.success() {
+        bail!(
+            "failed to resolve HEAD commit: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if head.is_empty() {
+        bail!("HEAD commit is empty");
+    }
+    Ok(vec![head])
+}
+
+fn load_daemon_config() -> DaemonConfig {
+    let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        Ok(home) => home,
+        Err(_) => return DaemonConfig::default(),
+    };
+    let path = PathBuf::from(home)
+        .join(".config")
+        .join("opensession")
+        .join(CONFIG_FILE_NAME);
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return DaemonConfig::default(),
+    };
+    toml::from_str(&content).unwrap_or_default()
+}
+
+fn sync_branch_session_to_hidden_ledger(
+    repo_root: &Path,
+    branch: &str,
+    commit_hint: Option<String>,
+) -> Result<()> {
+    let candidates = collect_recent_candidates();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+
+    let config = load_daemon_config();
+    let commit_shas = commit_hint_or_head(repo_root, commit_hint)?;
+    let head_sha = commit_shas.first().cloned();
+    let mut synced = false;
+
+    for candidate in candidates {
+        let Some(mut session) = parse_session_candidate(&candidate.path) else {
+            continue;
+        };
+        let Some(cwd) = working_directory(&session).map(str::to_owned) else {
+            continue;
+        };
+        let Some(session_repo) = opensession_git_native::ops::find_repo_root(Path::new(&cwd))
+        else {
+            continue;
+        };
+        if !same_repo_root(repo_root, &session_repo) {
+            continue;
+        }
+
+        if config
+            .privacy
+            .exclude_tools
+            .iter()
+            .any(|tool| tool.eq_ignore_ascii_case(&session.agent.tool))
+        {
+            continue;
+        }
+
+        sanitize_session(
+            &mut session,
+            &SanitizeConfig {
+                strip_paths: config.privacy.strip_paths,
+                strip_env_vars: config.privacy.strip_env_vars,
+                exclude_patterns: config.privacy.exclude_patterns.clone(),
+            },
+        );
+
+        let git_ctx = extract_git_context(&cwd);
+        let meta = build_git_storage_meta_json_with_git(
+            &session,
+            Some(&GitMeta {
+                remote: git_ctx.remote.clone(),
+                repo_name: git_ctx.repo_name.clone(),
+                branch: Some(branch.to_string()),
+                head: head_sha.clone().or(git_ctx.commit.clone()),
+                commits: commit_shas.clone(),
+            }),
+        );
+        let hail = session
+            .to_jsonl()
+            .context("serialize session to canonical HAIL JSONL")?;
+
+        NativeGitStorage.store_session_at_ref(
+            repo_root,
+            &branch_ledger_ref(branch),
+            &session.session_id,
+            hail.as_bytes(),
+            &meta,
+            &commit_shas,
+        )?;
+        synced = true;
+        break;
+    }
+
+    if !synced {
+        return Ok(());
+    }
+
     Ok(())
 }
 

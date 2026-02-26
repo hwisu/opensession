@@ -39,6 +39,13 @@ type SourceRouteState =
 			path: string;
 	  };
 
+const INVALID_GH_PATH_MSG =
+	'Invalid source path. Expected /src/gh/<owner>/<repo>/ref/<ref...>/path/<path...>.';
+const INVALID_GIT_PATH_MSG =
+	'Invalid source path. Expected /src/git/<remote_b64>/ref/<ref...>/path/<path...>.';
+const INVALID_GL_PATH_MSG =
+	'Invalid source path. Expected /src/gl/<project_b64>/ref/<ref...>/path/<path...>.';
+
 const VALID_PARSER_HINTS = new Set([
 	'hail',
 	'codex',
@@ -139,82 +146,70 @@ function parseSourceRouteFromParams(): { route: SourceRouteState | null; message
 
 	if (provider === 'gh') {
 		if (tail.length < 6 || tail[2] !== 'ref') {
-			return {
-				route: null,
-				message:
-					'Invalid source path. Expected /src/gh/<owner>/<repo>/ref/<ref...>/path/<path...>.',
-			};
+			return { route: null, message: INVALID_GH_PATH_MSG };
 		}
-		const refAndPath = extractRefAndPath(tail, 2, 3);
-		if (!refAndPath) {
+		try {
+			const refAndPath = extractRefAndPath(tail, 2, 3);
+			if (!refAndPath) {
+				return { route: null, message: INVALID_GH_PATH_MSG };
+			}
 			return {
-				route: null,
-				message:
-					'Invalid source path. Expected /src/gh/<owner>/<repo>/ref/<ref...>/path/<path...>.',
+				route: {
+					provider: 'gh',
+					owner: decodeURIComponent(tail[0]),
+					repo: decodeURIComponent(tail[1]),
+					ref: refAndPath.ref,
+					path: refAndPath.path,
+				},
 			};
+		} catch {
+			return { route: null, message: INVALID_GH_PATH_MSG };
 		}
-		return {
-			route: {
-				provider: 'gh',
-				owner: decodeURIComponent(tail[0]),
-				repo: decodeURIComponent(tail[1]),
-				ref: refAndPath.ref,
-				path: refAndPath.path,
-			},
-		};
 	}
 
 	if (provider === 'git') {
 		if (tail.length < 5 || tail[1] !== 'ref') {
-			return {
-				route: null,
-				message:
-					'Invalid source path. Expected /src/git/<remote_b64>/ref/<ref...>/path/<path...>.',
-			};
+			return { route: null, message: INVALID_GIT_PATH_MSG };
 		}
-		const refAndPath = extractRefAndPath(tail, 1, 2);
-		if (!refAndPath) {
+		try {
+			const refAndPath = extractRefAndPath(tail, 1, 2);
+			if (!refAndPath) {
+				return { route: null, message: INVALID_GIT_PATH_MSG };
+			}
+			const remote = decodeBase64Url(tail[0]);
 			return {
-				route: null,
-				message:
-					'Invalid source path. Expected /src/git/<remote_b64>/ref/<ref...>/path/<path...>.',
+				route: {
+					provider: 'git',
+					remote,
+					ref: refAndPath.ref,
+					path: refAndPath.path,
+				},
 			};
+		} catch {
+			return { route: null, message: INVALID_GIT_PATH_MSG };
 		}
-		const remote = decodeBase64Url(tail[0]);
-		return {
-			route: {
-				provider: 'git',
-				remote,
-				ref: refAndPath.ref,
-				path: refAndPath.path,
-			},
-		};
 	}
 
 	if (provider === 'gl') {
 		if (tail.length < 5 || tail[1] !== 'ref') {
-			return {
-				route: null,
-				message:
-					'Invalid source path. Expected /src/gl/<project_b64>/ref/<ref...>/path/<path...>.',
-			};
+			return { route: null, message: INVALID_GL_PATH_MSG };
 		}
-		const refAndPath = extractRefAndPath(tail, 1, 2);
-		if (!refAndPath) {
+		try {
+			const refAndPath = extractRefAndPath(tail, 1, 2);
+			if (!refAndPath) {
+				return { route: null, message: INVALID_GL_PATH_MSG };
+			}
 			return {
-				route: null,
-				message:
-					'Invalid source path. Expected /src/gl/<project_b64>/ref/<ref...>/path/<path...>.',
+				route: {
+					provider: 'gl',
+					project: decodeBase64Url(tail[0]),
+					ref: refAndPath.ref,
+					path: refAndPath.path,
+				},
 			};
+		} catch {
+			return { route: null, message: INVALID_GL_PATH_MSG };
 		}
-		return {
-			route: {
-				provider: 'gl',
-				project: decodeBase64Url(tail[0]),
-				ref: refAndPath.ref,
-				path: refAndPath.path,
-			},
-		};
 	}
 
 	return {

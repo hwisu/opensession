@@ -404,6 +404,71 @@ mod tests {
     }
 
     #[test]
+    fn uri_for_remote_detects_gl_for_gitlab_dot_com_https_and_ssh() {
+        let https = uri_for_remote(
+            "https://gitlab.com/group/sub/repo.git",
+            "refs/heads/main",
+            "sessions/x.jsonl",
+        );
+        assert_eq!(
+            https,
+            SourceUri::Src(SourceSpec::Gl {
+                project: "group/sub/repo".to_string(),
+                r#ref: "refs/heads/main".to_string(),
+                path: "sessions/x.jsonl".to_string(),
+            })
+        );
+
+        let ssh = uri_for_remote(
+            "git@gitlab.com:group/sub/repo.git",
+            "refs/heads/main",
+            "sessions/x.jsonl",
+        );
+        assert_eq!(
+            ssh,
+            SourceUri::Src(SourceSpec::Gl {
+                project: "group/sub/repo".to_string(),
+                r#ref: "refs/heads/main".to_string(),
+                path: "sessions/x.jsonl".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn uri_for_remote_keeps_self_managed_gitlab_as_git() {
+        let uri = uri_for_remote(
+            "https://gitlab.internal.example.com/group/sub/repo.git",
+            "refs/heads/main",
+            "sessions/x.jsonl",
+        );
+        assert_eq!(
+            uri,
+            SourceUri::Src(SourceSpec::Git {
+                remote: "https://gitlab.internal.example.com/group/sub/repo.git".to_string(),
+                r#ref: "refs/heads/main".to_string(),
+                path: "sessions/x.jsonl".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn uri_for_remote_keeps_generic_remote_as_git() {
+        let uri = uri_for_remote(
+            "https://code.example.com/team/repo.git",
+            "refs/heads/main",
+            "sessions/x.jsonl",
+        );
+        assert_eq!(
+            uri,
+            SourceUri::Src(SourceSpec::Git {
+                remote: "https://code.example.com/team/repo.git".to_string(),
+                r#ref: "refs/heads/main".to_string(),
+                path: "sessions/x.jsonl".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn path_validation_rejects_traversal() {
         assert!(validate_rel_path("sessions/ok.jsonl").is_ok());
         assert!(validate_rel_path("../bad").is_err());

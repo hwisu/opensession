@@ -67,6 +67,29 @@ fn resolve_base_url(headers: &HeaderMap, fallback: &str, prefer_request_host: bo
     }
 }
 
+fn maybe_store_provider_access_token(
+    db: &Db,
+    config: &AppConfig,
+    user_id: &str,
+    provider: &str,
+    access_token: &str,
+) -> Result<(), ApiErr> {
+    let Some(keyring) = config.credential_keyring.as_ref() else {
+        return Ok(());
+    };
+    let encrypted = keyring.encrypt(access_token).map_err(ApiErr::from)?;
+    let token_id = Uuid::new_v4().to_string();
+    let conn = db.conn();
+    sq_execute(
+        &conn,
+        dbq::oauth_provider_tokens::upsert_access_token(
+            &token_id, user_id, provider, &encrypted, None,
+        ),
+    )
+    .map_err(ApiErr::from_db("oauth provider token upsert"))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/auth/providers — list available auth methods
 // ---------------------------------------------------------------------------
@@ -276,6 +299,7 @@ pub async fn callback(
             ),
         )
         .map_err(ApiErr::from_db("oauth link upsert"))?;
+        maybe_store_provider_access_token(&db, &config, link_uid, &provider_id, &access_token)?;
 
         return Ok(Redirect::temporary(&format!(
             "{}/settings?oauth_linked=true",
@@ -368,6 +392,7 @@ pub async fn callback(
         }
     };
     drop(conn);
+    maybe_store_provider_access_token(&db, &config, &user_id, &provider_id, &access_token)?;
 
     // Issue tokens
     let tokens = super::auth::issue_tokens_pub(&db, &config.jwt_secret, &user_id, &nickname)?;

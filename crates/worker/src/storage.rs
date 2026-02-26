@@ -169,6 +169,41 @@ pub async fn ensure_d1_schema(env: &Env) -> Result<()> {
             .await?;
     }
 
+    // Keep bootstrap policy while ensuring post-bootstrap tables for existing DBs.
+    let ensure_sql = r#"
+CREATE TABLE IF NOT EXISTS git_credentials (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label            TEXT NOT NULL,
+    host             TEXT NOT NULL,
+    path_prefix      TEXT NOT NULL DEFAULT '',
+    header_name      TEXT NOT NULL,
+    header_value_enc TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_git_credentials_user_host ON git_credentials(user_id, host);
+CREATE INDEX IF NOT EXISTS idx_git_credentials_user_host_prefix
+ON git_credentials(user_id, host, path_prefix);
+
+CREATE TABLE IF NOT EXISTS oauth_provider_tokens (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider         TEXT NOT NULL,
+    access_token_enc TEXT NOT NULL,
+    expires_at       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, provider)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider
+ON oauth_provider_tokens(user_id, provider);
+"#;
+    for statement in split_migration_statements(ensure_sql) {
+        d1.exec(&statement).await?;
+    }
+
     Ok(())
 }
 

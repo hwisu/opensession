@@ -1,14 +1,15 @@
 use axum::{
-    extract::{FromRef, FromRequestParts, State},
-    http::{request::Parts, StatusCode},
+    extract::{FromRef, FromRequestParts, Path, State},
+    http::{request::Parts, HeaderMap, StatusCode},
     Json,
 };
 use uuid::Uuid;
 
 use opensession_api::{
     crypto, db as dbq, oauth, service, service::AuthToken, AuthRegisterRequest, AuthTokenResponse,
-    ChangePasswordRequest, IssueApiKeyResponse, LoginRequest, LogoutRequest, OkResponse,
-    RefreshRequest, UserSettingsResponse, VerifyResponse,
+    ChangePasswordRequest, CreateGitCredentialRequest, GitCredentialSummary, IssueApiKeyResponse,
+    ListGitCredentialsResponse, LoginRequest, LogoutRequest, OkResponse, RefreshRequest,
+    UserSettingsResponse, VerifyResponse,
 };
 
 use crate::error::ApiErr;
@@ -31,6 +32,55 @@ pub struct AuthUser {
     pub email: Option<String>,
 }
 
+fn resolve_auth_user(token: &str, db: &Db, config: &AppConfig) -> Result<AuthUser, ApiErr> {
+    let now = chrono::Utc::now().timestamp() as u64;
+    let resolved = service::resolve_auth_token(token, &config.jwt_secret, now)
+        .map_err(|e| ApiErr::unauthorized(e.message()))?;
+
+    let conn = db.conn();
+    match resolved {
+        AuthToken::ApiKey(key) => {
+            let key_hash = service::hash_api_key(&key);
+            sq_query_row(
+                &conn,
+                dbq::api_keys::get_user_by_valid_key_hash(&key_hash),
+                |row| {
+                    Ok(AuthUser {
+                        user_id: row.get(0)?,
+                        nickname: row.get(1)?,
+                        email: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(|_| ApiErr::unauthorized("invalid API key"))
+        }
+        AuthToken::Jwt(user_id) => sq_query_row(&conn, dbq::users::get_by_id(&user_id), |row| {
+            Ok(AuthUser {
+                user_id: row.get(0)?,
+                nickname: row.get(1)?,
+                email: row.get(2)?,
+            })
+        })
+        .map_err(|_| ApiErr::unauthorized("user not found")),
+    }
+}
+
+pub fn try_auth_from_headers(
+    headers: &HeaderMap,
+    db: &Db,
+    config: &AppConfig,
+) -> Result<Option<AuthUser>, ApiErr> {
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return Ok(None);
+    };
+
+    resolve_auth_user(token, db, config).map(Some)
+}
+
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,
@@ -51,39 +101,7 @@ where
             .ok_or(ApiErr::unauthorized(
                 "missing or invalid Authorization header",
             ))?;
-
-        let now = chrono::Utc::now().timestamp() as u64;
-        let resolved = service::resolve_auth_token(token, &config.jwt_secret, now)
-            .map_err(|e| ApiErr::unauthorized(e.message()))?;
-
-        let conn = db.conn();
-        match resolved {
-            AuthToken::ApiKey(key) => {
-                let key_hash = service::hash_api_key(&key);
-                sq_query_row(
-                    &conn,
-                    dbq::api_keys::get_user_by_valid_key_hash(&key_hash),
-                    |row| {
-                        Ok(AuthUser {
-                            user_id: row.get(0)?,
-                            nickname: row.get(1)?,
-                            email: row.get(2)?,
-                        })
-                    },
-                )
-                .map_err(|_| ApiErr::unauthorized("invalid API key"))
-            }
-            AuthToken::Jwt(user_id) => {
-                sq_query_row(&conn, dbq::users::get_by_id(&user_id), |row| {
-                    Ok(AuthUser {
-                        user_id: row.get(0)?,
-                        nickname: row.get(1)?,
-                        email: row.get(2)?,
-                    })
-                })
-                .map_err(|_| ApiErr::unauthorized("user not found"))
-            }
-        }
+        resolve_auth_user(token, &db, &config)
     }
 }
 
@@ -415,4 +433,238 @@ pub async fn issue_api_key(
     .map_err(ApiErr::from_db("issue api key insert"))?;
 
     Ok(Json(IssueApiKeyResponse { api_key: new_key }))
+}
+
+fn normalize_header_name(raw: &str) -> Result<String, ApiErr> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiErr::bad_request("header_name is required"));
+    }
+    if trimmed.len() > 64 {
+        return Err(ApiErr::bad_request(
+            "header_name is too long (max 64 chars)",
+        ));
+    }
+    if !trimmed.bytes().all(|b| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'!' | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'-'
+                    | b'.'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'|'
+                    | b'~'
+            )
+    }) {
+        return Err(ApiErr::bad_request(
+            "header_name contains invalid characters",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_host(raw: &str) -> Result<String, ApiErr> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return Err(ApiErr::bad_request("host is required"));
+    }
+    if trimmed.len() > 255 {
+        return Err(ApiErr::bad_request("host is too long (max 255 chars)"));
+    }
+    if trimmed.contains('/') || trimmed.contains(' ') {
+        return Err(ApiErr::bad_request(
+            "host must not contain path separators or spaces",
+        ));
+    }
+    if trimmed
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'))
+    {
+        return Ok(trimmed);
+    }
+    Err(ApiErr::bad_request("host contains invalid characters"))
+}
+
+fn normalize_path_prefix(raw: Option<&str>) -> Result<String, ApiErr> {
+    let trimmed = raw.unwrap_or_default().trim().trim_matches('/').to_string();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if trimmed.len() > 512 {
+        return Err(ApiErr::bad_request(
+            "path_prefix is too long (max 512 chars)",
+        ));
+    }
+
+    let mut segments = Vec::<String>::new();
+    for part in trimmed.split('/') {
+        let seg = part.trim();
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains('\\') {
+            return Err(ApiErr::bad_request("path_prefix contains invalid segments"));
+        }
+        segments.push(seg.to_string());
+    }
+    if let Some(last) = segments.last_mut() {
+        *last = last.strip_suffix(".git").unwrap_or(last).to_string();
+    }
+    Ok(segments.join("/"))
+}
+
+/// GET /api/auth/git-credentials — list masked git credentials for authenticated user.
+pub async fn list_git_credentials(
+    State(db): State<Db>,
+    user: AuthUser,
+) -> Result<Json<ListGitCredentialsResponse>, ApiErr> {
+    let conn = db.conn();
+    let credentials = sq_query_map(
+        &conn,
+        dbq::git_credentials::list_by_user(&user.user_id),
+        |row| {
+            Ok(GitCredentialSummary {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                host: row.get(2)?,
+                path_prefix: row.get(3)?,
+                header_name: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                last_used_at: row.get(7)?,
+            })
+        },
+    )
+    .map_err(ApiErr::from_db("list git credentials"))?;
+
+    Ok(Json(ListGitCredentialsResponse { credentials }))
+}
+
+/// POST /api/auth/git-credentials — register a user-managed git credential.
+pub async fn create_git_credential(
+    State(db): State<Db>,
+    State(config): State<AppConfig>,
+    user: AuthUser,
+    Json(req): Json<CreateGitCredentialRequest>,
+) -> Result<(StatusCode, Json<GitCredentialSummary>), ApiErr> {
+    let keyring = config
+        .credential_keyring
+        .as_ref()
+        .ok_or_else(|| ApiErr::internal("credential encryption is not configured"))?;
+
+    let label = req.label.trim().to_string();
+    if label.is_empty() {
+        return Err(ApiErr::bad_request("label is required"));
+    }
+    if label.len() > 120 {
+        return Err(ApiErr::bad_request("label is too long (max 120 chars)"));
+    }
+    let host = normalize_host(&req.host)?;
+    let path_prefix = normalize_path_prefix(req.path_prefix.as_deref())?;
+    let header_name = normalize_header_name(&req.header_name)?;
+    let header_value = req.header_value.trim();
+    if header_value.is_empty() {
+        return Err(ApiErr::bad_request("header_value is required"));
+    }
+    let header_value_enc = keyring.encrypt(header_value).map_err(ApiErr::from)?;
+
+    let id = Uuid::new_v4().to_string();
+    let conn = db.conn();
+    sq_execute(
+        &conn,
+        dbq::git_credentials::insert(
+            &id,
+            &user.user_id,
+            &label,
+            &host,
+            &path_prefix,
+            &header_name,
+            &header_value_enc,
+        ),
+    )
+    .map_err(ApiErr::from_db("create git credential"))?;
+
+    let created = sq_query_row(
+        &conn,
+        dbq::git_credentials::get_by_id_and_user(&id, &user.user_id),
+        |row| {
+            let current_id: String = row.get(0)?;
+            Ok(GitCredentialSummary {
+                id: current_id,
+                label: row.get(1)?,
+                host: row.get(2)?,
+                path_prefix: row.get(3)?,
+                header_name: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                last_used_at: row.get(7)?,
+            })
+        },
+    )
+    .map_err(ApiErr::from_db("reload git credential"))?;
+
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// DELETE /api/auth/git-credentials/:id — remove a user-managed git credential.
+pub async fn delete_git_credential(
+    Path(id): Path<String>,
+    State(db): State<Db>,
+    user: AuthUser,
+) -> Result<Json<OkResponse>, ApiErr> {
+    let conn = db.conn();
+    let affected = sq_execute(
+        &conn,
+        dbq::git_credentials::delete_by_id_and_user(id.as_str(), &user.user_id),
+    )
+    .map_err(ApiErr::from_db("delete git credential"))?;
+
+    if affected == 0 {
+        return Err(ApiErr::not_found("credential not found"));
+    }
+    Ok(Json(OkResponse { ok: true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_header_name, normalize_host, normalize_path_prefix};
+
+    #[test]
+    fn normalize_host_accepts_valid_and_rejects_invalid() {
+        assert_eq!(
+            normalize_host("GitLab.INTERNAL.example.com").unwrap_or_else(|_| panic!("valid host")),
+            "gitlab.internal.example.com"
+        );
+        assert!(normalize_host("bad host/path").is_err());
+        assert!(normalize_host("").is_err());
+    }
+
+    #[test]
+    fn normalize_path_prefix_trims_and_strips_git_suffix() {
+        assert_eq!(
+            normalize_path_prefix(Some("/group/sub/repo.git/"))
+                .unwrap_or_else(|_| panic!("prefix")),
+            "group/sub/repo"
+        );
+        assert_eq!(
+            normalize_path_prefix(None).unwrap_or_else(|_| panic!("empty")),
+            ""
+        );
+        assert!(normalize_path_prefix(Some("../bad")).is_err());
+    }
+
+    #[test]
+    fn normalize_header_name_enforces_token_chars() {
+        assert_eq!(
+            normalize_header_name("X-GitLab-Token").unwrap_or_else(|_| panic!("header")),
+            "X-GitLab-Token"
+        );
+        assert!(normalize_header_name("bad header").is_err());
+    }
 }

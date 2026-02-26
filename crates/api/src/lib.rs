@@ -219,6 +219,43 @@ pub struct IssueApiKeyResponse {
     pub api_key: String,
 }
 
+/// Public metadata for a user-managed git credential.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct GitCredentialSummary {
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    pub path_prefix: String,
+    pub header_name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+}
+
+/// Response for `GET /api/auth/git-credentials`.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct ListGitCredentialsResponse {
+    #[serde(default)]
+    pub credentials: Vec<GitCredentialSummary>,
+}
+
+/// Request for `POST /api/auth/git-credentials`.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct CreateGitCredentialRequest {
+    pub label: String,
+    pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
+    pub header_name: String,
+    pub header_value: String,
+}
+
 /// Response for OAuth link initiation (redirect URL).
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -956,6 +993,9 @@ mod tests {
             UserSettingsResponse,
             OkResponse,
             IssueApiKeyResponse,
+            GitCredentialSummary,
+            ListGitCredentialsResponse,
+            CreateGitCredentialRequest,
             OAuthLinkResponse,
             // Sessions
             UploadResponse,

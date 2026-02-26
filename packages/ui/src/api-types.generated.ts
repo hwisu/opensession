@@ -31,6 +31,12 @@ export interface OkResponse { ok: boolean, }
 
 export interface IssueApiKeyResponse { api_key: string, }
 
+export interface GitCredentialSummary { id: string, label: string, host: string, path_prefix: string, header_name: string, created_at: string, updated_at: string, last_used_at: string | null, }
+
+export interface ListGitCredentialsResponse { credentials: Array<GitCredentialSummary>, }
+
+export interface CreateGitCredentialRequest { label: string, host: string, path_prefix?: string | null, header_name: string, header_value: string, }
+
 export interface OAuthLinkResponse { url: string, }
 
 export interface UploadResponse { id: string, url: string, session_score: number, score_plugin: string, }

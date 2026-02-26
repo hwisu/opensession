@@ -3,8 +3,10 @@
 //! Used by: Axum server, Cloudflare Worker, local DB (TUI/Daemon).
 
 pub mod api_keys;
+pub mod git_credentials;
 pub mod migrations;
 pub mod oauth;
+pub mod oauth_provider_tokens;
 pub mod sessions;
 pub mod tables;
 pub mod users;

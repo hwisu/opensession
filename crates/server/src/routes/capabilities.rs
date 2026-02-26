@@ -25,6 +25,7 @@ mod tests {
             oauth_providers: Vec::new(),
             public_feed_enabled: true,
             local_review_root: None,
+            credential_keyring: None,
         };
 
         let Json(caps) = capabilities(State(config)).await;

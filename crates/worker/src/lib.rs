@@ -76,6 +76,9 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .post_async("/api/auth/verify", routes::auth::verify)
         .post_async("/api/auth/api-keys/issue", routes::auth::issue_api_key)
         .get_async("/api/auth/me", routes::auth::me)
+        .get_async("/api/auth/git-credentials", routes::auth::list_git_credentials)
+        .post_async("/api/auth/git-credentials", routes::auth::create_git_credential)
+        .delete_async("/api/auth/git-credentials/:id", routes::auth::delete_git_credential)
         .get_async("/api/auth/oauth/:provider", routes::auth::oauth_redirect)
         .get_async(
             "/api/auth/oauth/:provider/callback",

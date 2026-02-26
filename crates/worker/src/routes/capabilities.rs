@@ -22,6 +22,7 @@ mod tests {
             base_url: None,
             jwt_secret: "secret".to_string(),
             oauth_providers: Vec::new(),
+            credential_keyring: None,
         };
 
         let caps = capabilities_from_config(&config);

@@ -12,6 +12,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+use opensession_api::crypto::CredentialKeyring;
 use opensession_api::oauth::{self, OAuthProviderConfig};
 use storage::Db;
 
@@ -32,6 +33,7 @@ pub struct AppConfig {
     pub oauth_providers: Vec<OAuthProviderConfig>,
     pub public_feed_enabled: bool,
     pub local_review_root: Option<PathBuf>,
+    pub credential_keyring: Option<CredentialKeyring>,
 }
 
 impl FromRef<AppState> for Db {
@@ -133,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         local_review_root: std::env::var("OPENSESSION_LOCAL_REVIEW_ROOT")
             .ok()
             .map(PathBuf::from),
+        credential_keyring: load_credential_keyring(),
     };
 
     let state = AppState { db, config };
@@ -151,6 +154,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))
         .route("/auth/api-keys/issue", post(routes::auth::issue_api_key))
+        .route(
+            "/auth/git-credentials",
+            get(routes::auth::list_git_credentials).post(routes::auth::create_git_credential),
+        )
+        .route(
+            "/auth/git-credentials/{id}",
+            delete(routes::auth::delete_git_credential),
+        )
         // Auth (email/password + JWT)
         .route("/auth/register", post(routes::auth::auth_register))
         .route("/auth/login", post(routes::auth::login))
@@ -210,4 +221,16 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn load_credential_keyring() -> Option<CredentialKeyring> {
+    let active = env_trimmed("OPENSESSION_CREDENTIAL_ACTIVE_KID")?;
+    let keyset = env_trimmed("OPENSESSION_CREDENTIAL_KEYS")?;
+    match CredentialKeyring::from_csv(&active, &keyset) {
+        Ok(keyring) => Some(keyring),
+        Err(err) => {
+            tracing::error!("invalid credential encryption config: {}", err.message());
+            None
+        }
+    }
 }

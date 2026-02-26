@@ -1,14 +1,21 @@
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
-use axum::{http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use base64::Engine;
 use opensession_api::{
-    ParseCandidate as ApiParseCandidate, ParsePreviewErrorResponse, ParsePreviewRequest,
+    db as dbq, ParseCandidate as ApiParseCandidate, ParsePreviewErrorResponse, ParsePreviewRequest,
     ParsePreviewResponse, ParseSource,
 };
 use opensession_parsers::ingest::{self as parser_ingest, ParseError as ParserParseError};
 use reqwest::header::CONTENT_TYPE;
+
+use crate::storage::{sq_execute, sq_query_map, sq_query_row, Db};
+use crate::AppConfig;
 
 const FETCH_TIMEOUT_SECS: u64 = 10;
 const MAX_SOURCE_SIZE_BYTES: usize = 10 * 1024 * 1024;
@@ -44,6 +51,15 @@ struct PreviewRouteError {
 }
 
 impl PreviewRouteError {
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "unauthorized",
+            message: message.into(),
+            parser_candidates: Vec::new(),
+        }
+    }
+
     fn invalid_source(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -58,6 +74,28 @@ impl PreviewRouteError {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             code: "fetch_failed",
             message: message.into(),
+            parser_candidates: Vec::new(),
+        }
+    }
+
+    fn missing_git_credential(status_code: u16) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "missing_git_credential",
+            message: format!(
+                "remote source returned status {status_code}; connect provider OAuth or register a git credential for this host"
+            ),
+            parser_candidates: Vec::new(),
+        }
+    }
+
+    fn git_credential_forbidden(status_code: u16) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "git_credential_forbidden",
+            message: format!(
+                "configured credential was rejected by remote source (status {status_code})"
+            ),
             parser_candidates: Vec::new(),
         }
     }
@@ -112,11 +150,17 @@ impl PreviewRouteError {
 
 /// POST /api/parse/preview
 pub async fn preview(
+    State(db): State<Db>,
+    State(config): State<AppConfig>,
+    headers: HeaderMap,
     Json(req): Json<ParsePreviewRequest>,
 ) -> Result<Json<ParsePreviewResponse>, (StatusCode, Json<ParsePreviewErrorResponse>)> {
-    let input = prepare_parse_input(req.source)
-        .await
-        .map_err(PreviewRouteError::into_http)?;
+    let user_id =
+        resolve_optional_user_id(&headers, &db, &config).map_err(PreviewRouteError::into_http)?;
+    let input =
+        prepare_parse_input_with_ctx(req.source, Some(&db), Some(&config), user_id.as_deref())
+            .await
+            .map_err(PreviewRouteError::into_http)?;
 
     let preview = parser_ingest::preview_parse_bytes(
         &input.filename,
@@ -152,7 +196,27 @@ fn map_parser_error(err: ParserParseError) -> PreviewRouteError {
     }
 }
 
+fn resolve_optional_user_id(
+    headers: &HeaderMap,
+    db: &Db,
+    config: &AppConfig,
+) -> Result<Option<String>, PreviewRouteError> {
+    super::auth::try_auth_from_headers(headers, db, config)
+        .map(|user| user.map(|row| row.user_id))
+        .map_err(|_| PreviewRouteError::unauthorized("invalid authorization token"))
+}
+
+#[cfg(test)]
 async fn prepare_parse_input(source: ParseSource) -> Result<ParseInput, PreviewRouteError> {
+    prepare_parse_input_with_ctx(source, None, None, None).await
+}
+
+async fn prepare_parse_input_with_ctx(
+    source: ParseSource,
+    db: Option<&Db>,
+    config: Option<&AppConfig>,
+    user_id: Option<&str>,
+) -> Result<ParseInput, PreviewRouteError> {
     match source {
         ParseSource::Git {
             remote,
@@ -160,7 +224,13 @@ async fn prepare_parse_input(source: ParseSource) -> Result<ParseInput, PreviewR
             path,
         } => {
             let normalized = normalize_git_source(&remote, &r#ref, &path)?;
-            let bytes = fetch_git_source(&normalized).await?;
+            let db = db.ok_or_else(|| {
+                PreviewRouteError::fetch_failed("git source fetch is unavailable in this context")
+            })?;
+            let config = config.ok_or_else(|| {
+                PreviewRouteError::fetch_failed("git source fetch is unavailable in this context")
+            })?;
+            let bytes = fetch_git_source(&normalized, db, config, user_id).await?;
             let filename = file_name_from_path(&normalized.path);
 
             Ok(ParseInput {
@@ -180,14 +250,29 @@ async fn prepare_parse_input(source: ParseSource) -> Result<ParseInput, PreviewR
             path,
         } => {
             let normalized = normalize_github_source(&owner, &repo, &r#ref, &path)?;
-            let bytes = fetch_git_source(&GitSource {
-                remote: format!(
-                    "https://github.com/{}/{}",
-                    normalized.owner, normalized.repo
-                ),
-                r#ref: normalized.r#ref.clone(),
-                path: normalized.path.clone(),
-            })
+            let db = db.ok_or_else(|| {
+                PreviewRouteError::fetch_failed(
+                    "github source fetch is unavailable in this context",
+                )
+            })?;
+            let config = config.ok_or_else(|| {
+                PreviewRouteError::fetch_failed(
+                    "github source fetch is unavailable in this context",
+                )
+            })?;
+            let bytes = fetch_git_source(
+                &GitSource {
+                    remote: format!(
+                        "https://github.com/{}/{}",
+                        normalized.owner, normalized.repo
+                    ),
+                    r#ref: normalized.r#ref.clone(),
+                    path: normalized.path.clone(),
+                },
+                db,
+                config,
+                user_id,
+            )
             .await?;
             let filename = file_name_from_path(&normalized.path);
 
@@ -626,8 +711,128 @@ fn build_git_raw_url(source: &GitSource) -> Result<String, PreviewRouteError> {
     build_generic_raw_url(&remote, &source.r#ref, &source.path)
 }
 
-async fn fetch_git_source(source: &GitSource) -> Result<Vec<u8>, PreviewRouteError> {
+#[derive(Debug, Clone)]
+enum GitCredentialSource {
+    Provider,
+    Manual {
+        credential_id: String,
+        user_id: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct GitFetchAuthHeader {
+    header_name: String,
+    header_value: String,
+    source: GitCredentialSource,
+}
+
+fn provider_for_host(host: &str) -> Option<&'static str> {
+    if host == "github.com" {
+        return Some("github");
+    }
+    if host == "gitlab.com" || host.contains("gitlab") {
+        return Some("gitlab");
+    }
+    None
+}
+
+fn repo_path_from_remote(url: &reqwest::Url) -> Result<String, PreviewRouteError> {
+    Ok(repo_path_segments(url)?.join("/"))
+}
+
+fn path_prefix_matches(repo_path: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    repo_path == prefix
+        || repo_path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn resolve_fetch_auth_header(
+    source: &GitSource,
+    db: &Db,
+    config: &AppConfig,
+    user_id: Option<&str>,
+) -> Result<Option<GitFetchAuthHeader>, PreviewRouteError> {
+    let Some(user_id) = user_id else {
+        return Ok(None);
+    };
+    let Some(keyring) = config.credential_keyring.as_ref() else {
+        return Ok(None);
+    };
+
+    let remote = validate_remote_url(&source.remote)?;
+    let host = remote
+        .host_str()
+        .ok_or_else(|| PreviewRouteError::invalid_source("remote host is required"))?
+        .to_ascii_lowercase();
+    let repo_path = repo_path_from_remote(&remote)?;
+    let conn = db.conn();
+
+    if let Some(provider) = provider_for_host(&host) {
+        let provider_token_enc: Option<String> = sq_query_row(
+            &conn,
+            dbq::oauth_provider_tokens::get_by_user_provider(user_id, provider),
+            |row| row.get(1),
+        )
+        .ok();
+        if let Some(enc) = provider_token_enc {
+            let token = keyring
+                .decrypt(&enc)
+                .map_err(|e| PreviewRouteError::fetch_failed(e.message()))?;
+            return Ok(Some(GitFetchAuthHeader {
+                header_name: "Authorization".to_string(),
+                header_value: format!("Bearer {token}"),
+                source: GitCredentialSource::Provider,
+            }));
+        }
+    }
+
+    let manual_rows: Vec<(String, String, String, String)> = sq_query_map(
+        &conn,
+        dbq::git_credentials::list_for_host_with_secret(user_id, &host),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        },
+    )
+    .map_err(|e| PreviewRouteError::fetch_failed(format!("failed loading git credentials: {e}")))?;
+
+    for (credential_id, path_prefix, header_name, secret_enc) in manual_rows {
+        if !path_prefix_matches(&repo_path, &path_prefix) {
+            continue;
+        }
+        let secret = keyring
+            .decrypt(&secret_enc)
+            .map_err(|e| PreviewRouteError::fetch_failed(e.message()))?;
+        return Ok(Some(GitFetchAuthHeader {
+            header_name,
+            header_value: secret,
+            source: GitCredentialSource::Manual {
+                credential_id,
+                user_id: user_id.to_string(),
+            },
+        }));
+    }
+
+    Ok(None)
+}
+
+async fn fetch_git_source(
+    source: &GitSource,
+    db: &Db,
+    config: &AppConfig,
+    user_id: Option<&str>,
+) -> Result<Vec<u8>, PreviewRouteError> {
     let url = build_git_raw_url(source)?;
+    let fetch_auth = resolve_fetch_auth_header(source, db, config, user_id)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
@@ -636,9 +841,17 @@ async fn fetch_git_source(source: &GitSource) -> Result<Vec<u8>, PreviewRouteErr
             PreviewRouteError::fetch_failed(format!("failed to initialize fetch client: {e}"))
         })?;
 
-    let response = client
-        .get(url)
-        .header(reqwest::header::USER_AGENT, "opensession-ingest-preview")
+    let mut request = client
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, "opensession-ingest-preview");
+    if let Some(auth_header) = fetch_auth.as_ref() {
+        request = request.header(
+            auth_header.header_name.as_str(),
+            auth_header.header_value.as_str(),
+        );
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| PreviewRouteError::fetch_failed(format!("failed to fetch source: {e}")))?;
@@ -647,6 +860,13 @@ async fn fetch_git_source(source: &GitSource) -> Result<Vec<u8>, PreviewRouteErr
         return Err(PreviewRouteError::fetch_failed(
             "redirect responses are not allowed",
         ));
+    }
+
+    if matches!(response.status().as_u16(), 401 | 403) && user_id.is_some() {
+        return Err(match fetch_auth {
+            Some(_) => PreviewRouteError::git_credential_forbidden(response.status().as_u16()),
+            None => PreviewRouteError::missing_git_credential(response.status().as_u16()),
+        });
     }
 
     if !response.status().is_success() {
@@ -687,6 +907,22 @@ async fn fetch_git_source(source: &GitSource) -> Result<Vec<u8>, PreviewRouteErr
         return Err(PreviewRouteError::fetch_failed(
             "binary files are not supported",
         ));
+    }
+
+    if let Some(GitFetchAuthHeader {
+        source:
+            GitCredentialSource::Manual {
+                credential_id,
+                user_id,
+            },
+        ..
+    }) = fetch_auth
+    {
+        let conn = db.conn();
+        let _ = sq_execute(
+            &conn,
+            dbq::git_credentials::touch_last_used(credential_id.as_str(), user_id.as_str()),
+        );
     }
 
     Ok(body.to_vec())
@@ -849,6 +1085,17 @@ mod tests {
             "https://gitlab.com/group/subgroup/repo/-/raw/main/sessions/demo.hail.jsonl"
         );
 
+        let gitlab_self_managed = build_git_raw_url(&GitSource {
+            remote: "https://gitlab.internal.example.com/group/subgroup/repo.git".to_string(),
+            r#ref: "main".to_string(),
+            path: "sessions/demo.hail.jsonl".to_string(),
+        })
+        .expect("self-managed gitlab raw url should build");
+        assert_eq!(
+            gitlab_self_managed,
+            "https://gitlab.internal.example.com/group/subgroup/repo/-/raw/main/sessions/demo.hail.jsonl"
+        );
+
         let generic = build_git_raw_url(&GitSource {
             remote: "https://code.example.com/team/repo.git".to_string(),
             r#ref: "main".to_string(),
@@ -919,5 +1166,33 @@ mod tests {
         assert!(is_allowed_content_type("application/json"));
         assert!(is_allowed_content_type("application/x-ndjson"));
         assert!(!is_allowed_content_type("application/octet-stream"));
+    }
+
+    #[test]
+    fn provider_detection_and_path_prefix_matching_are_stable() {
+        assert_eq!(provider_for_host("github.com"), Some("github"));
+        assert_eq!(provider_for_host("gitlab.com"), Some("gitlab"));
+        assert_eq!(
+            provider_for_host("gitlab.internal.example.com"),
+            Some("gitlab")
+        );
+        assert_eq!(provider_for_host("code.example.com"), None);
+
+        assert!(path_prefix_matches("group/sub/repo", ""));
+        assert!(path_prefix_matches("group/sub/repo", "group/sub"));
+        assert!(path_prefix_matches("group/sub/repo", "group/sub/repo"));
+        assert!(!path_prefix_matches("group/sub/repo", "group/su"));
+        assert!(!path_prefix_matches("group/sub/repo", "group/sub/repo2"));
+    }
+
+    #[test]
+    fn git_credential_error_codes_are_stable() {
+        let missing = PreviewRouteError::missing_git_credential(401);
+        assert_eq!(missing.code, "missing_git_credential");
+        assert_eq!(missing.status, StatusCode::UNAUTHORIZED);
+
+        let forbidden = PreviewRouteError::git_credential_forbidden(403);
+        assert_eq!(forbidden.code, "git_credential_forbidden");
+        assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
     }
 }

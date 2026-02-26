@@ -119,3 +119,34 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_status ON api_keys(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_api_keys_grace_until ON api_keys(grace_until);
+
+-- User-managed git credentials for private source fetch.
+CREATE TABLE IF NOT EXISTS git_credentials (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label            TEXT NOT NULL,
+    host             TEXT NOT NULL,
+    path_prefix      TEXT NOT NULL DEFAULT '',
+    header_name      TEXT NOT NULL,
+    header_value_enc TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_git_credentials_user_host ON git_credentials(user_id, host);
+CREATE INDEX IF NOT EXISTS idx_git_credentials_user_host_prefix
+ON git_credentials(user_id, host, path_prefix);
+
+-- OAuth provider access tokens (encrypted) for user-scoped source fetch auth.
+CREATE TABLE IF NOT EXISTS oauth_provider_tokens (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider         TEXT NOT NULL,
+    access_token_enc TEXT NOT NULL,
+    expires_at       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, provider)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider
+ON oauth_provider_tokens(user_id, provider);

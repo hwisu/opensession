@@ -8,6 +8,8 @@ import type {
 	ParsePreviewResponse,
 	ParseSource,
 	IssueApiKeyResponse,
+	GitCredentialSummary,
+	ListGitCredentialsResponse,
 	LocalReviewBundle,
 	Session,
 	SessionListResponse,
@@ -229,6 +231,36 @@ export async function getSettings(): Promise<UserSettings> {
 export async function issueApiKey(): Promise<IssueApiKeyResponse> {
 	return request<IssueApiKeyResponse>('/api/auth/api-keys/issue', {
 		method: 'POST',
+	});
+}
+
+export async function listGitCredentials(): Promise<GitCredentialSummary[]> {
+	const response = await request<ListGitCredentialsResponse>('/api/auth/git-credentials');
+	return response.credentials ?? [];
+}
+
+export async function createGitCredential(params: {
+	label: string;
+	host: string;
+	path_prefix?: string | null;
+	header_name: string;
+	header_value: string;
+}): Promise<GitCredentialSummary> {
+	return request<GitCredentialSummary>('/api/auth/git-credentials', {
+		method: 'POST',
+		body: JSON.stringify({
+			label: params.label,
+			host: params.host,
+			path_prefix: params.path_prefix ?? null,
+			header_name: params.header_name,
+			header_value: params.header_value,
+		}),
+	});
+}
+
+export async function deleteGitCredential(id: string): Promise<void> {
+	await request('/api/auth/git-credentials/' + encodeURIComponent(id), {
+		method: 'DELETE',
 	});
 }
 

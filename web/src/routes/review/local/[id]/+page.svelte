@@ -188,7 +188,11 @@ $effect(() => {
 	<div class="space-y-3">
 		<div class="rounded border border-border bg-bg-secondary px-3 py-2 text-xs text-text-secondary">
 			<div class="font-medium text-text-primary">
-				PR #{bundle.pr.number} {bundle.pr.owner}/{bundle.pr.repo}
+				{#if bundle.pr.number > 0}
+					PR #{bundle.pr.number} {bundle.pr.owner}/{bundle.pr.repo}
+				{:else}
+					Review {bundle.pr.owner}/{bundle.pr.repo}
+				{/if}
 			</div>
 			<div class="mt-1 break-all">
 				base <span class="font-mono">{bundle.pr.base_sha}</span> -> head
@@ -203,7 +207,7 @@ $effect(() => {
 				</div>
 				<div class="max-h-[72vh] overflow-auto">
 					{#if bundle.commits.length === 0}
-						<div class="px-3 py-4 text-xs text-text-muted">No commits found for this PR range.</div>
+						<div class="px-3 py-4 text-xs text-text-muted">No commits found for this review range.</div>
 					{:else}
 						{#each bundle.commits as commit, index}
 							<button

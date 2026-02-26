@@ -117,6 +117,28 @@ Server parse-preview endpoint:
 
 - `POST /api/parse/preview`
 
+## Review View
+
+`opensession view` is the review-first entrypoint for web view.
+
+```bash
+# Source URI -> /src/*
+opensession view os://src/gl/<project_b64>/ref/<ref_enc>/path/<path...>
+
+# Local source URI / jsonl file -> /review/local/<id>
+opensession view os://src/local/<sha256>
+opensession view ./session.hail.jsonl
+
+# Commit/ref/range -> commit-linked local review bundle
+opensession view HEAD
+opensession view main..feature/my-branch
+```
+
+Default mode is web. Use `--no-open` to print URL only.
+
+Local `view` targets do not require registered git credentials.
+They use local git objects / local source bytes and generate a local review bundle.
+
 ## Handoff
 
 Handoff artifacts are immutable. Build creates a new artifact URI every time.

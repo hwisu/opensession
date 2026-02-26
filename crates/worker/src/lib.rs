@@ -62,6 +62,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         // Health
         .get_async("/api/health", routes::health::handle)
         .get_async("/api/capabilities", routes::capabilities::handle)
+        .post_async("/api/parse/preview", routes::parse::preview)
         // Public sessions (read-only)
         .get_async("/api/sessions", routes::sessions::list)
         .get_async("/api/sessions/:id", routes::sessions::get)

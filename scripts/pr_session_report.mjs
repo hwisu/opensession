@@ -115,6 +115,24 @@ function githubTreeLink(repoFullName, branchName, filePath = '') {
   return `https://github.com/${repoFullName}/tree/${branchName}/${filePath}`;
 }
 
+function encodeRepoPath(pathValue) {
+  return String(pathValue)
+    .split('/')
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+function opensessionSourceLink(repoFullName, rRef, repoPath) {
+  if (!repoFullName || !rRef || !repoPath) return null;
+  const [owner, repo] = String(repoFullName).split('/');
+  if (!owner || !repo) return null;
+  const refSegment = encodeURIComponent(String(rRef));
+  const pathSegment = encodeRepoPath(repoPath);
+  if (!pathSegment) return null;
+  return `https://opensession.io/src/gh/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/ref/${refSegment}/path/${pathSegment}`;
+}
+
 function shortSha(sha) {
   return String(sha).slice(0, 7);
 }
@@ -411,8 +429,8 @@ function renderReport({
     return lines.join('\n');
   }
 
-  lines.push('| Session ID | Commits | Open | JSONL | Meta |');
-  lines.push('| --- | ---: | --- | --- | --- |');
+  lines.push('| Session ID | Commits | Open | OpenSession | JSONL | Meta |');
+  lines.push('| --- | ---: | --- | --- | --- | --- |');
   for (const session of sessions.slice(0, 50)) {
     const commitCell = session.commits.length > 0
       ? session.commits
@@ -423,6 +441,14 @@ function renderReport({
     const suffix = session.commits.length > 4 ? ` +${session.commits.length - 4}` : '';
     const primaryCommit = session.commits[0] ?? '';
     const openLink = localReviewLink(reviewId, session.session_id, primaryCommit);
+    const webLink =
+      artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.hail_path
+        ? opensessionSourceLink(
+            repoFullName,
+            artifact.branchName,
+            `${artifact.artifactRoot}/${session.hail_path}`,
+          )
+        : null;
     const hailLink =
       artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.hail_path
         ? githubBlobLink(
@@ -440,7 +466,7 @@ function renderReport({
           )
         : null;
     lines.push(
-      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} |`,
+      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${webLink ? `[web](${webLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} |`,
     );
   }
   if (sessions.length > 50) {

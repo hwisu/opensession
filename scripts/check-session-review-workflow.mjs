@@ -52,8 +52,17 @@ function main() {
   if (!reportScript.includes('Artifact branch:')) {
     fail('Report must include artifact branch summary link.');
   }
-  if (!reportScript.includes('| Session ID | Commits | Open | JSONL | Meta |')) {
-    fail('Report must include Open/JSONL/Meta columns for per-session navigation.');
+  if (!reportScript.includes('| Session ID | Commits | Open | OpenSession | JSONL | Meta |')) {
+    fail('Report must include Open/OpenSession/JSONL/Meta columns for per-session navigation.');
+  }
+  if (!reportScript.includes('opensessionSourceLink(')) {
+    fail('Report must build opensession.io source links for web review.');
+  }
+  if (!reportScript.includes('https://opensession.io/src/gh/')) {
+    fail('Report must include opensession.io /src/gh link template.');
+  }
+  if (!reportScript.includes('[web](')) {
+    fail('Report must include direct web viewer links.');
   }
   if (!reportScript.includes('[jsonl](')) {
     fail('Report must include direct jsonl file links.');

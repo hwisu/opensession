@@ -115,16 +115,42 @@ function encodeBase64Url(value: string): string {
 	return encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
+function extractRefAndPath(
+	tail: string[],
+	refTokenIndex: number,
+	pathTokenFromIndex: number,
+): { ref: string; path: string } | null {
+	const pathTokenIndex = tail.indexOf('path', pathTokenFromIndex);
+	if (pathTokenIndex < 0 || pathTokenIndex >= tail.length - 1) return null;
+
+	const refSegments = tail.slice(refTokenIndex + 1, pathTokenIndex);
+	const pathSegments = tail.slice(pathTokenIndex + 1);
+	if (refSegments.length === 0 || pathSegments.length === 0) return null;
+
+	return {
+		ref: decodePathSegments(refSegments),
+		path: decodePathSegments(pathSegments),
+	};
+}
+
 function parseSourceRouteFromParams(): { route: SourceRouteState | null; message?: string } {
 	const provider = $page.params.provider;
 	const tail = ($page.params.segments ?? '').split('/').filter((segment) => segment.length > 0);
 
 	if (provider === 'gh') {
-		if (tail.length < 6 || tail[2] !== 'ref' || tail[4] !== 'path') {
+		if (tail.length < 6 || tail[2] !== 'ref') {
 			return {
 				route: null,
 				message:
-					'Invalid source path. Expected /src/gh/<owner>/<repo>/ref/<ref_enc>/path/<path...>.',
+					'Invalid source path. Expected /src/gh/<owner>/<repo>/ref/<ref...>/path/<path...>.',
+			};
+		}
+		const refAndPath = extractRefAndPath(tail, 2, 3);
+		if (!refAndPath) {
+			return {
+				route: null,
+				message:
+					'Invalid source path. Expected /src/gh/<owner>/<repo>/ref/<ref...>/path/<path...>.',
 			};
 		}
 		return {
@@ -132,18 +158,26 @@ function parseSourceRouteFromParams(): { route: SourceRouteState | null; message
 				provider: 'gh',
 				owner: decodeURIComponent(tail[0]),
 				repo: decodeURIComponent(tail[1]),
-				ref: decodeURIComponent(tail[3]),
-				path: decodePathSegments(tail.slice(5)),
+				ref: refAndPath.ref,
+				path: refAndPath.path,
 			},
 		};
 	}
 
 	if (provider === 'git') {
-		if (tail.length < 5 || tail[1] !== 'ref' || tail[3] !== 'path') {
+		if (tail.length < 5 || tail[1] !== 'ref') {
 			return {
 				route: null,
 				message:
-					'Invalid source path. Expected /src/git/<remote_b64>/ref/<ref_enc>/path/<path...>.',
+					'Invalid source path. Expected /src/git/<remote_b64>/ref/<ref...>/path/<path...>.',
+			};
+		}
+		const refAndPath = extractRefAndPath(tail, 1, 2);
+		if (!refAndPath) {
+			return {
+				route: null,
+				message:
+					'Invalid source path. Expected /src/git/<remote_b64>/ref/<ref...>/path/<path...>.',
 			};
 		}
 		const remote = decodeBase64Url(tail[0]);
@@ -151,26 +185,34 @@ function parseSourceRouteFromParams(): { route: SourceRouteState | null; message
 			route: {
 				provider: 'git',
 				remote,
-				ref: decodeURIComponent(tail[2]),
-				path: decodePathSegments(tail.slice(4)),
+				ref: refAndPath.ref,
+				path: refAndPath.path,
 			},
 		};
 	}
 
 	if (provider === 'gl') {
-		if (tail.length < 5 || tail[1] !== 'ref' || tail[3] !== 'path') {
+		if (tail.length < 5 || tail[1] !== 'ref') {
 			return {
 				route: null,
 				message:
-					'Invalid source path. Expected /src/gl/<project_b64>/ref/<ref_enc>/path/<path...>.',
+					'Invalid source path. Expected /src/gl/<project_b64>/ref/<ref...>/path/<path...>.',
+			};
+		}
+		const refAndPath = extractRefAndPath(tail, 1, 2);
+		if (!refAndPath) {
+			return {
+				route: null,
+				message:
+					'Invalid source path. Expected /src/gl/<project_b64>/ref/<ref...>/path/<path...>.',
 			};
 		}
 		return {
 			route: {
 				provider: 'gl',
 				project: decodeBase64Url(tail[0]),
-				ref: decodeURIComponent(tail[2]),
-				path: decodePathSegments(tail.slice(4)),
+				ref: refAndPath.ref,
+				path: refAndPath.path,
 			},
 		};
 	}

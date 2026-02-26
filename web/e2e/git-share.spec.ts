@@ -80,6 +80,11 @@ function srcGitUrl(): string {
 	return `/src/git/${remote}/ref/main/path/sessions/demo.hail.jsonl`;
 }
 
+function srcGitUrlWithRef(ref: string): string {
+	const remote = base64UrlEncode('https://github.com/hwisu/opensession');
+	return `/src/git/${remote}/ref/${ref}/path/sessions/demo.hail.jsonl`;
+}
+
 test.describe('Source Route', () => {
 	test('renders session automatically from /src/git path', async ({ page }) => {
 		await page.route('**/api/capabilities', async (route) => {
@@ -106,6 +111,36 @@ test.describe('Source Route', () => {
 		await expect(page.getByRole('heading', { name: 'Source Fixture' })).toBeVisible({ timeout: 10000 });
 		await expect(page.getByText('hello from user')).toBeVisible();
 		await expect(page.getByText('hello from assistant')).toBeVisible();
+	});
+
+	test('supports slash-separated refs in /src/git path', async ({ page }) => {
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: false,
+					parse_preview_enabled: true,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
+				}),
+			});
+		});
+		await page.route('**/api/parse/preview', async (route) => {
+			const requestBody = route.request().postDataJSON() as {
+				source?: { kind?: string; ref?: string };
+			};
+			expect(requestBody.source?.kind).toBe('git');
+			expect(requestBody.source?.ref).toBe('opensession/pr-13-sessions');
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(buildPreviewResponse()),
+			});
+		});
+
+		await page.goto(srcGitUrlWithRef('opensession/pr-13-sessions'));
+		await expect(page.getByRole('heading', { name: 'Source Fixture' })).toBeVisible({ timeout: 10000 });
 	});
 
 	test('supports parser selection retry flow on /src', async ({ page }) => {

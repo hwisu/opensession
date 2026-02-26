@@ -82,6 +82,108 @@ fn first_non_empty_line(output: &[u8]) -> String {
         .to_string()
 }
 
+fn setup_review_fixture(
+    tmp: &tempfile::TempDir,
+    fetch_hidden_refs: bool,
+) -> (std::path::PathBuf, String) {
+    let author = tmp.path().join("author");
+    let reviewer = tmp.path().join("reviewer");
+    let remote = tmp.path().join("review-remote.git");
+
+    init_git_repo(&author);
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote path")],
+    );
+    run_git(
+        &author,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    run_git(&author, &["push", "origin", "main:main"]);
+
+    run_git(&author, &["checkout", "-b", "feature/review"]);
+    write_file(&author.join("src").join("feature.txt"), "review data\n");
+    run_git(&author, &["add", "."]);
+    run_git(&author, &["commit", "-m", "feat: add review flow"]);
+    let feature_sha = first_non_empty_line(&run_git(&author, &["rev-parse", "HEAD"]).stdout);
+
+    let storage = opensession_git_native::NativeGitStorage;
+    let ledger_ref = opensession_git_native::branch_ledger_ref("feature/review");
+    let session_body = make_hail_jsonl("s-review");
+    let meta_body = serde_json::json!({
+        "schema_version": 2,
+        "session_id": "s-review",
+        "git": { "commits": [feature_sha.clone()] }
+    })
+    .to_string();
+    storage
+        .store_session_at_ref(
+            &author,
+            &ledger_ref,
+            "s-review",
+            session_body.as_bytes(),
+            meta_body.as_bytes(),
+            std::slice::from_ref(&feature_sha),
+        )
+        .expect("store session in hidden ledger");
+
+    run_git(
+        &author,
+        &["push", "origin", &format!("{feature_sha}:refs/pull/7/head")],
+    );
+    run_git(
+        &author,
+        &["push", "origin", &format!("{ledger_ref}:{ledger_ref}")],
+    );
+
+    run_git(
+        tmp.path(),
+        &[
+            "clone",
+            remote.to_str().expect("remote path"),
+            reviewer.to_str().expect("reviewer path"),
+        ],
+    );
+    run_git(
+        &reviewer,
+        &[
+            "fetch",
+            "origin",
+            "+refs/pull/7/head:refs/opensession/review/pr/7/head",
+        ],
+    );
+    if fetch_hidden_refs {
+        run_git(
+            &reviewer,
+            &[
+                "fetch",
+                "origin",
+                "+refs/opensession/*:refs/remotes/origin/opensession/*",
+            ],
+        );
+    }
+
+    run_git(
+        &reviewer,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/acme/private-repo.git",
+        ],
+    );
+
+    (
+        reviewer,
+        "https://github.com/acme/private-repo/pull/7".to_string(),
+    )
+}
+
 #[test]
 fn help_shows_v1_commands() {
     let tmp = make_home();
@@ -354,11 +456,22 @@ fn setup_installs_pre_push_hook_with_backup() {
         .join("bin")
         .join("opensession");
     assert!(shim.exists(), "expected setup to install opensession shim");
+    let ops_shim = tmp
+        .path()
+        .join(".local")
+        .join("share")
+        .join("opensession")
+        .join("bin")
+        .join("ops");
+    assert!(ops_shim.exists(), "expected setup to install ops shim");
 
     let hook_body = fs::read_to_string(repo.join(".git").join("hooks").join("pre-push"))
         .expect("read pre-push hook");
     assert!(hook_body.contains("opensession-managed"));
     assert!(hook_body.contains("setup --print-ledger-ref"));
+    assert!(hook_body.contains("setup --print-fanout-mode"));
+    assert!(hook_body.contains("git notes --ref=opensession"));
+    assert!(hook_body.contains("git notes --ref=opensession copy -f"));
     assert!(hook_body.contains(".local/share/opensession/bin/opensession"));
 }
 
@@ -377,6 +490,46 @@ fn setup_check_prints_expected_ledger_ref() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("current branch: main"));
     assert!(stdout.contains(&opensession_git_native::branch_ledger_ref("main")));
+    assert!(stdout.contains("ops shim:"));
+    assert!(stdout.contains("review readiness:"));
+}
+
+#[test]
+fn setup_print_fanout_mode_reads_git_config() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(tmp.path(), &repo, &["setup", "--print-fanout-mode"]);
+    assert!(
+        out.status.success(),
+        "print-fanout-mode failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hidden_ref");
+
+    let git_config = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .arg("config")
+        .arg("--local")
+        .arg("opensession.fanout-mode")
+        .arg("git_notes")
+        .output()
+        .expect("set git config");
+    assert!(
+        git_config.status.success(),
+        "{}",
+        String::from_utf8_lossy(&git_config.stderr)
+    );
+
+    let out = run(tmp.path(), &repo, &["setup", "--print-fanout-mode"]);
+    assert!(
+        out.status.success(),
+        "print-fanout-mode failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "git_notes");
 }
 
 #[test]
@@ -499,6 +652,65 @@ fn docs_completion_still_available() {
     let out = run(tmp.path(), tmp.path(), &["docs", "completion", "bash"]);
     assert!(out.status.success());
     assert!(!out.stdout.is_empty());
+}
+
+#[test]
+fn review_json_builds_commit_grouped_bundle_from_hidden_refs() {
+    let tmp = make_home();
+    let (reviewer_repo, pr_link) = setup_review_fixture(&tmp, true);
+
+    let out = run(
+        tmp.path(),
+        &reviewer_repo,
+        &["review", &pr_link, "--json", "--no-fetch"],
+    );
+    assert!(
+        out.status.success(),
+        "review failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("review json payload");
+    assert_eq!(payload["commit_count"].as_u64().unwrap_or(0), 1);
+    assert_eq!(payload["mapped_commit_count"].as_u64().unwrap_or(0), 1);
+    assert!(payload["session_count"].as_u64().unwrap_or(0) >= 1);
+
+    let bundle_path = payload["bundle_path"]
+        .as_str()
+        .expect("bundle path in payload");
+    let bundle_raw = fs::read(bundle_path).expect("read review bundle");
+    let bundle_json: Value = serde_json::from_slice(&bundle_raw).expect("bundle json");
+    let first_commit = bundle_json["commits"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .expect("first commit row");
+    let first_session = first_commit["session_ids"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert_eq!(first_session, "s-review");
+}
+
+#[test]
+fn review_no_fetch_succeeds_with_empty_session_groups_when_hidden_refs_missing() {
+    let tmp = make_home();
+    let (reviewer_repo, pr_link) = setup_review_fixture(&tmp, false);
+
+    let out = run(
+        tmp.path(),
+        &reviewer_repo,
+        &["review", &pr_link, "--json", "--no-fetch"],
+    );
+    assert!(
+        out.status.success(),
+        "review should succeed without hidden refs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("review json payload");
+    assert_eq!(payload["commit_count"].as_u64().unwrap_or(0), 1);
+    assert_eq!(payload["mapped_commit_count"].as_u64().unwrap_or(0), 0);
+    assert_eq!(payload["session_count"].as_u64().unwrap_or(0), 0);
 }
 
 #[test]

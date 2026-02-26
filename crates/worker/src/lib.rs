@@ -6,6 +6,12 @@ mod error;
 mod routes;
 mod storage;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::error::IntoErrResponse;
+
+static D1_SCHEMA_READY: AtomicBool = AtomicBool::new(false);
+
 fn cors_headers(headers: &mut Headers) {
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set(
@@ -41,6 +47,15 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
     // Handle CORS preflight
     if req.method() == Method::Options {
         return cors_response();
+    }
+
+    if !D1_SCHEMA_READY.load(Ordering::Relaxed) {
+        if let Err(err) = storage::ensure_d1_schema(&env).await {
+            let service_error =
+                opensession_api::ServiceError::Internal(format!("initialize d1 schema: {err}"));
+            return service_error.into_err_response();
+        }
+        D1_SCHEMA_READY.store(true, Ordering::Relaxed);
     }
 
     let router = Router::new()

@@ -56,6 +56,8 @@ opensession setup
 opensession setup --check
 ```
 
+첫 `setup` 실행 시 fanout 저장 모드(`hidden_ref` 또는 `git_notes`)를 선택하며, 선택값은 로컬 git 설정(`.git/config`)의 `opensession.fanout-mode`에 저장됩니다.
+
 자동 수집을 위한 daemon 실행:
 
 ```bash

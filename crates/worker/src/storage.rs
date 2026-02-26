@@ -3,6 +3,14 @@ use worker::*;
 
 // D1 + R2 storage layer for the Cloudflare Worker (public read-only surface).
 
+const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, applied_at TEXT NOT NULL DEFAULT (datetime('now')));";
+
+#[derive(Debug, Deserialize)]
+struct AppliedMigrationRow {
+    #[allow(dead_code)]
+    name: String,
+}
+
 // ── D1 bool helper ─────────────────────────────────────────────────────────
 
 /// D1 returns booleans as floats (0.0 / 1.0). This deserializer handles both.
@@ -95,6 +103,25 @@ fn default_score_plugin() -> String {
     opensession_core::scoring::DEFAULT_SCORE_PLUGIN.to_string()
 }
 
+fn split_migration_statements(sql: &str) -> Vec<String> {
+    let mut normalized = String::new();
+    for line in sql.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("--") {
+            continue;
+        }
+        normalized.push_str(trimmed);
+        normalized.push(' ');
+    }
+
+    normalized
+        .split(';')
+        .map(str::trim)
+        .filter(|stmt| !stmt.is_empty())
+        .map(|stmt| format!("{stmt};"))
+        .collect()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CountRow {
     pub count: i64,
@@ -110,6 +137,39 @@ pub struct StorageInfoRow {
 
 pub fn get_d1(env: &Env) -> Result<D1Database> {
     env.d1("DB")
+}
+
+/// Ensure shared schema migrations are applied in D1.
+///
+/// Cloudflare local dev can start with an empty D1 file; without this bootstrap
+/// the first `/api/sessions` query fails with `no such table: sessions`.
+pub async fn ensure_d1_schema(env: &Env) -> Result<()> {
+    let d1 = get_d1(env)?;
+    d1.exec(MIGRATIONS_TABLE_SQL).await?;
+
+    for &(name, sql) in opensession_api::db::migrations::MIGRATIONS {
+        let bind_name = worker::wasm_bindgen::JsValue::from_str(name);
+        let existing = d1
+            .prepare("SELECT name FROM _migrations WHERE name = ?1 LIMIT 1")
+            .bind(&[bind_name])?
+            .first::<AppliedMigrationRow>(None)
+            .await?;
+
+        if existing.is_some() {
+            continue;
+        }
+
+        for statement in split_migration_statements(sql) {
+            d1.exec(&statement).await?;
+        }
+        let insert_bind_name = worker::wasm_bindgen::JsValue::from_str(name);
+        d1.prepare("INSERT INTO _migrations (name) VALUES (?1)")
+            .bind(&[insert_bind_name])?
+            .run()
+            .await?;
+    }
+
+    Ok(())
 }
 
 // ── R2 accessor ─────────────────────────────────────────────────────────────
@@ -129,5 +189,38 @@ pub async fn get_session_body(env: &Env, key: &str) -> Result<Option<Vec<u8>>> {
             Ok(Some(bytes))
         }
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATIONS_TABLE_SQL;
+
+    #[test]
+    fn migrations_table_bootstrap_has_expected_shape() {
+        assert!(MIGRATIONS_TABLE_SQL.contains("CREATE TABLE IF NOT EXISTS _migrations"));
+        assert!(MIGRATIONS_TABLE_SQL.contains("name TEXT NOT NULL UNIQUE"));
+        assert!(MIGRATIONS_TABLE_SQL.contains("applied_at TEXT NOT NULL"));
+    }
+
+    #[test]
+    fn split_migration_statements_ignores_comments_and_blank_lines() {
+        let sql = r#"
+-- comment
+CREATE TABLE foo (
+    id INTEGER PRIMARY KEY
+);
+
+-- another comment
+CREATE INDEX idx_foo_id ON foo(id);
+"#;
+
+        let statements = super::split_migration_statements(sql);
+        assert_eq!(statements.len(), 2);
+        assert_eq!(
+            statements[0],
+            "CREATE TABLE foo ( id INTEGER PRIMARY KEY );"
+        );
+        assert_eq!(statements[1], "CREATE INDEX idx_foo_id ON foo(id);");
     }
 }

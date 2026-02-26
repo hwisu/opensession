@@ -39,6 +39,203 @@ const {
 }: { event: Event; pairedResult?: Event; resultOk?: boolean } = $props();
 
 // --- Helpers ---
+type RequestUserInputOption = {
+	label: string;
+	description: string | null;
+};
+
+type RequestUserInputQuestion = {
+	id: string;
+	header: string | null;
+	question: string | null;
+	options: RequestUserInputOption[];
+};
+
+type RequestUserInputCallPayload = {
+	questions: RequestUserInputQuestion[];
+};
+
+type RequestUserInputAnswer = {
+	id: string;
+	answers: string[];
+	raw: string | null;
+};
+
+type RequestUserInputResultPayload = {
+	answers: RequestUserInputAnswer[];
+};
+
+function asObject(value: unknown): Record<string, unknown> | null {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+	return value as Record<string, unknown>;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseJsonText(text: string): unknown | null {
+	const trimmed = text.trim();
+	if (trimmed.length === 0) return null;
+	const first = trimmed[0];
+	if (first !== '{' && first !== '[') return null;
+	try {
+		return JSON.parse(trimmed);
+	} catch {
+		return null;
+	}
+}
+
+function firstStructuredPayload(event: Event): unknown | null {
+	for (const block of event.content.blocks) {
+		if (block.type === 'Json') return block.data;
+		if (block.type === 'Text') {
+			const parsed = parseJsonText(block.text);
+			if (parsed != null) return parsed;
+		}
+	}
+	return null;
+}
+
+function answerValues(value: unknown): { answers: string[]; raw: string | null } {
+	if (value == null) return { answers: [], raw: null };
+	const valueObject = asObject(value);
+	const options = valueObject?.answers;
+	if (Array.isArray(options)) {
+		const answers = options
+			.map((item) => {
+				const direct = asNonEmptyString(item);
+				if (direct) return direct;
+				const fromObject = asObject(item)?.value;
+				const fromValue = asNonEmptyString(fromObject);
+				if (fromValue) return fromValue;
+				if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+				return null;
+			})
+			.filter((entry): entry is string => entry != null);
+		if (answers.length > 0) return { answers, raw: null };
+	}
+	const direct = asNonEmptyString(value);
+	if (direct) return { answers: [direct], raw: null };
+	if (typeof value === 'number' || typeof value === 'boolean') {
+		return { answers: [String(value)], raw: null };
+	}
+	try {
+		return { answers: [], raw: JSON.stringify(value) };
+	} catch {
+		return { answers: [], raw: String(value) };
+	}
+}
+
+function parseRequestUserInputOptions(value: unknown): RequestUserInputOption[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((entry) => {
+			const direct = asNonEmptyString(entry);
+			if (direct) {
+				return {
+					label: direct,
+					description: null,
+				};
+			}
+			const row = asObject(entry);
+			if (!row) return null;
+			const label =
+				asNonEmptyString(row.label) ??
+				asNonEmptyString(row.title) ??
+				asNonEmptyString(row.text) ??
+				asNonEmptyString(row.value);
+			if (!label) return null;
+			return {
+				label,
+				description: asNonEmptyString(row.description),
+			};
+		})
+		.filter((option): option is RequestUserInputOption => option != null);
+}
+
+function parseRequestUserInputCallPayload(payload: unknown): RequestUserInputCallPayload | null {
+	const root = asObject(payload);
+	if (!root) return null;
+	const items = root.questions;
+	const questions = Array.isArray(items)
+		? items
+				.map((entry) => {
+					const item = asObject(entry);
+					if (!item) return null;
+					const id = asNonEmptyString(item.id) ?? 'question';
+					const header = asNonEmptyString(item.header);
+					const question =
+						asNonEmptyString(item.question) ??
+						asNonEmptyString(item.prompt) ??
+						asNonEmptyString(item.ask);
+					const options = parseRequestUserInputOptions(item.options ?? item.choices);
+					return {
+						id,
+						header,
+						question,
+						options,
+					};
+				})
+				.filter((question): question is RequestUserInputQuestion => question != null)
+		: [];
+
+	if (questions.length === 0) {
+		const fallbackQuestion =
+			asNonEmptyString(root.question) ?? asNonEmptyString(root.prompt) ?? asNonEmptyString(root.ask);
+		if (!fallbackQuestion) return null;
+		return {
+			questions: [
+				{
+					id: asNonEmptyString(root.id) ?? 'question',
+					header: asNonEmptyString(root.header) ?? asNonEmptyString(root.title),
+					question: fallbackQuestion,
+					options: parseRequestUserInputOptions(root.options ?? root.choices),
+				},
+			],
+		};
+	}
+
+	return { questions };
+}
+
+function parseRequestUserInputResultPayload(payload: unknown): RequestUserInputResultPayload | null {
+	const root = asObject(payload);
+	if (!root) return null;
+	const answerMap = asObject(root.answers);
+	const answers = answerMap
+		? Object.entries(answerMap).map(([id, value]) => {
+				const normalized = answerValues(value);
+				return {
+					id,
+					answers: normalized.answers,
+					raw: normalized.raw,
+				};
+			})
+		: [];
+
+	if (answers.length === 0) {
+		const fallbackAnswer =
+			answerValues(root.answer).answers[0] ??
+			answerValues(root.response).answers[0] ??
+			answerValues(root.user_message).answers[0];
+		if (!fallbackAnswer) return null;
+		return {
+			answers: [
+				{
+					id: asNonEmptyString(root.id) ?? 'question',
+					answers: [fallbackAnswer],
+					raw: null,
+				},
+			],
+		};
+	}
+
+	return { answers };
+}
+
 function shortPath(path: string): string {
 	const parts = path.split('/');
 	return parts.length > 3 ? `.../${parts.slice(-3).join('/')}` : path;
@@ -112,6 +309,30 @@ const chipIcon = $derived(
 			: (ICON_MAP[eventTypeName] ?? '&#x2022;'),
 );
 
+const toolEventName = $derived.by(() => {
+	if (event.event_type.type !== 'ToolCall' && event.event_type.type !== 'ToolResult') return null;
+	return getToolName(event.event_type).toLowerCase();
+});
+
+const isRequestUserInputTool = $derived(toolEventName === 'request_user_input');
+
+const requestUserInputCallPayload = $derived.by(() => {
+	if (!isRequestUserInputTool || event.event_type.type !== 'ToolCall') return null;
+	return parseRequestUserInputCallPayload(firstStructuredPayload(event));
+});
+
+const requestUserInputResultPayload = $derived.by(() => {
+	if (!isRequestUserInputTool || event.event_type.type !== 'ToolResult') return null;
+	return parseRequestUserInputResultPayload(firstStructuredPayload(event));
+});
+
+const pairedRequestUserInputResultPayload = $derived.by(() => {
+	if (!pairedResult) return null;
+	if (pairedResult.event_type.type !== 'ToolResult') return null;
+	if (getToolName(pairedResult.event_type).toLowerCase() !== 'request_user_input') return null;
+	return parseRequestUserInputResultPayload(firstStructuredPayload(pairedResult));
+});
+
 // --- Chip label ---
 const summaryLabel = $derived.by(() => {
 	const t = event.event_type;
@@ -135,13 +356,19 @@ const summaryLabel = $derived.by(() => {
 		}
 		case 'CodeSearch':
 			return t.data.query;
-		case 'FileSearch':
-			return t.data.pattern;
-		case 'ToolCall': {
-			for (const block of event.content.blocks) {
-				if (block.type === 'Json' && block.data && typeof block.data === 'object') {
-					const d = block.data as Record<string, unknown>;
-					if (d.subject) return String(d.subject);
+			case 'FileSearch':
+				return t.data.pattern;
+			case 'ToolCall': {
+				if (isRequestUserInputTool && requestUserInputCallPayload) {
+					const first = requestUserInputCallPayload.questions[0];
+					const label = first?.header ?? first?.question ?? first?.id ?? 'request_user_input';
+					if (requestUserInputCallPayload.questions.length === 1) return label;
+					return `${label} +${requestUserInputCallPayload.questions.length - 1}`;
+				}
+				for (const block of event.content.blocks) {
+					if (block.type === 'Json' && block.data && typeof block.data === 'object') {
+						const d = block.data as Record<string, unknown>;
+						if (d.subject) return String(d.subject);
 					if (d.recipient) return `\u2192 ${String(d.recipient)}`;
 					if (d.taskId && d.status) return `#${d.taskId} \u2192 ${d.status}`;
 				}
@@ -150,12 +377,19 @@ const summaryLabel = $derived.by(() => {
 				}
 			}
 			return '';
-		}
-		case 'ToolResult': {
-			for (const block of event.content.blocks) {
-				if (block.type === 'Text' && block.text.trim()) {
-					return truncate(block.text.trim().split('\n')[0]);
+			}
+			case 'ToolResult': {
+				if (isRequestUserInputTool && requestUserInputResultPayload) {
+					if (requestUserInputResultPayload.answers.length === 0) return 'no answers';
+					const first = requestUserInputResultPayload.answers[0];
+					const preview = first.answers[0] ?? first.raw ?? '(no answer)';
+					if (requestUserInputResultPayload.answers.length === 1) return `${first.id}: ${preview}`;
+					return `${first.id}: ${preview} +${requestUserInputResultPayload.answers.length - 1}`;
 				}
+				for (const block of event.content.blocks) {
+					if (block.type === 'Text' && block.text.trim()) {
+						return truncate(block.text.trim().split('\n')[0]);
+					}
 			}
 			return '';
 		}
@@ -395,73 +629,172 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 			{/snippet}
 
 			{#snippet children()}
-				{#each event.content.blocks as block}
-					{#if block.type === 'Code'}
-						{@const fileEditData = isFileEdit && 'data' in event.event_type ? (event.event_type as { data: { diff?: string } }).data : null}
-						{#if fileEditData?.diff}
-							<DiffView diff={fileEditData.diff} />
+				{#if requestUserInputCallPayload}
+					<div class="space-y-2 p-3">
+						{#each requestUserInputCallPayload.questions as question}
+							<div class="rounded border border-border/70 bg-bg-secondary/45 px-2.5 py-2">
+								<div class="flex flex-wrap items-center gap-1.5 text-[11px] text-text-muted">
+									<span class="rounded border border-border bg-bg-primary px-1.5 py-0.5 font-mono text-text-secondary">
+										{question.id}
+									</span>
+									{#if question.header}
+										<span class="rounded border border-border bg-bg-primary px-1.5 py-0.5">
+											{question.header}
+										</span>
+									{/if}
+								</div>
+								{#if question.question}
+									<div class="mt-1.5 whitespace-pre-wrap text-xs text-text-primary">
+										{question.question}
+									</div>
+								{/if}
+								{#if question.options.length > 0}
+									<div class="mt-2 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+										Options
+									</div>
+									<div class="mt-1 space-y-1.5">
+										{#each question.options as option, optionIndex}
+											<div class="rounded border border-border/60 bg-bg-primary/40 px-2 py-1.5">
+												<div class="text-xs text-text-secondary">
+													{optionIndex + 1}. {option.label}
+												</div>
+												{#if option.description}
+													<div class="mt-0.5 text-[11px] text-text-muted">
+														{option.description}
+													</div>
+												{/if}
+											</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{:else if requestUserInputResultPayload}
+					<div class="space-y-2 p-3">
+						{#if requestUserInputResultPayload.answers.length === 0}
+							<div class="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-xs text-warning">
+								No answers found in payload.
+							</div>
 						{:else}
-							<CodeBlockView code={block.code} language={block.language}
-								startLine={block.start_line ?? 1} bind:showFull />
-						{/if}
-					{:else if block.type === 'Text'}
-						{@const long = isLongContent(block.text)}
-						{#if block.text.trim()}
-							{@const isPlainText = eventTypeName === 'FileRead' || isShellCommand || eventTypeName === 'FileSearch' || eventTypeName === 'CodeSearch'}
-							{#if isPlainText}
-								<div class="p-3 text-text-secondary whitespace-pre-wrap" class:font-mono={isShellCommand} class:ev-collapsed={long && !showFull}>
-									{block.text}
+							{#each requestUserInputResultPayload.answers as answer}
+								<div class="rounded border border-border/70 bg-bg-secondary/45 px-2.5 py-2">
+									<div class="text-[11px] font-mono text-text-secondary">{answer.id}</div>
+									{#if answer.answers.length > 0}
+										<div class="mt-1.5 flex flex-wrap gap-1">
+											{#each answer.answers as choice}
+												<span class="rounded border border-accent/35 bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent">
+													{choice}
+												</span>
+											{/each}
+										</div>
+									{:else if answer.raw}
+										<div class="mt-1.5 whitespace-pre-wrap text-xs text-text-muted">{answer.raw}</div>
+									{:else}
+										<div class="mt-1.5 text-xs text-warning">(no answer)</div>
+									{/if}
 								</div>
+							{/each}
+						{/if}
+					</div>
+				{:else}
+					{#each event.content.blocks as block}
+						{#if block.type === 'Code'}
+							{@const fileEditData = isFileEdit && 'data' in event.event_type ? (event.event_type as { data: { diff?: string } }).data : null}
+							{#if fileEditData?.diff}
+								<DiffView diff={fileEditData.diff} />
 							{:else}
-								<div class="md-content p-3 text-text-secondary" class:ev-collapsed={long && !showFull}>
-									{@html renderMarkdown(block.text)}
-								</div>
+								<CodeBlockView code={block.code} language={block.language}
+									startLine={block.start_line ?? 1} bind:showFull />
 							{/if}
-							{#if long}
-								<button
-									onclick={() => (showFull = !showFull)}
-									class="w-full border-t border-border bg-bg-secondary px-3 py-1.5 text-center text-[10px] font-medium text-accent hover:bg-bg-hover"
-								>
-									{showFull ? 'Collapse' : 'Show more...'}
-								</button>
+						{:else if block.type === 'Text'}
+							{@const long = isLongContent(block.text)}
+							{#if block.text.trim()}
+								{@const isPlainText = eventTypeName === 'FileRead' || isShellCommand || eventTypeName === 'FileSearch' || eventTypeName === 'CodeSearch'}
+								{#if isPlainText}
+									<div class="p-3 text-text-secondary whitespace-pre-wrap" class:font-mono={isShellCommand} class:ev-collapsed={long && !showFull}>
+										{block.text}
+									</div>
+								{:else}
+									<div class="md-content p-3 text-text-secondary" class:ev-collapsed={long && !showFull}>
+										{@html renderMarkdown(block.text)}
+									</div>
+								{/if}
+								{#if long}
+									<button
+										onclick={() => (showFull = !showFull)}
+										class="w-full border-t border-border bg-bg-secondary px-3 py-1.5 text-center text-[10px] font-medium text-accent hover:bg-bg-hover"
+									>
+										{showFull ? 'Collapse' : 'Show more...'}
+									</button>
+								{/if}
 							{/if}
+						{:else if block.type === 'Json'}
+							<pre class="overflow-x-auto p-3 leading-relaxed"><code class="hljs">{@html highlightCode(JSON.stringify(block.data, null, 2), 'json')}</code></pre>
+						{:else if block.type === 'Image'}
+							<img src={block.url} alt={block.alt ?? ''} class="max-h-64 p-2" />
+						{:else if block.type === 'File'}
+							<div class="p-3 font-mono text-text-muted">{block.path}</div>
 						{/if}
-					{:else if block.type === 'Json'}
-						<pre class="overflow-x-auto p-3 leading-relaxed"><code class="hljs">{@html highlightCode(JSON.stringify(block.data, null, 2), 'json')}</code></pre>
-					{:else if block.type === 'Image'}
-						<img src={block.url} alt={block.alt ?? ''} class="max-h-64 p-2" />
-					{:else if block.type === 'File'}
-						<div class="p-3 font-mono text-text-muted">{block.path}</div>
-					{/if}
-				{/each}
+					{/each}
+				{/if}
 				{#if pairedResult && pairedResult.content.blocks.length > 0}
 					<div class="border-t border-border/50 mt-1">
 						<div class="px-3 py-1 text-[10px] font-medium text-text-muted uppercase tracking-wider bg-bg-secondary/50">Result</div>
-						{#each pairedResult.content.blocks as block}
-							{#if block.type === 'Code'}
-								<CodeBlockView code={block.code} language={block.language}
-									startLine={block.start_line ?? 1} bind:showFull />
-							{:else if block.type === 'Text'}
-								{@const long = isLongContent(block.text)}
-								{#if block.text.trim()}
-									<div class="p-3 text-text-secondary whitespace-pre-wrap" class:ev-collapsed={long && !showFull}>
-										{block.text}
+						{#if pairedRequestUserInputResultPayload}
+							<div class="space-y-2 p-3">
+								{#if pairedRequestUserInputResultPayload.answers.length === 0}
+									<div class="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-xs text-warning">
+										No answers found in payload.
 									</div>
-									{#if long}
-										<button
-											onclick={() => (showFull = !showFull)}
-											class="w-full border-t border-border bg-bg-secondary px-3 py-1.5 text-center text-[10px] font-medium text-accent hover:bg-bg-hover"
-										>
-											{showFull ? 'Collapse' : 'Show more...'}
-										</button>
-									{/if}
+								{:else}
+									{#each pairedRequestUserInputResultPayload.answers as answer}
+										<div class="rounded border border-border/70 bg-bg-secondary/45 px-2.5 py-2">
+											<div class="text-[11px] font-mono text-text-secondary">{answer.id}</div>
+											{#if answer.answers.length > 0}
+												<div class="mt-1.5 flex flex-wrap gap-1">
+													{#each answer.answers as choice}
+														<span class="rounded border border-accent/35 bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent">
+															{choice}
+														</span>
+													{/each}
+												</div>
+											{:else if answer.raw}
+												<div class="mt-1.5 whitespace-pre-wrap text-xs text-text-muted">{answer.raw}</div>
+											{:else}
+												<div class="mt-1.5 text-xs text-warning">(no answer)</div>
+											{/if}
+										</div>
+									{/each}
 								{/if}
-							{:else if block.type === 'Json'}
-								<pre class="overflow-x-auto p-3 leading-relaxed"><code class="hljs">{@html highlightCode(JSON.stringify(block.data, null, 2), 'json')}</code></pre>
-							{:else if block.type === 'Image'}
-								<img src={block.url} alt={block.alt ?? ''} class="max-h-64 p-2" />
-							{/if}
-						{/each}
+							</div>
+						{:else}
+							{#each pairedResult.content.blocks as block}
+								{#if block.type === 'Code'}
+									<CodeBlockView code={block.code} language={block.language}
+										startLine={block.start_line ?? 1} bind:showFull />
+								{:else if block.type === 'Text'}
+									{@const long = isLongContent(block.text)}
+									{#if block.text.trim()}
+										<div class="p-3 text-text-secondary whitespace-pre-wrap" class:ev-collapsed={long && !showFull}>
+											{block.text}
+										</div>
+										{#if long}
+											<button
+												onclick={() => (showFull = !showFull)}
+												class="w-full border-t border-border bg-bg-secondary px-3 py-1.5 text-center text-[10px] font-medium text-accent hover:bg-bg-hover"
+											>
+												{showFull ? 'Collapse' : 'Show more...'}
+											</button>
+										{/if}
+									{/if}
+								{:else if block.type === 'Json'}
+									<pre class="overflow-x-auto p-3 leading-relaxed"><code class="hljs">{@html highlightCode(JSON.stringify(block.data, null, 2), 'json')}</code></pre>
+								{:else if block.type === 'Image'}
+									<img src={block.url} alt={block.alt ?? ''} class="max-h-64 p-2" />
+								{/if}
+							{/each}
+						{/if}
 					</div>
 				{/if}
 			{/snippet}

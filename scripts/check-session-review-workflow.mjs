@@ -43,6 +43,15 @@ function main() {
   if (!reportScript.includes("'<!-- opensession-session-review-final -->'")) {
     fail('Final marker is missing in scripts/pr_session_report.mjs.');
   }
+  if (!reportScript.includes('Quick links: [Files changed]')) {
+    fail('Report must include PR quick links to files/commits.');
+  }
+  if (!reportScript.includes('#### Commit trail')) {
+    fail('Report must include commit trail for direct change navigation.');
+  }
+  if (!reportScript.includes('Updated at (UTC)')) {
+    fail('Report must include update timestamp for per-run freshness.');
+  }
 
   const cleanupBlock = extractCleanupBlock(workflow);
   if (!cleanupBlock) {
@@ -55,6 +64,21 @@ function main() {
   }
   if (!cleanupBlock.includes('contents: write')) {
     fail('cleanup job must include permissions.contents=write for ref deletion.');
+  }
+  if (!cleanupBlock.includes('issues: write')) {
+    fail('cleanup job must include permissions.issues=write for final comment.');
+  }
+  if (!workflow.includes('issues: write')) {
+    fail('workflow must include issues: write for sticky comment upsert.');
+  }
+  if (!workflow.includes('--repo "$REPO_FULL_NAME"')) {
+    fail('workflow must pass repository context to report builder.');
+  }
+  if (!workflow.includes('--pr-number "$PR_NUMBER"')) {
+    fail('workflow must pass PR number context to report builder.');
+  }
+  if (!workflow.includes('github.rest.issues.deleteComment')) {
+    fail('sticky comment upsert must dedupe stale marker comments.');
   }
 
   if (process.exitCode && process.exitCode !== 0) {

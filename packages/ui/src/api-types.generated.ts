@@ -75,6 +75,14 @@ export interface ParsePreviewResponse { parser_used: string, parser_candidates: 
 
 export interface ParsePreviewErrorResponse { code: string, message: string, parser_candidates?: Array<ParseCandidate>, }
 
+export interface LocalReviewBundle { review_id: string, generated_at: string, pr: LocalReviewPrMeta, commits: Array<LocalReviewCommit>, sessions: Array<LocalReviewSession>, }
+
+export interface LocalReviewPrMeta { url: string, owner: string, repo: string, number: number, remote: string, base_sha: string, head_sha: string, }
+
+export interface LocalReviewCommit { sha: string, title: string, author_name: string, author_email: string, authored_at: string, session_ids: Array<string>, }
+
+export interface LocalReviewSession { session_id: string, ledger_ref: string, hail_path: string, commit_shas: Array<string>, session: any, }
+
 export interface AuthProvidersResponse { email_password: boolean, oauth: Array<OAuthProviderInfo>, }
 
 export interface OAuthProviderInfo { id: string, display_name: string, }

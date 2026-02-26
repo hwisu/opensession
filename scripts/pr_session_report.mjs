@@ -30,6 +30,28 @@ function unique(items) {
   return Array.from(new Set(items));
 }
 
+function shortSha(sha) {
+  return String(sha).slice(0, 7);
+}
+
+function commitLink(repoFullName, sha) {
+  if (!repoFullName || !sha) return `\`${shortSha(sha)}\``;
+  return `[\`${shortSha(sha)}\`](https://github.com/${repoFullName}/commit/${sha})`;
+}
+
+function pullRequestLinks(repoFullName, prNumber, base, head) {
+  if (!repoFullName || !prNumber) return null;
+  const root = `https://github.com/${repoFullName}/pull/${prNumber}`;
+  const links = {
+    files: `${root}/files`,
+    commits: `${root}/commits`,
+  };
+  if (base && head) {
+    links.compare = `https://github.com/${repoFullName}/compare/${base}...${head}`;
+  }
+  return links;
+}
+
 function collectCommitRange(base, head) {
   if (!head) return [];
   if (!base) return [head];
@@ -73,6 +95,9 @@ function renderReport({
   marker,
   mode,
   ledgerRef,
+  repoFullName,
+  prNumber,
+  generatedAt,
   base,
   head,
   commits,
@@ -88,9 +113,27 @@ function renderReport({
   lines.push(`- Ledger ref: \`${ledgerRef}\``);
   if (base) lines.push(`- Base: \`${base}\``);
   if (head) lines.push(`- Head: \`${head}\``);
+  lines.push(`- Updated at (UTC): ${generatedAt}`);
   lines.push(`- Commit range size: ${commits.length}`);
   lines.push(`- Linked sessions: ${sessions.length}`);
+  const prLinks = pullRequestLinks(repoFullName, prNumber, base, head);
+  if (prLinks) {
+    lines.push(
+      `- Quick links: [Files changed](${prLinks.files}) · [Commits](${prLinks.commits})${prLinks.compare ? ` · [Compare](${prLinks.compare})` : ''}`,
+    );
+  }
   lines.push('');
+
+  if (commits.length > 0) {
+    lines.push('#### Commit trail');
+    for (const sha of commits.slice(0, 20)) {
+      lines.push(`- ${commitLink(repoFullName, sha)}`);
+    }
+    if (commits.length > 20) {
+      lines.push(`- ...and ${commits.length - 20} more`);
+    }
+    lines.push('');
+  }
 
   if (sessions.length === 0) {
     lines.push('No indexed sessions matched this commit range.');
@@ -100,8 +143,15 @@ function renderReport({
   lines.push('| Session ID | Commits | Meta |');
   lines.push('| --- | ---: | --- |');
   for (const session of sessions.slice(0, 50)) {
+    const commitCell = session.commits.length > 0
+      ? session.commits
+          .slice(0, 4)
+          .map((sha) => commitLink(repoFullName, sha))
+          .join(', ')
+      : String(session.commits.length);
+    const suffix = session.commits.length > 4 ? ` +${session.commits.length - 4}` : '';
     lines.push(
-      `| \`${session.session_id}\` | ${session.commits.length} | \`${session.meta_path ?? ''}\` |`,
+      `| \`${session.session_id}\` | ${commitCell}${suffix} | \`${session.meta_path ?? ''}\` |`,
     );
   }
   if (sessions.length > 50) {
@@ -115,8 +165,12 @@ function main() {
   const args = parseArgs(process.argv);
   const mode = args.mode ?? 'update';
   const ledgerRef = args['ledger-ref'];
+  const repoFullName = args.repo ?? '';
+  const prNumberRaw = args['pr-number'] ?? '';
+  const prNumber = /^\d+$/.test(prNumberRaw) ? Number(prNumberRaw) : null;
   const base = args.base ?? '';
   const head = args.head ?? '';
+  const generatedAt = new Date().toISOString();
   const marker = mode === 'final'
     ? '<!-- opensession-session-review-final -->'
     : '<!-- opensession-session-review -->';
@@ -140,6 +194,9 @@ function main() {
     marker,
     mode,
     ledgerRef,
+    repoFullName,
+    prNumber,
+    generatedAt,
     base,
     head,
     commits,

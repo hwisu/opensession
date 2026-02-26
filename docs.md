@@ -78,6 +78,7 @@ opensession setup --check
 
 - Installs/updates OpenSession-managed `pre-push` hook in the current repo.
 - Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
+- On first setup, prompts for fanout mode (`hidden_ref` or `git_notes`) and stores it in local git config (`opensession.fanout-mode`).
 - `setup --check` prints daemon status from `~/.config/opensession/daemon.pid`.
 - Start daemon with `opensession-daemon run` (or `cargo run -p opensession-daemon -- run` in a source checkout).
 - Does **not** modify `remote.<name>.push`.

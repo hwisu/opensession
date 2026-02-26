@@ -517,6 +517,62 @@ pub struct ParsePreviewErrorResponse {
     pub parser_candidates: Vec<ParseCandidate>,
 }
 
+/// Local review bundle generated from a PR range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewBundle {
+    pub review_id: String,
+    pub generated_at: String,
+    pub pr: LocalReviewPrMeta,
+    #[serde(default)]
+    pub commits: Vec<LocalReviewCommit>,
+    #[serde(default)]
+    pub sessions: Vec<LocalReviewSession>,
+}
+
+/// PR metadata for a local review bundle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewPrMeta {
+    pub url: String,
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub remote: String,
+    pub base_sha: String,
+    pub head_sha: String,
+}
+
+/// Commit row in a local review bundle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewCommit {
+    pub sha: String,
+    pub title: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub authored_at: String,
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+}
+
+/// Session payload mapped into a local review bundle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewSession {
+    pub session_id: String,
+    pub ledger_ref: String,
+    pub hail_path: String,
+    #[serde(default)]
+    pub commit_shas: Vec<String>,
+    #[cfg_attr(feature = "ts", ts(type = "any"))]
+    pub session: Session,
+}
+
 // ─── Streaming Events ────────────────────────────────────────────────────────
 
 /// Request body for `POST /api/sessions/:id/events` — append live events.
@@ -762,6 +818,59 @@ mod schema_tests {
     }
 
     #[test]
+    fn local_review_bundle_round_trip() {
+        let mut sample_session = Session::new(
+            "s-review-1".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        sample_session.recompute_stats();
+
+        let payload = LocalReviewBundle {
+            review_id: "gh-org-repo-pr1-abc1234".to_string(),
+            generated_at: "2026-02-24T00:00:00Z".to_string(),
+            pr: LocalReviewPrMeta {
+                url: "https://github.com/org/repo/pull/1".to_string(),
+                owner: "org".to_string(),
+                repo: "repo".to_string(),
+                number: 1,
+                remote: "origin".to_string(),
+                base_sha: "a".repeat(40),
+                head_sha: "b".repeat(40),
+            },
+            commits: vec![LocalReviewCommit {
+                sha: "c".repeat(40),
+                title: "feat: add review flow".to_string(),
+                author_name: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+                authored_at: "2026-02-24T00:00:00Z".to_string(),
+                session_ids: vec!["s-review-1".to_string()],
+            }],
+            sessions: vec![LocalReviewSession {
+                session_id: "s-review-1".to_string(),
+                ledger_ref: "refs/remotes/origin/opensession/branches/bWFpbg".to_string(),
+                hail_path: "v1/se/s-review-1.hail.jsonl".to_string(),
+                commit_shas: vec!["c".repeat(40)],
+                session: sample_session,
+            }],
+        };
+
+        let json = serde_json::to_string(&payload).expect("review bundle should serialize");
+        let decoded: LocalReviewBundle =
+            serde_json::from_str(&json).expect("review bundle should deserialize");
+
+        assert_eq!(decoded.review_id, "gh-org-repo-pr1-abc1234");
+        assert_eq!(decoded.pr.number, 1);
+        assert_eq!(decoded.commits.len(), 1);
+        assert_eq!(decoded.sessions.len(), 1);
+        assert_eq!(decoded.sessions[0].session_id, "s-review-1");
+    }
+
+    #[test]
     fn capabilities_response_round_trip_includes_new_fields() {
         let caps = CapabilitiesResponse::for_runtime(true, true);
 
@@ -860,6 +969,10 @@ mod tests {
             ParsePreviewRequest,
             ParsePreviewResponse,
             ParsePreviewErrorResponse,
+            LocalReviewBundle,
+            LocalReviewPrMeta,
+            LocalReviewCommit,
+            LocalReviewSession,
             // OAuth
             oauth::AuthProvidersResponse,
             oauth::OAuthProviderInfo,

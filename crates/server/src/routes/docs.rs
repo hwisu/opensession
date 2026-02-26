@@ -22,6 +22,7 @@ Cursor, and Codex, then provides a timeline viewer, repo analytics, and search.
 Base URL: `/api`
 
 - `POST /api/parse/preview` — Preview parser output from source descriptors
+- `GET /api/review/local/:review_id` — Load local PR review bundle (local mode)
 - `GET /api/sessions` — List sessions
 - `GET /api/sessions/:id` — Get session detail
 - `GET /api/sessions/:id/raw` — Download raw HAIL JSONL

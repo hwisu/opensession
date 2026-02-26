@@ -4,8 +4,7 @@ use std::collections::HashMap;
 
 use opensession_api::db;
 use opensession_api::{
-    ServiceError, SessionDetail, SessionLink, SessionListQuery, SessionListResponse,
-    SessionSummary,
+    ServiceError, SessionDetail, SessionLink, SessionListQuery, SessionListResponse, SessionSummary,
 };
 
 use crate::db_helpers::values_to_js;

@@ -12,6 +12,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+pub const INTERACTIVE_USER_INPUT_TOOL: &str = "request_user_input";
+
 // ── First-wins metadata helper ──────────────────────────────────────────────
 
 /// Assign `source` to `target` if `target` is still `None` (first-wins semantics).
@@ -40,8 +42,34 @@ pub fn normalize_role_label(role: &str) -> Option<&'static str> {
     }
 }
 
+/// Return true when a tool call semantically means "ask user for input".
+pub fn is_interactive_user_input_tool(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    let normalized = lower.rsplit('.').next().unwrap_or(lower.as_str());
+    matches!(
+        normalized,
+        "request_user_input"
+            | "ask_followup_question"
+            | "ask_follow_up_question"
+            | "ask_user"
+            | "request_human_input"
+            | "request_user_response"
+    )
+}
+
+/// Canonicalize raw tool name into a cross-agent stable name.
+pub fn canonical_tool_name(name: &str) -> String {
+    if is_interactive_user_input_tool(name) {
+        return INTERACTIVE_USER_INPUT_TOOL.to_string();
+    }
+    name.trim().to_string()
+}
+
 /// Infer a semantic tool kind from a raw tool name.
 pub fn infer_tool_kind(name: &str) -> &'static str {
+    if is_interactive_user_input_tool(name) {
+        return "interactive";
+    }
     let lower = name.trim().to_ascii_lowercase();
     if lower.is_empty() {
         return "other";
@@ -499,7 +527,22 @@ mod tests {
         assert_eq!(infer_tool_kind("exec_command"), "shell");
         assert_eq!(infer_tool_kind("WebSearch"), "web");
         assert_eq!(infer_tool_kind("Task"), "task");
+        assert_eq!(infer_tool_kind("request_user_input"), "interactive");
+        assert_eq!(infer_tool_kind("ask_followup_question"), "interactive");
         assert_eq!(infer_tool_kind("custom_tool"), "other");
+    }
+
+    #[test]
+    fn test_canonical_tool_name_for_interactive_variants() {
+        assert_eq!(
+            canonical_tool_name("request_user_input"),
+            INTERACTIVE_USER_INPUT_TOOL
+        );
+        assert_eq!(
+            canonical_tool_name("ask_followup_question"),
+            INTERACTIVE_USER_INPUT_TOOL
+        );
+        assert_eq!(canonical_tool_name(" exec_command "), "exec_command");
     }
 
     #[test]

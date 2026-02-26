@@ -16,16 +16,19 @@ pub fn validate_email(email: &str) -> Result<String, ServiceError> {
     Ok(email)
 }
 
-/// Validate a password (8-12 characters).
+const MIN_PASSWORD_CHARS: usize = 12;
+const MAX_PASSWORD_CHARS: usize = 128;
+
+/// Validate a password (12-128 characters).
 pub fn validate_password(password: &str) -> Result<(), ServiceError> {
-    if password.len() < 8 {
+    if password.len() < MIN_PASSWORD_CHARS {
         return Err(ServiceError::BadRequest(
-            "password must be at least 8 characters".into(),
+            "password must be at least 12 characters".into(),
         ));
     }
-    if password.len() > 12 {
+    if password.len() > MAX_PASSWORD_CHARS {
         return Err(ServiceError::BadRequest(
-            "password must be at most 12 characters".into(),
+            "password must be at most 128 characters".into(),
         ));
     }
     Ok(())
@@ -174,6 +177,14 @@ pub fn prepare_token_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_password_bounds() {
+        assert!(validate_password("x".repeat(11).as_str()).is_err());
+        assert!(validate_password("x".repeat(12).as_str()).is_ok());
+        assert!(validate_password("x".repeat(128).as_str()).is_ok());
+        assert!(validate_password("x".repeat(129).as_str()).is_err());
+    }
 
     #[test]
     fn test_validate_nickname() {

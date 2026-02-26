@@ -30,17 +30,20 @@
 	},
 	"dependencies": {
 		"highlight.js": "^11.11.1",
+		"isomorphic-dompurify": "^2.28.0",
 		"marked": "^17.0.1"
 	},
 	"scripts": {
 		"lint": "biome check src/",
 		"lint:fix": "biome check --write src/",
-		"format": "biome format --write src/"
+		"format": "biome format --write src/",
+		"test": "tsx --test src/**/*.test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.15",
 		"jsdom": "^28.1.0",
 		"svelte": "^5.51.5",
+		"tsx": "^4.20.5",
 		"turndown": "^7.2.0",
 		"typescript": "^5.9.3"
 	}

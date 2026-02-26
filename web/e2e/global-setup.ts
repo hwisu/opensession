@@ -26,7 +26,7 @@ async function globalSetup() {
 	const resp = await ctx.post('/api/auth/register', {
 		data: {
 			email: 'pw-admin@e2e.local',
-			password: 'testpass99',
+			password: 'testpass99!!',
 			nickname: 'pw-admin',
 		},
 	});

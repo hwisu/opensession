@@ -3,8 +3,9 @@ use opensession_api::{
     oauth::{self, AuthProvidersResponse, OAuthProviderConfig, OAuthProviderInfo},
     service,
     service::AuthToken,
-    AuthRegisterRequest, AuthTokenResponse, IssueApiKeyResponse, LoginRequest, LogoutRequest,
-    OkResponse, RefreshRequest, UserSettingsResponse, VerifyResponse,
+    AuthRegisterRequest, AuthTokenResponse, CreateGitCredentialRequest, GitCredentialSummary,
+    IssueApiKeyResponse, ListGitCredentialsResponse, LoginRequest, LogoutRequest, OkResponse,
+    RefreshRequest, ServiceError, UserSettingsResponse, VerifyResponse,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -17,10 +18,16 @@ use crate::storage;
 
 type ServiceResult<T> = std::result::Result<T, opensession_api::ServiceError>;
 
+const ACCESS_COOKIE_NAME: &str = "opensession_access_token";
+const REFRESH_COOKIE_NAME: &str = "opensession_refresh_token";
+const CSRF_COOKIE_NAME: &str = "opensession_csrf_token";
+const CSRF_HEADER_NAME: &str = "x-csrf-token";
+
 #[derive(Debug)]
 pub(crate) struct AuthUser {
     pub(crate) user_id: String,
     pub(crate) nickname: String,
+    pub(crate) auth_via_cookie: bool,
     pub(crate) email: Option<String>,
 }
 
@@ -71,6 +78,18 @@ struct OAuthIdentityUserRow {
     user_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitCredentialSummaryRow {
+    id: String,
+    label: String,
+    host: String,
+    path_prefix: String,
+    header_name: String,
+    created_at: String,
+    updated_at: String,
+    last_used_at: Option<String>,
+}
+
 fn now_unix() -> u64 {
     let now = chrono::Utc::now().timestamp();
     if now < 0 {
@@ -84,12 +103,171 @@ fn now_sqlite_datetime() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+fn parse_cookie_value(headers: &Headers, name: &str) -> Option<String> {
+    headers.get("Cookie").ok().flatten().and_then(|raw| {
+        raw.split(';').find_map(|entry| {
+            let mut parts = entry.trim().splitn(2, '=');
+            let key = parts.next()?.trim();
+            let value = parts.next()?.trim();
+            if key == name {
+                Some(value.to_string())
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn constant_time_eq(lhs: &str, rhs: &str) -> bool {
+    let left = lhs.as_bytes();
+    let right = rhs.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+fn secure_cookie_mode(req: &Request, config: &WorkerConfig) -> bool {
+    if let Ok(Some(proto)) = req.headers().get("x-forwarded-proto") {
+        if proto
+            .split(',')
+            .next()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
+        {
+            return true;
+        }
+    }
+    if let Ok(url) = req.url() {
+        if url.scheme().eq_ignore_ascii_case("https") {
+            return true;
+        }
+    }
+    config
+        .base_url
+        .as_deref()
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("https://"))
+}
+
+fn build_set_cookie(
+    name: &str,
+    value: &str,
+    max_age_secs: i64,
+    path: &str,
+    http_only: bool,
+    secure: bool,
+) -> String {
+    let mut cookie = format!("{name}={value}; Path={path}; Max-Age={max_age_secs}; SameSite=Lax");
+    if http_only {
+        cookie.push_str("; HttpOnly");
+    }
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn auth_cookie_values(
+    req: &Request,
+    config: &WorkerConfig,
+    tokens: &AuthTokenResponse,
+) -> ServiceResult<Vec<String>> {
+    let secure = secure_cookie_mode(req, config);
+    let csrf = crypto::generate_token()?;
+    Ok(vec![
+        build_set_cookie(
+            ACCESS_COOKIE_NAME,
+            &tokens.access_token,
+            tokens.expires_in as i64,
+            "/api",
+            true,
+            secure,
+        ),
+        build_set_cookie(
+            REFRESH_COOKIE_NAME,
+            &tokens.refresh_token,
+            crypto::REFRESH_EXPIRY_SECS as i64,
+            "/api",
+            true,
+            secure,
+        ),
+        build_set_cookie(
+            CSRF_COOKIE_NAME,
+            &csrf,
+            crypto::REFRESH_EXPIRY_SECS as i64,
+            "/",
+            false,
+            secure,
+        ),
+    ])
+}
+
+fn clear_auth_cookie_values(req: &Request, config: &WorkerConfig) -> Vec<String> {
+    let secure = secure_cookie_mode(req, config);
+    vec![
+        build_set_cookie(ACCESS_COOKIE_NAME, "", 0, "/api", true, secure),
+        build_set_cookie(REFRESH_COOKIE_NAME, "", 0, "/api", true, secure),
+        build_set_cookie(CSRF_COOKIE_NAME, "", 0, "/", false, secure),
+    ]
+}
+
+fn enforce_csrf_if_cookie_auth(
+    req: &Request,
+    config: &WorkerConfig,
+    using_cookie_auth: bool,
+) -> ServiceResult<()> {
+    if !using_cookie_auth {
+        return Ok(());
+    }
+    let origin = req
+        .headers()
+        .get("Origin")
+        .map_err(|e| service_internal("read origin header", e))?
+        .ok_or_else(|| {
+            opensession_api::ServiceError::Unauthorized("missing request origin".into())
+        })?;
+    if !config.allowed_origins.iter().any(|value| value == &origin) {
+        return Err(opensession_api::ServiceError::Unauthorized(
+            "request origin is not allowed".into(),
+        ));
+    }
+    let csrf_cookie = parse_cookie_value(req.headers(), CSRF_COOKIE_NAME)
+        .ok_or_else(|| opensession_api::ServiceError::Unauthorized("missing csrf cookie".into()))?;
+    let csrf_header = req
+        .headers()
+        .get(CSRF_HEADER_NAME)
+        .map_err(|e| service_internal("read csrf header", e))?
+        .ok_or_else(|| opensession_api::ServiceError::Unauthorized("missing csrf header".into()))?;
+    if !constant_time_eq(&csrf_cookie, &csrf_header) {
+        return Err(opensession_api::ServiceError::Unauthorized(
+            "csrf token mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn service_internal(context: &str, err: impl std::fmt::Display) -> opensession_api::ServiceError {
     opensession_api::ServiceError::Internal(format!("{context}: {err}"))
 }
 
 fn json_response<T: Serialize>(value: &T, status: u16) -> Result<Response> {
     Response::from_json(value).map(|resp| resp.with_status(status))
+}
+
+fn json_response_with_cookies<T: Serialize>(
+    value: &T,
+    status: u16,
+    cookies: &[String],
+) -> Result<Response> {
+    let resp = json_response(value, status)?;
+    let headers = Headers::new();
+    for cookie in cookies {
+        headers.append("Set-Cookie", cookie)?;
+    }
+    Ok(resp.with_headers(headers))
 }
 
 async fn parse_json<T: for<'de> Deserialize<'de>>(req: &mut Request) -> ServiceResult<T> {
@@ -155,7 +333,7 @@ pub(crate) async fn authenticate(
     d1: &D1Database,
     config: &WorkerConfig,
 ) -> std::result::Result<AuthUser, opensession_api::ServiceError> {
-    let token = req
+    let header_token = req
         .headers()
         .get("Authorization")
         .map_err(|_| {
@@ -163,12 +341,17 @@ pub(crate) async fn authenticate(
                 "missing or invalid Authorization header".into(),
             )
         })?
-        .and_then(|raw| raw.strip_prefix("Bearer ").map(str::to_owned))
-        .ok_or_else(|| {
-            opensession_api::ServiceError::Unauthorized(
-                "missing or invalid Authorization header".into(),
-            )
-        })?;
+        .and_then(|raw| raw.strip_prefix("Bearer ").map(str::to_owned));
+    let cookie_token = parse_cookie_value(req.headers(), ACCESS_COOKIE_NAME);
+    let (token, auth_via_cookie) = if let Some(token) = header_token {
+        (token, false)
+    } else if let Some(token) = cookie_token {
+        (token, true)
+    } else {
+        return Err(opensession_api::ServiceError::Unauthorized(
+            "missing authentication token".into(),
+        ));
+    };
 
     let resolved = service::resolve_auth_token(&token, &config.jwt_secret, now_unix())?;
     match resolved {
@@ -186,6 +369,7 @@ pub(crate) async fn authenticate(
             Ok(AuthUser {
                 user_id: row.id,
                 nickname: row.nickname,
+                auth_via_cookie,
                 email: row.email,
             })
         }
@@ -198,10 +382,35 @@ pub(crate) async fn authenticate(
             Ok(AuthUser {
                 user_id: row.id,
                 nickname: row.nickname,
+                auth_via_cookie,
                 email: row.email,
             })
         }
     }
+}
+
+pub(crate) async fn authenticate_optional(
+    req: &Request,
+    d1: &D1Database,
+    config: &WorkerConfig,
+) -> std::result::Result<Option<AuthUser>, opensession_api::ServiceError> {
+    let header = req.headers().get("Authorization").map_err(|_| {
+        opensession_api::ServiceError::Unauthorized(
+            "missing or invalid Authorization header".into(),
+        )
+    })?;
+    if let Some(raw) = header {
+        if !raw.starts_with("Bearer ") {
+            return Err(opensession_api::ServiceError::Unauthorized(
+                "missing or invalid Authorization header".into(),
+            ));
+        }
+        return authenticate(req, d1, config).await.map(Some);
+    }
+    if parse_cookie_value(req.headers(), ACCESS_COOKIE_NAME).is_some() {
+        return authenticate(req, d1, config).await.map(Some);
+    }
+    Ok(None)
 }
 
 async fn issue_tokens(
@@ -254,6 +463,16 @@ fn provider_display_name(provider_id: &str) -> String {
     }
 }
 
+fn oauth_provider_host(provider: &OAuthProviderConfig) -> ServiceResult<String> {
+    let parsed = Url::parse(&provider.token_url).map_err(|_| {
+        opensession_api::ServiceError::Internal("invalid OAuth provider token URL".into())
+    })?;
+    let host = parsed.host_str().ok_or_else(|| {
+        opensession_api::ServiceError::Internal("OAuth provider token URL missing host".into())
+    })?;
+    Ok(host.to_ascii_lowercase())
+}
+
 fn resolve_base_url(req: &Request, config: &WorkerConfig) -> String {
     if let Some(base_url) = config.base_url.as_ref() {
         return base_url.trim_end_matches('/').to_string();
@@ -274,6 +493,15 @@ fn resolve_base_url(req: &Request, config: &WorkerConfig) -> String {
 fn redirect_response(location: &str) -> Result<Response> {
     let headers = Headers::new();
     headers.set("Location", location)?;
+    Ok(Response::empty()?.with_status(302).with_headers(headers))
+}
+
+fn redirect_response_with_cookies(location: &str, cookies: &[String]) -> Result<Response> {
+    let headers = Headers::new();
+    headers.set("Location", location)?;
+    for cookie in cookies {
+        headers.append("Set-Cookie", cookie)?;
+    }
     Ok(Response::empty()?.with_status(302).with_headers(headers))
 }
 
@@ -396,7 +624,10 @@ pub async fn auth_register(mut req: Request, ctx: RouteContext<()>) -> Result<Re
     .await;
 
     match result {
-        Ok(tokens) => json_response(&tokens, 201),
+        Ok(tokens) => match auth_cookie_values(&req, &config, &tokens) {
+            Ok(cookies) => json_response_with_cookies(&tokens, 201, &cookies),
+            Err(err) => err.into_err_response(),
+        },
         Err(err) => err.into_err_response(),
     }
 }
@@ -448,7 +679,10 @@ pub async fn login(mut req: Request, ctx: RouteContext<()>) -> Result<Response> 
     .await;
 
     match result {
-        Ok(tokens) => json_response(&tokens, 200),
+        Ok(tokens) => match auth_cookie_values(&req, &config, &tokens) {
+            Ok(cookies) => json_response_with_cookies(&tokens, 200, &cookies),
+            Err(err) => err.into_err_response(),
+        },
         Err(err) => err.into_err_response(),
     }
 }
@@ -467,8 +701,36 @@ pub async fn refresh(mut req: Request, ctx: RouteContext<()>) -> Result<Response
             ));
         }
 
-        let req: RefreshRequest = parse_json(&mut req).await?;
-        let token_hash = crypto::hash_token(&req.refresh_token);
+        let body_text = req
+            .text()
+            .await
+            .map_err(|e| service_internal("read refresh body", e))?;
+        let body_token = if body_text.trim().is_empty() {
+            None
+        } else {
+            let payload: RefreshRequest = serde_json::from_str(&body_text).map_err(|_| {
+                opensession_api::ServiceError::BadRequest("invalid request body".into())
+            })?;
+            let token = payload.refresh_token.trim().to_string();
+            if token.is_empty() {
+                return Err(opensession_api::ServiceError::BadRequest(
+                    "refresh_token is required".into(),
+                ));
+            }
+            Some(token)
+        };
+        let cookie_token = parse_cookie_value(req.headers(), REFRESH_COOKIE_NAME);
+        let (refresh_token, using_cookie_refresh) = match (body_token, cookie_token) {
+            (Some(token), _) => (token, false),
+            (None, Some(token)) => (token, true),
+            (None, None) => {
+                return Err(opensession_api::ServiceError::Unauthorized(
+                    "missing refresh token".into(),
+                ));
+            }
+        };
+        enforce_csrf_if_cookie_auth(&req, &config, using_cookie_refresh)?;
+        let token_hash = crypto::hash_token(&refresh_token);
 
         let row: Option<RefreshRow> = d1_first(
             &d1,
@@ -504,32 +766,65 @@ pub async fn refresh(mut req: Request, ctx: RouteContext<()>) -> Result<Response
     .await;
 
     match result {
-        Ok(tokens) => json_response(&tokens, 200),
+        Ok(tokens) => match auth_cookie_values(&req, &config, &tokens) {
+            Ok(cookies) => json_response_with_cookies(&tokens, 200, &cookies),
+            Err(err) => err.into_err_response(),
+        },
         Err(err) => err.into_err_response(),
     }
 }
 
 pub async fn logout(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let config = WorkerConfig::from_env(&ctx.env);
     let d1 = match storage::get_d1(&ctx.env) {
         Ok(db) => db,
         Err(err) => return service_internal("load d1 binding", err).into_err_response(),
     };
 
     let result: ServiceResult<OkResponse> = async {
-        let req: LogoutRequest = parse_json(&mut req).await?;
-        let token_hash = crypto::hash_token(&req.refresh_token);
-        let _ = d1_run(
-            &d1,
-            dbq::users::delete_refresh_token(&token_hash),
-            "logout refresh token delete",
-        )
-        .await;
+        let body_text = req
+            .text()
+            .await
+            .map_err(|e| service_internal("read logout body", e))?;
+        let body_token = if body_text.trim().is_empty() {
+            None
+        } else {
+            let payload: LogoutRequest = serde_json::from_str(&body_text).map_err(|_| {
+                opensession_api::ServiceError::BadRequest("invalid request body".into())
+            })?;
+            let token = payload.refresh_token.trim().to_string();
+            if token.is_empty() {
+                return Err(opensession_api::ServiceError::BadRequest(
+                    "refresh_token is required".into(),
+                ));
+            }
+            Some(token)
+        };
+        let cookie_token = parse_cookie_value(req.headers(), REFRESH_COOKIE_NAME);
+        let token_and_source = match (body_token, cookie_token) {
+            (Some(token), _) => Some((token, false)),
+            (None, Some(token)) => Some((token, true)),
+            (None, None) => None,
+        };
+        if let Some((refresh_token, using_cookie_refresh)) = token_and_source {
+            enforce_csrf_if_cookie_auth(&req, &config, using_cookie_refresh)?;
+            let token_hash = crypto::hash_token(&refresh_token);
+            let _ = d1_run(
+                &d1,
+                dbq::users::delete_refresh_token(&token_hash),
+                "logout refresh token delete",
+            )
+            .await;
+        }
         Ok(OkResponse { ok: true })
     }
     .await;
 
     match result {
-        Ok(body) => json_response(&body, 200),
+        Ok(body) => {
+            let cookies = clear_auth_cookie_values(&req, &config);
+            json_response_with_cookies(&body, 200, &cookies)
+        }
         Err(err) => err.into_err_response(),
     }
 }
@@ -619,6 +914,7 @@ pub async fn issue_api_key(req: Request, ctx: RouteContext<()>) -> Result<Respon
 
     let result: ServiceResult<IssueApiKeyResponse> = async {
         let user = authenticate(&req, &d1, &config).await?;
+        enforce_csrf_if_cookie_auth(&req, &config, user.auth_via_cookie)?;
         let now = now_unix();
         let grace_until = service::grace_until_sqlite(now)?;
         let key = service::generate_api_key();
@@ -640,6 +936,250 @@ pub async fn issue_api_key(req: Request, ctx: RouteContext<()>) -> Result<Respon
         .await?;
 
         Ok(IssueApiKeyResponse { api_key: key })
+    }
+    .await;
+
+    match result {
+        Ok(body) => json_response(&body, 200),
+        Err(err) => err.into_err_response(),
+    }
+}
+
+fn normalize_header_name(raw: &str) -> ServiceResult<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ServiceError::BadRequest("header_name is required".into()));
+    }
+    if trimmed.len() > 64 {
+        return Err(ServiceError::BadRequest(
+            "header_name is too long (max 64 chars)".into(),
+        ));
+    }
+    if !trimmed.bytes().all(|b| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'!' | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'-'
+                    | b'.'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'|'
+                    | b'~'
+            )
+    }) {
+        return Err(ServiceError::BadRequest(
+            "header_name contains invalid characters".into(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_host(raw: &str) -> ServiceResult<String> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return Err(ServiceError::BadRequest("host is required".into()));
+    }
+    if trimmed.len() > 255 {
+        return Err(ServiceError::BadRequest(
+            "host is too long (max 255 chars)".into(),
+        ));
+    }
+    if trimmed.contains('/') || trimmed.contains(' ') {
+        return Err(ServiceError::BadRequest(
+            "host must not contain path separators or spaces".into(),
+        ));
+    }
+    if trimmed
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'))
+    {
+        return Ok(trimmed);
+    }
+    Err(ServiceError::BadRequest(
+        "host contains invalid characters".into(),
+    ))
+}
+
+fn normalize_path_prefix(raw: Option<&str>) -> ServiceResult<String> {
+    let trimmed = raw.unwrap_or_default().trim().trim_matches('/').to_string();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if trimmed.len() > 512 {
+        return Err(ServiceError::BadRequest(
+            "path_prefix is too long (max 512 chars)".into(),
+        ));
+    }
+    let mut segments = Vec::<String>::new();
+    for part in trimmed.split('/') {
+        let seg = part.trim();
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains('\\') {
+            return Err(ServiceError::BadRequest(
+                "path_prefix contains invalid segments".into(),
+            ));
+        }
+        segments.push(seg.to_string());
+    }
+    if let Some(last) = segments.last_mut() {
+        *last = last.strip_suffix(".git").unwrap_or(last).to_string();
+    }
+    Ok(segments.join("/"))
+}
+
+pub async fn list_git_credentials(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let config = WorkerConfig::from_env(&ctx.env);
+    let d1 = match storage::get_d1(&ctx.env) {
+        Ok(db) => db,
+        Err(err) => return service_internal("load d1 binding", err).into_err_response(),
+    };
+
+    let result: ServiceResult<ListGitCredentialsResponse> = async {
+        let user = authenticate(&req, &d1, &config).await?;
+        let rows: Vec<GitCredentialSummaryRow> = d1_all(
+            &d1,
+            dbq::git_credentials::list_by_user(&user.user_id),
+            "list git credentials",
+        )
+        .await?;
+        let credentials = rows
+            .into_iter()
+            .map(|row| GitCredentialSummary {
+                id: row.id,
+                label: row.label,
+                host: row.host,
+                path_prefix: row.path_prefix,
+                header_name: row.header_name,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                last_used_at: row.last_used_at,
+            })
+            .collect();
+        Ok(ListGitCredentialsResponse { credentials })
+    }
+    .await;
+
+    match result {
+        Ok(body) => json_response(&body, 200),
+        Err(err) => err.into_err_response(),
+    }
+}
+
+pub async fn create_git_credential(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let config = WorkerConfig::from_env(&ctx.env);
+    let d1 = match storage::get_d1(&ctx.env) {
+        Ok(db) => db,
+        Err(err) => return service_internal("load d1 binding", err).into_err_response(),
+    };
+
+    let result: ServiceResult<GitCredentialSummary> = async {
+        let user = authenticate(&req, &d1, &config).await?;
+        enforce_csrf_if_cookie_auth(&req, &config, user.auth_via_cookie)?;
+        let payload: CreateGitCredentialRequest = parse_json(&mut req).await?;
+
+        let keyring = config.credential_keyring.as_ref().ok_or_else(|| {
+            ServiceError::Internal("credential encryption is not configured".into())
+        })?;
+
+        let label = payload.label.trim().to_string();
+        if label.is_empty() {
+            return Err(ServiceError::BadRequest("label is required".into()));
+        }
+        if label.len() > 120 {
+            return Err(ServiceError::BadRequest(
+                "label is too long (max 120 chars)".into(),
+            ));
+        }
+        let host = normalize_host(&payload.host)?;
+        let path_prefix = normalize_path_prefix(payload.path_prefix.as_deref())?;
+        let header_name = normalize_header_name(&payload.header_name)?;
+        let header_value = payload.header_value.trim();
+        if header_value.is_empty() {
+            return Err(ServiceError::BadRequest("header_value is required".into()));
+        }
+        let header_value_enc = keyring.encrypt(header_value)?;
+
+        let credential_id = Uuid::new_v4().to_string();
+        d1_run(
+            &d1,
+            dbq::git_credentials::insert(
+                &credential_id,
+                &user.user_id,
+                &label,
+                &host,
+                &path_prefix,
+                &header_name,
+                &header_value_enc,
+            ),
+            "insert git credential",
+        )
+        .await?;
+
+        let row = d1_first::<GitCredentialSummaryRow>(
+            &d1,
+            dbq::git_credentials::get_by_id_and_user(&credential_id, &user.user_id),
+            "reload git credential",
+        )
+        .await?
+        .ok_or_else(|| ServiceError::Internal("failed to reload git credential".into()))?;
+
+        Ok(GitCredentialSummary {
+            id: row.id,
+            label: row.label,
+            host: row.host,
+            path_prefix: row.path_prefix,
+            header_name: row.header_name,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            last_used_at: row.last_used_at,
+        })
+    }
+    .await;
+
+    match result {
+        Ok(body) => json_response(&body, 201),
+        Err(err) => err.into_err_response(),
+    }
+}
+
+pub async fn delete_git_credential(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let config = WorkerConfig::from_env(&ctx.env);
+    let d1 = match storage::get_d1(&ctx.env) {
+        Ok(db) => db,
+        Err(err) => return service_internal("load d1 binding", err).into_err_response(),
+    };
+
+    let result: ServiceResult<OkResponse> = async {
+        let user = authenticate(&req, &d1, &config).await?;
+        enforce_csrf_if_cookie_auth(&req, &config, user.auth_via_cookie)?;
+        let id = ctx
+            .param("id")
+            .ok_or_else(|| ServiceError::BadRequest("missing credential id".into()))?;
+
+        let existing = d1_first::<GitCredentialSummaryRow>(
+            &d1,
+            dbq::git_credentials::get_by_id_and_user(id, &user.user_id),
+            "lookup git credential",
+        )
+        .await?;
+        if existing.is_none() {
+            return Err(ServiceError::NotFound("credential not found".into()));
+        }
+
+        d1_run(
+            &d1,
+            dbq::git_credentials::delete_by_id_and_user(id, &user.user_id),
+            "delete git credential",
+        )
+        .await?;
+        Ok(OkResponse { ok: true })
     }
     .await;
 
@@ -699,7 +1239,7 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
         Err(err) => return service_internal("load d1 binding", err).into_err_response(),
     };
 
-    let result: ServiceResult<String> = async {
+    let result: ServiceResult<(String, Vec<String>)> = async {
         let provider_id = ctx
             .param("provider")
             .ok_or_else(|| opensession_api::ServiceError::BadRequest("missing provider".into()))?
@@ -892,16 +1432,66 @@ pub async fn oauth_callback(req: Request, ctx: RouteContext<()>) -> Result<Respo
             }
         };
 
+        if let Some(keyring) = config.credential_keyring.as_ref() {
+            let token_id = Uuid::new_v4().to_string();
+            let access_token_enc = keyring.encrypt(&access_token)?;
+            d1_run(
+                &d1,
+                dbq::oauth_provider_tokens::upsert_access_token(
+                    &token_id,
+                    &user_id,
+                    &provider_id,
+                    &oauth_provider_host(provider)?,
+                    &access_token_enc,
+                    None,
+                ),
+                "upsert oauth provider token",
+            )
+            .await?;
+        }
+
         let tokens = issue_tokens(&d1, &config, &user_id, &nickname).await?;
-        Ok(format!(
-            "{base_url}/auth/callback#access_token={}&refresh_token={}&expires_in={}",
-            tokens.access_token, tokens.refresh_token, tokens.expires_in
-        ))
+        let cookies = auth_cookie_values(&req, &config, &tokens)?;
+        Ok((format!("{base_url}/auth/callback"), cookies))
     }
     .await;
 
     match result {
-        Ok(location) => redirect_response(&location),
+        Ok((location, cookies)) => redirect_response_with_cookies(&location, &cookies),
         Err(err) => err.into_err_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_header_name, normalize_host, normalize_path_prefix};
+
+    #[test]
+    fn normalize_host_accepts_valid_and_rejects_invalid() {
+        assert_eq!(
+            normalize_host("GitLab.INTERNAL.example.com").expect("valid host"),
+            "gitlab.internal.example.com"
+        );
+        assert!(normalize_host("bad host/path").is_err());
+        assert!(normalize_host("").is_err());
+    }
+
+    #[test]
+    fn normalize_path_prefix_trims_and_strips_git_suffix() {
+        assert_eq!(
+            normalize_path_prefix(Some("/group/sub/repo.git/")).expect("prefix"),
+            "group/sub/repo"
+        );
+        assert_eq!(normalize_path_prefix(None).expect("empty"), "");
+        assert!(normalize_path_prefix(Some("../bad")).is_err());
+    }
+
+    #[test]
+    fn normalize_header_name_enforces_token_chars() {
+        assert_eq!(
+            normalize_header_name("X-GitLab-Token").expect("header"),
+            "X-GitLab-Token"
+        );
+        assert!(normalize_header_name("bad header").is_err());
     }
 }

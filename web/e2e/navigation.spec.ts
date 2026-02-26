@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { createSessionFixture, mockCapabilities, mockSessionApis } from './helpers';
 
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+
 test.describe('Navigation', () => {
 	test('unauthenticated nav links are present', async ({ page }) => {
 		await page.goto('/');
@@ -96,12 +98,21 @@ test.describe('Navigation', () => {
 	});
 
 	test('authenticated nav shows account dropdown actions', async ({ page }) => {
-		const expiry = Math.floor(Date.now() / 1000) + 3600;
-		await page.addInitScript((nextExpiry) => {
-			localStorage.setItem('opensession_access_token', 'nav-access');
-			localStorage.setItem('opensession_refresh_token', 'nav-refresh');
-			localStorage.setItem('opensession_token_expiry', String(nextExpiry));
-		}, expiry);
+		const secure = BASE_URL.startsWith('https://');
+		const domain = new URL(BASE_URL).hostname;
+		const now = Math.floor(Date.now() / 1000);
+		await page.context().addCookies([
+			{
+				name: 'opensession_csrf_token',
+				value: 'nav-csrf-token',
+				domain,
+				path: '/',
+				httpOnly: false,
+				secure,
+				sameSite: 'Lax',
+				expires: now + 3600,
+			},
+		]);
 
 		await mockCapabilities(page, { auth_enabled: true, parse_preview_enabled: true });
 		await page.route('**/api/auth/verify', async (route) => {

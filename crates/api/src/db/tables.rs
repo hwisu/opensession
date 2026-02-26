@@ -86,6 +86,19 @@ pub enum OauthIdentities {
 }
 
 #[derive(Iden)]
+pub enum OauthProviderTokens {
+    Table,
+    Id,
+    UserId,
+    Provider,
+    ProviderHost,
+    AccessTokenEnc,
+    ExpiresAt,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(Iden)]
 pub enum OauthStates {
     Table,
     State,
@@ -103,6 +116,21 @@ pub enum RefreshTokens {
     TokenHash,
     ExpiresAt,
     CreatedAt,
+}
+
+#[derive(Iden)]
+pub enum GitCredentials {
+    Table,
+    Id,
+    UserId,
+    Label,
+    Host,
+    PathPrefix,
+    HeaderName,
+    HeaderValueEnc,
+    CreatedAt,
+    UpdatedAt,
+    LastUsedAt,
 }
 
 #[derive(Iden)]

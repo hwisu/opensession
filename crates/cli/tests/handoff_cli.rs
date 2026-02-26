@@ -253,6 +253,7 @@ fn help_shows_v1_commands() {
     let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
     assert!(stdout.contains("register"));
     assert!(stdout.contains("share"));
+    assert!(stdout.contains("view"));
     assert!(stdout.contains("handoff"));
     assert!(!stdout.contains("publish"));
 }
@@ -361,6 +362,45 @@ fn share_git_without_push_prints_push_command() {
 }
 
 #[test]
+fn share_git_with_gitlab_dot_com_remote_emits_gl_uri() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-gl"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(
+        tmp.path(),
+        &repo,
+        &[
+            "share",
+            &local_uri,
+            "--git",
+            "--remote",
+            "https://gitlab.com/group/sub/repo.git",
+        ],
+    );
+    assert!(
+        share_out.status.success(),
+        "share --git failed: {}",
+        String::from_utf8_lossy(&share_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&share_out.stdout);
+    let shared_uri = stdout.lines().next().unwrap_or_default();
+    assert!(
+        shared_uri.starts_with("os://src/gl/"),
+        "expected gl uri, got: {shared_uri}"
+    );
+}
+
+#[test]
 fn config_and_share_web_success() {
     let tmp = make_home();
     let repo = tmp.path().join("repo");
@@ -390,6 +430,148 @@ fn config_and_share_web_success() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("https://example.test/src/git/"));
     assert!(stdout.contains("base_url: https://example.test"));
+}
+
+#[test]
+fn share_web_supports_gl_and_git_routes() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let init_out = run(
+        tmp.path(),
+        &repo,
+        &["config", "init", "--base-url", "https://example.test"],
+    );
+    assert!(init_out.status.success());
+
+    let gl_uri = opensession_core::source_uri::SourceUri::Src(
+        opensession_core::source_uri::SourceSpec::Gl {
+            project: "group/sub/repo".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            path: "sessions/demo.jsonl".to_string(),
+        },
+    )
+    .to_string();
+    let gl_out = run(tmp.path(), &repo, &["share", &gl_uri, "--web"]);
+    assert!(
+        gl_out.status.success(),
+        "share web for gl failed: {}",
+        String::from_utf8_lossy(&gl_out.stderr)
+    );
+    let gl_stdout = String::from_utf8_lossy(&gl_out.stdout);
+    assert!(gl_stdout.contains("https://example.test/src/gl/"));
+
+    let git_uri = opensession_core::source_uri::SourceUri::Src(
+        opensession_core::source_uri::SourceSpec::Git {
+            remote: "https://gitlab.internal.example.com/group/repo.git".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            path: "sessions/demo.jsonl".to_string(),
+        },
+    )
+    .to_string();
+    let git_out = run(tmp.path(), &repo, &["share", &git_uri, "--web"]);
+    assert!(
+        git_out.status.success(),
+        "share web for git failed: {}",
+        String::from_utf8_lossy(&git_out.stderr)
+    );
+    let git_stdout = String::from_utf8_lossy(&git_out.stdout);
+    assert!(git_stdout.contains("https://example.test/src/git/"));
+}
+
+#[test]
+fn view_web_maps_remote_source_uri_to_src_route() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let init_out = run(
+        tmp.path(),
+        &repo,
+        &["config", "init", "--base-url", "https://example.test"],
+    );
+    assert!(init_out.status.success());
+
+    let uri = opensession_core::source_uri::SourceUri::Src(
+        opensession_core::source_uri::SourceSpec::Gl {
+            project: "group/sub/repo".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            path: "sessions/demo.jsonl".to_string(),
+        },
+    )
+    .to_string();
+    let out = run(tmp.path(), &repo, &["view", &uri, "--no-open", "--json"]);
+    assert!(
+        out.status.success(),
+        "view failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("view json");
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        url.starts_with("https://example.test/src/gl/"),
+        "unexpected url: {url}"
+    );
+}
+
+#[test]
+fn view_local_uri_emits_local_review_url_without_opening_browser() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-view-local"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let view_out = run(
+        tmp.path(),
+        &repo,
+        &["view", &local_uri, "--no-open", "--json"],
+    );
+    assert!(
+        view_out.status.success(),
+        "view failed: {}",
+        String::from_utf8_lossy(&view_out.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&view_out.stdout).expect("view json");
+    assert_eq!(payload.get("mode").and_then(Value::as_str), Some("local"));
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(url.contains("/review/local/"), "unexpected url: {url}");
+}
+
+#[test]
+fn view_commit_target_builds_commit_review_bundle() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(tmp.path(), &repo, &["view", "HEAD", "--no-open", "--json"]);
+    assert!(
+        out.status.success(),
+        "view commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("view json");
+    assert_eq!(payload.get("mode").and_then(Value::as_str), Some("commit"));
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(url.contains("/review/local/"), "unexpected url: {url}");
 }
 
 #[test]

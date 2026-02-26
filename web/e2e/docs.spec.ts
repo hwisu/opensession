@@ -42,6 +42,12 @@ test.describe('Docs', () => {
 		await expect(
 			docsContent
 				.locator('code')
+				.filter({ hasText: 'opensession view os://src/local/<sha256>' })
+				.first(),
+		).toBeVisible();
+		await expect(
+			docsContent
+				.locator('code')
 				.filter({
 					hasText:
 						'opensession handoff artifacts get os://artifact/<sha256> --format canonical --encode jsonl',
@@ -50,6 +56,7 @@ test.describe('Docs', () => {
 		).toBeVisible();
 		await expect(docsContent.getByText('POST /api/parse/preview')).toBeVisible();
 		await expect(docsContent.getByText('/src/gh/').first()).toBeVisible();
+		await expect(docsContent.getByText('/src/gl/').first()).toBeVisible();
 		await expect(docsContent.getByText('/src/git/').first()).toBeVisible();
 	});
 

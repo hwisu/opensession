@@ -9,6 +9,7 @@ mod setup_cmd;
 mod share;
 #[cfg(feature = "e2e")]
 mod test_cmd;
+mod view;
 
 use clap::{Parser, Subcommand};
 
@@ -32,6 +33,8 @@ enum Commands {
     Inspect(inspect::InspectArgs),
     /// Resolve sharing outputs from a source URI.
     Share(share::ShareArgs),
+    /// Open a review-centric web view from URI/file/URL/commit targets.
+    View(view::ViewArgs),
     /// Review a GitHub PR using local hidden refs and grouped commit sessions.
     Review(review::ReviewArgs),
     /// Build and manage immutable handoff artifacts.
@@ -71,6 +74,7 @@ async fn main() {
         Commands::Cat(args) => cat_cmd::run(args),
         Commands::Inspect(args) => inspect::run(args),
         Commands::Share(args) => share::run(args),
+        Commands::View(args) => view::run(args).await,
         Commands::Review(args) => review::run(args).await,
         Commands::Handoff(args) => handoff_v1::run(args),
         Commands::Parse(args) => parse_cmd::run(args),

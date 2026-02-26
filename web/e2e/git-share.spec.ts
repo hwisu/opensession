@@ -85,6 +85,16 @@ function srcGitUrlWithRef(ref: string): string {
 	return `/src/git/${remote}/ref/${ref}/path/sessions/demo.hail.jsonl`;
 }
 
+function srcGlUrl(): string {
+	const project = base64UrlEncode('group/subgroup/repo');
+	return `/src/gl/${project}/ref/main/path/sessions/demo.hail.jsonl`;
+}
+
+function srcSelfManagedGitlabUrl(ref = 'main'): string {
+	const remote = base64UrlEncode('https://gitlab.internal.example.com/group/subgroup/repo.git');
+	return `/src/git/${remote}/ref/${ref}/path/sessions/demo.hail.jsonl`;
+}
+
 test.describe('Source Route', () => {
 	test('renders session automatically from /src/git path', async ({ page }) => {
 		await page.route('**/api/capabilities', async (route) => {
@@ -141,6 +151,90 @@ test.describe('Source Route', () => {
 
 		await page.goto(srcGitUrlWithRef('opensession/pr-13-sessions'));
 		await expect(page.getByRole('heading', { name: 'Source Fixture' })).toBeVisible({ timeout: 10000 });
+	});
+
+	test('maps /src/gl path to git parse source with gitlab.com remote', async ({ page }) => {
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: false,
+					parse_preview_enabled: true,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
+				}),
+			});
+		});
+		await page.route('**/api/parse/preview', async (route) => {
+			const requestBody = route.request().postDataJSON() as {
+				source?: { kind?: string; remote?: string; ref?: string; path?: string };
+			};
+			expect(requestBody.source?.kind).toBe('git');
+			expect(requestBody.source?.remote).toBe('https://gitlab.com/group/subgroup/repo');
+			expect(requestBody.source?.ref).toBe('main');
+			expect(requestBody.source?.path).toBe('sessions/demo.hail.jsonl');
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(buildPreviewResponse()),
+			});
+		});
+
+		await page.goto(srcGlUrl());
+		await expect(page.getByRole('heading', { name: 'Source Fixture' })).toBeVisible({ timeout: 10000 });
+	});
+
+	test('passes self-managed gitlab remote through /src/git path', async ({ page }) => {
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: false,
+					parse_preview_enabled: true,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
+				}),
+			});
+		});
+		await page.route('**/api/parse/preview', async (route) => {
+			const requestBody = route.request().postDataJSON() as {
+				source?: { kind?: string; remote?: string; ref?: string };
+			};
+			expect(requestBody.source?.kind).toBe('git');
+			expect(requestBody.source?.remote).toBe(
+				'https://gitlab.internal.example.com/group/subgroup/repo.git',
+			);
+			expect(requestBody.source?.ref).toBe('feature/x');
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(buildPreviewResponse()),
+			});
+		});
+
+		await page.goto(srcSelfManagedGitlabUrl('feature/x'));
+		await expect(page.getByRole('heading', { name: 'Source Fixture' })).toBeVisible({ timeout: 10000 });
+	});
+
+	test('shows route error for invalid base64 segments', async ({ page }) => {
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: false,
+					parse_preview_enabled: true,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
+				}),
+			});
+		});
+		await page.goto('/src/gl/not-valid/ref/main/path/sessions/demo.hail.jsonl');
+		await expect(page.getByText('Invalid source path. Expected /src/gl/')).toBeVisible({
+			timeout: 10000,
+		});
 	});
 
 	test('supports parser selection retry flow on /src', async ({ page }) => {

@@ -4,14 +4,19 @@ mod storage;
 
 use axum::{
     extract::{DefaultBodyLimit, FromRef},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderName, HeaderValue, Method,
+    },
     routing::{delete, get, post, put},
     Router,
 };
 use std::path::PathBuf;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+use opensession_api::crypto::CredentialKeyring;
 use opensession_api::oauth::{self, OAuthProviderConfig};
 use storage::Db;
 
@@ -26,12 +31,66 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct AppConfig {
     pub base_url: String,
+    pub allowed_origins: Vec<String>,
     pub oauth_use_request_host: bool,
     pub jwt_secret: String,
     pub admin_key: String,
     pub oauth_providers: Vec<OAuthProviderConfig>,
     pub public_feed_enabled: bool,
     pub local_review_root: Option<PathBuf>,
+    pub credential_keyring: Option<CredentialKeyring>,
+}
+
+fn origin_from_base_url(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw).ok()?;
+    let host = url.host_str()?;
+    let mut origin = format!("{}://{host}", url.scheme());
+    if let Some(port) = url.port() {
+        origin.push(':');
+        origin.push_str(&port.to_string());
+    }
+    Some(origin)
+}
+
+fn load_allowed_origins(base_url: &str) -> Vec<String> {
+    let configured = std::env::var("OPENSESSION_ALLOWED_ORIGINS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !configured.is_empty() {
+        return configured;
+    }
+    origin_from_base_url(base_url).into_iter().collect()
+}
+
+fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
+    let csrf_header = HeaderName::from_static("x-csrf-token");
+    let origin_values: Vec<HeaderValue> = allowed_origins
+        .iter()
+        .filter_map(|origin| HeaderValue::from_str(origin).ok())
+        .collect();
+
+    let mut cors = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([CONTENT_TYPE, AUTHORIZATION, csrf_header])
+        .allow_credentials(true);
+    if !origin_values.is_empty() {
+        cors = cors.allow_origin(origin_values);
+    }
+    cors
 }
 
 impl FromRef<AppState> for Db {
@@ -125,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig {
         base_url: base_url.clone(),
+        allowed_origins: load_allowed_origins(&base_url),
         oauth_use_request_host: base_url_env.is_none(),
         jwt_secret,
         admin_key,
@@ -133,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
         local_review_root: std::env::var("OPENSESSION_LOCAL_REVIEW_ROOT")
             .ok()
             .map(PathBuf::from),
+        credential_keyring: load_credential_keyring(),
     };
 
     let state = AppState { db, config };
@@ -151,6 +212,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))
         .route("/auth/api-keys/issue", post(routes::auth::issue_api_key))
+        .route(
+            "/auth/git-credentials",
+            get(routes::auth::list_git_credentials).post(routes::auth::create_git_credential),
+        )
+        .route(
+            "/auth/git-credentials/{id}",
+            delete(routes::auth::delete_git_credential),
+        )
         // Auth (email/password + JWT)
         .route("/auth/register", post(routes::auth::auth_register))
         .route("/auth/login", post(routes::auth::login))
@@ -195,12 +264,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = app
         .layer(TraceLayer::new_for_http())
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(build_cors_layer(&state.config.allowed_origins))
         .with_state(state);
 
     tracing::info!("starting server at {base_url}");
@@ -210,4 +274,16 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn load_credential_keyring() -> Option<CredentialKeyring> {
+    let active = env_trimmed("OPENSESSION_CREDENTIAL_ACTIVE_KID")?;
+    let keyset = env_trimmed("OPENSESSION_CREDENTIAL_KEYS")?;
+    match CredentialKeyring::from_csv(&active, &keyset) {
+        Ok(keyring) => Some(keyring),
+        Err(err) => {
+            tracing::error!("invalid credential encryption config: {}", err.message());
+            None
+        }
+    }
 }

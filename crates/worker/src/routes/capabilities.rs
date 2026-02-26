@@ -20,8 +20,10 @@ mod tests {
     fn worker_capabilities_enable_key_based_upload_only() {
         let config = WorkerConfig {
             base_url: None,
+            allowed_origins: Vec::new(),
             jwt_secret: "secret".to_string(),
             oauth_providers: Vec::new(),
+            credential_keyring: None,
         };
 
         let caps = capabilities_from_config(&config);

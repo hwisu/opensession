@@ -11,6 +11,11 @@ struct AppliedMigrationRow {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct TableInfoRow {
+    name: String,
+}
+
 // ── D1 bool helper ─────────────────────────────────────────────────────────
 
 /// D1 returns booleans as floats (0.0 / 1.0). This deserializer handles both.
@@ -167,6 +172,74 @@ pub async fn ensure_d1_schema(env: &Env) -> Result<()> {
             .bind(&[insert_bind_name])?
             .run()
             .await?;
+    }
+
+    let table_info = d1
+        .prepare("PRAGMA table_info(oauth_provider_tokens)")
+        .all()
+        .await?;
+    let table_info_rows = table_info.results::<TableInfoRow>().unwrap_or_default();
+    let has_provider_host = table_info_rows
+        .iter()
+        .any(|row| row.name == "provider_host");
+    if !has_provider_host {
+        d1.exec("DROP TABLE IF EXISTS oauth_provider_tokens;")
+            .await?;
+        let rebuild_sql = r#"
+CREATE TABLE oauth_provider_tokens (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider         TEXT NOT NULL,
+    provider_host    TEXT NOT NULL,
+    access_token_enc TEXT NOT NULL,
+    expires_at       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, provider, provider_host)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider_host
+ON oauth_provider_tokens(user_id, provider, provider_host);
+"#;
+        for statement in split_migration_statements(rebuild_sql) {
+            d1.exec(&statement).await?;
+        }
+    }
+
+    // Keep bootstrap policy while ensuring post-bootstrap tables for existing DBs.
+    let ensure_sql = r#"
+CREATE TABLE IF NOT EXISTS git_credentials (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label            TEXT NOT NULL,
+    host             TEXT NOT NULL,
+    path_prefix      TEXT NOT NULL DEFAULT '',
+    header_name      TEXT NOT NULL,
+    header_value_enc TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_git_credentials_user_host ON git_credentials(user_id, host);
+CREATE INDEX IF NOT EXISTS idx_git_credentials_user_host_prefix
+ON git_credentials(user_id, host, path_prefix);
+
+CREATE TABLE IF NOT EXISTS oauth_provider_tokens (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider         TEXT NOT NULL,
+    provider_host    TEXT NOT NULL,
+    access_token_enc TEXT NOT NULL,
+    expires_at       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, provider, provider_host)
+);
+DROP INDEX IF EXISTS idx_oauth_provider_tokens_user_provider;
+CREATE INDEX IF NOT EXISTS idx_oauth_provider_tokens_user_provider_host
+ON oauth_provider_tokens(user_id, provider, provider_host);
+"#;
+    for statement in split_migration_statements(ensure_sql) {
+        d1.exec(&statement).await?;
     }
 
     Ok(())

@@ -27,8 +27,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const LOCAL_REVIEW_ROOT_DIR: &str = ".opensession/review";
-const LOCAL_REVIEW_SERVER_BASE_URL: &str = "http://127.0.0.1:8788";
+pub(crate) const LOCAL_REVIEW_ROOT_DIR: &str = ".opensession/review";
+pub(crate) const LOCAL_REVIEW_SERVER_BASE_URL: &str = "http://127.0.0.1:8788";
 
 #[derive(Debug, Clone, Args)]
 pub struct ReviewArgs {
@@ -1035,7 +1035,7 @@ fn truncate_for_tui(value: &str, limit: usize) -> String {
     out
 }
 
-async fn ensure_web_review_server(
+pub(crate) async fn ensure_web_review_server(
     repo_root: &Path,
     review_root: &Path,
     review_id: &str,
@@ -1198,7 +1198,7 @@ fn find_executable_in_path_or_sibling(name: &str) -> Option<PathBuf> {
     }
 }
 
-fn open_url_in_browser(url: &str) -> Result<()> {
+pub(crate) fn open_url_in_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let status = Command::new("open")

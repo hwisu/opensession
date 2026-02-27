@@ -65,7 +65,7 @@ opensession doctor --fix --fanout-mode hidden_ref
 opensession doctor --fix --yes --fanout-mode hidden_ref
 ```
 
-`doctor`는 내부적으로 기존 setup 파이프라인(`opensession setup` / `opensession setup --check`)을 재사용합니다.
+`doctor`는 내부적으로 기존 setup 파이프라인을 재사용합니다.
 `doctor --fix`는 적용 전 setup 계획을 출력하고 동의를 받은 뒤 훅/shim/fanout 변경을 수행합니다.
 첫 interactive 적용 시 fanout 저장 모드(`hidden_ref` 또는 `git_notes`)를 선택하며, 선택값은 로컬 git 설정(`.git/config`)의 `opensession.fanout-mode`에 저장됩니다.
 비대화형 환경에서는 `--fix`에 `--yes`가 필요하고, 저장된 fanout 모드가 없으면 `--fanout-mode`를 명시해야 합니다.
@@ -85,6 +85,9 @@ daemon이 없으면 parse/register/share는 수동으로 사용할 수 있지만
 ## 빠른 시작
 
 ```bash
+# 첫 사용자용 명령 흐름 출력
+opensession docs quickstart
+
 # agent-native 로그 -> canonical HAIL JSONL
 opensession parse --profile codex ./raw-session.jsonl > ./session.hail.jsonl
 
@@ -184,6 +187,60 @@ opensession handoff artifacts rm os://artifact/<sha256>
 - `GET /api/sessions/{id}`
 - `GET /api/sessions/{id}/raw`
 - `DELETE /api/admin/sessions/{id}` (`X-OpenSession-Admin-Key` 필요)
+
+## 실패 복구 가이드
+
+자주 발생하는 실패 시그니처와 즉시 복구 명령:
+
+1. local URI로 `share --web` 실행:
+```bash
+opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
+```
+2. `share --git`에서 remote 누락:
+```bash
+opensession share os://src/local/<sha256> --git --remote origin
+```
+3. git 저장소 밖에서 `share --git` 실행:
+```bash
+cd <your-repo>
+opensession share os://src/local/<sha256> --git --remote origin
+```
+4. `.opensession/config.toml` 없이 `share --web` 실행:
+```bash
+opensession config init --base-url https://opensession.io
+opensession config show
+```
+5. 비정규 입력으로 `register` 실행:
+```bash
+opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
+opensession register ./session.hail.jsonl
+```
+6. parser/input 불일치로 `parse` 실패:
+```bash
+opensession parse --help
+opensession parse --profile codex ./raw-session.jsonl --preview
+```
+7. `view` 타겟 해석 실패:
+```bash
+opensession view os://src/... --no-open
+opensession view ./session.hail.jsonl --no-open
+opensession view HEAD
+```
+8. cleanup 설정 전에 `cleanup run` 실행:
+```bash
+opensession cleanup init --provider auto
+opensession cleanup run
+```
+
+처음 사용자 5분 복귀 경로:
+```bash
+opensession doctor
+opensession doctor --fix
+opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
+opensession register ./session.hail.jsonl
+opensession share os://src/local/<sha256> --git --remote origin
+```
 
 ## 로컬 개발 검증
 

@@ -219,7 +219,7 @@ fn validate_setup_args(args: &SetupArgs) -> Result<()> {
     }
     if args.check && args.fanout_mode.is_some() {
         bail!(
-            "`--fanout-mode` requires apply mode. next: run `opensession setup --yes --fanout-mode hidden_ref`"
+            "`--fanout-mode` requires apply mode. next: run `opensession doctor --fix --yes --fanout-mode hidden_ref`"
         );
     }
     Ok(())
@@ -268,10 +268,6 @@ fn run_install(repo_root: &PathBuf, yes: bool, requested_fanout: Option<FanoutMo
     Ok(())
 }
 
-fn suggested_setup_command(mode: FanoutMode) -> String {
-    format!("opensession setup --yes --fanout-mode {}", mode.as_str())
-}
-
 fn suggested_doctor_command(mode: FanoutMode) -> String {
     format!(
         "opensession doctor --fix --yes --fanout-mode {}",
@@ -287,15 +283,13 @@ fn enforce_apply_mode_requirements(
     let suggested_mode = fanout_plan.suggested_mode();
     if !interactive && !yes {
         bail!(
-            "setup requires explicit approval in non-interactive mode.\nnext: run `{}` (or `{}`)",
-            suggested_setup_command(suggested_mode),
+            "setup requires explicit approval in non-interactive mode.\nnext: run `{}`",
             suggested_doctor_command(suggested_mode)
         );
     }
     if !interactive && fanout_plan.existing.is_none() && fanout_plan.requested.is_none() {
         bail!(
-            "fanout mode is not configured for this repository, and setup cannot prompt in non-interactive mode.\nnext: run `{}` (or `{}`)",
-            suggested_setup_command(FanoutMode::HiddenRef),
+            "fanout mode is not configured for this repository, and setup cannot prompt in non-interactive mode.\nnext: run `{}`",
             suggested_doctor_command(FanoutMode::HiddenRef)
         );
     }
@@ -317,8 +311,7 @@ fn prompt_apply_confirmation(mode_hint: FanoutMode) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "setup cancelled by user.\nnext: run `{}` (or `{}`)",
-        suggested_setup_command(mode_hint),
+        "setup cancelled by user.\nnext: run `{}`",
         suggested_doctor_command(mode_hint)
     );
 }
@@ -1014,8 +1007,7 @@ fn ensure_fanout_mode(
 
     if !interactive {
         bail!(
-            "fanout mode is not configured for this repository.\nnext: run `{}` (or `{}`)",
-            suggested_setup_command(FanoutMode::HiddenRef),
+            "fanout mode is not configured for this repository.\nnext: run `{}`",
             suggested_doctor_command(FanoutMode::HiddenRef)
         );
     }
@@ -1073,8 +1065,7 @@ fn write_fanout_mode(repo_root: &std::path::Path, mode: FanoutMode) -> Result<()
 fn prompt_fanout_mode() -> Result<FanoutMode> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
-            "fanout mode prompt requires an interactive terminal.\nnext: run `{}` (or `{}`)",
-            suggested_setup_command(FanoutMode::HiddenRef),
+            "fanout mode prompt requires an interactive terminal.\nnext: run `{}`",
             suggested_doctor_command(FanoutMode::HiddenRef)
         );
     }

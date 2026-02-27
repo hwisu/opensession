@@ -1,4 +1,4 @@
-use crate::{config_cmd::load_repo_config, review};
+use crate::{config_cmd::load_repo_config, review, user_guidance::guided_error};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use opensession_api::{
@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Args)]
+#[command(after_long_help = r"Recovery examples:
+  opensession view os://src/local/<sha256> --no-open
+  opensession view ./session.hail.jsonl --no-open
+  opensession view HEAD~3..HEAD --no-open")]
 pub struct ViewArgs {
     /// Review target: source URI, local *.jsonl file, PR/MR URL, or commit/ref/range.
     pub target: String,
@@ -69,7 +73,13 @@ pub async fn run(args: ViewArgs) -> Result<()> {
     }
 
     if args.tui {
-        bail!("`view --tui` is currently supported for GitHub PR URLs only");
+        return Err(guided_error(
+            "`view --tui` is currently supported for GitHub PR URLs only",
+            [
+                "use web mode for other targets: `opensession view <target>`",
+                "or provide a GitHub PR URL with `--tui`",
+            ],
+        ));
     }
 
     if let Ok(uri) = SourceUri::parse(&args.target) {
@@ -88,7 +98,20 @@ pub async fn run(args: ViewArgs) -> Result<()> {
         return view_gitlab_mr(mr_number, &args).await;
     }
 
-    view_commit_target(&args.target, &args).await
+    view_commit_target(&args.target, &args)
+        .await
+        .map_err(|err| {
+            guided_error(
+                format!("unable to resolve view target `{}`: {err}", args.target),
+                [
+                    "for source URIs: `opensession view os://src/... --no-open`".to_string(),
+                    "for local files: `opensession view ./session.hail.jsonl --no-open`"
+                        .to_string(),
+                    "for commits/ranges: `opensession view HEAD` or `opensession view main..feature`"
+                        .to_string(),
+                ],
+            )
+        })
 }
 
 async fn view_source_uri(uri: SourceUri, args: &ViewArgs) -> Result<()> {

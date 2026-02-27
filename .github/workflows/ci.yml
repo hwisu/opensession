@@ -48,6 +48,8 @@ jobs:
           node-version: 22
       - run: node scripts/verify-content-contract.mjs --check
       - run: node scripts/check-session-review-workflow.mjs
+      - run: node scripts/check-validation-hooks.mjs
+      - run: node scripts/check-doc-portability.mjs
 
   fmt:
     name: Format

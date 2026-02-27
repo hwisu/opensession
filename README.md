@@ -65,7 +65,7 @@ opensession doctor --fix --fanout-mode hidden_ref
 opensession doctor --fix --yes --fanout-mode hidden_ref
 ```
 
-`doctor` reuses the existing setup pipeline under the hood (`opensession setup` / `opensession setup --check`).
+`doctor` reuses the existing setup pipeline under the hood.
 `doctor --fix` now prints the setup plan and asks for confirmation before applying hook/shim/fanout changes.
 On first interactive apply, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
 In non-interactive mode, `--fix` requires `--yes` and an explicit `--fanout-mode` when no fanout mode is already configured in git.
@@ -85,6 +85,9 @@ Without daemon, parse/register/share still work manually, but background auto-ca
 ## Quick Start
 
 ```bash
+# Print the first-user command flow
+opensession docs quickstart
+
 # Parse agent-native log -> canonical HAIL JSONL
 opensession parse --profile codex ./raw-session.jsonl > ./session.hail.jsonl
 
@@ -192,6 +195,60 @@ opensession handoff artifacts rm os://artifact/<sha256>
 - `GET /api/sessions/{id}`
 - `GET /api/sessions/{id}/raw`
 - `DELETE /api/admin/sessions/{id}` (requires `X-OpenSession-Admin-Key`)
+
+## Failure Recovery
+
+Common failure signatures and immediate recovery commands:
+
+1. `share --web` with a local URI:
+```bash
+opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
+```
+2. `share --git` without remote:
+```bash
+opensession share os://src/local/<sha256> --git --remote origin
+```
+3. `share --git` outside a git repository:
+```bash
+cd <your-repo>
+opensession share os://src/local/<sha256> --git --remote origin
+```
+4. `share --web` without `.opensession/config.toml`:
+```bash
+opensession config init --base-url https://opensession.io
+opensession config show
+```
+5. `register` with non-canonical input:
+```bash
+opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
+opensession register ./session.hail.jsonl
+```
+6. `parse` with parser/input mismatch:
+```bash
+opensession parse --help
+opensession parse --profile codex ./raw-session.jsonl --preview
+```
+7. `view` target cannot be resolved:
+```bash
+opensession view os://src/... --no-open
+opensession view ./session.hail.jsonl --no-open
+opensession view HEAD
+```
+8. `cleanup run` before cleanup setup:
+```bash
+opensession cleanup init --provider auto
+opensession cleanup run
+```
+
+5-minute recovery path for first-time users:
+```bash
+opensession doctor
+opensession doctor --fix
+opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
+opensession register ./session.hail.jsonl
+opensession share os://src/local/<sha256> --git --remote origin
+```
 
 ## Local Development
 

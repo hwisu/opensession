@@ -1,5 +1,6 @@
 use crate::cleanup_cmd;
 use crate::config_cmd::load_repo_config;
+use crate::user_guidance::guided_error;
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use opensession_core::object_store::{find_repo_root, read_local_object_from_uri};
@@ -8,6 +9,10 @@ use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, Clone, Args)]
+#[command(after_long_help = r"Recovery examples:
+  opensession share os://src/local/<sha256> --git --remote origin
+  opensession config init --base-url https://opensession.io
+  opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web")]
 pub struct ShareArgs {
     /// Source URI (`os://src/...`).
     pub uri: String,
@@ -54,7 +59,13 @@ enum ShareMode {
 
 fn resolve_mode(web: bool, git: bool) -> Result<ShareMode> {
     if web && git {
-        bail!("choose one mode: --web or --git");
+        return Err(guided_error(
+            "choose one mode: --web or --git",
+            [
+                "for remote source uri to web url: `opensession share <uri> --web`",
+                "for local source uri to git source uri: `opensession share <uri> --git --remote origin`",
+            ],
+        ));
     }
     if git {
         Ok(ShareMode::Git)
@@ -65,7 +76,13 @@ fn resolve_mode(web: bool, git: bool) -> Result<ShareMode> {
 
 fn run_web(uri: SourceUri, args: &ShareArgs) -> Result<()> {
     if !uri.is_remote_source() {
-        bail!("`share --web` supports only remote sources. For local objects, use `opensession share <uri> --git --remote <name|url>`.");
+        return Err(guided_error(
+            "`share --web` supports only remote sources",
+            [
+                "convert local uri first: `opensession share <uri> --git --remote origin`",
+                "then run web share with the returned remote source uri",
+            ],
+        ));
     }
 
     let cwd = std::env::current_dir().context("read current directory")?;
@@ -99,18 +116,39 @@ fn run_web(uri: SourceUri, args: &ShareArgs) -> Result<()> {
 
 fn run_git(uri: SourceUri, args: &ShareArgs) -> Result<()> {
     let local_hash = uri.as_local_hash().ok_or_else(|| {
-        anyhow::anyhow!("`share --git` requires a local source uri (os://src/local/<sha256>)")
+        guided_error(
+            "`share --git` requires a local source uri (os://src/local/<sha256>)",
+            [
+                "first register a canonical session: `opensession register ./session.hail.jsonl`",
+                "then share that local uri with `--git --remote <name|url>`",
+            ],
+        )
     })?;
 
     let remote_arg = args
         .remote
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("`--remote <name|url>` is required for `share --git`"))?;
+        .ok_or_else(|| {
+            guided_error(
+                "`--remote <name|url>` is required for `share --git`",
+                [
+                    "example: `opensession share <local_uri> --git --remote origin`",
+                    "or use a direct URL: `opensession share <local_uri> --git --remote https://github.com/org/repo.git`",
+                ],
+            )
+        })?;
 
     let cwd = std::env::current_dir().context("read current directory")?;
     let (_path, bytes) = read_local_object_from_uri(&uri, &cwd)?;
-    let repo_root = find_repo_root(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("current directory is not inside a git repository"))?;
+    let repo_root = find_repo_root(&cwd).ok_or_else(|| {
+        guided_error(
+            "current directory is not inside a git repository",
+            [
+                "cd into the target git repository and retry",
+                "or initialize one first: `git init`",
+            ],
+        )
+    })?;
 
     let target_ref = args
         .git_ref

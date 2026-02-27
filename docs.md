@@ -15,6 +15,9 @@ Core principles:
 Beginner 3-step quick start:
 
 ```bash
+# Print the first-user command flow
+opensession docs quickstart
+
 # 1) Install CLI
 cargo install opensession
 
@@ -97,7 +100,7 @@ opensession doctor --fix --fanout-mode hidden_ref
 opensession doctor --fix --yes --fanout-mode hidden_ref
 ```
 
-- `doctor` check mode maps to `setup --check`; `doctor --fix` maps to `setup`.
+- `doctor` check mode maps to internal setup checks; `doctor --fix` maps to the internal setup apply flow.
 - `doctor --fix` requires explicit approval: interactive prompt by default, `--yes` for automation.
 - Installs/updates OpenSession-managed `pre-push` hook in the current repo.
 - Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
@@ -160,6 +163,60 @@ Provider matrix:
 - GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. PR updates publish/refresh `opensession/pr-<number>-sessions` and upsert a PR comment.
 - GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note.
 - Generic git: `.opensession/cleanup/cron.example` is generated for cron/system scheduler wiring.
+
+## Failure Recovery
+
+Use these commands when a common onboarding flow fails:
+
+1. `share --web` got a local URI:
+```bash
+opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
+```
+2. `share --git` missing `--remote`:
+```bash
+opensession share os://src/local/<sha256> --git --remote origin
+```
+3. `share --git` outside git repo:
+```bash
+cd <repo>
+opensession share os://src/local/<sha256> --git --remote origin
+```
+4. `share --web` missing config:
+```bash
+opensession config init --base-url https://opensession.io
+opensession config show
+```
+5. `register` rejected non-canonical input:
+```bash
+opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
+opensession register ./session.hail.jsonl
+```
+6. `parse` parser/input mismatch:
+```bash
+opensession parse --help
+opensession parse --profile codex ./raw-session.jsonl --preview
+```
+7. `view` target resolution failed:
+```bash
+opensession view os://src/... --no-open
+opensession view ./session.hail.jsonl --no-open
+opensession view HEAD
+```
+8. `cleanup run` before initialization:
+```bash
+opensession cleanup init --provider auto
+opensession cleanup run
+```
+
+Five-minute first-user recovery path:
+```bash
+opensession doctor
+opensession doctor --fix
+opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
+opensession register ./session.hail.jsonl
+opensession share os://src/local/<sha256> --git --remote origin
+```
 
 ## Inspect Timeline
 

@@ -1,3 +1,4 @@
+use crate::user_guidance::{guided_error, guided_error_with_doc};
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use opensession_core::object_store::store_local_object;
@@ -17,12 +18,28 @@ pub struct RegisterArgs {
 }
 
 pub fn run(args: RegisterArgs) -> Result<()> {
-    let raw = std::fs::read_to_string(&args.file)
-        .with_context(|| format!("failed to read {}", args.file.display()))?;
+    let raw = std::fs::read_to_string(&args.file).map_err(|err| {
+        guided_error(
+            format!("failed to read input file `{}`: {err}", args.file.display()),
+            [
+                format!("check file path and permissions: {}", args.file.display()),
+                "run `opensession register --help`".to_string(),
+            ],
+        )
+    })?;
 
     let mut session = Session::from_jsonl(&raw).map_err(|err| {
-        anyhow::anyhow!(
-            "register expects canonical HAIL JSONL. run `opensession parse --profile <profile> <file>` first: {err}"
+        guided_error_with_doc(
+            format!("register expects canonical HAIL JSONL: {err}"),
+            [
+                format!(
+                    "convert source logs first: `opensession parse --profile codex {} --out ./session.hail.jsonl`",
+                    args.file.display()
+                ),
+                "retry register with the canonical file: `opensession register ./session.hail.jsonl`"
+                    .to_string(),
+            ],
+            "docs.md#Getting Started",
         )
     })?;
     session.recompute_stats();

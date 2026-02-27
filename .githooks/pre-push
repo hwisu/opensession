@@ -2,7 +2,9 @@
 # Pre-push hook: full local validation gate (docker-free, git-native)
 set -e
 
-ROOT_DIR=$(pwd)
+ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$ROOT_DIR"
+CACHE_DIR="$ROOT_DIR/.opensession/.cache/pre-push"
 
 run_cargo() {
     if command -v rustup >/dev/null 2>&1; then
@@ -19,22 +21,98 @@ run_cargo() {
     cargo "$@"
 }
 
+hash_file() {
+    file="$1"
+    if command -v shasum >/dev/null 2>&1; then
+        shasum "$file" | awk '{print $1}'
+        return 0
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+        return 0
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+        return 0
+    fi
+    return 1
+}
+
+ensure_npm_ci_cached() {
+    pkg_dir="$1"
+    cache_key="$2"
+    lock_path="$pkg_dir/package-lock.json"
+    cache_file="$CACHE_DIR/${cache_key}.lock.sha256"
+
+    if [ ! -f "$lock_path" ]; then
+        echo "ERROR: missing lockfile: $lock_path"
+        exit 1
+    fi
+
+    mkdir -p "$CACHE_DIR"
+    lock_hash=$(hash_file "$lock_path" || true)
+
+    if [ -n "$lock_hash" ] && [ -d "$pkg_dir/node_modules" ] && [ -f "$cache_file" ]; then
+        cached_hash=$(cat "$cache_file")
+        if [ "$cached_hash" = "$lock_hash" ]; then
+            echo "=== Skipping npm ci for $cache_key (lockfile unchanged) ==="
+            return 0
+        fi
+    fi
+
+    echo "=== Installing npm deps for $cache_key ==="
+    (cd "$pkg_dir" && npm ci --prefer-offline --no-audit --no-fund --silent)
+
+    if [ -n "$lock_hash" ]; then
+        printf '%s\n' "$lock_hash" > "$cache_file"
+    fi
+}
+
+should_run_frontend_checks() {
+    if [ "${OPENSESSION_FORCE_FRONTEND_CHECK:-0}" = "1" ]; then
+        echo "=== OPENSESSION_FORCE_FRONTEND_CHECK=1; running frontend checks ==="
+        return 0
+    fi
+
+    if ! git -C "$ROOT_DIR" rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" >/dev/null 2>&1; then
+        echo "=== Upstream branch is not configured; running frontend checks ==="
+        return 0
+    fi
+
+    changed_files=$(git -C "$ROOT_DIR" diff --name-only "@{upstream}...HEAD")
+    if [ -z "$changed_files" ]; then
+        echo "=== No outgoing commits vs upstream; skipping frontend checks ==="
+        return 1
+    fi
+
+    if printf '%s\n' "$changed_files" | grep -Eq '^(web/|packages/ui/|wrangler.toml$)'; then
+        return 0
+    fi
+
+    echo "=== No frontend-related changes vs upstream; skipping frontend checks ==="
+    return 1
+}
+
 echo "=== Running workspace clippy ==="
 run_cargo clippy --workspace -- -D warnings
 
 echo "=== Running Worker (wasm) clippy ==="
 run_cargo clippy --locked --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
 
-if command -v npm >/dev/null 2>&1; then
+if ! command -v npm >/dev/null 2>&1; then
+    echo "ERROR: npm is required for pre-push validation."
+    echo "Install Node.js/npm and re-run ./.githooks/pre-push."
+    exit 1
+fi
+
+if should_run_frontend_checks; then
     echo "=== Running frontend checks ==="
-    (cd "$ROOT_DIR/packages/ui" && npm ci --prefer-offline --no-audit --no-fund --silent)
-    (cd "$ROOT_DIR/web" && npm ci --prefer-offline --no-audit --no-fund --silent)
+    ensure_npm_ci_cached "$ROOT_DIR/packages/ui" "packages-ui"
+    ensure_npm_ci_cached "$ROOT_DIR/web" "web"
     mkdir -p "$ROOT_DIR/web/node_modules/@opensession"
     rm -f "$ROOT_DIR/web/node_modules/@opensession/ui"
     ln -sf "$ROOT_DIR/packages/ui" "$ROOT_DIR/web/node_modules/@opensession/ui"
     (cd "$ROOT_DIR/web" && npm run check)
-else
-    echo "WARNING: npm not found; skipping frontend checks."
 fi
 
 echo "=== Running workspace tests ==="

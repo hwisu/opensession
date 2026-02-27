@@ -2,7 +2,8 @@
 # Pre-commit hook: keep this fast as an early validation gate
 set -e
 
-ROOT_DIR=$(pwd)
+ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$ROOT_DIR"
 
 run_cargo() {
   if command -v rustup >/dev/null 2>&1; then
@@ -22,16 +23,22 @@ run_cargo() {
 # Cargo.lock 변경 감지를 위한 스냅샷
 LOCK_HASH_BEFORE=$(shasum Cargo.lock 2>/dev/null || echo "none")
 
-if command -v node >/dev/null 2>&1; then
-  echo "Running content contract check..."
-  node scripts/verify-content-contract.mjs --check
-  echo "Running session-review workflow check..."
-  node scripts/check-session-review-workflow.mjs
-  echo "Running publishable dependency check..."
-  node scripts/check-publishable-deps.mjs
-else
-  echo "WARNING: node not found; skipping content contract check."
+if ! command -v node >/dev/null 2>&1; then
+  echo "ERROR: node is required for pre-commit validation."
+  echo "Install Node.js and re-run ./.githooks/pre-commit."
+  exit 1
 fi
+
+echo "Running content contract check..."
+node scripts/verify-content-contract.mjs --check
+echo "Running session-review workflow check..."
+node scripts/check-session-review-workflow.mjs
+echo "Running publishable dependency check..."
+node scripts/check-publishable-deps.mjs
+echo "Running validation hook guardrail check..."
+node scripts/check-validation-hooks.mjs
+echo "Running docs portability check..."
+node scripts/check-doc-portability.mjs
 
 echo "Running cargo fmt check..."
 run_cargo fmt --all -- --check

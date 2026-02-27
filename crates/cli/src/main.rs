@@ -10,14 +10,26 @@ mod register;
 mod review;
 mod setup_cmd;
 mod share;
+mod user_guidance;
 mod view;
 
 use clap::{Parser, Subcommand};
+use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "opensession",
-    about = "OpenSession CLI - local-first source URI workflows"
+    about = "OpenSession CLI - local-first source URI workflows",
+    after_long_help = r"First-user flow (5 minutes):
+  opensession docs quickstart
+
+Common next steps:
+  opensession doctor
+  opensession doctor --fix
+  opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
+  opensession register ./session.hail.jsonl
+  opensession share os://src/local/<sha256> --git --remote origin"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -47,6 +59,7 @@ enum Commands {
     /// Configure and run hidden-ref cleanup automation.
     Cleanup(cleanup_cmd::CleanupArgs),
     /// Install/update OpenSession git hooks and diagnostics.
+    #[command(hide = true)]
     Setup(setup_cmd::SetupArgs),
     /// Diagnose and optionally fix local OpenSession setup.
     Doctor(doctor_cmd::DoctorArgs),
@@ -64,6 +77,21 @@ enum DocsAction {
         /// Target shell.
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+    /// Print a 5-minute first-user flow.
+    Quickstart {
+        /// Parser profile used for first parse.
+        #[arg(long, default_value = "codex")]
+        profile: String,
+        /// Raw input path for parse.
+        #[arg(long, default_value = "./raw-session.jsonl")]
+        input: PathBuf,
+        /// Canonical output path for parse.
+        #[arg(long, default_value = "./session.hail.jsonl")]
+        out: PathBuf,
+        /// Git remote name used for initial share.
+        #[arg(long, default_value = "origin")]
+        remote: String,
     },
 }
 
@@ -88,9 +116,24 @@ async fn main() {
     };
 
     if let Err(err) = result {
-        eprintln!("Error: {err:#}");
+        if debug_errors_enabled() {
+            eprintln!("Error: {err:#}");
+        } else {
+            eprintln!("Error: {err}");
+        }
         std::process::exit(1);
     }
+}
+
+fn debug_errors_enabled() -> bool {
+    matches!(
+        std::env::var("OPENSESSION_DEBUG"),
+        Ok(value)
+            if matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+    )
 }
 
 fn run_docs(action: DocsAction) -> anyhow::Result<()> {
@@ -100,5 +143,44 @@ fn run_docs(action: DocsAction) -> anyhow::Result<()> {
             clap_complete::generate(shell, &mut cmd, "opensession", &mut std::io::stdout());
             Ok(())
         }
+        DocsAction::Quickstart {
+            profile,
+            input,
+            out,
+            remote,
+        } => {
+            print_quickstart(&profile, &input, &out, &remote);
+            Ok(())
+        }
     }
+}
+
+fn print_quickstart(profile: &str, input: &Path, out: &Path, remote: &str) {
+    println!("# OpenSession 5-minute first-user flow");
+    println!();
+    println!("# 1) Diagnose and apply setup");
+    println!("opensession doctor");
+    println!("opensession doctor --fix");
+    println!();
+    println!("# 2) Parse raw logs into canonical HAIL JSONL");
+    println!(
+        "opensession parse --profile {} {} --out {}",
+        profile,
+        input.display(),
+        out.display()
+    );
+    println!();
+    println!("# 3) Register canonical session locally");
+    println!("opensession register {}", out.display());
+    println!("# -> os://src/local/<sha256>");
+    println!();
+    println!("# 4) Share local source URI via git");
+    println!(
+        "opensession share os://src/local/<sha256> --git --remote {}",
+        remote
+    );
+    println!();
+    println!("# 5) Optional: convert a remote URI to web URL");
+    println!("opensession config init --base-url https://opensession.io");
+    println!("opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web");
 }

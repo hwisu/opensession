@@ -1,4 +1,5 @@
-use anyhow::{bail, Context, Result};
+use crate::user_guidance::{guided_error, guided_error_with_doc};
+use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -51,20 +52,32 @@ pub fn run(args: ConfigArgs) -> Result<()> {
 pub fn load_repo_config(cwd: &Path) -> Result<(PathBuf, RepoConfig)> {
     let path = config_path(cwd)?;
     if !path.exists() {
-        bail!(
-            "missing config: {} (run `opensession config init`)",
-            path.display()
-        );
+        return Err(guided_error_with_doc(
+            format!("missing config: {}", path.display()),
+            [
+                "initialize config: `opensession config init --base-url https://opensession.io`"
+                    .to_string(),
+                "verify config: `opensession config show`".to_string(),
+            ],
+            "README.md#Share",
+        ));
     }
 
     let raw = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let parsed: RepoConfig =
         toml::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
     if parsed.share.base_url.trim().is_empty() {
-        bail!(
-            "invalid config: share.base_url is empty ({})",
-            path.display()
-        );
+        return Err(guided_error(
+            format!(
+                "invalid config: share.base_url is empty ({})",
+                path.display()
+            ),
+            [
+                "set a valid base URL: `opensession config init --base-url https://opensession.io`"
+                    .to_string(),
+                "inspect file content and retry: `opensession config show`".to_string(),
+            ],
+        ));
     }
     Ok((path, parsed))
 }
@@ -114,10 +127,18 @@ fn config_path(cwd: &Path) -> Result<PathBuf> {
 fn normalize_base_url(value: &str) -> Result<String> {
     let trimmed = value.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        bail!("base_url cannot be empty");
+        return Err(guided_error(
+            "base_url cannot be empty",
+            [
+                "use an explicit URL, e.g. `opensession config init --base-url https://opensession.io`",
+            ],
+        ));
     }
     if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-        bail!("base_url must start with http:// or https://");
+        return Err(guided_error(
+            "base_url must start with http:// or https://",
+            ["example: `opensession config init --base-url https://opensession.io`"],
+        ));
     }
     Ok(trimmed.to_string())
 }

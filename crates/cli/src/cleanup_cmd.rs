@@ -1,3 +1,4 @@
+use crate::user_guidance::guided_error;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use opensession_git_native::ops::find_repo_root;
@@ -444,7 +445,13 @@ fn run_execute(args: CleanupRunArgs) -> Result<()> {
     let paths = cleanup_paths(repo_root);
 
     if !paths.janitor.exists() {
-        bail!("cleanup janitor is not configured. run `opensession cleanup init --provider auto`");
+        return Err(guided_error(
+            "cleanup janitor is not configured",
+            [
+                "initialize cleanup first: `opensession cleanup init --provider auto`",
+                "then preview with `opensession cleanup status` or `opensession cleanup run`",
+            ],
+        ));
     }
 
     let output = run_janitor(&paths, args.apply, args.json)?;

@@ -17,5 +17,5 @@ npm run check
 
 For product-level usage and install-and-forget flow, see the root docs:
 
-- `/Users/hwisookim/opensession/README.md`
-- `/Users/hwisookim/opensession/docs.md`
+- `../README.md`
+- `../docs.md`

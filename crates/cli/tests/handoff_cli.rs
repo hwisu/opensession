@@ -255,7 +255,87 @@ fn help_shows_v1_commands() {
     assert!(stdout.contains("share"));
     assert!(stdout.contains("view"));
     assert!(stdout.contains("handoff"));
+    assert!(!stdout.contains("\n  setup  "));
     assert!(!stdout.contains("publish"));
+    assert!(stdout.contains("first-user flow (5 minutes):"));
+    assert!(stdout.contains("opensession docs quickstart"));
+    assert!(stdout.contains("common next steps:"));
+    assert!(stdout.contains("opensession doctor --fix"));
+}
+
+#[test]
+fn parse_help_shows_recovery_examples() {
+    let tmp = make_home();
+    let output = run(tmp.path(), tmp.path(), &["parse", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Recovery examples:"));
+    assert!(stdout.contains("opensession parse --profile codex ./raw-session.jsonl --preview"));
+    assert!(stdout.contains(
+        "opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl"
+    ));
+}
+
+#[test]
+fn share_help_shows_recovery_examples() {
+    let tmp = make_home();
+    let output = run(tmp.path(), tmp.path(), &["share", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Recovery examples:"));
+    assert!(stdout.contains("opensession share os://src/local/<sha256> --git --remote origin"));
+    assert!(stdout.contains(
+        "opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web"
+    ));
+}
+
+#[test]
+fn view_help_shows_recovery_examples() {
+    let tmp = make_home();
+    let output = run(tmp.path(), tmp.path(), &["view", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Recovery examples:"));
+    assert!(stdout.contains("opensession view os://src/local/<sha256> --no-open"));
+    assert!(stdout.contains("opensession view ./session.hail.jsonl --no-open"));
+    assert!(stdout.contains("opensession view HEAD~3..HEAD --no-open"));
+}
+
+#[test]
+fn doctor_help_shows_recovery_examples() {
+    let tmp = make_home();
+    let output = run(tmp.path(), tmp.path(), &["doctor", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Recovery examples:"));
+    assert!(stdout.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
+    assert!(stdout.contains("opensession docs quickstart"));
+}
+
+#[test]
+fn doctor_yes_without_fix_shows_next_steps() {
+    let tmp = make_home();
+    let output = run(tmp.path(), tmp.path(), &["doctor", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`--yes` requires `--fix`"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
+}
+
+#[test]
+fn doctor_fanout_without_fix_shows_next_steps() {
+    let tmp = make_home();
+    let output = run(
+        tmp.path(),
+        tmp.path(),
+        &["doctor", "--fanout-mode", "hidden_ref"],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`--fanout-mode` requires `--fix`"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession doctor --fix --fanout-mode hidden_ref"));
 }
 
 #[test]
@@ -305,7 +385,82 @@ fn share_web_rejects_local_uri() {
     let output = run(tmp.path(), &repo, &["share", &local_uri, "--web"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("next:"));
     assert!(stderr.contains("--git --remote"));
+}
+
+#[test]
+fn share_git_requires_remote_guidance() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-missing-remote"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(tmp.path(), &repo, &["share", &local_uri, "--git"]);
+    assert!(!share_out.status.success());
+    let stderr = String::from_utf8_lossy(&share_out.stderr);
+    assert!(stderr.contains("`--remote <name|url>` is required"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession share <local_uri> --git --remote origin"));
+}
+
+#[test]
+fn share_web_requires_config_with_next_steps() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let uri = opensession_core::source_uri::SourceUri::Src(
+        opensession_core::source_uri::SourceSpec::Git {
+            remote: "https://git.example/repo.git".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            path: "sessions/demo.jsonl".to_string(),
+        },
+    )
+    .to_string();
+
+    let out = run(tmp.path(), &repo, &["share", &uri, "--web"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("missing config"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession config init --base-url"));
+}
+
+#[test]
+fn share_git_outside_repo_shows_next_steps() {
+    let tmp = make_home();
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).expect("create outside dir");
+
+    let input = outside.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-outside"));
+    let register_out = run(
+        tmp.path(),
+        &outside,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+    assert!(local_uri.starts_with("os://src/local/"));
+
+    let share_out = run(
+        tmp.path(),
+        &outside,
+        &["share", &local_uri, "--git", "--remote", "origin"],
+    );
+    assert!(!share_out.status.success());
+    let stderr = String::from_utf8_lossy(&share_out.stderr);
+    assert!(stderr.contains("current directory is not inside a git repository"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("cd into the target git repository and retry"));
 }
 
 #[test]
@@ -578,6 +733,20 @@ fn cleanup_status_reports_not_configured_then_configured() {
         after_payload.get("provider").and_then(Value::as_str),
         Some("generic")
     );
+}
+
+#[test]
+fn cleanup_run_without_init_shows_next_steps() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(tmp.path(), &repo, &["cleanup", "run"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cleanup janitor is not configured"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession cleanup init --provider auto"));
 }
 
 #[test]
@@ -946,6 +1115,70 @@ fn view_commit_target_builds_commit_review_bundle() {
 }
 
 #[test]
+fn view_invalid_target_shows_next_steps() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &["view", "definitely-not-a-real-target", "--no-open"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unable to resolve view target"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession view os://src/... --no-open"));
+}
+
+#[test]
+fn register_rejects_non_hail_with_next_steps() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("not-hail.txt");
+    write_file(&input, "this is not hail jsonl\n");
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &["register", input.to_str().expect("path")],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("register expects canonical HAIL JSONL"));
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession parse --profile codex"));
+}
+
+#[test]
+fn parse_invalid_profile_shows_next_steps() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let raw = repo.join("raw-session.jsonl");
+    write_file(&raw, "{\"not\":\"a valid session format\"}\n");
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &[
+            "parse",
+            "--profile",
+            "unknown-profile",
+            raw.to_str().expect("path"),
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("next:"));
+    assert!(stderr.contains("opensession parse --help"));
+}
+
+#[test]
 fn handoff_build_get_verify_pin_unpin_rm() {
     let tmp = make_home();
     let repo = tmp.path().join("repo");
@@ -1052,7 +1285,7 @@ fn setup_non_tty_requires_yes() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("requires explicit approval"));
-    assert!(stderr.contains("opensession setup --yes --fanout-mode hidden_ref"));
+    assert!(stderr.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
 }
 
 #[test]
@@ -1068,7 +1301,7 @@ fn setup_non_tty_yes_requires_explicit_fanout_when_unset() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("fanout mode is not configured"));
-    assert!(stderr.contains("opensession setup --yes --fanout-mode hidden_ref"));
+    assert!(stderr.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
 }
 
 #[test]
@@ -1467,6 +1700,19 @@ fn docs_completion_still_available() {
     let out = run(tmp.path(), tmp.path(), &["docs", "completion", "bash"]);
     assert!(out.status.success());
     assert!(!out.stdout.is_empty());
+}
+
+#[test]
+fn docs_quickstart_prints_first_user_flow() {
+    let tmp = make_home();
+    let out = run(tmp.path(), tmp.path(), &["docs", "quickstart"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("OpenSession 5-minute first-user flow"));
+    assert!(stdout.contains("opensession doctor --fix"));
+    assert!(stdout.contains("opensession parse --profile codex"));
+    assert!(stdout.contains("opensession register ./session.hail.jsonl"));
+    assert!(stdout.contains("opensession share os://src/local/<sha256> --git --remote origin"));
 }
 
 #[test]

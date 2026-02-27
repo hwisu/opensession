@@ -1,5 +1,6 @@
 use crate::setup_cmd::{self, SetupArgs, SetupFanoutMode};
-use anyhow::{bail, Result};
+use crate::user_guidance::guided_error;
+use anyhow::Result;
 use clap::{Args, ValueEnum};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -20,6 +21,11 @@ impl DoctorFanoutMode {
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_long_help = r"Recovery examples:
+  opensession doctor
+  opensession doctor --fix
+  opensession doctor --fix --yes --fanout-mode hidden_ref
+  opensession docs quickstart")]
 pub struct DoctorArgs {
     /// Apply recommended setup fixes (hooks/shims/fanout defaults).
     #[arg(long)]
@@ -52,6 +58,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
 
     if !args.fix {
         println!("hint: run `opensession doctor --fix` to apply recommended setup values.");
+        println!("hint: run `opensession docs quickstart` for a 5-minute first-user flow.");
     }
 
     Ok(())
@@ -59,10 +66,22 @@ pub fn run(args: DoctorArgs) -> Result<()> {
 
 fn validate_args(args: &DoctorArgs) -> Result<()> {
     if args.fanout_mode.is_some() && !args.fix {
-        bail!("`--fanout-mode` requires `--fix`");
+        return Err(guided_error(
+            "`--fanout-mode` requires `--fix`",
+            [
+                "run `opensession doctor --fix --fanout-mode hidden_ref`",
+                "or run `opensession doctor --fix --fanout-mode git_notes`",
+            ],
+        ));
     }
     if args.yes && !args.fix {
-        bail!("`--yes` requires `--fix`");
+        return Err(guided_error(
+            "`--yes` requires `--fix`",
+            [
+                "run `opensession doctor --fix --yes --fanout-mode hidden_ref`",
+                "or run `opensession doctor --fix` in interactive mode",
+            ],
+        ));
     }
     Ok(())
 }
@@ -79,7 +98,10 @@ mod tests {
             fanout_mode: Some(DoctorFanoutMode::HiddenRef),
         };
         let err = validate_args(&args).expect_err("validate");
-        assert!(err.to_string().contains("requires `--fix`"));
+        let msg = err.to_string();
+        assert!(msg.contains("requires `--fix`"));
+        assert!(msg.contains("next:"));
+        assert!(msg.contains("doctor --fix --fanout-mode hidden_ref"));
     }
 
     #[test]
@@ -100,6 +122,9 @@ mod tests {
             fanout_mode: None,
         };
         let err = validate_args(&args).expect_err("validate");
-        assert!(err.to_string().contains("requires `--fix`"));
+        let msg = err.to_string();
+        assert!(msg.contains("requires `--fix`"));
+        assert!(msg.contains("next:"));
+        assert!(msg.contains("doctor --fix --yes --fanout-mode hidden_ref"));
     }
 }

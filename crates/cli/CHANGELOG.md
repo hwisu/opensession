@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.32](https://github.com/hwisu/opensession/compare/opensession-v0.2.31...opensession-v0.2.32) - 2026-02-27
+
+### Added
+
+- *(dx)* standardize recovery guidance and streamline first-user flow
+
 ## [0.2.31](https://github.com/hwisu/opensession/compare/opensession-v0.2.30...opensession-v0.2.31) - 2026-02-27
 
 ### Added

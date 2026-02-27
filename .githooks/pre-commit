@@ -27,6 +27,8 @@ if command -v node >/dev/null 2>&1; then
   node scripts/verify-content-contract.mjs --check
   echo "Running session-review workflow check..."
   node scripts/check-session-review-workflow.mjs
+  echo "Running publishable dependency check..."
+  node scripts/check-publishable-deps.mjs
 else
   echo "WARNING: node not found; skipping content contract check."
 fi

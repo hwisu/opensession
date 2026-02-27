@@ -15,9 +15,6 @@ include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
 name = "opensession"
 path = "src/main.rs"
 
-[features]
-e2e = ["dep:opensession-e2e"]
-
 [lints]
 workspace = true
 
@@ -29,8 +26,6 @@ opensession-api = { workspace = true, default-features = false }
 opensession-api-client = { workspace = true }
 opensession-local-db = { workspace = true }
 opensession-git-native = { workspace = true }
-opensession-daemon = { workspace = true }
-opensession-e2e = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -45,6 +40,7 @@ chrono = { workspace = true }
 dialoguer = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 opensession-core = { workspace = true, features = ["testing"] }

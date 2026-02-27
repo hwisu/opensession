@@ -2,14 +2,13 @@ mod cat_cmd;
 mod config_cmd;
 mod doctor_cmd;
 mod handoff_v1;
+mod hooks;
 mod inspect;
 mod parse_cmd;
 mod register;
 mod review;
 mod setup_cmd;
 mod share;
-#[cfg(feature = "e2e")]
-mod test_cmd;
 mod view;
 
 use clap::{Parser, Subcommand};
@@ -53,9 +52,6 @@ enum Commands {
         #[command(subcommand)]
         action: DocsAction,
     },
-    /// Run E2E checks against a server (requires --features e2e).
-    #[cfg(feature = "e2e")]
-    Test(test_cmd::TestArgs),
 }
 
 #[derive(Subcommand)]
@@ -85,8 +81,6 @@ async fn main() {
         Commands::Setup(args) => setup_cmd::run(args),
         Commands::Doctor(args) => doctor_cmd::run(args),
         Commands::Docs { action } => run_docs(action),
-        #[cfg(feature = "e2e")]
-        Commands::Test(args) => test_cmd::run_test(args).await,
     };
 
     if let Err(err) = result {

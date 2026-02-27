@@ -47,6 +47,7 @@ Required:
 6. Run `node/npm/pnpm` commands in the package directory that owns `package.json` and dependencies.
 7. When edits push a TUI source file over 1000 lines, add or update its ownership entry in `crates/tui/long_file_ownership.toml` before running `pre-push`.
 8. For `wrangler dev` web validation, restart `wrangler dev` after source edits when using custom build hooks; do not assume an already-running instance rebuilt the latest bundle.
+9. Before merging release automation changes, run `cargo package -p opensession --allow-dirty` and ensure publishable crates do not depend on `publish = false` workspace crates.
 
 ## Auto-Improvement Routine
 Trigger this routine automatically whenever a command, test, hook, or runtime check fails.

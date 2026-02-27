@@ -52,66 +52,6 @@ pub struct LocalSessionRow {
     pub is_auxiliary: bool,
 }
 
-/// Return true when a cached row corresponds to an OpenCode child session.
-pub fn is_opencode_child_session(row: &LocalSessionRow) -> bool {
-    row.tool == "opencode" && row.is_auxiliary
-}
-
-/// Parse `parentID` / `parentId` from an OpenCode session JSON file.
-#[deprecated(
-    note = "Use parser/core canonical session role attributes instead of runtime file inspection"
-)]
-pub fn parse_opencode_parent_session_id(source_path: &str) -> Option<String> {
-    let text = fs::read_to_string(source_path).ok()?;
-    let json: Value = serde_json::from_str(&text).ok()?;
-    lookup_parent_session_id(&json)
-}
-
-fn lookup_parent_session_id(value: &Value) -> Option<String> {
-    match value {
-        Value::Object(obj) => {
-            for (key, value) in obj {
-                if is_parent_id_key(key) {
-                    if let Some(parent_id) = value.as_str() {
-                        let parent_id = parent_id.trim();
-                        if !parent_id.is_empty() {
-                            return Some(parent_id.to_string());
-                        }
-                    }
-                }
-                if let Some(parent_id) = lookup_parent_session_id(value) {
-                    return Some(parent_id);
-                }
-            }
-            None
-        }
-        Value::Array(items) => items.iter().find_map(lookup_parent_session_id),
-        _ => None,
-    }
-}
-
-fn is_parent_id_key(key: &str) -> bool {
-    let flat = key
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect::<String>();
-
-    flat == "parentid"
-        || flat == "parentuuid"
-        || flat == "parentsessionid"
-        || flat == "parentsessionuuid"
-        || flat.ends_with("parentsessionid")
-        || (flat.contains("parent") && flat.ends_with("id"))
-        || (flat.contains("parent") && flat.ends_with("uuid"))
-}
-
-/// Remove OpenCode child sessions so only parent sessions remain visible.
-pub fn hide_opencode_child_sessions(mut rows: Vec<LocalSessionRow>) -> Vec<LocalSessionRow> {
-    rows.retain(|row| !row.is_auxiliary);
-    rows
-}
-
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
     let source_path = source_path.map(|path| path.to_ascii_lowercase())?;
 
@@ -1373,49 +1313,6 @@ mod tests {
         LocalDb::open_path(&path).unwrap()
     }
 
-    fn temp_root() -> tempfile::TempDir {
-        tempdir().unwrap()
-    }
-
-    fn make_row(id: &str, tool: &str, source_path: Option<&str>) -> LocalSessionRow {
-        LocalSessionRow {
-            id: id.to_string(),
-            source_path: source_path.map(String::from),
-            sync_status: "local_only".to_string(),
-            last_synced_at: None,
-            user_id: None,
-            nickname: None,
-            team_id: None,
-            tool: tool.to_string(),
-            agent_provider: None,
-            agent_model: None,
-            title: Some("test".to_string()),
-            description: None,
-            tags: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            uploaded_at: None,
-            message_count: 0,
-            user_message_count: 0,
-            task_count: 0,
-            event_count: 0,
-            duration_seconds: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            git_remote: None,
-            git_branch: None,
-            git_commit: None,
-            git_repo_name: None,
-            pr_number: None,
-            pr_url: None,
-            working_directory: None,
-            files_modified: None,
-            files_read: None,
-            has_errors: false,
-            max_active_agents: 1,
-            is_auxiliary: false,
-        }
-    }
-
     #[test]
     fn test_open_and_schema() {
         let _db = test_db();
@@ -1627,133 +1524,82 @@ mod tests {
     }
 
     #[test]
-    fn test_is_opencode_child_session() {
-        let root = temp_root();
-        let dir = root.path().join("sessions");
-        create_dir_all(&dir).unwrap();
-        let parent_session = dir.join("parent.json");
-        write(
-            &parent_session,
-            r#"{"id":"ses_parent","time":{"created":1000,"updated":1000}}"#,
-        )
-        .unwrap();
-        let child_session = dir.join("child.json");
-        write(
-            &child_session,
-            r#"{"id":"ses_child","parentID":"ses_parent","time":{"created":1000,"updated":1000}}"#,
-        )
-        .unwrap();
-
-        let parent = make_row(
-            "ses_parent",
-            "opencode",
-            Some(parent_session.to_str().unwrap()),
-        );
-        let mut child = make_row(
-            "ses_child",
-            "opencode",
-            Some(child_session.to_str().unwrap()),
-        );
-        child.is_auxiliary = true;
-        let mut codex = make_row("ses_other", "codex", Some(child_session.to_str().unwrap()));
-        codex.is_auxiliary = true;
-
-        assert!(!is_opencode_child_session(&parent));
-        assert!(is_opencode_child_session(&child));
-        assert!(!is_opencode_child_session(&codex));
-    }
-
-    #[allow(deprecated)]
-    #[test]
-    fn test_parse_opencode_parent_session_id_aliases() {
-        let root = temp_root();
-        let dir = root.path().join("session-aliases");
-        create_dir_all(&dir).unwrap();
-        let child_session = dir.join("child.json");
-        write(
-            &child_session,
-            r#"{"id":"ses_child","parentUUID":"ses_parent","time":{"created":1000,"updated":1000}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            parse_opencode_parent_session_id(child_session.to_str().unwrap()).as_deref(),
-            Some("ses_parent")
-        );
-    }
-
-    #[allow(deprecated)]
-    #[test]
-    fn test_parse_opencode_parent_session_id_nested_metadata() {
-        let root = temp_root();
-        let dir = root.path().join("session-nested");
-        create_dir_all(&dir).unwrap();
-        let child_session = dir.join("child.json");
-        write(
-            &child_session,
-            r#"{"id":"ses_child","metadata":{"links":{"parentSessionId":"ses_parent","trace":"x"}}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            parse_opencode_parent_session_id(child_session.to_str().unwrap()).as_deref(),
-            Some("ses_parent")
-        );
-    }
-
-    #[test]
-    fn test_hide_opencode_child_sessions() {
-        let root = temp_root();
-        let dir = root.path().join("sessions");
-        create_dir_all(&dir).unwrap();
-        let parent_session = dir.join("parent.json");
-        let child_session = dir.join("child.json");
-        let orphan_session = dir.join("orphan.json");
-
-        write(
-            &parent_session,
-            r#"{"id":"ses_parent","time":{"created":1000,"updated":1000}}"#,
-        )
-        .unwrap();
-        write(
-            &child_session,
-            r#"{"id":"ses_child","parentID":"ses_parent","time":{"created":1000,"updated":1000}}"#,
-        )
-        .unwrap();
-        write(
-            &orphan_session,
-            r#"{"id":"ses_orphan","time":{"created":1000,"updated":1000}}"#,
-        )
-        .unwrap();
-
-        let rows = vec![
-            {
-                let mut row = make_row(
-                    "ses_child",
-                    "opencode",
-                    Some(child_session.to_str().unwrap()),
-                );
-                row.is_auxiliary = true;
-                row
+    fn test_upsert_local_session_marks_parented_sessions_auxiliary() {
+        let db = test_db();
+        let mut session = Session::new(
+            "aux-upsert".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "opencode".to_string(),
+                tool_version: None,
             },
-            make_row(
-                "ses_parent",
-                "opencode",
-                Some(parent_session.to_str().unwrap()),
-            ),
-            {
-                let mut row = make_row("ses_other", "codex", None);
-                row.user_message_count = 1;
-                row
-            },
-            make_row(
-                "ses_orphan",
-                "opencode",
-                Some(orphan_session.to_str().unwrap()),
-            ),
-        ];
+        );
+        session.stats.event_count = 1;
+        session.context.attributes.insert(
+            opensession_core::session::ATTR_PARENT_SESSION_ID.to_string(),
+            serde_json::Value::String("parent-session".to_string()),
+        );
 
-        let filtered = hide_opencode_child_sessions(rows);
-        assert_eq!(filtered.len(), 3);
-        assert!(filtered.iter().all(|r| r.id != "ses_child"));
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.opencode/storage/session/project/aux-upsert.json",
+            &crate::git::GitContext::default(),
+        )
+        .unwrap();
+
+        let is_auxiliary: i64 = db
+            .conn()
+            .query_row(
+                "SELECT is_auxiliary FROM sessions WHERE id = ?1",
+                params!["aux-upsert"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(is_auxiliary, 1);
+
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert!(
+            rows.iter().all(|row| row.id != "aux-upsert"),
+            "auxiliary sessions should be hidden from default listing"
+        );
+    }
+
+    #[test]
+    fn test_upsert_local_session_primary_role_overrides_parent_link() {
+        let db = test_db();
+        let mut session = Session::new(
+            "primary-override".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "opencode".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.event_count = 1;
+        session.context.attributes.insert(
+            opensession_core::session::ATTR_PARENT_SESSION_ID.to_string(),
+            serde_json::Value::String("parent-session".to_string()),
+        );
+        session.context.attributes.insert(
+            opensession_core::session::ATTR_SESSION_ROLE.to_string(),
+            serde_json::Value::String("primary".to_string()),
+        );
+
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.opencode/storage/session/project/primary-override.json",
+            &crate::git::GitContext::default(),
+        )
+        .unwrap();
+
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.id == "primary-override")
+            .expect("session with explicit primary role should stay visible");
+        assert!(!row.is_auxiliary);
     }
 
     #[test]

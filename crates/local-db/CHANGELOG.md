@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.30](https://github.com/hwisu/opensession/compare/opensession-local-db-v0.2.29...opensession-local-db-v0.2.30) - 2026-02-27
+
+### Fixed
+
+- repair codex auxiliary sync and add detail flow modes
+
 ## [0.2.25](https://github.com/hwisu/opensession/compare/opensession-local-db-v0.2.24...opensession-local-db-v0.2.25) - 2026-02-23
 
 ### Other

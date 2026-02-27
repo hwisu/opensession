@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.30](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.29...opensession-parsers-v0.2.30) - 2026-02-27
+
+### Fixed
+
+- repair codex auxiliary sync and add detail flow modes
+
 ## [0.2.27](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.26...opensession-parsers-v0.2.27) - 2026-02-26
 
 ### Other

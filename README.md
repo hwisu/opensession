@@ -123,6 +123,39 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 Git-native writes now target hidden ledger refs (`refs/opensession/branches/<branch_b64url>`); legacy fixed ref writes are removed.
 `opensession doctor --fix` installs the shim at `~/.local/share/opensession/bin/opensession` for hook stability.
 
+## Cleanup Automation
+
+Configure hidden-ref and artifact cleanup for GitHub/GitLab/generic git remotes:
+
+```bash
+# initialize cleanup config and templates
+opensession cleanup init --provider auto
+
+# non-interactive setup
+opensession cleanup init --provider auto --yes
+
+# inspect cleanup status + janitor preview
+opensession cleanup status
+
+# dry-run janitor (default)
+opensession cleanup run
+
+# apply cleanup deletions
+opensession cleanup run --apply
+```
+
+Defaults:
+
+- hidden ref TTL: 30 days
+- artifact branch TTL: 30 days
+- GitHub/GitLab setup also writes PR/MR session-review automation that updates an artifact branch and posts a review comment on PR/MR updates.
+
+Sensitive repositories can force immediate cleanup:
+
+```bash
+opensession cleanup init --provider auto --hidden-ttl-days 0 --artifact-ttl-days 0 --yes
+```
+
 ## Handoff
 
 ```bash

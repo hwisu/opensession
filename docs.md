@@ -123,6 +123,44 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 - Local URI with `--web` is rejected with follow-up action (`share --git`)
 - Human output prints canonical URL as first line
 
+## Cleanup Automation
+
+OpenSession can configure hidden ref cleanup for user repositories without changing server-side infrastructure.
+
+```bash
+# Initialize provider-aware cleanup templates/config
+opensession cleanup init --provider auto
+
+# Non-interactive setup
+opensession cleanup init --provider auto --yes
+
+# Inspect config + janitor dry-run summary
+opensession cleanup status
+
+# Dry-run (default)
+opensession cleanup run
+
+# Apply deletions
+opensession cleanup run --apply
+```
+
+Defaults:
+
+- hidden ref TTL: 30 days
+- artifact branch TTL: 30 days
+
+For sensitive repositories:
+
+```bash
+opensession cleanup init --provider auto --hidden-ttl-days 0 --artifact-ttl-days 0 --yes
+```
+
+Provider matrix:
+
+- GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. PR updates publish/refresh `opensession/pr-<number>-sessions` and upsert a PR comment.
+- GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note.
+- Generic git: `.opensession/cleanup/cron.example` is generated for cron/system scheduler wiring.
+
 ## Inspect Timeline
 
 Canonical web routes:

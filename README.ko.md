@@ -115,6 +115,39 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 
 `share --web`는 `.opensession/config.toml`이 반드시 필요합니다.
 
+## Cleanup 자동화
+
+GitHub/GitLab/Generic 원격에서 hidden ref와 artifact 정리를 자동화할 수 있습니다.
+
+```bash
+# cleanup 설정 + 템플릿 초기화
+opensession cleanup init --provider auto
+
+# 비대화형 설정
+opensession cleanup init --provider auto --yes
+
+# cleanup 상태 + janitor 미리보기
+opensession cleanup status
+
+# 기본은 dry-run
+opensession cleanup run
+
+# 실제 삭제 적용
+opensession cleanup run --apply
+```
+
+기본값:
+
+- hidden ref TTL: 30일
+- artifact branch TTL: 30일
+- GitHub/GitLab 설정 시 PR/MR 갱신마다 artifact branch를 갱신하고 리뷰 코멘트를 남기는 session-review 자동화 템플릿도 함께 생성됩니다.
+
+민감한 저장소는 즉시 정리 모드를 권장합니다.
+
+```bash
+opensession cleanup init --provider auto --hidden-ttl-days 0 --artifact-ttl-days 0 --yes
+```
+
 ## handoff
 
 ```bash

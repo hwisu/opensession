@@ -1,3 +1,4 @@
+use crate::cleanup_cmd;
 use crate::config_cmd::load_repo_config;
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -136,6 +137,13 @@ fn run_git(uri: SourceUri, args: &ShareArgs) -> Result<()> {
     let push_cmd = format!("git push {} {target_ref}:{target_ref}", remote.push_target);
     if args.push {
         run_push(&repo_root, &remote.push_target, &target_ref)?;
+        if !args.json {
+            if let Err(err) =
+                cleanup_cmd::maybe_prompt_cleanup_init_after_push(&repo_root, &remote.push_target)
+            {
+                eprintln!("[opensession] Warning: cleanup setup prompt failed: {err}");
+            }
+        }
     }
 
     if args.copy {

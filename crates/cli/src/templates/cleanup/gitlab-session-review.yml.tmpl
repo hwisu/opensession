@@ -1,0 +1,60 @@
+# opensession-managed-cleanup
+opensession_session_review:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - set -eu
+    - |
+      encoded="$(python3 - <<'PY'
+import base64, os
+print(base64.urlsafe_b64encode(os.environ['CI_COMMIT_REF_NAME'].encode()).decode().rstrip('='))
+PY
+)"
+      ledger_ref="refs/opensession/branches/${encoded}"
+      artifact_branch="opensession/mr-${CI_MERGE_REQUEST_IID}-sessions"
+      has_ledger=0
+      push_ok=0
+
+      if git fetch --no-tags --depth=1 origin "+${ledger_ref}:${ledger_ref}" >/dev/null 2>&1; then
+        has_ledger=1
+        if git push origin "${ledger_ref}:refs/heads/${artifact_branch}" >/dev/null 2>&1; then
+          push_ok=1
+        fi
+      fi
+
+      if [ -n "${OPENSESSION_GITLAB_TOKEN:-}" ]; then
+        auth_header="PRIVATE-TOKEN: ${OPENSESSION_GITLAB_TOKEN}"
+      elif [ -n "${CI_JOB_TOKEN:-}" ]; then
+        auth_header="JOB-TOKEN: ${CI_JOB_TOKEN}"
+      else
+        echo "[opensession] warning: no token available for MR comment"
+        exit 0
+      fi
+
+      body="<!-- opensession-auto-session-review -->
+### OpenSession Session Artifact
+- Ledger ref: \\`${ledger_ref}\\`
+- Artifact branch: \\`${artifact_branch}\\`
+- Artifact branch link: ${CI_PROJECT_URL}/-/tree/${artifact_branch}
+"
+
+      if [ "$has_ledger" -ne 1 ]; then
+        body="${body}
+- Status: hidden ledger ref not found yet (no tracked sessions pushed)."
+      elif [ "$push_ok" -ne 1 ]; then
+        body="${body}
+- Status: ledger found, but failed to push artifact branch (check runner push permissions)."
+      else
+        body="${body}
+- Status: artifact branch updated."
+      fi
+
+      notes_api="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes"
+      curl --silent --show-error --fail \
+        --header "$auth_header" \
+        --request POST \
+        --data-urlencode "body=${body}" \
+        "$notes_api" \
+        >/dev/null || echo "[opensession] warning: failed to post MR comment"

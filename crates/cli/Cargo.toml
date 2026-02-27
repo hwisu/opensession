@@ -9,7 +9,13 @@ readme = "../../README.md"
 homepage = "https://opensession.io"
 keywords = ["ai", "session", "coding", "cli", "llm"]
 categories = ["command-line-utilities", "development-tools"]
-include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+include = [
+    "src/**/*.rs",
+    "src/templates/**/*.tmpl",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+]
 
 [[bin]]
 name = "opensession"

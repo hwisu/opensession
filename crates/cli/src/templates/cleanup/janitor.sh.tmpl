@@ -1,0 +1,229 @@
+#!/bin/sh
+# opensession-managed-cleanup
+set -eu
+
+REMOTE="{{REMOTE}}"
+HIDDEN_TTL_DAYS={{HIDDEN_TTL_DAYS}}
+ARTIFACT_TTL_DAYS={{ARTIFACT_TTL_DAYS}}
+
+APPLY=0
+JSON=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply)
+      APPLY=1
+      ;;
+    --json)
+      JSON=1
+      ;;
+    *)
+      echo "unknown arg: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+HIDDEN_FILE="$(mktemp)"
+ARTIFACT_FILE="$(mktemp)"
+DELETED_FILE="$(mktemp)"
+FAILED_FILE="$(mktemp)"
+KEEP_COUNT=0
+NOW_TS="$(date -u +%s)"
+
+cleanup_tmp() {
+  rm -f "$HIDDEN_FILE" "$ARTIFACT_FILE" "$DELETED_FILE" "$FAILED_FILE"
+}
+trap cleanup_tmp EXIT
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+json_array_from_file() {
+  file="$1"
+  if [ ! -s "$file" ]; then
+    printf '[]'
+    return
+  fi
+
+  first=1
+  printf '['
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    escaped="$(json_escape "$line")"
+    if [ "$first" -eq 0 ]; then
+      printf ','
+    fi
+    first=0
+    printf '"%s"' "$escaped"
+  done < "$file"
+  printf ']'
+}
+
+count_file_lines() {
+  file="$1"
+  if [ ! -s "$file" ]; then
+    printf '0'
+    return
+  fi
+  wc -l < "$file" | tr -d ' '
+}
+
+decode_base64url() {
+  token="$1"
+  standard="$(printf '%s' "$token" | tr '_-' '/+')"
+  remainder=$((${#standard} % 4))
+  case "$remainder" in
+    0) ;;
+    2) standard="${standard}==" ;;
+    3) standard="${standard}=" ;;
+    1) return 1 ;;
+  esac
+
+  if decoded="$(printf '%s' "$standard" | base64 --decode 2>/dev/null)"; then
+    printf '%s' "$decoded"
+    return 0
+  fi
+  if decoded="$(printf '%s' "$standard" | base64 -D 2>/dev/null)"; then
+    printf '%s' "$decoded"
+    return 0
+  fi
+  return 1
+}
+
+ref_timestamp_unix() {
+  ref="$1"
+  temp_ref="refs/opensession/tmp/cleanup-$$-$(printf '%s' "$ref" | tr '/:' '__')"
+  if ! git fetch --no-tags --depth=1 "$REMOTE" "+$ref:$temp_ref" >/dev/null 2>&1; then
+    printf ''
+    return
+  fi
+
+  ts="$(git show -s --format=%ct "$temp_ref" 2>/dev/null || true)"
+  git update-ref -d "$temp_ref" >/dev/null 2>&1 || true
+  printf '%s' "$ts"
+}
+
+ttl_allows_delete() {
+  tip_ts="$1"
+  ttl_days="$2"
+  if [ "$ttl_days" -eq 0 ]; then
+    return 0
+  fi
+  if [ -z "$tip_ts" ]; then
+    return 1
+  fi
+
+  ttl_seconds=$((ttl_days * 86400))
+  age_seconds=$((NOW_TS - tip_ts))
+  [ "$age_seconds" -ge "$ttl_seconds" ]
+}
+
+delete_ref_with_retry() {
+  ref="$1"
+  ok=0
+  for attempt in 1 2; do
+    if git push "$REMOTE" ":$ref" >/dev/null 2>&1; then
+      ok=1
+      break
+    fi
+    sleep 1
+  done
+
+  if [ "$ok" -eq 1 ]; then
+    printf '%s\n' "$ref" >> "$DELETED_FILE"
+  else
+    printf '%s\n' "$ref" >> "$FAILED_FILE"
+  fi
+}
+
+hidden_raw="$(git ls-remote "$REMOTE" 'refs/opensession/branches/*' 2>/dev/null || true)"
+if [ -n "$hidden_raw" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    sha="$(printf '%s' "$line" | awk '{print $1}')"
+    ref="$(printf '%s' "$line" | awk '{print $2}')"
+    [ -n "$ref" ] || continue
+    token="${ref#refs/opensession/branches/}"
+    if [ -z "$token" ]; then
+      continue
+    fi
+
+    if ! branch_name="$(decode_base64url "$token" 2>/dev/null)"; then
+      continue
+    fi
+    [ -n "$branch_name" ] || continue
+
+    if git ls-remote --exit-code --heads "$REMOTE" "refs/heads/$branch_name" >/dev/null 2>&1; then
+      continue
+    fi
+
+    ts="$(ref_timestamp_unix "$ref")"
+    if ttl_allows_delete "$ts" "$HIDDEN_TTL_DAYS"; then
+      printf '%s\n' "$ref" >> "$HIDDEN_FILE"
+      if [ "$APPLY" -eq 1 ]; then
+        delete_ref_with_retry "$ref"
+      fi
+    else
+      KEEP_COUNT=$((KEEP_COUNT + 1))
+    fi
+  done <<EOF_HIDDEN
+$hidden_raw
+EOF_HIDDEN
+fi
+
+artifact_raw="$(git ls-remote "$REMOTE" 'refs/heads/opensession/pr-*-sessions' 2>/dev/null || true)"
+if [ -n "$artifact_raw" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    sha="$(printf '%s' "$line" | awk '{print $1}')"
+    ref="$(printf '%s' "$line" | awk '{print $2}')"
+    [ -n "$ref" ] || continue
+    ts="$(ref_timestamp_unix "$ref")"
+    if ttl_allows_delete "$ts" "$ARTIFACT_TTL_DAYS"; then
+      printf '%s\n' "$ref" >> "$ARTIFACT_FILE"
+      if [ "$APPLY" -eq 1 ]; then
+        delete_ref_with_retry "$ref"
+      fi
+    else
+      KEEP_COUNT=$((KEEP_COUNT + 1))
+    fi
+  done <<EOF_ARTIFACT
+$artifact_raw
+EOF_ARTIFACT
+fi
+
+hidden_count="$(count_file_lines "$HIDDEN_FILE")"
+artifact_count="$(count_file_lines "$ARTIFACT_FILE")"
+deleted_count="$(count_file_lines "$DELETED_FILE")"
+failed_count="$(count_file_lines "$FAILED_FILE")"
+
+if [ "$JSON" -eq 1 ]; then
+  printf '{'
+  printf '"hidden_candidates":%s,' "$(json_array_from_file "$HIDDEN_FILE")"
+  printf '"artifact_candidates":%s,' "$(json_array_from_file "$ARTIFACT_FILE")"
+  printf '"deleted":%s,' "$(json_array_from_file "$DELETED_FILE")"
+  printf '"failed":%s,' "$(json_array_from_file "$FAILED_FILE")"
+  printf '"kept_due_to_ttl":%s' "$KEEP_COUNT"
+  printf '}\n'
+else
+  if [ "$APPLY" -eq 1 ]; then
+    echo "mode: apply"
+  else
+    echo "mode: dry-run"
+  fi
+  echo "remote: $REMOTE"
+  echo "hidden_candidates: $hidden_count"
+  echo "artifact_candidates: $artifact_count"
+  echo "deleted: $deleted_count"
+  echo "failed: $failed_count"
+  echo "kept_due_to_ttl: $KEEP_COUNT"
+fi
+
+if [ "$failed_count" -gt 0 ]; then
+  exit 1
+fi
+
+exit 0

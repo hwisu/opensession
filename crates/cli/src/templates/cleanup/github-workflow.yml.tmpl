@@ -1,0 +1,23 @@
+# opensession-managed-cleanup
+name: OpenSession Cleanup
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run OpenSession janitor
+        run: |
+          chmod +x .opensession/cleanup/janitor.sh
+          ./.opensession/cleanup/janitor.sh --apply

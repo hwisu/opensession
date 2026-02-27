@@ -1,3 +1,4 @@
+use crate::cleanup_cmd::{self, CleanupDoctorLevel};
 use crate::hooks::{
     install_hooks_with_report, list_installed_hooks, plan_hook_install, HookInstallAction, HookType,
 };
@@ -903,6 +904,18 @@ fn run_check(repo_root: &PathBuf) -> Result<()> {
         } else {
             required_actions.push(hint);
         }
+    }
+
+    let cleanup = cleanup_cmd::doctor_status(repo_root);
+    let cleanup_level = match cleanup.level {
+        CleanupDoctorLevel::Ok => DoctorLevel::Ok,
+        CleanupDoctorLevel::Warn => DoctorLevel::Warn,
+    };
+    print_doctor_item(colors, cleanup_level, "cleanup", &cleanup.detail);
+    summary.record(cleanup_level);
+    if let Some(hint) = cleanup.hint {
+        print_doctor_hint(&hint);
+        required_actions.push(hint);
     }
 
     print_doctor_item(colors, DoctorLevel::Ok, "current branch", &branch);

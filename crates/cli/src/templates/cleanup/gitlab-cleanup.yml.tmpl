@@ -1,0 +1,8 @@
+# opensession-managed-cleanup
+opensession_cleanup:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - when: manual
+  script:
+    - chmod +x .opensession/cleanup/janitor.sh
+    - ./.opensession/cleanup/janitor.sh --apply

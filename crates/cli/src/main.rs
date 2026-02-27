@@ -1,4 +1,5 @@
 mod cat_cmd;
+mod cleanup_cmd;
 mod config_cmd;
 mod doctor_cmd;
 mod handoff_v1;
@@ -43,6 +44,8 @@ enum Commands {
     Parse(parse_cmd::ParseArgs),
     /// Manage explicit repo config (`.opensession/config.toml`).
     Config(config_cmd::ConfigArgs),
+    /// Configure and run hidden-ref cleanup automation.
+    Cleanup(cleanup_cmd::CleanupArgs),
     /// Install/update OpenSession git hooks and diagnostics.
     Setup(setup_cmd::SetupArgs),
     /// Diagnose and optionally fix local OpenSession setup.
@@ -78,6 +81,7 @@ async fn main() {
         Commands::Handoff(args) => handoff_v1::run(args),
         Commands::Parse(args) => parse_cmd::run(args),
         Commands::Config(args) => config_cmd::run(args),
+        Commands::Cleanup(args) => cleanup_cmd::run(args),
         Commands::Setup(args) => setup_cmd::run(args),
         Commands::Doctor(args) => doctor_cmd::run(args),
         Commands::Docs { action } => run_docs(action),

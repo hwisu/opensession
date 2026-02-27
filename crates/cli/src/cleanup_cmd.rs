@@ -752,7 +752,8 @@ fn parse_remote_host_and_path(remote_url: &str) -> Option<(String, String)> {
 }
 
 fn looks_like_remote_url(value: &str) -> bool {
-    value.contains("://") || value.starts_with("git@")
+    let trimmed = value.trim();
+    trimmed.contains("://") || trimmed.starts_with("git@")
 }
 
 fn prompt_confirmation(prompt: &str) -> Result<()> {
@@ -771,7 +772,8 @@ fn prompt_confirmation(prompt: &str) -> Result<()> {
 }
 
 fn parse_confirmation(raw: &str) -> bool {
-    matches!(raw.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    let trimmed = raw.trim();
+    trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes")
 }
 
 fn render_janitor_template(config: &CleanupConfig) -> String {
@@ -803,8 +805,7 @@ fn write_embedded_template(
     applied_paths: &mut Vec<String>,
     manual_steps: &mut Vec<String>,
 ) -> Result<()> {
-    let rendered = render_template(template, &[]);
-    write_managed_file(path, &rendered, repo_root, applied_paths, manual_steps)
+    write_managed_file(path, template, repo_root, applied_paths, manual_steps)
 }
 
 fn write_managed_file(
@@ -962,10 +963,15 @@ fn prompt_already_seen(repo_root: &Path) -> Result<bool> {
     let Some(raw) = git_config_get(repo_root, PROMPTED_GIT_KEY)? else {
         return Ok(false);
     };
-    Ok(matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    ))
+    Ok(parse_truthy_value(&raw))
+}
+
+fn parse_truthy_value(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed == "1"
+        || trimmed.eq_ignore_ascii_case("true")
+        || trimmed.eq_ignore_ascii_case("yes")
+        || trimmed.eq_ignore_ascii_case("on")
 }
 
 fn mark_prompt_seen(repo_root: &Path) -> Result<()> {
@@ -1108,5 +1114,15 @@ mod tests {
         assert!(parse_confirmation("Yes"));
         assert!(!parse_confirmation("n"));
         assert!(!parse_confirmation(""));
+    }
+
+    #[test]
+    fn parse_truthy_value_accepts_expected_tokens() {
+        assert!(parse_truthy_value("1"));
+        assert!(parse_truthy_value("TRUE"));
+        assert!(parse_truthy_value(" yes "));
+        assert!(parse_truthy_value("On"));
+        assert!(!parse_truthy_value("0"));
+        assert!(!parse_truthy_value("no"));
     }
 }

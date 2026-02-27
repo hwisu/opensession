@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.31](https://github.com/hwisu/opensession/compare/opensession-local-db-v0.2.30...opensession-local-db-v0.2.31) - 2026-02-27
+
+### Other
+
+- *(local-db)* remove legacy session fallback helpers
+
 ## [0.2.30](https://github.com/hwisu/opensession/compare/opensession-local-db-v0.2.29...opensession-local-db-v0.2.30) - 2026-02-27
 
 ### Fixed

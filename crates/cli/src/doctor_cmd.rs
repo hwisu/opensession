@@ -1,10 +1,6 @@
-use crate::setup_cmd::{self, SetupArgs};
-use anyhow::{anyhow, bail, Context, Result};
+use crate::setup_cmd::{self, SetupArgs, SetupFanoutMode};
+use anyhow::{bail, Result};
 use clap::{Args, ValueEnum};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-const FANOUT_MODE_GIT_CONFIG_KEY: &str = "opensession.fanout-mode";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DoctorFanoutMode {
@@ -15,10 +11,10 @@ pub enum DoctorFanoutMode {
 }
 
 impl DoctorFanoutMode {
-    fn as_str(self) -> &'static str {
+    fn as_setup_mode(self) -> SetupFanoutMode {
         match self {
-            Self::HiddenRef => "hidden_ref",
-            Self::GitNotes => "git_notes",
+            Self::HiddenRef => SetupFanoutMode::HiddenRef,
+            Self::GitNotes => SetupFanoutMode::GitNotes,
         }
     }
 }
@@ -28,6 +24,9 @@ pub struct DoctorArgs {
     /// Apply recommended setup fixes (hooks/shims/fanout defaults).
     #[arg(long)]
     pub fix: bool,
+    /// Apply setup changes without interactive confirmation.
+    #[arg(long)]
+    pub yes: bool,
     /// Set fanout mode before applying fixes.
     #[arg(long, value_enum)]
     pub fanout_mode: Option<DoctorFanoutMode>,
@@ -41,18 +40,10 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         if args.fix { "apply mode" } else { "check mode" }
     );
 
-    if let Some(mode) = args.fanout_mode {
-        let repo_root = current_repo_root()?;
-        write_fanout_mode(&repo_root, mode)?;
-        println!(
-            "fanout mode set: {} ({})",
-            mode.as_str(),
-            repo_root.display()
-        );
-    }
-
     setup_cmd::run(SetupArgs {
         check: !args.fix,
+        yes: args.yes,
+        fanout_mode: args.fanout_mode.map(DoctorFanoutMode::as_setup_mode),
         print_ledger_ref: None,
         print_fanout_mode: false,
         sync_branch_session: None,
@@ -70,30 +61,8 @@ fn validate_args(args: &DoctorArgs) -> Result<()> {
     if args.fanout_mode.is_some() && !args.fix {
         bail!("`--fanout-mode` requires `--fix`");
     }
-    Ok(())
-}
-
-fn current_repo_root() -> Result<PathBuf> {
-    let cwd = std::env::current_dir().context("read current directory")?;
-    opensession_git_native::ops::find_repo_root(&cwd)
-        .ok_or_else(|| anyhow!("current directory is not inside a git repository"))
-}
-
-fn write_fanout_mode(repo_root: &Path, mode: DoctorFanoutMode) -> Result<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .arg("config")
-        .arg("--local")
-        .arg(FANOUT_MODE_GIT_CONFIG_KEY)
-        .arg(mode.as_str())
-        .output()
-        .context("write git fanout mode")?;
-    if !output.status.success() {
-        bail!(
-            "failed to store fanout mode in git config: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    if args.yes && !args.fix {
+        bail!("`--yes` requires `--fix`");
     }
     Ok(())
 }
@@ -106,6 +75,7 @@ mod tests {
     fn validate_args_rejects_fanout_without_fix() {
         let args = DoctorArgs {
             fix: false,
+            yes: false,
             fanout_mode: Some(DoctorFanoutMode::HiddenRef),
         };
         let err = validate_args(&args).expect_err("validate");
@@ -116,43 +86,20 @@ mod tests {
     fn validate_args_accepts_fix_with_fanout() {
         let args = DoctorArgs {
             fix: true,
+            yes: true,
             fanout_mode: Some(DoctorFanoutMode::GitNotes),
         };
         validate_args(&args).expect("validate");
     }
 
     #[test]
-    fn write_fanout_mode_persists_local_git_config() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).expect("create repo dir");
-        let init = Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .arg("init")
-            .output()
-            .expect("git init");
-        assert!(
-            init.status.success(),
-            "{}",
-            String::from_utf8_lossy(&init.stderr)
-        );
-
-        write_fanout_mode(&repo, DoctorFanoutMode::GitNotes).expect("write fanout mode");
-        let get = Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .arg("config")
-            .arg("--local")
-            .arg("--get")
-            .arg(FANOUT_MODE_GIT_CONFIG_KEY)
-            .output()
-            .expect("git config get");
-        assert!(
-            get.status.success(),
-            "{}",
-            String::from_utf8_lossy(&get.stderr)
-        );
-        assert_eq!(String::from_utf8_lossy(&get.stdout).trim(), "git_notes");
+    fn validate_args_rejects_yes_without_fix() {
+        let args = DoctorArgs {
+            fix: false,
+            yes: true,
+            fanout_mode: None,
+        };
+        let err = validate_args(&args).expect_err("validate");
+        assert!(err.to_string().contains("requires `--fix`"));
     }
 }

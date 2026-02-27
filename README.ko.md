@@ -49,18 +49,26 @@ cargo install opensession
 ## Install-and-Forget 설정
 
 ```bash
-# 1) 로컬 설정 진단 (flutter doctor 스타일)
+# 1) CLI 설치
+cargo install opensession
+
+# 2) 로컬 설정 진단 (flutter doctor 스타일)
 opensession doctor
 
-# 2) 권장 설치값 자동 적용 (hooks/shims/fanout defaults)
+# 3) 권장 설치값 적용 (변경 전 동의 프롬프트)
 opensession doctor --fix
 
-# 3) 선택: fanout 모드를 명시적으로 지정
+# 선택: fanout 모드를 명시적으로 지정
 opensession doctor --fix --fanout-mode hidden_ref
+
+# 자동화/비대화형(non-TTY)
+opensession doctor --fix --yes --fanout-mode hidden_ref
 ```
 
 `doctor`는 내부적으로 기존 setup 파이프라인(`opensession setup` / `opensession setup --check`)을 재사용합니다.
-첫 적용 시 fanout 저장 모드(`hidden_ref` 또는 `git_notes`)를 선택하며, 선택값은 로컬 git 설정(`.git/config`)의 `opensession.fanout-mode`에 저장됩니다.
+`doctor --fix`는 적용 전 setup 계획을 출력하고 동의를 받은 뒤 훅/shim/fanout 변경을 수행합니다.
+첫 interactive 적용 시 fanout 저장 모드(`hidden_ref` 또는 `git_notes`)를 선택하며, 선택값은 로컬 git 설정(`.git/config`)의 `opensession.fanout-mode`에 저장됩니다.
+비대화형 환경에서는 `--fix`에 `--yes`가 필요하고, 저장된 fanout 모드가 없으면 `--fanout-mode`를 명시해야 합니다.
 
 자동 수집을 위한 daemon 실행:
 

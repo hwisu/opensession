@@ -12,6 +12,23 @@ Core principles:
 - No implicit network mutation.
 - Defaults are allowed only when printed in output.
 
+Beginner 3-step quick start:
+
+```bash
+# 1) Install CLI
+cargo install opensession
+
+# 2) Diagnose local setup (flutter doctor style)
+opensession doctor
+
+# 3) Apply setup after explicit confirmation prompt
+opensession doctor --fix
+```
+
+- `doctor --fix` prints a setup plan and asks before applying hook/shim/fanout changes.
+- For automation or non-interactive shells, use explicit mode + approval:
+  `opensession doctor --fix --yes --fanout-mode hidden_ref`
+
 Quick path:
 
 ```bash
@@ -74,14 +91,18 @@ Install-and-forget setup:
 ```bash
 opensession doctor
 opensession doctor --fix
-# optional
+# optional explicit mode in interactive shells
 opensession doctor --fix --fanout-mode hidden_ref
+# automation/non-interactive
+opensession doctor --fix --yes --fanout-mode hidden_ref
 ```
 
 - `doctor` check mode maps to `setup --check`; `doctor --fix` maps to `setup`.
+- `doctor --fix` requires explicit approval: interactive prompt by default, `--yes` for automation.
 - Installs/updates OpenSession-managed `pre-push` hook in the current repo.
 - Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
-- On first apply, prompts for fanout mode (`hidden_ref` or `git_notes`) and stores it in local git config (`opensession.fanout-mode`).
+- On first apply without a configured mode, interactive shells prompt for fanout mode (`hidden_ref` or `git_notes`) and store it in local git config (`opensession.fanout-mode`).
+- Non-interactive apply requires explicit fanout mode (`--fanout-mode`) if the repository has no stored `opensession.fanout-mode`.
 - `doctor` check output includes daemon status from `~/.config/opensession/daemon.pid`.
 - Start daemon with `opensession-daemon run` (or `cargo run -p opensession-daemon -- run` in a source checkout).
 - Does **not** modify `remote.<name>.push`.

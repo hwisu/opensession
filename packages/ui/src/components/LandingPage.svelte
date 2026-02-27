@@ -67,19 +67,26 @@ const operatingLoop = [
 					AI coding sessions are easy to lose. Context disappears, handoffs degrade, and screenshots replace evidence.
 					OpenSession turns AI sessions into structured, replayable artifacts.
 				</p>
-				<div class="flex flex-wrap gap-2">
-					<button
-						type="button"
-						onclick={() => onNavigate('/sessions')}
-						class="stage-cta bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85"
-					>
-						Open Sessions
-					</button>
-					<button
-						type="button"
-						onclick={() => onNavigate('/docs')}
-						class="stage-cta border border-border px-4 py-2 text-xs font-semibold text-text-secondary transition-colors hover:border-accent hover:text-accent"
-					>
+					<div class="flex flex-wrap gap-2">
+						<button
+							type="button"
+							onclick={() => onNavigate('/sessions')}
+							class="stage-cta bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85"
+						>
+							Open Sessions
+						</button>
+						<button
+							type="button"
+							onclick={() => onNavigate('/docs#getting-started')}
+							class="stage-cta bg-warning px-4 py-2 text-xs font-semibold text-text-primary transition-colors hover:bg-warning/85"
+						>
+							Beginner Quick Start
+						</button>
+						<button
+							type="button"
+							onclick={() => onNavigate('/docs')}
+							class="stage-cta border border-border px-4 py-2 text-xs font-semibold text-text-secondary transition-colors hover:border-accent hover:text-accent"
+						>
 						Open Docs
 					</button>
 				</div>

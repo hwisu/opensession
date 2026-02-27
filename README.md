@@ -49,18 +49,26 @@ cargo install opensession
 ## Install-and-Forget Setup
 
 ```bash
-# 1) Diagnose local setup (flutter doctor style)
+# 1) Install CLI
+cargo install opensession
+
+# 2) Diagnose local setup (flutter doctor style)
 opensession doctor
 
-# 2) Apply recommended setup values (hooks/shims/fanout defaults)
+# 3) Apply recommended setup values (explicit confirmation prompt)
 opensession doctor --fix
 
-# 3) Optional: pin fanout storage mode while fixing
+# Optional: pin fanout storage mode while fixing
 opensession doctor --fix --fanout-mode hidden_ref
+
+# Automation / non-interactive mode
+opensession doctor --fix --yes --fanout-mode hidden_ref
 ```
 
 `doctor` reuses the existing setup pipeline under the hood (`opensession setup` / `opensession setup --check`).
-On first apply, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
+`doctor --fix` now prints the setup plan and asks for confirmation before applying hook/shim/fanout changes.
+On first interactive apply, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
+In non-interactive mode, `--fix` requires `--yes` and an explicit `--fanout-mode` when no fanout mode is already configured in git.
 
 Start daemon (required for automatic session capture):
 

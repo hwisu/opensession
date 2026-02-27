@@ -53,9 +53,9 @@ if [ "${OPENSESSION_INTERNAL_PUSH:-}" = "1" ]; then
     exit 0
 fi
 
-backup_hook="$(dirname "$0")/pre-push.pre-opensession"
-if [ -f "$backup_hook" ]; then
-    sh "$backup_hook" "$@" || exit $?
+original_hook="$(dirname "$0")/pre-push.original.pre-opensession"
+if [ -f "$original_hook" ]; then
+    sh "$original_hook" "$@" || exit $?
 fi
 
 tmp_fanout="/tmp/opensession-ledger-fanout.$$"
@@ -253,6 +253,8 @@ exit 0
 // ---------------------------------------------------------------------------
 
 const HOOK_MARKER: &str = "# opensession-managed";
+const ORIGINAL_HOOK_SUFFIX: &str = ".original.pre-opensession";
+const LEGACY_ORIGINAL_HOOK_SUFFIX: &str = ".pre-opensession";
 
 // ---------------------------------------------------------------------------
 // Hook template accessor
@@ -304,6 +306,11 @@ fn hooks_dir(repo_root: &Path) -> PathBuf {
     configured_hooks_path(repo_root).unwrap_or_else(|| repo_root.join(".git").join("hooks"))
 }
 
+fn suffixed_hook_path(hook_path: &Path, suffix: &str) -> Option<PathBuf> {
+    let filename = hook_path.file_name()?.to_str()?;
+    Some(hook_path.with_file_name(format!("{filename}{suffix}")))
+}
+
 // ---------------------------------------------------------------------------
 // Hook installer
 // ---------------------------------------------------------------------------
@@ -318,17 +325,33 @@ pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookTyp
     let mut installed = Vec::new();
     for hook_type in hooks {
         let hook_path = hooks_dir.join(hook_type.filename());
+        let legacy_backup_path = suffixed_hook_path(&hook_path, LEGACY_ORIGINAL_HOOK_SUFFIX);
+        let canonical_backup_path = suffixed_hook_path(&hook_path, ORIGINAL_HOOK_SUFFIX);
 
         // Check if there's an existing non-opensession hook
         if hook_path.exists() {
             let content = std::fs::read_to_string(&hook_path)
                 .with_context(|| format!("read existing hook {}", hook_path.display()))?;
-            if !content.contains(HOOK_MARKER) {
+            if content.contains(HOOK_MARKER) {
+                if let (Some(legacy_path), Some(canonical_path)) =
+                    (legacy_backup_path.as_ref(), canonical_backup_path.as_ref())
+                {
+                    if legacy_path.exists() && !canonical_path.exists() {
+                        std::fs::rename(legacy_path, canonical_path).with_context(|| {
+                            format!(
+                                "migrate legacy original hook {} -> {}",
+                                legacy_path.display(),
+                                canonical_path.display()
+                            )
+                        })?;
+                    }
+                }
+            } else {
                 // Backup existing hook
                 let backup_path =
-                    hooks_dir.join(format!("{}.pre-opensession", hook_type.filename()));
+                    hooks_dir.join(format!("{}{}", hook_type.filename(), ORIGINAL_HOOK_SUFFIX));
                 std::fs::rename(&hook_path, &backup_path).with_context(|| {
-                    format!("backup existing hook to {}", backup_path.display())
+                    format!("preserve original hook at {}", backup_path.display())
                 })?;
             }
             // If it contains HOOK_MARKER, we'll just overwrite with new version
@@ -374,10 +397,18 @@ pub fn uninstall_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookT
 
         std::fs::remove_file(&hook_path)?;
 
-        // Restore backup if exists
-        let backup_path = hooks_dir.join(format!("{}.pre-opensession", hook_type.filename()));
+        // Restore original hook copy if exists
+        let backup_path =
+            hooks_dir.join(format!("{}{}", hook_type.filename(), ORIGINAL_HOOK_SUFFIX));
+        let legacy_backup_path = hooks_dir.join(format!(
+            "{}{}",
+            hook_type.filename(),
+            LEGACY_ORIGINAL_HOOK_SUFFIX
+        ));
         if backup_path.exists() {
             std::fs::rename(&backup_path, &hook_path)?;
+        } else if legacy_backup_path.exists() {
+            std::fs::rename(&legacy_backup_path, &hook_path)?;
         }
 
         uninstalled.push(*hook_type);
@@ -571,7 +602,7 @@ mod tests {
         install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
 
         // Original should be backed up
-        let backup_path = hooks_dir.join("pre-push.pre-opensession");
+        let backup_path = hooks_dir.join("pre-push.original.pre-opensession");
         assert!(backup_path.exists(), "backup should exist");
         let backup_content = fs::read_to_string(&backup_path).unwrap();
         assert_eq!(backup_content, existing_content);
@@ -705,7 +736,7 @@ mod tests {
         install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
 
         let hooks_dir = repo.path().join(".git/hooks");
-        let backup_path = hooks_dir.join("pre-push.pre-opensession");
+        let backup_path = hooks_dir.join("pre-push.original.pre-opensession");
         assert!(
             !backup_path.exists(),
             "should not create backup for opensession-managed hooks"

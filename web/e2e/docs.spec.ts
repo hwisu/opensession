@@ -42,6 +42,12 @@ test.describe('Docs', () => {
 		await expect(
 			docsContent
 				.locator('code')
+				.filter({ hasText: 'opensession doctor --fix --yes --fanout-mode hidden_ref' })
+				.first(),
+		).toBeVisible();
+		await expect(
+			docsContent
+				.locator('code')
 				.filter({ hasText: 'opensession view os://src/local/<sha256>' })
 				.first(),
 		).toBeVisible();

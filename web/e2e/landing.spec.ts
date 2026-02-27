@@ -42,6 +42,13 @@ test.describe('Landing (unauthenticated)', () => {
 		await expect(page.locator('main h1').first()).toContainText('Documentation');
 	});
 
+	test('landing beginner quick start opens getting-started docs anchor', async ({ page }) => {
+		await page.goto('/');
+		await page.getByRole('button', { name: 'Beginner Quick Start' }).click();
+		await expect(page).toHaveURL(/\/docs#getting-started$/);
+		await expect(page.getByRole('heading', { level: 2, name: 'Getting Started' })).toBeVisible();
+	});
+
 	test('login page is accessible to guests', async ({ page }) => {
 		const resp = await page.request.get('/api/capabilities');
 		expect(resp.ok()).toBeTruthy();

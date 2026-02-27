@@ -669,7 +669,39 @@ fn handoff_build_get_verify_pin_unpin_rm() {
 }
 
 #[test]
-fn setup_installs_pre_push_hook_with_backup() {
+fn setup_non_tty_requires_yes() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(tmp.path(), &repo, &["setup"]);
+    assert!(
+        !out.status.success(),
+        "setup should require --yes in non-tty mode"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("requires explicit approval"));
+    assert!(stderr.contains("opensession setup --yes --fanout-mode hidden_ref"));
+}
+
+#[test]
+fn setup_non_tty_yes_requires_explicit_fanout_when_unset() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(tmp.path(), &repo, &["setup", "--yes"]);
+    assert!(
+        !out.status.success(),
+        "setup --yes should fail without explicit fanout when repo has no fanout config"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("fanout mode is not configured"));
+    assert!(stderr.contains("opensession setup --yes --fanout-mode hidden_ref"));
+}
+
+#[test]
+fn setup_yes_with_fanout_installs_pre_push_hook_with_original_copy() {
     let tmp = make_home();
     let repo = tmp.path().join("repo");
     init_git_repo(&repo);
@@ -679,7 +711,11 @@ fn setup_installs_pre_push_hook_with_backup() {
         "#!/bin/sh\necho custom\n",
     );
 
-    let out = run(tmp.path(), &repo, &["setup"]);
+    let out = run(
+        tmp.path(),
+        &repo,
+        &["setup", "--yes", "--fanout-mode", "hidden_ref"],
+    );
     assert!(
         out.status.success(),
         "setup failed: {}",
@@ -689,8 +725,8 @@ fn setup_installs_pre_push_hook_with_backup() {
     let backup = repo
         .join(".git")
         .join("hooks")
-        .join("pre-push.pre-opensession");
-    assert!(backup.exists(), "expected backup hook");
+        .join("pre-push.original.pre-opensession");
+    assert!(backup.exists(), "expected original hook copy");
     let shim = tmp
         .path()
         .join(".local")
@@ -718,6 +754,40 @@ fn setup_installs_pre_push_hook_with_backup() {
     assert!(hook_body.contains("git notes --ref=opensession"));
     assert!(hook_body.contains("git notes --ref=opensession copy -f"));
     assert!(hook_body.contains(".local/share/opensession/bin/opensession"));
+
+    let fanout = run_git(
+        &repo,
+        &["config", "--local", "--get", "opensession.fanout-mode"],
+    );
+    assert_eq!(String::from_utf8_lossy(&fanout.stdout).trim(), "hidden_ref");
+}
+
+#[test]
+fn doctor_fix_yes_with_fanout_mode_applies_setup() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &["doctor", "--fix", "--yes", "--fanout-mode", "git_notes"],
+    );
+    assert!(
+        out.status.success(),
+        "doctor --fix failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let fanout = run_git(
+        &repo,
+        &["config", "--local", "--get", "opensession.fanout-mode"],
+    );
+    assert_eq!(String::from_utf8_lossy(&fanout.stdout).trim(), "git_notes");
+    assert!(
+        repo.join(".git").join("hooks").join("pre-push").exists(),
+        "expected pre-push hook to be installed by doctor --fix"
+    );
 }
 
 #[test]
@@ -733,7 +803,8 @@ fn setup_check_prints_expected_ledger_ref() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("current branch: main"));
+    assert!(stdout.contains("current branch:"));
+    assert!(stdout.contains("main"));
     assert!(stdout.contains(&opensession_git_native::branch_ledger_ref("main")));
     assert!(stdout.contains("ops shim:"));
     assert!(stdout.contains("review readiness:"));

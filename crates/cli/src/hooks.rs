@@ -55,9 +55,9 @@ if [ "${OPENSESSION_INTERNAL_PUSH:-}" = "1" ]; then
     exit 0
 fi
 
-backup_hook="$(dirname "$0")/pre-push.pre-opensession"
-if [ -f "$backup_hook" ]; then
-    sh "$backup_hook" "$@" || exit $?
+original_hook="$(dirname "$0")/pre-push.original.pre-opensession"
+if [ -f "$original_hook" ]; then
+    sh "$original_hook" "$@" || exit $?
 fi
 
 tmp_fanout="/tmp/opensession-ledger-fanout.$$"
@@ -255,6 +255,32 @@ exit 0
 // ---------------------------------------------------------------------------
 
 const HOOK_MARKER: &str = "# opensession-managed";
+const ORIGINAL_HOOK_SUFFIX: &str = ".original.pre-opensession";
+const LEGACY_ORIGINAL_HOOK_SUFFIX: &str = ".pre-opensession";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookInstallAction {
+    InstallNew,
+    ReplaceManaged,
+    BackupAndReplace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookInstallPlan {
+    pub hook_type: HookType,
+    pub hook_path: PathBuf,
+    pub action: HookInstallAction,
+    pub backup_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookInstallReport {
+    pub hook_type: HookType,
+    pub hook_path: PathBuf,
+    pub action: HookInstallAction,
+    pub backup_path: Option<PathBuf>,
+    pub backup_created: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Hook template accessor
@@ -306,53 +332,131 @@ fn hooks_dir(repo_root: &Path) -> PathBuf {
     configured_hooks_path(repo_root).unwrap_or_else(|| repo_root.join(".git").join("hooks"))
 }
 
+fn suffixed_hook_path(hook_path: &Path, suffix: &str) -> Option<PathBuf> {
+    let filename = hook_path.file_name()?.to_str()?;
+    Some(hook_path.with_file_name(format!("{filename}{suffix}")))
+}
+
 // ---------------------------------------------------------------------------
 // Hook installer
 // ---------------------------------------------------------------------------
 
-/// Install opensession git hooks into a repository.
-pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookType>> {
+/// Plan hook installation before mutating hook files.
+pub fn plan_hook_install(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookInstallPlan>> {
+    ensure_git_repo(repo_root)?;
+    let hooks_dir = hooks_dir(repo_root);
+    let mut plans = Vec::new();
+
+    for hook_type in hooks {
+        let hook_path = hooks_dir.join(hook_type.filename());
+        if !hook_path.exists() {
+            plans.push(HookInstallPlan {
+                hook_type: *hook_type,
+                hook_path,
+                action: HookInstallAction::InstallNew,
+                backup_path: None,
+            });
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&hook_path)
+            .with_context(|| format!("read existing hook {}", hook_path.display()))?;
+        if content.contains(HOOK_MARKER) {
+            plans.push(HookInstallPlan {
+                hook_type: *hook_type,
+                hook_path,
+                action: HookInstallAction::ReplaceManaged,
+                backup_path: None,
+            });
+        } else {
+            let backup_path =
+                hooks_dir.join(format!("{}{}", hook_type.filename(), ORIGINAL_HOOK_SUFFIX));
+            plans.push(HookInstallPlan {
+                hook_type: *hook_type,
+                hook_path,
+                action: HookInstallAction::BackupAndReplace,
+                backup_path: Some(backup_path),
+            });
+        }
+    }
+
+    Ok(plans)
+}
+
+/// Install opensession git hooks and return per-hook details.
+pub fn install_hooks_with_report(
+    repo_root: &Path,
+    hooks: &[HookType],
+) -> Result<Vec<HookInstallReport>> {
     ensure_git_repo(repo_root)?;
     let hooks_dir = hooks_dir(repo_root);
     std::fs::create_dir_all(&hooks_dir)
         .with_context(|| format!("create hooks directory {}", hooks_dir.display()))?;
 
+    let plans = plan_hook_install(repo_root, hooks)?;
     let mut installed = Vec::new();
-    for hook_type in hooks {
-        let hook_path = hooks_dir.join(hook_type.filename());
-
-        // Check if there's an existing non-opensession hook
-        if hook_path.exists() {
-            let content = std::fs::read_to_string(&hook_path)
-                .with_context(|| format!("read existing hook {}", hook_path.display()))?;
-            if !content.contains(HOOK_MARKER) {
-                // Backup existing hook
-                let backup_path =
-                    hooks_dir.join(format!("{}.pre-opensession", hook_type.filename()));
-                std::fs::rename(&hook_path, &backup_path).with_context(|| {
-                    format!("backup existing hook to {}", backup_path.display())
-                })?;
+    for plan in plans {
+        let mut backup_created = false;
+        let legacy_backup_path = suffixed_hook_path(&plan.hook_path, LEGACY_ORIGINAL_HOOK_SUFFIX);
+        let canonical_backup_path = suffixed_hook_path(&plan.hook_path, ORIGINAL_HOOK_SUFFIX);
+        if matches!(plan.action, HookInstallAction::ReplaceManaged) {
+            if let (Some(legacy_path), Some(canonical_path)) =
+                (legacy_backup_path.as_ref(), canonical_backup_path.as_ref())
+            {
+                if legacy_path.exists() && !canonical_path.exists() {
+                    std::fs::rename(legacy_path, canonical_path).with_context(|| {
+                        format!(
+                            "migrate legacy original hook {} -> {}",
+                            legacy_path.display(),
+                            canonical_path.display()
+                        )
+                    })?;
+                }
             }
-            // If it contains HOOK_MARKER, we'll just overwrite with new version
         }
 
-        let template = hook_template(*hook_type);
-        std::fs::write(&hook_path, template)
-            .with_context(|| format!("write hook {}", hook_path.display()))?;
+        if let (HookInstallAction::BackupAndReplace, Some(backup_path)) =
+            (plan.action, plan.backup_path.as_ref())
+        {
+            if plan.hook_path.exists() {
+                std::fs::rename(&plan.hook_path, backup_path).with_context(|| {
+                    format!("preserve original hook at {}", backup_path.display())
+                })?;
+                backup_created = true;
+            }
+        }
+
+        let template = hook_template(plan.hook_type);
+        std::fs::write(&plan.hook_path, template)
+            .with_context(|| format!("write hook {}", plan.hook_path.display()))?;
 
         // Make executable on Unix
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o755);
-            std::fs::set_permissions(&hook_path, perms)
-                .with_context(|| format!("chmod hook {}", hook_path.display()))?;
+            std::fs::set_permissions(&plan.hook_path, perms)
+                .with_context(|| format!("chmod hook {}", plan.hook_path.display()))?;
         }
 
-        installed.push(*hook_type);
+        installed.push(HookInstallReport {
+            hook_type: plan.hook_type,
+            hook_path: plan.hook_path,
+            action: plan.action,
+            backup_path: plan.backup_path,
+            backup_created,
+        });
     }
 
     Ok(installed)
+}
+
+/// Install opensession git hooks into a repository.
+pub fn install_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookType>> {
+    Ok(install_hooks_with_report(repo_root, hooks)?
+        .into_iter()
+        .map(|report| report.hook_type)
+        .collect())
 }
 
 /// Uninstall opensession git hooks from a repository.
@@ -376,10 +480,18 @@ pub fn uninstall_hooks(repo_root: &Path, hooks: &[HookType]) -> Result<Vec<HookT
 
         std::fs::remove_file(&hook_path)?;
 
-        // Restore backup if exists
-        let backup_path = hooks_dir.join(format!("{}.pre-opensession", hook_type.filename()));
+        // Restore original hook copy if exists
+        let backup_path =
+            hooks_dir.join(format!("{}{}", hook_type.filename(), ORIGINAL_HOOK_SUFFIX));
+        let legacy_backup_path = hooks_dir.join(format!(
+            "{}{}",
+            hook_type.filename(),
+            LEGACY_ORIGINAL_HOOK_SUFFIX
+        ));
         if backup_path.exists() {
             std::fs::rename(&backup_path, &hook_path)?;
+        } else if legacy_backup_path.exists() {
+            std::fs::rename(&legacy_backup_path, &hook_path)?;
         }
 
         uninstalled.push(*hook_type);
@@ -573,7 +685,7 @@ mod tests {
         install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
 
         // Original should be backed up
-        let backup_path = hooks_dir.join("pre-push.pre-opensession");
+        let backup_path = hooks_dir.join("pre-push.original.pre-opensession");
         assert!(backup_path.exists(), "backup should exist");
         let backup_content = fs::read_to_string(&backup_path).unwrap();
         assert_eq!(backup_content, existing_content);
@@ -590,6 +702,69 @@ mod tests {
             !backup_path.exists(),
             "backup should be removed after restore"
         );
+    }
+
+    #[test]
+    fn test_plan_hook_install_marks_backup_and_restore_paths() {
+        let repo = create_fake_git_repo();
+        let hooks_dir = repo.path().join(".git/hooks");
+        fs::write(hooks_dir.join("pre-push"), "#!/bin/sh\necho custom\n").unwrap();
+
+        let plan = plan_hook_install(repo.path(), &[HookType::PrePush]).expect("plan install");
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].action, HookInstallAction::BackupAndReplace);
+        assert_eq!(
+            plan[0].backup_path.as_deref(),
+            Some(
+                hooks_dir
+                    .join("pre-push.original.pre-opensession")
+                    .as_path()
+            )
+        );
+    }
+
+    #[test]
+    fn test_install_hooks_with_report_exposes_backup_creation() {
+        let repo = create_fake_git_repo();
+        let hooks_dir = repo.path().join(".git/hooks");
+        fs::write(hooks_dir.join("pre-push"), "#!/bin/sh\necho custom\n").unwrap();
+
+        let report =
+            install_hooks_with_report(repo.path(), &[HookType::PrePush]).expect("install hooks");
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].action, HookInstallAction::BackupAndReplace);
+        assert!(report[0].backup_created);
+        assert!(report[0]
+            .backup_path
+            .as_ref()
+            .expect("backup path")
+            .exists());
+    }
+
+    #[test]
+    fn test_install_hooks_migrates_legacy_original_hook_filename() {
+        let repo = create_fake_git_repo();
+        let hooks_dir = repo.path().join(".git/hooks");
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
+        let hook_path = hooks_dir.join("pre-push");
+        let legacy_original = hooks_dir.join("pre-push.pre-opensession");
+        let canonical_original = hooks_dir.join("pre-push.original.pre-opensession");
+        fs::write(&legacy_original, "#!/bin/sh\necho custom\n").unwrap();
+        assert!(legacy_original.exists());
+        assert!(!canonical_original.exists());
+
+        install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
+
+        assert!(
+            !legacy_original.exists(),
+            "legacy original hook should be migrated"
+        );
+        assert!(
+            canonical_original.exists(),
+            "canonical original hook should be created"
+        );
+        let content = fs::read_to_string(&hook_path).unwrap();
+        assert!(content.contains(HOOK_MARKER));
     }
 
     #[test]
@@ -707,7 +882,7 @@ mod tests {
         install_hooks(repo.path(), &[HookType::PrePush]).unwrap();
 
         let hooks_dir = repo.path().join(".git/hooks");
-        let backup_path = hooks_dir.join("pre-push.pre-opensession");
+        let backup_path = hooks_dir.join("pre-push.original.pre-opensession");
         assert!(
             !backup_path.exists(),
             "should not create backup for opensession-managed hooks"

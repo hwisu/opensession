@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.29](https://github.com/hwisu/opensession/compare/opensession-v0.2.28...opensession-v0.2.29) - 2026-02-27
+
+### Other
+
+- Improve setup consent flow and preserve original pre-push hook
+
 ## [0.2.28](https://github.com/hwisu/opensession/compare/opensession-v0.2.8...opensession-v0.2.28) - 2026-02-26
 
 ### Added

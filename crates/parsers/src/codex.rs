@@ -5,6 +5,7 @@ use crate::common::{
 use crate::SessionParser;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use opensession_core::session::{ATTR_PARENT_SESSION_ID, ATTR_SESSION_ROLE};
 use opensession_core::trace::{
     Agent, Content, ContentBlock, Event, EventType, Session, SessionContext,
 };
@@ -69,6 +70,8 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
     let mut cwd: Option<String> = None;
     let mut tool_version: Option<String> = None;
     let mut originator: Option<String> = None;
+    let mut parent_session_id: Option<String> = None;
+    let mut is_auxiliary_session = false;
     let mut is_desktop = false;
     let mut open_tasks: BTreeMap<String, Option<String>> = BTreeMap::new();
     let mut interactive_call_meta: HashMap<String, RequestUserInputCallMeta> = HashMap::new();
@@ -131,6 +134,13 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
                         .get("originator")
                         .and_then(|v| v.as_str())
                         .map(String::from),
+                );
+                if codex_desktop_payload_is_auxiliary(payload) {
+                    is_auxiliary_session = true;
+                }
+                set_first(
+                    &mut parent_session_id,
+                    codex_desktop_parent_session_id(payload),
                 );
             }
             continue;
@@ -597,6 +607,20 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
             serde_json::Value::String(orig.clone()),
         );
     }
+    let mut related_session_ids = Vec::new();
+    if is_auxiliary_session {
+        attributes.insert(
+            ATTR_SESSION_ROLE.to_string(),
+            serde_json::Value::String("auxiliary".to_string()),
+        );
+        if let Some(parent_id) = parent_session_id.as_ref() {
+            attributes.insert(
+                ATTR_PARENT_SESSION_ID.to_string(),
+                serde_json::Value::String(parent_id.clone()),
+            );
+            related_session_ids.push(parent_id.clone());
+        }
+    }
 
     let title = first_user_text.map(|t| {
         if t.chars().count() > 80 {
@@ -613,7 +637,7 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
         tags: vec!["codex".to_string()],
         created_at,
         updated_at,
-        related_session_ids: Vec::new(),
+        related_session_ids,
         attributes,
     };
 
@@ -1808,6 +1832,39 @@ fn looks_like_injected_codex_user_text(text: &str) -> bool {
         || lower.contains("</turn_aborted>")
 }
 
+fn codex_desktop_parent_session_id(payload: &serde_json::Value) -> Option<String> {
+    non_empty_json_str(payload.pointer("/source/subagent/thread_spawn/parent_thread_id"))
+        .or_else(|| non_empty_json_str(payload.pointer("/source/subagent/parent_thread_id")))
+        .or_else(|| non_empty_json_str(payload.pointer("/source/parent_thread_id")))
+        .or_else(|| non_empty_json_str(payload.get("parent_thread_id")))
+}
+
+fn codex_desktop_payload_is_auxiliary(payload: &serde_json::Value) -> bool {
+    if payload.pointer("/source/subagent").is_some() {
+        return true;
+    }
+
+    payload
+        .get("agent_role")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|role| {
+            matches!(
+                role.to_ascii_lowercase().as_str(),
+                "awaiter" | "worker" | "explorer" | "subagent"
+            )
+        })
+}
+
+fn non_empty_json_str(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(|entry| entry.as_str())
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+}
+
 fn json_object_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
     match value {
         serde_json::Value::Object(map) => {
@@ -2528,6 +2585,70 @@ provider = "anthropic"
                     matches!(b, ContentBlock::Text { text } if text.contains("apply_patch was requested via exec_command"))
                 })
         }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_subagent_thread_spawn_marks_session_auxiliary() {
+        let lines = [
+            r#"{"timestamp":"2026-02-27T04:49:06.449Z","type":"session_meta","payload":{"id":"desktop-subagent","timestamp":"2026-02-27T04:49:05.467Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.105.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread-1","depth":1,"agent_role":"awaiter"}}},"agent_role":"awaiter"}}"#,
+            r#"{"timestamp":"2026-02-27T04:49:06.451Z","type":"event_msg","payload":{"type":"agent_message","message":"child response"}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_subagent_auxiliary_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get(ATTR_SESSION_ROLE)
+                .and_then(|value| value.as_str()),
+            Some("auxiliary")
+        );
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get(ATTR_PARENT_SESSION_ID)
+                .and_then(|value| value.as_str()),
+            Some("parent-thread-1")
+        );
+        assert_eq!(
+            session.context.related_session_ids,
+            vec!["parent-thread-1".to_string()]
+        );
+        assert!(opensession_core::session::is_auxiliary_session(&session));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_agent_role_awaiter_marks_session_auxiliary() {
+        let lines = [
+            r#"{"timestamp":"2026-02-27T04:49:06.449Z","type":"session_meta","payload":{"id":"desktop-agent-role-subagent","timestamp":"2026-02-27T04:49:05.467Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.105.0","agent_role":"awaiter"}}"#,
+            r#"{"timestamp":"2026-02-27T04:49:06.451Z","type":"event_msg","payload":{"type":"agent_message","message":"child response"}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_agent_role_auxiliary_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get(ATTR_SESSION_ROLE)
+                .and_then(|value| value.as_str()),
+            Some("auxiliary")
+        );
+        assert!(opensession_core::session::is_auxiliary_session(&session));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

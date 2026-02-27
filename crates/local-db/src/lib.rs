@@ -7,6 +7,7 @@ use opensession_core::trace::Session;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -1150,6 +1151,7 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
 
     apply_local_migrations(&conn)?;
     repair_session_tools_from_source_path(&conn)?;
+    repair_auxiliary_flags_from_source_path(&conn)?;
     validate_local_schema(&conn)?;
 
     Ok(conn)
@@ -1231,6 +1233,66 @@ fn repair_session_tools_from_source_path(conn: &Connection) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn repair_auxiliary_flags_from_source_path(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, ss.source_path \
+         FROM sessions s \
+         LEFT JOIN session_sync ss ON ss.session_id = s.id \
+         WHERE ss.source_path IS NOT NULL \
+         AND COALESCE(s.is_auxiliary, 0) = 0",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+
+    let mut updates: Vec<String> = Vec::new();
+    for row in rows {
+        let (id, source_path) = row?;
+        let Some(source_path) = source_path else {
+            continue;
+        };
+        if infer_tool_from_source_path(Some(&source_path)) != Some("codex") {
+            continue;
+        }
+        if is_codex_auxiliary_source_file(&source_path) {
+            updates.push(id);
+        }
+    }
+    drop(stmt);
+
+    for id in updates {
+        conn.execute(
+            "UPDATE sessions SET is_auxiliary = 1 WHERE id = ?1",
+            params![id],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn is_codex_auxiliary_source_file(source_path: &str) -> bool {
+    let Ok(file) = fs::File::open(source_path) else {
+        return false;
+    };
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    if reader.read_line(&mut first_line).is_err() {
+        return false;
+    }
+
+    let line = first_line.trim();
+    if line.is_empty() {
+        return false;
+    }
+
+    line.contains("\"source\":{\"subagent\"")
+        || line.contains("\"source\": {\"subagent\"")
+        || line.contains("\"agent_role\":\"awaiter\"")
+        || line.contains("\"agent_role\":\"worker\"")
+        || line.contains("\"agent_role\":\"explorer\"")
+        || line.contains("\"agent_role\":\"subagent\"")
 }
 
 /// Column list for SELECT queries against sessions + session_sync + users.
@@ -1389,6 +1451,51 @@ mod tests {
             .find(|row| row.id == "rollout-repair")
             .expect("repaired row");
         assert_eq!(row.tool, "codex");
+    }
+
+    #[test]
+    fn test_open_repairs_codex_auxiliary_flag_from_source_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repair-auxiliary.db");
+        let codex_dir = dir
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("02")
+            .join("20");
+        create_dir_all(&codex_dir).unwrap();
+        let source_path = codex_dir.join("rollout-subagent.jsonl");
+        write(
+            &source_path,
+            r#"{"timestamp":"2026-02-20T00:00:00.000Z","type":"session_meta","payload":{"id":"rollout-subagent","timestamp":"2026-02-20T00:00:00.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.105.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session-id","depth":1,"agent_role":"awaiter"}}},"agent_role":"awaiter"}}\n"#,
+        )
+        .unwrap();
+
+        {
+            let _ = LocalDb::open_path(&path).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, team_id, tool, created_at, body_storage_key, is_auxiliary) VALUES (?1, 'personal', 'codex', ?2, '', 0)",
+                params!["rollout-subagent", "2026-02-20T00:00:00Z"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_sync (session_id, source_path, sync_status) VALUES (?1, ?2, 'local_only')",
+                params!["rollout-subagent", source_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        }
+
+        let db = LocalDb::open_path(&path).unwrap();
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert!(
+            rows.iter().all(|row| row.id != "rollout-subagent"),
+            "auxiliary codex session should be hidden after repair"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ use crate::config::DaemonConfig;
 pub enum AsyncCommand {
     // ── Upload flow (existing) ────────────────────────────────────────
     UploadSession {
+        session_id: String,
         session_json: serde_json::Value,
         target_name: String,
         body_url: Option<String>,
@@ -26,7 +27,7 @@ pub enum AsyncCommand {
 /// Results returned by async commands.
 pub enum CommandResult {
     // Upload flow
-    UploadDone(Result<(String, String), (String, String)>), // Ok((target_name, url)) or Err((target_name, error))
+    UploadDone(Result<(String, String, String), (String, String, String)>), // Ok((target_name, url, session_id)) or Err((target_name, error, session_id))
 
     // Profile / Account
     Profile(Result<UserSettingsResponse, String>),
@@ -48,6 +49,7 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
     match cmd {
         // ── Upload flow ───────────────────────────────────────────────
         AsyncCommand::UploadSession {
+            session_id,
             session_json,
             target_name,
             body_url,
@@ -75,8 +77,8 @@ pub async fn execute(cmd: AsyncCommand, config: &DaemonConfig) -> CommandResult 
             }
             .await;
             CommandResult::UploadDone(match result {
-                Ok(url) => Ok((target_name, url)),
-                Err(e) => Err((target_name, e)),
+                Ok(url) => Ok((target_name, url, session_id)),
+                Err(e) => Err((target_name, e, session_id)),
             })
         }
 

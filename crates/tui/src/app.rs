@@ -238,6 +238,35 @@ pub enum DetailViewMode {
     Turn,
 }
 
+/// High-level timeline flow presets for tracing a specific narrative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailFlowMode {
+    /// Keep all event kinds (default).
+    All,
+    /// Keep conversation/choice/interrupt flow only.
+    Interaction,
+    /// Keep file-change flow: lead statement + file change events.
+    FileChanges,
+}
+
+impl DetailFlowMode {
+    fn next(self) -> Self {
+        match self {
+            Self::All => Self::Interaction,
+            Self::Interaction => Self::FileChanges,
+            Self::FileChanges => Self::All,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Interaction => "Interaction",
+            Self::FileChanges => "FileChanges",
+        }
+    }
+}
+
 /// A single conversational turn: user prompt + agent response.
 pub struct Turn<'a> {
     pub turn_index: usize,
@@ -403,6 +432,7 @@ mod turn_extract_tests {
     use crate::live::{LiveUpdate, LiveUpdateBatch};
     use chrono::{Duration as ChronoDuration, Utc};
     use opensession_core::trace::{Agent, Content, Session};
+    use opensession_local_db::{git::GitContext, LocalDb, LocalSessionFilter};
     use serde_json::Value;
 
     fn make_event(event_id: &str, event_type: EventType, text: &str) -> Event {
@@ -502,6 +532,55 @@ mod turn_extract_tests {
             max_active_agents: 1,
             is_auxiliary: false,
         }
+    }
+
+    #[test]
+    fn upload_done_marks_synced_for_uploaded_session_id() {
+        let unique = format!(
+            "ops-upload-sync-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let db_path = dir.join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let session = make_live_session("upload-session-id", 2);
+        db.upsert_local_session(
+            &session,
+            "/tmp/upload-session.jsonl",
+            &GitContext::default(),
+        )
+        .expect("seed local session");
+
+        let mut app = App::new(vec![session.clone()]);
+        app.db = Some(std::sync::Arc::new(db));
+        app.upload_popup = Some(UploadPopup {
+            target_name: "Personal (Public)".to_string(),
+            status: Some("Uploading...".to_string()),
+            phase: UploadPhase::Uploading,
+            results: Vec::new(),
+        });
+        app.apply_command_result(CommandResult::UploadDone(Ok((
+            "Personal (Public)".to_string(),
+            "https://opensession.io/s/upload-session-id".to_string(),
+            session.session_id.clone(),
+        ))));
+
+        let rows = app
+            .db
+            .as_ref()
+            .expect("db set")
+            .list_sessions(&LocalSessionFilter::default())
+            .expect("list sessions");
+        let row = rows
+            .iter()
+            .find(|entry| entry.id == session.session_id)
+            .expect("uploaded session row");
+        assert_eq!(row.sync_status, "synced");
+
+        std::fs::remove_file(&db_path).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1317,6 +1396,21 @@ mod turn_extract_tests {
     }
 
     #[test]
+    fn detail_f_key_cycles_flow_modes() {
+        let session = make_live_session("turn-flow-cycle", 4);
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+
+        assert_eq!(app.detail_flow_mode, DetailFlowMode::All);
+        app.handle_detail_key(KeyCode::Char('f'));
+        assert_eq!(app.detail_flow_mode, DetailFlowMode::Interaction);
+        app.handle_detail_key(KeyCode::Char('f'));
+        assert_eq!(app.detail_flow_mode, DetailFlowMode::FileChanges);
+        app.handle_detail_key(KeyCode::Char('f'));
+        assert_eq!(app.detail_flow_mode, DetailFlowMode::All);
+    }
+
+    #[test]
     fn turn_numeric_keys_toggle_event_filters_to_nine() {
         let session = make_live_session("turn-filter-toggle-turn", 4);
         let mut app = App::new(vec![session]);
@@ -1412,6 +1506,147 @@ mod turn_extract_tests {
         assert!(app.matches_event_filter(&EventType::ImageGenerate {
             prompt: "draw".to_string()
         }));
+    }
+
+    #[test]
+    fn interaction_flow_mode_keeps_conversation_choice_and_interrupt_events() {
+        let mut session = make_live_session("interaction-flow", 0);
+        let mut question = make_event("q1", EventType::SystemMessage, "Select mode");
+        question.attributes.insert(
+            "source".to_string(),
+            Value::String("interactive_question".to_string()),
+        );
+        let mut response = make_event("resp1", EventType::UserMessage, "FileChanges");
+        response.attributes.insert(
+            "source".to_string(),
+            Value::String("interactive".to_string()),
+        );
+        session.events = vec![
+            make_event("u1", EventType::UserMessage, "hello"),
+            make_event("a1", EventType::AgentMessage, "let me check"),
+            make_event(
+                "ask1",
+                EventType::ToolCall {
+                    name: "request_user_input".to_string(),
+                },
+                "",
+            ),
+            question,
+            response,
+            make_event(
+                "intr1",
+                EventType::Custom {
+                    kind: "turn_aborted".to_string(),
+                },
+                "user interrupted",
+            ),
+            make_event(
+                "shell1",
+                EventType::ShellCommand {
+                    command: "ls".to_string(),
+                    exit_code: Some(0),
+                },
+                "",
+            ),
+            make_event(
+                "tok1",
+                EventType::Custom {
+                    kind: "token_count".to_string(),
+                },
+                "",
+            ),
+        ];
+        session.recompute_stats();
+
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_flow_mode = DetailFlowMode::Interaction;
+        let selected = app.selected_session().expect("selected session").clone();
+        let visible = app.get_visible_events(&selected);
+        let ids: Vec<&str> = visible
+            .iter()
+            .map(|entry| entry.event().event_id.as_str())
+            .collect();
+
+        assert!(ids.contains(&"u1"));
+        assert!(ids.contains(&"a1"));
+        assert!(ids.contains(&"ask1"));
+        assert!(ids.contains(&"q1"));
+        assert!(ids.contains(&"resp1"));
+        assert!(ids.contains(&"intr1"));
+        assert!(!ids.contains(&"shell1"));
+        assert!(!ids.contains(&"tok1"));
+    }
+
+    #[test]
+    fn file_changes_flow_mode_keeps_lead_statement_and_file_changes() {
+        let mut session = make_live_session("filechanges-flow", 0);
+        session.events = vec![
+            make_event("u1", EventType::UserMessage, "please patch"),
+            make_event("a1", EventType::AgentMessage, "I will update files now"),
+            make_event(
+                "f1",
+                EventType::FileEdit {
+                    path: "src/main.rs".to_string(),
+                    diff: Some("- old\n+ new".to_string()),
+                },
+                "",
+            ),
+            make_event(
+                "f2",
+                EventType::FileCreate {
+                    path: "src/new.rs".to_string(),
+                },
+                "",
+            ),
+            make_event("a2", EventType::AgentMessage, "done"),
+        ];
+        session.recompute_stats();
+
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        app.detail_flow_mode = DetailFlowMode::FileChanges;
+        let selected = app.selected_session().expect("selected session").clone();
+        let visible = app.get_visible_events(&selected);
+        let ids: Vec<&str> = visible
+            .iter()
+            .map(|entry| entry.event().event_id.as_str())
+            .collect();
+
+        assert!(ids.contains(&"a1"));
+        assert!(ids.contains(&"f1"));
+        assert!(ids.contains(&"f2"));
+        assert!(!ids.contains(&"u1"));
+        assert!(!ids.contains(&"a2"));
+    }
+
+    #[test]
+    fn token_count_custom_events_are_hidden_in_detail_timeline() {
+        let mut session = make_live_session("token-count-hidden", 0);
+        session.events = vec![
+            make_event("u1", EventType::UserMessage, "hello"),
+            make_event(
+                "tok1",
+                EventType::Custom {
+                    kind: "token_count".to_string(),
+                },
+                "",
+            ),
+            make_event("a1", EventType::AgentMessage, "world"),
+        ];
+        session.recompute_stats();
+
+        let mut app = App::new(vec![session]);
+        app.enter_detail();
+        let selected = app.selected_session().expect("selected session").clone();
+        let visible = app.get_visible_events(&selected);
+        let ids: Vec<&str> = visible
+            .iter()
+            .map(|entry| entry.event().event_id.as_str())
+            .collect();
+        assert!(ids.contains(&"u1"));
+        assert!(ids.contains(&"a1"));
+        assert!(!ids.contains(&"tok1"));
     }
 
     #[test]
@@ -1991,6 +2226,7 @@ pub struct App {
     pub detail_scroll: u16,
     pub detail_event_index: usize,
     pub event_filters: HashSet<EventFilter>,
+    pub detail_flow_mode: DetailFlowMode,
     pub expanded_diff_events: HashSet<usize>,
     pub detail_view_mode: DetailViewMode,
     pub focus_detail_view: bool,
@@ -2198,6 +2434,7 @@ impl App {
             detail_scroll: 0,
             detail_event_index: 0,
             event_filters: HashSet::from([EventFilter::All]),
+            detail_flow_mode: DetailFlowMode::All,
             expanded_diff_events: HashSet::new(),
             detail_view_mode: DetailViewMode::Linear,
             focus_detail_view: false,
@@ -2776,6 +3013,7 @@ impl App {
             KeyCode::Char('U') => self.jump_to_prev_user_message(),
             KeyCode::Char('n') => self.jump_to_next_same_type(),
             KeyCode::Char('N') => self.jump_to_prev_same_type(),
+            KeyCode::Char('f') => self.cycle_detail_flow_mode(),
             KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
             KeyCode::Char('2') => self.toggle_event_filter(EventFilter::User),
             KeyCode::Char('3') => self.toggle_event_filter(EventFilter::Agent),
@@ -3394,22 +3632,16 @@ impl App {
     pub fn apply_command_result(&mut self, result: CommandResult) {
         match result {
             CommandResult::UploadDone(result) => {
-                if result.is_ok() {
-                    // Mark synced on any successful upload
-                    if let Some(session) = self.selected_session() {
-                        let sid = session.session_id.clone();
-                        if let Some(ref db) = self.db {
-                            let _ = db.mark_synced(&sid);
-                        }
-                    }
+                if let (Some(db), Ok((_, _, session_id))) = (self.db.as_ref(), &result) {
+                    let _ = db.mark_synced(session_id);
                 }
 
                 if let Some(ref mut popup) = self.upload_popup {
                     match result {
-                        Ok((target_name, url)) => {
+                        Ok((target_name, url, _session_id)) => {
                             popup.results.push((target_name, Ok(url)));
                         }
-                        Err((target_name, e)) => {
+                        Err((target_name, e, _session_id)) => {
                             popup.results.push((target_name, Err(e)));
                         }
                     }
@@ -3541,6 +3773,21 @@ impl App {
             }
         }
         self.detail_event_index = 0;
+    }
+
+    pub fn detail_flow_mode_label(&self) -> &'static str {
+        self.detail_flow_mode.label()
+    }
+
+    fn cycle_detail_flow_mode(&mut self) {
+        self.detail_flow_mode = self.detail_flow_mode.next();
+        self.detail_event_index = 0;
+        self.detail_scroll = 0;
+        self.detail_h_scroll = 0;
+        self.expanded_diff_events.clear();
+        self.turn_index = 0;
+        self.turn_agent_scroll = 0;
+        self.turn_h_scroll = 0;
     }
 
     // ── View mode cycling ──────────────────────────────────────────
@@ -4113,6 +4360,7 @@ impl App {
                 self.detail_event_index = 0;
                 self.detail_h_scroll = 0;
                 self.event_filters = HashSet::from([EventFilter::All]);
+                self.detail_flow_mode = DetailFlowMode::All;
                 self.expanded_diff_events.clear();
                 self.turn_raw_overrides.clear();
                 self.turn_prompt_expanded.clear();
@@ -4271,6 +4519,7 @@ impl App {
                 self.toggle_turn_raw_override();
             }
             KeyCode::Char('p') => self.toggle_turn_prompt_expanded(),
+            KeyCode::Char('f') => self.cycle_detail_flow_mode(),
             KeyCode::Char('1') => self.toggle_event_filter(EventFilter::All),
             KeyCode::Char('2') => self.toggle_event_filter(EventFilter::User),
             KeyCode::Char('3') => self.toggle_event_filter(EventFilter::Agent),
@@ -5009,9 +5258,14 @@ impl App {
     }
 
     pub fn get_base_visible_events<'a>(&self, session: &'a Session) -> Vec<DisplayEvent<'a>> {
+        let detail_flow_event_ids = Self::detail_flow_event_ids(session, self.detail_flow_mode);
         let mut after_task: Vec<DisplayEvent<'a>> = build_lane_events_with_filter(
             session,
-            |_| true,
+            |event| {
+                detail_flow_event_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&event.event_id))
+            },
             |event_type| self.matches_event_filter(event_type),
         )
         .into_iter()
@@ -5025,6 +5279,114 @@ impl App {
         .collect();
         after_task.retain(|event| !Self::is_boilerplate_detail_event(event.event()));
         after_task
+    }
+
+    fn detail_flow_event_ids(session: &Session, mode: DetailFlowMode) -> Option<HashSet<String>> {
+        match mode {
+            DetailFlowMode::All => None,
+            DetailFlowMode::Interaction => Some(
+                session
+                    .events
+                    .iter()
+                    .filter(|event| Self::is_interaction_flow_event(event))
+                    .map(|event| event.event_id.clone())
+                    .collect(),
+            ),
+            DetailFlowMode::FileChanges => {
+                let mut ids = HashSet::new();
+                for (idx, event) in session.events.iter().enumerate() {
+                    if !Self::is_file_change_event(event) {
+                        continue;
+                    }
+                    ids.insert(event.event_id.clone());
+                    if let Some(lead_idx) =
+                        Self::find_file_change_lead_statement_idx(&session.events, idx)
+                    {
+                        ids.insert(session.events[lead_idx].event_id.clone());
+                    }
+                }
+                Some(ids)
+            }
+        }
+    }
+
+    fn is_interaction_flow_event(event: &Event) -> bool {
+        if Self::is_interrupt_like_event(event) {
+            return true;
+        }
+
+        if matches!(
+            event.event_type,
+            EventType::UserMessage | EventType::AgentMessage
+        ) {
+            return true;
+        }
+
+        if matches!(event.event_type, EventType::SystemMessage)
+            && event
+                .attr_str("source")
+                .is_some_and(|source| source.eq_ignore_ascii_case("interactive_question"))
+        {
+            return true;
+        }
+
+        match &event.event_type {
+            EventType::ToolCall { name } | EventType::ToolResult { name, .. } => {
+                event
+                    .semantic_tool_kind()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("interactive"))
+                    || matches!(
+                        name.trim().to_ascii_lowercase().as_str(),
+                        "request_user_input" | "ask_followup_question"
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    fn is_interrupt_like_event(event: &Event) -> bool {
+        if is_control_event(event) {
+            return true;
+        }
+
+        if let EventType::Custom { kind } = &event.event_type {
+            let lowered = kind.trim().to_ascii_lowercase();
+            return lowered == "turn_aborted"
+                || lowered.contains("interrupt")
+                || lowered.contains("aborted");
+        }
+
+        false
+    }
+
+    fn is_file_change_event(event: &Event) -> bool {
+        matches!(
+            event.event_type,
+            EventType::FileEdit { .. }
+                | EventType::FileCreate { .. }
+                | EventType::FileDelete { .. }
+        )
+    }
+
+    fn find_file_change_lead_statement_idx(events: &[Event], change_idx: usize) -> Option<usize> {
+        let mut tool_fallback: Option<usize> = None;
+        for idx in (0..change_idx).rev() {
+            let event = &events[idx];
+            if Self::is_file_change_event(event) {
+                break;
+            }
+            match event.event_type {
+                EventType::AgentMessage | EventType::Thinking => return Some(idx),
+                EventType::ToolCall { .. } => {
+                    if tool_fallback.is_none() {
+                        tool_fallback = Some(idx);
+                    }
+                }
+                EventType::UserMessage | EventType::SystemMessage => break,
+                _ => {}
+            }
+        }
+        tool_fallback
     }
 
     fn is_boilerplate_detail_event(event: &Event) -> bool {
@@ -5049,6 +5411,14 @@ impl App {
             EventType::Thinking => Self::first_event_text_line(event)
                 .as_deref()
                 .is_some_and(Self::is_markdown_progress_line),
+            EventType::Custom { kind } => {
+                if kind.eq_ignore_ascii_case("token_count") {
+                    return true;
+                }
+                event
+                    .source_raw_type()
+                    .is_some_and(|raw| raw.eq_ignore_ascii_case("event_msg:token_count"))
+            }
             _ => false,
         }
     }
@@ -5414,6 +5784,7 @@ impl App {
         self.detail_event_index = 0;
         self.detail_h_scroll = 0;
         self.detail_view_mode = DetailViewMode::Linear;
+        self.detail_flow_mode = DetailFlowMode::All;
         self.detail_hydrate_pending = false;
         self.live_mode = false;
         self.live_last_event_at = None;

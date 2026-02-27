@@ -26,7 +26,7 @@ use std::io::stdout;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 enum BgEvent {
     SessionsLoaded(Vec<opensession_core::trace::Session>),
@@ -440,6 +440,7 @@ fn event_loop(
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let mut auto_enter_detail_pending = auto_enter_detail;
+    let mut last_daemon_refresh = Instant::now() - Duration::from_secs(5);
 
     loop {
         // ── Poll background session loading ──────────────────────────
@@ -500,6 +501,7 @@ fn event_loop(
                 let session_json = serde_json::to_value(&session).ok();
                 if let Some(json) = session_json {
                     app.pending_command = Some(async_ops::AsyncCommand::UploadSession {
+                        session_id: session.session_id.clone(),
                         session_json: json,
                         target_name,
                         body_url,
@@ -534,6 +536,17 @@ fn event_loop(
         // ── Realtime detail preview (live provider + tail-follow aware update) ──
         if let Some(batch) = app.poll_live_update_batch() {
             app.apply_live_update_batch(batch);
+        }
+
+        // Keep daemon status in header/list titles fresh even when daemon is toggled
+        // outside this TUI process.
+        if last_daemon_refresh.elapsed() >= Duration::from_secs(2) {
+            let daemon_pid = config::daemon_pid();
+            if app.startup_status.daemon_pid != daemon_pid {
+                app.startup_status.daemon_pid = daemon_pid;
+                app.sync_daemon_publish_policy_from_runtime();
+            }
+            last_daemon_refresh = Instant::now();
         }
 
         terminal.draw(|frame| ui::render(frame, app))?;

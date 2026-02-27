@@ -314,10 +314,10 @@ fn build_detail_sidebar_lines(
         "Time",
         selected.event().timestamp.format("%H:%M:%S").to_string(),
     ));
-    let (event_kind, kind_color) = event_type_display(&selected.event().event_type);
+    let (event_kind, kind_color) = event_kind_display(selected.event());
     lines.push(Line::from(vec![
         Span::styled("Type: ", Style::new().fg(Theme::TEXT_MUTED)),
-        Span::styled(event_kind.to_string(), Style::new().fg(kind_color).bold()),
+        Span::styled(event_kind, Style::new().fg(kind_color).bold()),
     ]));
     if let Some(task_key) = display_event_task_key(selected) {
         lines.push(sidebar_kv_line("Task", task_key));
@@ -542,19 +542,24 @@ fn render_lane_timeline(
                 )
             }
             DisplayEvent::Single { event, .. } => {
-                let (_, kind_color) = event_type_display(&event.event_type);
-                let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+                let summary = event_compact_summary_for_display(event);
                 let status_like_thinking = is_status_like_thinking_event(event, &summary);
-                let icon = if status_like_thinking {
-                    "STATUS"
-                } else {
-                    event_type_icon(&event.event_type)
-                };
-                let icon_color = if status_like_thinking {
-                    Theme::TEXT_SECONDARY
-                } else {
-                    kind_color
-                };
+                let mut icon = event_type_icon(&event.event_type);
+                let mut icon_color = event_kind_display(event).1;
+                if is_interactive_question_event(event) {
+                    icon = "CHOICE";
+                    icon_color = Theme::ACCENT_BLUE;
+                } else if is_interactive_response_event(event) {
+                    icon = "CHOICE";
+                    icon_color = Theme::ACCENT_GREEN;
+                } else if is_interrupt_event(event) {
+                    icon = "INT";
+                    icon_color = Theme::ACCENT_RED;
+                }
+                if status_like_thinking {
+                    icon = "STATUS";
+                    icon_color = Theme::TEXT_SECONDARY;
+                }
                 (
                     format!("[{icon}] {summary}"),
                     Style::new().fg(icon_color),
@@ -1100,6 +1105,71 @@ fn event_attr_string_array(event: &Event, key: &str) -> Vec<String> {
         .collect()
 }
 
+fn is_interactive_question_event(event: &Event) -> bool {
+    matches!(event.event_type, EventType::SystemMessage)
+        && event_attr_text(event, "source")
+            .is_some_and(|source| source.eq_ignore_ascii_case("interactive_question"))
+}
+
+fn is_interactive_response_event(event: &Event) -> bool {
+    matches!(event.event_type, EventType::UserMessage)
+        && event_attr_text(event, "source")
+            .is_some_and(|source| source.eq_ignore_ascii_case("interactive"))
+}
+
+fn is_interrupt_event(event: &Event) -> bool {
+    if let EventType::Custom { kind } = &event.event_type {
+        let lowered = kind.trim().to_ascii_lowercase();
+        if lowered == "turn_aborted" || lowered.contains("interrupt") || lowered.contains("aborted")
+        {
+            return true;
+        }
+    }
+
+    event
+        .source_raw_type()
+        .is_some_and(|raw| raw.eq_ignore_ascii_case("event_msg:turn_aborted"))
+}
+
+fn event_kind_display(event: &Event) -> (String, Color) {
+    if is_interactive_question_event(event) {
+        return ("choice_prompt".to_string(), Theme::ACCENT_BLUE);
+    }
+    if is_interactive_response_event(event) {
+        return ("choice_response".to_string(), Theme::ACCENT_GREEN);
+    }
+    if is_interrupt_event(event) {
+        return ("interrupt".to_string(), Theme::ACCENT_RED);
+    }
+    let (label, color) = event_type_display(&event.event_type);
+    (label.to_string(), color)
+}
+
+fn event_compact_summary_for_display(event: &Event) -> String {
+    if is_interactive_question_event(event) {
+        let question_count = event_attr_string_array(event, "question_ids").len();
+        if question_count > 0 {
+            return format!("choice prompt ({question_count})");
+        }
+        return "choice prompt".to_string();
+    }
+
+    let summary = event_compact_summary(&event.event_type, &event.content.blocks);
+    if is_interactive_response_event(event) {
+        if summary.trim().is_empty() || summary == "(user prompt)" {
+            return "choice response".to_string();
+        }
+        return format!("choice response: {summary}");
+    }
+    if is_interrupt_event(event) {
+        if summary.trim().is_empty() {
+            return "interrupted".to_string();
+        }
+        return format!("interrupted: {summary}");
+    }
+    summary
+}
+
 fn format_elapsed_short(delta_seconds: i64) -> String {
     if delta_seconds < 60 {
         format!("{delta_seconds}s")
@@ -1247,6 +1317,8 @@ fn collect_content_preview_rows(
     const DETAIL_PREVIEW_MAX_CHARS: usize = 100;
     let mut rows = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let interactive_prompt = is_interactive_question_event(event);
+    let interactive_response = is_interactive_response_event(event);
     if let EventType::FileEdit {
         diff: Some(diff), ..
     } = &event.event_type
@@ -1346,7 +1418,11 @@ fn collect_content_preview_rows(
                         }
                         continue;
                     }
-                    let (prefix, style) = if is_fence {
+                    let (prefix, style) = if interactive_prompt {
+                        ("Q ", Style::new().fg(Theme::ACCENT_BLUE).bold())
+                    } else if interactive_response {
+                        ("=> ", Style::new().fg(Theme::ACCENT_GREEN).bold())
+                    } else if is_fence {
                         ("``` ", Style::new().fg(Theme::ACCENT_PURPLE))
                     } else if in_fence {
                         ("| ", Style::new().fg(Theme::ACCENT_GREEN))
@@ -3495,6 +3571,55 @@ mod tests {
         let summary = event_compact_summary(&event.event_type, &event.content.blocks);
         assert!(summary.contains("Searching for AGENTS documentation"));
         assert!(!summary.contains("**"));
+    }
+
+    #[test]
+    fn interactive_events_use_choice_specific_labels() {
+        let mut question = make_event(EventType::SystemMessage, "Select output mode");
+        question.attributes.insert(
+            "source".to_string(),
+            serde_json::Value::String("interactive_question".to_string()),
+        );
+        question
+            .attributes
+            .insert("question_ids".to_string(), serde_json::json!(["mode"]));
+
+        let mut response = make_event(EventType::UserMessage, "FileChanges");
+        response.attributes.insert(
+            "source".to_string(),
+            serde_json::Value::String("interactive".to_string()),
+        );
+
+        assert_eq!(
+            event_compact_summary_for_display(&question),
+            "choice prompt (1)"
+        );
+        assert!(event_compact_summary_for_display(&response).starts_with("choice response:"));
+        assert_eq!(
+            event_kind_display(&question),
+            ("choice_prompt".to_string(), Theme::ACCENT_BLUE)
+        );
+        assert_eq!(
+            event_kind_display(&response),
+            ("choice_response".to_string(), Theme::ACCENT_GREEN)
+        );
+    }
+
+    #[test]
+    fn interactive_response_preview_uses_emphasized_prefix() {
+        let mut event = make_event(EventType::UserMessage, "FileChanges");
+        event.attributes.insert(
+            "source".to_string(),
+            serde_json::Value::String("interactive".to_string()),
+        );
+
+        let rows = collect_content_preview_rows(&event, 3, None, false);
+        let rendered = rows
+            .iter()
+            .map(|(text, _)| text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("=> FileChanges"));
     }
 
     #[test]

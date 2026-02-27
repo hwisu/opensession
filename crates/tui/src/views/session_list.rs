@@ -464,13 +464,8 @@ fn db_row_to_list_item(
     let live = is_live_row(row);
     let agents = resolved_agents_label(max_agents);
 
-    // Sync status icon
-    let sync_icon = match row.sync_status.as_str() {
-        "local_only" => Span::styled(" L ", Style::new().fg(Color::Yellow)),
-        "synced" => Span::styled(" S ", Style::new().fg(Color::Green)),
-        "remote_only" => Span::styled(" R ", Style::new().fg(Color::Cyan)),
-        _ => Span::styled(" ? ", Style::new().fg(Color::DarkGray)),
-    };
+    let (sync_label, sync_color) = sync_status_badge(&row.sync_status);
+    let sync_badge = Span::styled(sync_label, Style::new().fg(sync_color));
 
     // Line 1: color bar + tool icon + sync icon + title + nickname
     let mut line1_spans = Vec::new();
@@ -483,7 +478,7 @@ fn db_row_to_list_item(
             theme::tool_icon(tool),
             Style::new().fg(theme::tool_color(tool)).bold(),
         ),
-        sync_icon,
+        sync_badge,
         Span::styled(
             if live { " LIVE " } else { "" },
             if live {
@@ -644,7 +639,21 @@ fn render_empty(frame: &mut Frame, area: Rect, msg: &str, app: &App) {
 fn list_title(app: &App) -> String {
     let mut base = match &app.view_mode {
         ViewMode::Local => " Sessions ".to_string(),
-        ViewMode::Repo(repo) => format!(" Repo: {} ", truncate(repo, 40)),
+        ViewMode::Repo(repo) => {
+            let daemon = match app.startup_status.daemon_pid {
+                Some(pid) => format!("daemon:on:{pid}"),
+                None => "daemon:off".to_string(),
+            };
+            let (local_count, synced_count, remote_count) = repo_sync_counts(app);
+            format!(
+                " Repo: {} [{}] [Local:{}] [Synced:{}] [Remote:{}] ",
+                truncate(repo, 40),
+                daemon,
+                local_count,
+                synced_count,
+                remote_count
+            )
+        }
     };
     if let Some(agent) = app.active_agent_filter() {
         base.push_str(&format!("[agent:{agent}] "));
@@ -661,6 +670,30 @@ fn list_title(app: &App) -> String {
         }
     }
     base
+}
+
+fn sync_status_badge(status: &str) -> (&'static str, Color) {
+    match status {
+        "local_only" => (" Local ", Color::Yellow),
+        "synced" => (" Synced ", Color::Green),
+        "remote_only" => (" Remote ", Color::Cyan),
+        _ => (" Unknown ", Color::DarkGray),
+    }
+}
+
+fn repo_sync_counts(app: &App) -> (usize, usize, usize) {
+    let mut local_only = 0usize;
+    let mut synced = 0usize;
+    let mut remote_only = 0usize;
+    for row in &app.db_sessions {
+        match row.sync_status.as_str() {
+            "local_only" => local_only += 1,
+            "synced" => synced += 1,
+            "remote_only" => remote_only += 1,
+            _ => {}
+        }
+    }
+    (local_only, synced, remote_only)
 }
 
 const MIN_MULTI_COLUMN_WIDTH: usize = 28;
@@ -940,7 +973,8 @@ fn normalized_db_message_count(row: &LocalSessionRow) -> i64 {
 mod tests {
     use super::{
         column_viewport, format_relative_datetime, is_live_local_session, is_live_row, list_title,
-        normalized_db_message_count, resolved_agents_label, MIN_MULTI_COLUMN_WIDTH,
+        normalized_db_message_count, resolved_agents_label, sync_status_badge,
+        MIN_MULTI_COLUMN_WIDTH,
     };
     use crate::app::{App, ListLayout, ViewMode};
     use crate::config::CalendarDisplayMode;
@@ -1005,6 +1039,35 @@ mod tests {
         assert!(title.contains("[group:agent-count(desc)]"));
         assert!(title.contains("[cols:5]"));
         assert!(!title.contains("[sort:"));
+    }
+
+    #[test]
+    fn list_title_repo_view_shows_daemon_and_sync_counts() {
+        let mut app = App::new(vec![]);
+        app.view_mode = ViewMode::Repo("hwisu/opensession".to_string());
+        app.startup_status.daemon_pid = Some(4242);
+
+        let mut local = sample_row();
+        local.sync_status = "local_only".to_string();
+        let mut synced = sample_row();
+        synced.id = "ses-2".to_string();
+        synced.sync_status = "synced".to_string();
+        let mut remote = sample_row();
+        remote.id = "ses-3".to_string();
+        remote.sync_status = "remote_only".to_string();
+        app.db_sessions = vec![local, synced, remote];
+
+        let title = list_title(&app);
+        assert!(title.contains("[daemon:on:4242]"));
+        assert!(title.contains("[Local:1]"));
+        assert!(title.contains("[Synced:1]"));
+        assert!(title.contains("[Remote:1]"));
+    }
+
+    #[test]
+    fn sync_status_badge_uses_human_readable_local_label() {
+        let (label, _) = sync_status_badge("local_only");
+        assert_eq!(label, " Local ");
     }
 
     #[test]

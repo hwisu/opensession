@@ -142,6 +142,7 @@ fn current_view_shortcuts(app: &App, key_style: Style, desc_style: Style) -> Vec
                         key_style,
                         desc_style,
                     ),
+                    shortcut_line("  f           ", "Cycle flow mode", key_style, desc_style),
                     shortcut_line(
                         "  1-0         ",
                         "Toggle event filters",
@@ -167,6 +168,7 @@ fn current_view_shortcuts(app: &App, key_style: Style, desc_style: Style) -> Vec
                         key_style,
                         desc_style,
                     ),
+                    shortcut_line("  f           ", "Cycle flow mode", key_style, desc_style),
                     shortcut_line(
                         "  1-0         ",
                         "Toggle event filters",

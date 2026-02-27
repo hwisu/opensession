@@ -1,6 +1,6 @@
 use crate::app::{
-    extract_visible_turns, App, ConnectionContext, DetailViewMode, EventFilter, FlashLevel,
-    ServerStatus, SettingsSection, UploadPhase, View, ViewMode,
+    extract_visible_turns, App, ConnectionContext, DetailFlowMode, DetailViewMode, EventFilter,
+    FlashLevel, ServerStatus, SettingsSection, UploadPhase, View, ViewMode,
 };
 use crate::theme::Theme;
 use crate::views::{handoff, help, modal, session_detail, session_list, settings, setup, tab_bar};
@@ -281,6 +281,16 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("  ", Style::new()),
             ];
             spans.extend(event_filter_hotkey_spans(app));
+            spans.push(Span::styled("  ", Style::new()));
+            let flow_style = if matches!(app.detail_flow_mode, DetailFlowMode::All) {
+                Style::new().fg(Theme::TEXT_SECONDARY)
+            } else {
+                Style::new().fg(Color::Black).bg(Theme::ACCENT_CYAN).bold()
+            };
+            spans.push(Span::styled(
+                format!("[f]{}", app.detail_flow_mode_label()),
+                flow_style,
+            ));
             let line = Line::from(spans);
             let p = Paragraph::new(line).block(Theme::block());
             frame.render_widget(p, area);
@@ -600,6 +610,10 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
                     desc: "scroll".to_string(),
                 },
                 FooterSegment::Shortcut {
+                    key: "f".to_string(),
+                    desc: "flow".to_string(),
+                },
+                FooterSegment::Shortcut {
                     key: "1-0".to_string(),
                     desc: "filter".to_string(),
                 },
@@ -632,6 +646,10 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
             FooterSegment::Shortcut {
                 key: "h/l".to_string(),
                 desc: "scroll".to_string(),
+            },
+            FooterSegment::Shortcut {
+                key: "f".to_string(),
+                desc: "flow".to_string(),
             },
             FooterSegment::Shortcut {
                 key: "Space/Enter".to_string(),
@@ -699,6 +717,11 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
             }
         }
     }
+
+    segments.push(FooterSegment::Plain(format!(
+        "flow:{}",
+        app.detail_flow_mode_label()
+    )));
 
     segments.push(FooterSegment::Plain(format!(
         "follow:{}",
@@ -1520,7 +1543,9 @@ mod tests {
         assert!(text.contains("g/G"));
         assert!(text.contains("u/U"));
         assert!(text.contains("n/N"));
+        assert!(text.contains("f flow"));
         assert!(text.contains("1-0 filter"));
+        assert!(text.contains("flow:All"));
         assert!(!text.contains("d diff toggle"));
     }
 
@@ -1562,6 +1587,7 @@ mod tests {
         assert!(text.contains("Space/Enter"));
         assert!(text.contains("turn jump"));
         assert!(text.contains("v linear"));
+        assert!(text.contains("f flow"));
         assert!(!text.contains("u/U"));
         assert!(!text.contains("d diff toggle"));
     }
@@ -1584,6 +1610,7 @@ mod tests {
         assert!(!text.contains("mode:"));
         assert!(!text.contains("active:"));
         assert!(text.contains("[1]All [2]User [3]Agent"));
+        assert!(text.contains("[f]All"));
     }
 
     #[test]

@@ -1,23 +1,41 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use opensession_api::{
-    DesktopApiError, DesktopContractVersionResponse, DesktopHandoffBuildRequest,
-    DesktopHandoffBuildResponse, DesktopSessionListQuery, SessionRepoListResponse,
-    DESKTOP_IPC_CONTRACT_VERSION,
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
-    CapabilitiesResponse, LinkType, SessionDetail, SessionLink, SessionListResponse,
-    SessionSummary,
+    CapabilitiesResponse, DesktopApiError, DesktopContractVersionResponse,
+    DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopSessionListQuery, LinkType,
+    SessionDetail, SessionLink, SessionListResponse, SessionRepoListResponse, SessionSummary,
+    DESKTOP_IPC_CONTRACT_VERSION,
 };
+use opensession_core::handoff::{validate_handoff_summaries, HandoffSummary};
+use opensession_core::object_store::{
+    find_repo_root, global_store_root, sha256_hex, store_local_object,
+};
+use opensession_core::source_uri::SourceUri;
 use opensession_core::trace::Session as HailSession;
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow};
 use opensession_parsers::ingest::preview_parse_bytes;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::io::ErrorKind;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 type DesktopApiResult<T> = Result<T, DesktopApiError>;
+
+const HANDOFF_RECORD_VERSION: &str = "v1";
+const HANDOFF_LATEST_PIN_ALIAS: &str = "latest";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DesktopHandoffArtifactRecord {
+    version: String,
+    sha256: String,
+    created_at: String,
+    source_uris: Vec<String>,
+    canonical_jsonl: String,
+    raw_sessions: Vec<HailSession>,
+    #[serde(default)]
+    validation_reports: Vec<serde_json::Value>,
+}
 
 fn desktop_error(
     code: &str,
@@ -212,137 +230,307 @@ fn read_and_normalize_source_session(source_path: &str) -> DesktopApiResult<Stri
     normalize_session_body_to_hail_jsonl(&body, Some(source_path))
 }
 
-fn sanitize_session_id_for_filename(session_id: &str) -> String {
-    let mut out = String::with_capacity(session_id.len());
-    for ch in session_id.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "session".to_string()
-    } else {
-        out
-    }
-}
-
-fn parse_handoff_artifact_uri(stdout: &str) -> Option<String> {
-    stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("os://artifact/"))
-        .map(ToString::to_string)
-}
-
-fn workspace_root_from_current_dir() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let content = std::fs::read_to_string(&cargo_toml).ok()?;
-            if content.contains("[workspace]") {
-                return Some(dir);
-            }
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    None
-}
-
-fn run_handoff_cli_output(input_path: &Path, pin_latest: bool) -> DesktopApiResult<Output> {
-    let mut cli_args = vec![
-        "handoff".to_string(),
-        "build".to_string(),
-        input_path.display().to_string(),
-    ];
-    if pin_latest {
-        cli_args.push("--pin".to_string());
-        cli_args.push("latest".to_string());
-    }
-
-    let env_cli_path = std::env::var("OPENSESSION_CLI_PATH")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let primary_program = env_cli_path.unwrap_or_else(|| "opensession".to_string());
-
-    let primary_output = Command::new(&primary_program).args(&cli_args).output();
-    match primary_output {
-        Ok(output) => return Ok(output),
-        Err(error) if error.kind() != ErrorKind::NotFound => {
-            return Err(desktop_error(
-                "desktop.handoff_cli_spawn_failed",
-                500,
-                "failed to execute handoff command",
-                Some(json!({
-                    "cause": error.to_string(),
-                    "program": primary_program,
-                })),
-            ));
-        }
-        Err(_) => {}
-    }
-
-    let Some(workspace_root) = workspace_root_from_current_dir() else {
-        return Err(desktop_error(
-            "desktop.handoff_cli_missing",
-            500,
-            "handoff command is unavailable (opensession CLI not found)",
-            Some(json!({
-                "program": primary_program,
-                "hint": "Set OPENSESSION_CLI_PATH or add opensession to PATH",
-            })),
-        ));
-    };
-
-    let mut cargo_args = vec![
-        "run".to_string(),
-        "-q".to_string(),
-        "-p".to_string(),
-        "opensession".to_string(),
-        "--".to_string(),
-    ];
-    cargo_args.extend(cli_args);
-
-    Command::new("cargo")
-        .current_dir(workspace_root)
-        .args(cargo_args)
-        .output()
-        .map_err(|error| {
-            desktop_error(
-                "desktop.handoff_cli_spawn_failed",
-                500,
-                "failed to execute cargo fallback for handoff command",
-                Some(json!({ "cause": error.to_string() })),
-            )
-        })
-}
-
-fn write_temp_handoff_input(session_id: &str, body: &str) -> DesktopApiResult<PathBuf> {
-    let now_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let filename = format!(
-        "opensession-handoff-{}-{}-{}.hail.jsonl",
-        sanitize_session_id_for_filename(session_id),
-        std::process::id(),
-        now_nanos
-    );
-    let path = std::env::temp_dir().join(filename);
-    std::fs::write(&path, body).map_err(|error| {
+fn load_normalized_session_body(db: &LocalDb, session_id: &str) -> DesktopApiResult<String> {
+    let source_path = db.get_session_source_path(session_id).map_err(|error| {
         desktop_error(
-            "desktop.handoff_temp_write_failed",
+            "desktop.session_source_path_failed",
             500,
-            "failed to create temporary handoff input",
-            Some(json!({ "cause": error.to_string(), "path": path })),
+            "failed to resolve session source path",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
         )
     })?;
-    Ok(path)
+
+    if let Some(cached) = db.get_cached_body(session_id).map_err(|error| {
+        desktop_error(
+            "desktop.session_cache_read_failed",
+            500,
+            "failed to read cached session body",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })? {
+        match String::from_utf8(cached) {
+            Ok(text) => match normalize_session_body_to_hail_jsonl(&text, source_path.as_deref()) {
+                Ok(normalized) => return Ok(normalized),
+                Err(error) if source_path.is_none() => return Err(error),
+                Err(_) => {}
+            },
+            Err(error) if source_path.is_none() => {
+                return Err(desktop_error(
+                    "desktop.session_cache_invalid_utf8",
+                    500,
+                    "session body is not valid UTF-8",
+                    Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+                ));
+            }
+            Err(_) => {}
+        }
+    }
+
+    if let Some(source_path) = source_path {
+        return read_and_normalize_source_session(&source_path);
+    }
+
+    Err(desktop_error(
+        "desktop.session_body_not_found",
+        404,
+        "session body not found in local cache",
+        Some(json!({ "session_id": session_id })),
+    ))
+}
+
+fn canonicalize_summaries(summaries: &[HandoffSummary]) -> DesktopApiResult<String> {
+    let mut sorted = summaries
+        .iter()
+        .map(|summary| {
+            serde_json::to_value(summary)
+                .map(|value| (summary.source_session_id.clone(), value))
+                .map_err(|error| {
+                    desktop_error(
+                        "desktop.handoff_serialize_failed",
+                        500,
+                        "failed to serialize handoff summary",
+                        Some(json!({ "cause": error.to_string() })),
+                    )
+                })
+        })
+        .collect::<DesktopApiResult<Vec<_>>>()?;
+    sorted.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut out = String::new();
+    for (_session_id, value) in sorted {
+        let line = serde_json::to_string(&value).map_err(|error| {
+            desktop_error(
+                "desktop.handoff_serialize_failed",
+                500,
+                "failed to serialize canonical handoff line",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn artifact_root_for_cwd(cwd: &Path) -> DesktopApiResult<PathBuf> {
+    if let Some(repo_root) = find_repo_root(cwd) {
+        return Ok(repo_root.join(".opensession").join("artifacts"));
+    }
+    let global_objects_root = global_store_root().map_err(|error| {
+        desktop_error(
+            "desktop.handoff_store_unavailable",
+            500,
+            "failed to resolve global object store",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let parent = global_objects_root.parent().ok_or_else(|| {
+        desktop_error(
+            "desktop.handoff_store_unavailable",
+            500,
+            "invalid global object store path",
+            Some(json!({ "path": global_objects_root })),
+        )
+    })?;
+    Ok(parent.join("artifacts"))
+}
+
+fn is_valid_sha256(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn artifact_path_for_hash(root: &Path, hash: &str) -> DesktopApiResult<PathBuf> {
+    if !is_valid_sha256(hash) {
+        return Err(desktop_error(
+            "desktop.handoff_invalid_hash",
+            400,
+            "invalid artifact hash",
+            Some(json!({ "hash": hash })),
+        ));
+    }
+    Ok(root
+        .join("sha256")
+        .join(&hash[0..2])
+        .join(&hash[2..4])
+        .join(format!("{hash}.json")))
+}
+
+fn validate_pin_alias(alias: &str) -> DesktopApiResult<()> {
+    let trimmed = alias.trim();
+    if trimmed.is_empty() {
+        return Err(desktop_error(
+            "desktop.handoff_invalid_alias",
+            400,
+            "pin alias cannot be empty",
+            Some(json!({ "alias": alias })),
+        ));
+    }
+    if !trimmed
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'_' || byte == b'-')
+    {
+        return Err(desktop_error(
+            "desktop.handoff_invalid_alias",
+            400,
+            "pin alias contains invalid characters",
+            Some(json!({ "alias": alias })),
+        ));
+    }
+    Ok(())
+}
+
+fn pin_path_for_alias(root: &Path, alias: &str) -> DesktopApiResult<PathBuf> {
+    validate_pin_alias(alias)?;
+    Ok(root.join("pins").join(alias))
+}
+
+fn store_handoff_artifact_record(
+    record: &DesktopHandoffArtifactRecord,
+    cwd: &Path,
+) -> DesktopApiResult<()> {
+    let root = artifact_root_for_cwd(cwd)?;
+    let path = artifact_path_for_hash(&root, &record.sha256)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            desktop_error(
+                "desktop.handoff_store_failed",
+                500,
+                "failed to prepare handoff artifact directory",
+                Some(json!({ "cause": error.to_string(), "path": parent })),
+            )
+        })?;
+    }
+    if !path.exists() {
+        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
+            desktop_error(
+                "desktop.handoff_store_failed",
+                500,
+                "failed to serialize handoff artifact record",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+        std::fs::write(&path, bytes).map_err(|error| {
+            desktop_error(
+                "desktop.handoff_store_failed",
+                500,
+                "failed to store handoff artifact",
+                Some(json!({ "cause": error.to_string(), "path": path })),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn set_handoff_pin(alias: &str, hash: &str, cwd: &Path) -> DesktopApiResult<()> {
+    validate_pin_alias(alias)?;
+    if !is_valid_sha256(hash) {
+        return Err(desktop_error(
+            "desktop.handoff_invalid_hash",
+            400,
+            "invalid artifact hash",
+            Some(json!({ "hash": hash })),
+        ));
+    }
+
+    let root = artifact_root_for_cwd(cwd)?;
+    let pin_path = pin_path_for_alias(&root, alias)?;
+    if let Some(parent) = pin_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            desktop_error(
+                "desktop.handoff_store_failed",
+                500,
+                "failed to prepare handoff pin directory",
+                Some(json!({ "cause": error.to_string(), "path": parent })),
+            )
+        })?;
+    }
+
+    std::fs::write(&pin_path, format!("{hash}\n")).map_err(|error| {
+        desktop_error(
+            "desktop.handoff_store_failed",
+            500,
+            "failed to write handoff pin alias",
+            Some(json!({ "cause": error.to_string(), "path": pin_path, "alias": alias })),
+        )
+    })
+}
+
+fn build_handoff_artifact_record(
+    normalized_session: &str,
+    session: HailSession,
+    pin_latest: bool,
+    cwd: &Path,
+) -> DesktopApiResult<DesktopHandoffBuildResponse> {
+    let summaries = vec![HandoffSummary::from_session(&session)];
+    let reports = validate_handoff_summaries(&summaries);
+    let has_error_level = reports.iter().any(|report| {
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.severity == "error")
+    });
+    if has_error_level {
+        return Err(desktop_error(
+            "desktop.handoff_validation_failed",
+            422,
+            "handoff validation failed with error-level findings",
+            Some(json!({ "reports": reports })),
+        ));
+    }
+
+    let canonical_jsonl = canonicalize_summaries(&summaries)?;
+    let artifact_hash = sha256_hex(canonical_jsonl.as_bytes());
+
+    let source_object =
+        store_local_object(normalized_session.as_bytes(), cwd).map_err(|error| {
+            desktop_error(
+                "desktop.handoff_store_failed",
+                500,
+                "failed to store canonical source object for handoff",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+
+    let validation_reports = reports
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.handoff_serialize_failed",
+                500,
+                "failed to serialize handoff validation report",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+
+    let mut deduped_source_uris = BTreeSet::new();
+    deduped_source_uris.insert(source_object.uri.to_string());
+
+    let record = DesktopHandoffArtifactRecord {
+        version: HANDOFF_RECORD_VERSION.to_string(),
+        sha256: artifact_hash.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        source_uris: deduped_source_uris.into_iter().collect(),
+        canonical_jsonl,
+        raw_sessions: vec![session],
+        validation_reports,
+    };
+    store_handoff_artifact_record(&record, cwd)?;
+
+    if pin_latest {
+        set_handoff_pin(HANDOFF_LATEST_PIN_ALIAS, &artifact_hash, cwd)?;
+    }
+
+    let artifact_uri = SourceUri::Artifact {
+        sha256: artifact_hash,
+    }
+    .to_string();
+
+    Ok(DesktopHandoffBuildResponse {
+        artifact_uri,
+        pinned_alias: pin_latest.then_some(HANDOFF_LATEST_PIN_ALIAS.to_string()),
+    })
 }
 
 #[tauri::command]
@@ -460,53 +648,7 @@ fn desktop_get_session_detail(id: String) -> DesktopApiResult<SessionDetail> {
 #[tauri::command]
 fn desktop_get_session_raw(id: String) -> DesktopApiResult<String> {
     let db = open_local_db()?;
-    let source_path = db
-        .get_session_source_path(&id)
-        .map_err(|error| {
-            desktop_error(
-                "desktop.session_source_path_failed",
-                500,
-                "failed to resolve session source path",
-                Some(json!({ "cause": error.to_string(), "session_id": id })),
-            )
-        })?;
-
-    if let Some(cached) = db.get_cached_body(&id).map_err(|error| {
-        desktop_error(
-            "desktop.session_cache_read_failed",
-            500,
-            "failed to read cached session body",
-            Some(json!({ "cause": error.to_string(), "session_id": id })),
-        )
-    })? {
-        match String::from_utf8(cached) {
-            Ok(text) => match normalize_session_body_to_hail_jsonl(&text, source_path.as_deref()) {
-                Ok(normalized) => return Ok(normalized),
-                Err(error) if source_path.is_none() => return Err(error),
-                Err(_) => {}
-            },
-            Err(error) if source_path.is_none() => {
-                return Err(desktop_error(
-                    "desktop.session_cache_invalid_utf8",
-                    500,
-                    "session body is not valid UTF-8",
-                    Some(json!({ "cause": error.to_string(), "session_id": id })),
-                ));
-            }
-            Err(_) => {}
-        }
-    }
-
-    if let Some(source_path) = source_path {
-        return read_and_normalize_source_session(&source_path);
-    }
-
-    Err(desktop_error(
-        "desktop.session_body_not_found",
-        404,
-        "session body not found in local cache",
-        Some(json!({ "session_id": id })),
-    ))
+    load_normalized_session_body(&db, &id)
 }
 
 #[tauri::command]
@@ -524,124 +666,25 @@ fn desktop_build_handoff(
     }
 
     let db = open_local_db()?;
-    let source_path = db
-        .get_session_source_path(&session_id)
-        .map_err(|error| {
-            desktop_error(
-                "desktop.session_source_path_failed",
-                500,
-                "failed to resolve session source path",
-                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
-            )
-        })?
-        .filter(|path| !path.trim().is_empty());
-
-    let mut temp_input: Option<PathBuf> = None;
-    let input_path: PathBuf = if let Some(source_path) = source_path.as_ref() {
-        let source = PathBuf::from(source_path);
-        if source.exists() {
-            source
-        } else {
-            let cached = db.get_cached_body(&session_id).map_err(|error| {
-                desktop_error(
-                    "desktop.session_cache_read_failed",
-                    500,
-                    "failed to read cached session body",
-                    Some(json!({ "cause": error.to_string(), "session_id": session_id })),
-                )
-            })?;
-            if let Some(cached) = cached {
-                let text = String::from_utf8(cached).map_err(|error| {
-                    desktop_error(
-                        "desktop.session_cache_invalid_utf8",
-                        500,
-                        "session body is not valid UTF-8",
-                        Some(json!({ "cause": error.to_string(), "session_id": session_id })),
-                    )
-                })?;
-                let normalized = normalize_session_body_to_hail_jsonl(&text, Some(source_path))?;
-                let temp = write_temp_handoff_input(&session_id, &normalized)?;
-                temp_input = Some(temp.clone());
-                temp
-            } else {
-                return Err(desktop_error(
-                    "desktop.handoff_input_unavailable",
-                    404,
-                    "session source file is unavailable and no cached body exists",
-                    Some(json!({ "session_id": session_id, "source_path": source_path })),
-                ));
-            }
-        }
-    } else {
-        let cached = db.get_cached_body(&session_id).map_err(|error| {
-            desktop_error(
-                "desktop.session_cache_read_failed",
-                500,
-                "failed to read cached session body",
-                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
-            )
-        })?;
-        let Some(cached) = cached else {
-            return Err(desktop_error(
-                "desktop.handoff_input_unavailable",
-                404,
-                "session source input is unavailable",
-                Some(json!({ "session_id": session_id })),
-            ));
-        };
-        let text = String::from_utf8(cached).map_err(|error| {
-            desktop_error(
-                "desktop.session_cache_invalid_utf8",
-                500,
-                "session body is not valid UTF-8",
-                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
-            )
-        })?;
-        let normalized = normalize_session_body_to_hail_jsonl(&text, None)?;
-        let temp = write_temp_handoff_input(&session_id, &normalized)?;
-        temp_input = Some(temp.clone());
-        temp
-    };
-
-    let output = run_handoff_cli_output(&input_path, request.pin_latest);
-
-    if let Some(temp) = temp_input {
-        let _ = std::fs::remove_file(&temp);
-    }
-
-    let output = output?;
-    if !output.status.success() {
-        return Err(desktop_error(
-            "desktop.handoff_build_failed",
-            422,
-            "handoff build command failed",
-            Some(json!({
-                "session_id": session_id,
-                "exit_code": output.status.code(),
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
-            })),
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let Some(artifact_uri) = parse_handoff_artifact_uri(&stdout) else {
-        return Err(desktop_error(
+    let normalized_session = load_normalized_session_body(&db, &session_id)?;
+    let session = HailSession::from_jsonl(&normalized_session).map_err(|error| {
+        desktop_error(
             "desktop.handoff_parse_failed",
+            422,
+            "failed to decode normalized session for handoff build",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    let cwd = std::env::current_dir().map_err(|error| {
+        desktop_error(
+            "desktop.handoff_store_unavailable",
             500,
-            "failed to parse handoff artifact URI from command output",
-            Some(json!({ "stdout": stdout })),
-        ));
-    };
+            "failed to resolve current workspace directory",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
 
-    Ok(DesktopHandoffBuildResponse {
-        artifact_uri,
-        pinned_alias: if request.pin_latest {
-            Some("latest".to_string())
-        } else {
-            None
-        },
-    })
+    build_handoff_artifact_record(&normalized_session, session, request.pin_latest, &cwd)
 }
 
 fn main() {
@@ -663,12 +706,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_local_filter, desktop_get_contract_version, map_link_type,
-        normalize_session_body_to_hail_jsonl, parse_handoff_artifact_uri,
-        sanitize_session_id_for_filename,
-        session_summary_from_local_row, DesktopSessionListQuery,
+        artifact_path_for_hash, build_handoff_artifact_record, build_local_filter,
+        canonicalize_summaries, desktop_get_contract_version, map_link_type,
+        normalize_session_body_to_hail_jsonl, session_summary_from_local_row, validate_pin_alias,
+        DesktopSessionListQuery,
     };
-    use opensession_core::trace::Session as HailSession;
+    use opensession_core::handoff::HandoffSummary;
+    use opensession_core::trace::{Agent, Session as HailSession};
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_row() -> opensession_local_db::LocalSessionRow {
         opensession_local_db::LocalSessionRow {
@@ -786,19 +832,101 @@ mod tests {
     #[test]
     fn desktop_contract_version_matches_shared_constant() {
         let payload = desktop_get_contract_version();
-        assert_eq!(payload.version, opensession_api::DESKTOP_IPC_CONTRACT_VERSION);
+        assert_eq!(
+            payload.version,
+            opensession_api::DESKTOP_IPC_CONTRACT_VERSION
+        );
     }
 
     #[test]
-    fn parse_handoff_artifact_uri_extracts_uri_line() {
-        let stdout = "building...\nos://artifact/abc123\nsaved";
-        let parsed = parse_handoff_artifact_uri(stdout);
-        assert_eq!(parsed.as_deref(), Some("os://artifact/abc123"));
+    fn handoff_canonicalization_orders_by_session_id() {
+        let mut session_b = HailSession::new(
+            "session-b".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session_b.recompute_stats();
+        let mut session_a = HailSession::new(
+            "session-a".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session_a.recompute_stats();
+
+        let summaries = vec![
+            HandoffSummary::from_session(&session_b),
+            HandoffSummary::from_session(&session_a),
+        ];
+        let canonical = canonicalize_summaries(&summaries).expect("canonicalize summaries");
+        let first_line = canonical.lines().next().expect("canonical line");
+        assert!(first_line.contains("\"source_session_id\":\"session-a\""));
     }
 
     #[test]
-    fn sanitize_session_id_for_filename_replaces_path_delimiters() {
-        let sanitized = sanitize_session_id_for_filename("team/repo/session:1");
-        assert_eq!(sanitized, "team_repo_session_1");
+    fn handoff_pin_alias_validation_rejects_spaces() {
+        assert!(validate_pin_alias("latest").is_ok());
+        assert!(validate_pin_alias("bad alias").is_err());
+    }
+
+    #[test]
+    fn artifact_path_rejects_invalid_hash() {
+        assert!(artifact_path_for_hash(Path::new("/tmp"), "abc").is_err());
+    }
+
+    #[test]
+    fn handoff_build_writes_artifact_record_and_pin() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be monotonic")
+            .as_nanos();
+        let repo_root = std::env::temp_dir().join(format!("opensession-desktop-handoff-{unique}"));
+        let git_dir = repo_root.join(".git");
+        std::fs::create_dir_all(&git_dir).expect("create repo .git");
+
+        let mut session = HailSession::new(
+            "session-handoff-test".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.recompute_stats();
+        let normalized = session.to_jsonl().expect("serialize session");
+
+        let response =
+            build_handoff_artifact_record(&normalized, session, true, &repo_root).expect("build");
+        let hash = response
+            .artifact_uri
+            .strip_prefix("os://artifact/")
+            .expect("artifact uri prefix");
+        assert_eq!(hash.len(), 64);
+        assert_eq!(response.pinned_alias.as_deref(), Some("latest"));
+
+        let artifact_path = PathBuf::from(repo_root.join(".opensession").join("artifacts"))
+            .join("sha256")
+            .join(&hash[0..2])
+            .join(&hash[2..4])
+            .join(format!("{hash}.json"));
+        assert!(artifact_path.exists());
+
+        let pin_path = repo_root
+            .join(".opensession")
+            .join("artifacts")
+            .join("pins")
+            .join("latest");
+        let pin_hash = std::fs::read_to_string(&pin_path).expect("read pin hash");
+        assert_eq!(pin_hash.trim(), hash);
+
+        let _ = std::fs::remove_dir_all(&repo_root);
     }
 }

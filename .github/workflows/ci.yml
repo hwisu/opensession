@@ -24,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Check release-plz package names map to workspace crates
         run: |
           set -euo pipefail
@@ -35,6 +38,8 @@ jobs:
             printf '%s\n' "$bad"
             exit 1
           fi
+      - name: Check product version sync (workspace + desktop)
+        run: node scripts/sync-product-version.mjs --check
 
   content-contract:
     name: Content Contract

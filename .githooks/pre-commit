@@ -39,6 +39,8 @@ echo "Running validation hook guardrail check..."
 node scripts/check-validation-hooks.mjs
 echo "Running docs portability check..."
 node scripts/check-doc-portability.mjs
+echo "Running product version sync check..."
+node scripts/sync-product-version.mjs --check
 
 echo "Running cargo fmt check..."
 run_cargo fmt --all -- --check

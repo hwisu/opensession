@@ -94,6 +94,8 @@ npm run dev
 
 위 명령은 `opensession-server`와 Tauri 데스크톱 창을 함께 실행합니다.
 
+데스크톱 릴리즈는 GitHub Actions `Release` 워크플로에서 수동 실행하며, 이제 crates 릴리즈와 macOS 데스크톱 아티팩트 업로드를 같은 버전 태그로 처리합니다.
+
 ## 빠른 시작
 
 ```bash

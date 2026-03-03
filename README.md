@@ -94,6 +94,8 @@ npm run dev
 
 This starts both `opensession-server` and the Tauri desktop window.
 
+Desktop release is manual via GitHub Actions `Release` workflow; it now publishes crates and uploads macOS desktop artifacts on the same version tag.
+
 ## Quick Start
 
 ```bash

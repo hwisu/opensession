@@ -1,7 +1,7 @@
 {
 	"name": "opensession-desktop",
 	"private": true,
-	"version": "0.1.0",
+	"version": "0.2.32",
 	"type": "module",
 	"scripts": {
 		"tauri:dev": "tauri dev",

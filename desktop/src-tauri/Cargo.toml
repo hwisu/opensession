@@ -1,6 +1,6 @@
 [package]
 name = "opensession-desktop"
-version = "0.1.0"
+version = "0.2.32"
 description = "OpenSession desktop preview shell (Tauri + shared web UI)"
 edition = "2021"
 publish = false

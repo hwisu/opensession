@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.33](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.32...opensession-parsers-v0.2.33) - 2026-03-03
+
+### Added
+
+- unify desktop/web contracts and stabilize session timeline UX
+
 ## [0.2.30](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.29...opensession-parsers-v0.2.30) - 2026-02-27
 
 ### Fixed

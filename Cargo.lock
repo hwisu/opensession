@@ -2537,7 +2537,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "opensession"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-api"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-api-client"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "opensession-api",
@@ -2600,7 +2600,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-core"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "base64",
  "chrono",
@@ -2616,7 +2616,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-daemon"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-e2e"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-git-native"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "base64",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-local-db"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-parsers"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2710,7 +2710,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-runtime-config"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "serde",
  "toml",
@@ -2718,7 +2718,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-server"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "axum",
@@ -2742,7 +2742,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-tui"
-version = "0.2.32"
+version = "0.2.33"
 dependencies = [
  "anyhow",
  "chrono",

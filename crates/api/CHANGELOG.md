@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.33](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.32...opensession-api-v0.2.33) - 2026-03-03
+
+### Added
+
+- *(desktop)* add tauri handoff build flow in session detail
+- unify desktop/web contracts and stabilize session timeline UX
+
 ## [0.2.28](https://github.com/hwisu/opensession/compare/opensession-api-v0.2.27...opensession-api-v0.2.28) - 2026-02-26
 
 ### Added

@@ -2,6 +2,8 @@ use opensession_core::testing;
 use opensession_core::{Agent, Content, Event, EventType, Session};
 use serde_json::Value;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -296,6 +298,7 @@ fn view_help_shows_recovery_examples() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Recovery examples:"));
+    assert!(stdout.contains("opensession view --no-open"));
     assert!(stdout.contains("opensession view os://src/local/<sha256> --no-open"));
     assert!(stdout.contains("opensession view ./session.hail.jsonl --no-open"));
     assert!(stdout.contains("opensession view HEAD~3..HEAD --no-open"));
@@ -1115,6 +1118,182 @@ fn view_commit_target_builds_commit_review_bundle() {
 }
 
 #[test]
+fn view_without_target_defaults_to_sessions_route() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let out = run(tmp.path(), &repo, &["view", "--no-open", "--json"]);
+    assert!(
+        out.status.success(),
+        "view default failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("view json");
+    assert_eq!(
+        payload.get("mode").and_then(Value::as_str),
+        Some("sessions")
+    );
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(url, "http://127.0.0.1:8788/sessions");
+}
+
+#[test]
+fn view_without_target_prefills_repo_query_when_origin_matches_owner_repo() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    run_git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/repo.git",
+        ],
+    );
+
+    let out = run(tmp.path(), &repo, &["view", "--no-open", "--json"]);
+    assert!(
+        out.status.success(),
+        "view default failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("view json");
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(url.contains("/sessions?"), "unexpected url: {url}");
+    assert!(
+        url.contains("git_repo_name=acme%2Frepo"),
+        "unexpected url: {url}"
+    );
+}
+
+#[test]
+fn view_without_target_open_mode_fails_closed_without_explicit_base_url() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    run_git(
+        &repo,
+        &["config", "--local", "opensession.open-target", "web"],
+    );
+
+    let out = run(tmp.path(), &repo, &["view", "--json"]);
+    assert!(
+        !out.status.success(),
+        "view default should fail without local server/base URL"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("local sessions server is unavailable"));
+    assert!(stderr.contains("opensession view --no-open"));
+    assert!(stderr.contains("opensession config init --base-url"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn view_without_target_open_mode_suppresses_desktop_open_probe_stderr() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).expect("create bin");
+    let fake_open = bin.join("open");
+    write_file(
+        &fake_open,
+        "#!/bin/sh\necho OPEN_PROBE_MARKER >&2\nexit 1\n",
+    );
+    let mut perms = fs::metadata(&fake_open)
+        .expect("stat fake open")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_open, perms).expect("chmod fake open");
+
+    let base_path = std::env::var("PATH").unwrap_or_default();
+    let path_env = if base_path.is_empty() {
+        bin.display().to_string()
+    } else {
+        format!("{}:{}", bin.display(), base_path)
+    };
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
+    let out = cmd
+        .args(["view", "--json"])
+        .current_dir(&repo)
+        .env("HOME", tmp.path())
+        .env("NO_COLOR", "1")
+        .env("PATH", path_env)
+        .output()
+        .expect("run opensession");
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("OPEN_PROBE_MARKER"),
+        "desktop open probe stderr leaked: {stderr}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn view_without_target_web_open_target_skips_desktop_probe() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    run_git(
+        &repo,
+        &["config", "--local", "opensession.open-target", "web"],
+    );
+
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).expect("create bin");
+    let marker_path = tmp.path().join("open-invoked");
+    let fake_open = bin.join("open");
+    write_file(
+        &fake_open,
+        format!(
+            "#!/bin/sh\nprintf invoked > \"{}\"\nexit 1\n",
+            marker_path.display()
+        )
+        .as_str(),
+    );
+    let mut perms = fs::metadata(&fake_open)
+        .expect("stat fake open")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_open, perms).expect("chmod fake open");
+
+    let base_path = std::env::var("PATH").unwrap_or_default();
+    let path_env = if base_path.is_empty() {
+        bin.display().to_string()
+    } else {
+        format!("{}:{}", bin.display(), base_path)
+    };
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
+    let out = cmd
+        .args(["view", "--json"])
+        .current_dir(&repo)
+        .env("HOME", tmp.path())
+        .env("NO_COLOR", "1")
+        .env("PATH", path_env)
+        .output()
+        .expect("run opensession");
+
+    assert!(!out.status.success());
+    assert!(
+        !marker_path.exists(),
+        "desktop open probe should be skipped for open-target=web"
+    );
+}
+
+#[test]
 fn view_invalid_target_shows_next_steps() {
     let tmp = make_home();
     let repo = tmp.path().join("repo");
@@ -1364,6 +1543,11 @@ fn setup_yes_with_fanout_installs_pre_push_hook_with_original_copy() {
         &["config", "--local", "--get", "opensession.fanout-mode"],
     );
     assert_eq!(String::from_utf8_lossy(&fanout.stdout).trim(), "hidden_ref");
+    let open_target = run_git(
+        &repo,
+        &["config", "--local", "--get", "opensession.open-target"],
+    );
+    assert_eq!(String::from_utf8_lossy(&open_target.stdout).trim(), "app");
 }
 
 #[test]
@@ -1375,7 +1559,15 @@ fn doctor_fix_yes_with_fanout_mode_applies_setup() {
     let out = run(
         tmp.path(),
         &repo,
-        &["doctor", "--fix", "--yes", "--fanout-mode", "git_notes"],
+        &[
+            "doctor",
+            "--fix",
+            "--yes",
+            "--fanout-mode",
+            "git_notes",
+            "--open-target",
+            "web",
+        ],
     );
     assert!(
         out.status.success(),
@@ -1388,6 +1580,11 @@ fn doctor_fix_yes_with_fanout_mode_applies_setup() {
         &["config", "--local", "--get", "opensession.fanout-mode"],
     );
     assert_eq!(String::from_utf8_lossy(&fanout.stdout).trim(), "git_notes");
+    let open_target = run_git(
+        &repo,
+        &["config", "--local", "--get", "opensession.open-target"],
+    );
+    assert_eq!(String::from_utf8_lossy(&open_target.stdout).trim(), "web");
     assert!(
         repo.join(".git").join("hooks").join("pre-push").exists(),
         "expected pre-push hook to be installed by doctor --fix"

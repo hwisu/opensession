@@ -5,6 +5,7 @@ mod doctor_cmd;
 mod handoff_v1;
 mod hooks;
 mod inspect;
+mod open_target;
 mod parse_cmd;
 mod register;
 mod review;

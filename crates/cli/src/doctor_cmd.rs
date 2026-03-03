@@ -1,3 +1,4 @@
+use crate::open_target::OpenTarget;
 use crate::setup_cmd::{self, SetupArgs, SetupFanoutMode};
 use crate::user_guidance::guided_error;
 use anyhow::Result;
@@ -25,6 +26,7 @@ impl DoctorFanoutMode {
   opensession doctor
   opensession doctor --fix
   opensession doctor --fix --yes --fanout-mode hidden_ref
+  opensession doctor --fix --yes --fanout-mode hidden_ref --open-target app
   opensession docs quickstart")]
 pub struct DoctorArgs {
     /// Apply recommended setup fixes (hooks/shims/fanout defaults).
@@ -36,6 +38,9 @@ pub struct DoctorArgs {
     /// Set fanout mode before applying fixes.
     #[arg(long, value_enum)]
     pub fanout_mode: Option<DoctorFanoutMode>,
+    /// Set default review opener (`app` or `web`) before applying fixes.
+    #[arg(long, value_enum)]
+    pub open_target: Option<OpenTarget>,
 }
 
 pub fn run(args: DoctorArgs) -> Result<()> {
@@ -50,6 +55,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         check: !args.fix,
         yes: args.yes,
         fanout_mode: args.fanout_mode.map(DoctorFanoutMode::as_setup_mode),
+        open_target: args.open_target,
         print_ledger_ref: None,
         print_fanout_mode: false,
         sync_branch_session: None,
@@ -71,6 +77,15 @@ fn validate_args(args: &DoctorArgs) -> Result<()> {
             [
                 "run `opensession doctor --fix --fanout-mode hidden_ref`",
                 "or run `opensession doctor --fix --fanout-mode git_notes`",
+            ],
+        ));
+    }
+    if args.open_target.is_some() && !args.fix {
+        return Err(guided_error(
+            "`--open-target` requires `--fix`",
+            [
+                "run `opensession doctor --fix --open-target app`",
+                "or run `opensession doctor --fix --open-target web`",
             ],
         ));
     }
@@ -96,6 +111,7 @@ mod tests {
             fix: false,
             yes: false,
             fanout_mode: Some(DoctorFanoutMode::HiddenRef),
+            open_target: None,
         };
         let err = validate_args(&args).expect_err("validate");
         let msg = err.to_string();
@@ -110,6 +126,7 @@ mod tests {
             fix: true,
             yes: true,
             fanout_mode: Some(DoctorFanoutMode::GitNotes),
+            open_target: Some(OpenTarget::Web),
         };
         validate_args(&args).expect("validate");
     }
@@ -120,11 +137,26 @@ mod tests {
             fix: false,
             yes: true,
             fanout_mode: None,
+            open_target: None,
         };
         let err = validate_args(&args).expect_err("validate");
         let msg = err.to_string();
         assert!(msg.contains("requires `--fix`"));
         assert!(msg.contains("next:"));
         assert!(msg.contains("doctor --fix --yes --fanout-mode hidden_ref"));
+    }
+
+    #[test]
+    fn validate_args_rejects_open_target_without_fix() {
+        let args = DoctorArgs {
+            fix: false,
+            yes: false,
+            fanout_mode: None,
+            open_target: Some(OpenTarget::App),
+        };
+        let err = validate_args(&args).expect_err("validate");
+        let msg = err.to_string();
+        assert!(msg.contains("`--open-target` requires `--fix`"));
+        assert!(msg.contains("doctor --fix --open-target app"));
     }
 }

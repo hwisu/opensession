@@ -61,14 +61,18 @@ opensession doctor --fix
 # Optional: pin fanout storage mode while fixing
 opensession doctor --fix --fanout-mode hidden_ref
 
+# Optional: pin review opener mode while fixing
+opensession doctor --fix --open-target app
+
 # Automation / non-interactive mode
-opensession doctor --fix --yes --fanout-mode hidden_ref
+opensession doctor --fix --yes --fanout-mode hidden_ref --open-target app
 ```
 
 `doctor` reuses the existing setup pipeline under the hood.
 `doctor --fix` now prints the setup plan and asks for confirmation before applying hook/shim/fanout changes.
 On first interactive apply, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
-In non-interactive mode, `--fix` requires `--yes` and an explicit `--fanout-mode` when no fanout mode is already configured in git.
+The same setup flow also asks which opener to use for `opensession view/review` (`app` or `web`) and stores it in local git config as `opensession.open-target`.
+In non-interactive mode, `--fix` requires `--yes` and an explicit `--fanout-mode` when no fanout mode is already configured in git. `--open-target` is optional and defaults to `app`.
 
 Start daemon (required for automatic session capture):
 

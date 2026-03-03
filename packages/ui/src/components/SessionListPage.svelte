@@ -29,6 +29,7 @@ let fetchRequestId = 0;
 let knownRepos = $state<string[]>([]);
 let copyFeedback = $state<string | null>(null);
 let copyFeedbackTimer: number | null = null;
+let hydratedFromQuery = false;
 
 const perPage = 20;
 const listCacheKey = 'opensession_public_list_cache_v1';
@@ -199,6 +200,33 @@ const tools = [
 	{ value: '', label: 'All Tools' },
 	...Object.values(TOOL_CONFIGS).map((t) => ({ value: t.name, label: t.label })),
 ];
+const validTimeRanges = new Set<TimeRange>(['all', '24h', '7d', '30d']);
+
+function hydrateFiltersFromQuery() {
+	if (typeof window === 'undefined') return;
+	const params = new URLSearchParams(window.location.search);
+
+	const repoFromQuery = params.get('git_repo_name')?.trim();
+	if (repoFromQuery) {
+		repoFilter = repoFromQuery;
+		repoInput = repoFromQuery;
+	}
+
+	const searchFromQuery = params.get('search')?.trim();
+	if (searchFromQuery) {
+		searchQuery = searchFromQuery;
+	}
+
+	const toolFromQuery = params.get('tool')?.trim();
+	if (toolFromQuery && tools.some((entry) => entry.value === toolFromQuery)) {
+		toolFilter = toolFromQuery;
+	}
+
+	const rangeFromQuery = params.get('time_range')?.trim() as TimeRange | undefined;
+	if (rangeFromQuery && validTimeRanges.has(rangeFromQuery)) {
+		timeRange = rangeFromQuery;
+	}
+}
 
 function extractRepos(items: SessionSummary[]): string[] {
 	const values = new Set<string>();
@@ -338,6 +366,10 @@ async function copySelectedSessionTitle() {
 }
 
 $effect(() => {
+	if (!hydratedFromQuery) {
+		hydrateFiltersFromQuery();
+		hydratedFromQuery = true;
+	}
 	void fetchKnownRepos();
 	fetchSessions(true);
 });

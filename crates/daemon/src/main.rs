@@ -77,10 +77,20 @@ async fn run() -> Result<()> {
 
     // Start file watcher (must keep handle alive)
     let _watcher = if !watch_paths.is_empty() {
-        Some(watcher::start_watcher(&watch_paths, tx)?)
+        Some(watcher::start_watcher(&watch_paths, tx.clone())?)
     } else {
         None
     };
+
+    if !watch_paths.is_empty() {
+        let seeded = watcher::seed_existing_session_files(&watch_paths, &tx);
+        if seeded > 0 {
+            info!(
+                "Queued {} existing session files for startup backfill",
+                seeded
+            );
+        }
+    }
 
     // Start scheduler in background
     let scheduler_cfg = cfg.clone();

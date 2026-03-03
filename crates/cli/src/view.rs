@@ -1,4 +1,9 @@
-use crate::{config_cmd::load_repo_config, review, user_guidance::guided_error};
+use crate::{
+    config_cmd::load_repo_config,
+    open_target::{read_repo_open_target, OpenTarget},
+    review,
+    user_guidance::guided_error,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use opensession_api::{
@@ -18,12 +23,13 @@ use std::process::Command;
 
 #[derive(Debug, Clone, Args)]
 #[command(after_long_help = r"Recovery examples:
+  opensession view --no-open
   opensession view os://src/local/<sha256> --no-open
   opensession view ./session.hail.jsonl --no-open
   opensession view HEAD~3..HEAD --no-open")]
 pub struct ViewArgs {
     /// Review target: source URI, local *.jsonl file, PR/MR URL, or commit/ref/range.
-    pub target: String,
+    pub target: Option<String>,
     /// Prefer TUI mode when supported by the target.
     #[arg(long)]
     pub tui: bool,
@@ -57,9 +63,13 @@ struct CommitIndexEntry {
 }
 
 pub async fn run(args: ViewArgs) -> Result<()> {
-    if is_github_pr_url(&args.target) {
+    let Some(target) = args.target.clone() else {
+        return view_repo_sessions(&args).await;
+    };
+
+    if is_github_pr_url(&target) {
         let review_args = review::ReviewArgs {
-            pr_link: args.target.clone(),
+            pr_link: target.clone(),
             view: if args.tui {
                 review::ReviewView::Tui
             } else {
@@ -82,36 +92,224 @@ pub async fn run(args: ViewArgs) -> Result<()> {
         ));
     }
 
-    if let Ok(uri) = SourceUri::parse(&args.target) {
+    if let Ok(uri) = SourceUri::parse(&target) {
         return view_source_uri(uri, &args).await;
     }
 
-    let target_path = PathBuf::from(&args.target);
+    let target_path = PathBuf::from(&target);
     if target_path.exists() && target_path.is_file() {
         return view_jsonl_file(&target_path, &args).await;
     }
 
-    if let Some(commit_sha) = parse_commit_url(&args.target) {
+    if let Some(commit_sha) = parse_commit_url(&target) {
         return view_commit_target(&commit_sha, &args).await;
     }
-    if let Some(mr_number) = parse_gitlab_mr_url(&args.target) {
+    if let Some(mr_number) = parse_gitlab_mr_url(&target) {
         return view_gitlab_mr(mr_number, &args).await;
     }
 
-    view_commit_target(&args.target, &args)
-        .await
-        .map_err(|err| {
-            guided_error(
-                format!("unable to resolve view target `{}`: {err}", args.target),
-                [
-                    "for source URIs: `opensession view os://src/... --no-open`".to_string(),
-                    "for local files: `opensession view ./session.hail.jsonl --no-open`"
-                        .to_string(),
-                    "for commits/ranges: `opensession view HEAD` or `opensession view main..feature`"
-                        .to_string(),
-                ],
-            )
-        })
+    view_commit_target(&target, &args).await.map_err(|err| {
+        guided_error(
+            format!("unable to resolve view target `{}`: {err}", target),
+            [
+                "for source URIs: `opensession view os://src/... --no-open`".to_string(),
+                "for local files: `opensession view ./session.hail.jsonl --no-open`".to_string(),
+                "for commits/ranges: `opensession view HEAD` or `opensession view main..feature`"
+                    .to_string(),
+            ],
+        )
+    })
+}
+
+async fn view_repo_sessions(args: &ViewArgs) -> Result<()> {
+    if args.tui {
+        return Err(guided_error(
+            "`view --tui` currently requires an explicit GitHub PR URL target",
+            [
+                "provide a PR URL: `opensession view https://github.com/<owner>/<repo>/pull/<number> --tui`",
+                "or use web mode without target: `opensession view`",
+            ],
+        ));
+    }
+
+    let repo_root = resolve_repo_root_required(args.repo.as_deref()).map_err(|err| {
+        guided_error(
+            format!("`opensession view` without a target requires a git repository: {err}"),
+            [
+                "run the command from inside a git repository",
+                "or pass an explicit repository path: `opensession view --repo /path/to/repo`",
+                "or provide an explicit target: `opensession view HEAD`",
+            ],
+        )
+    })?;
+
+    let repo_name = detect_repo_identity(&repo_root).map(|(owner, repo)| format!("{owner}/{repo}"));
+    let mut sessions_base = review::LOCAL_REVIEW_SERVER_BASE_URL.to_string();
+    let configured_open_target = match read_repo_open_target(&repo_root) {
+        Ok(target) => target,
+        Err(err) => {
+            eprintln!(
+                "[opensession] failed to read repo open target ({err}); using default auto behavior"
+            );
+            None
+        }
+    };
+    if !args.no_open {
+        if let Err(err) = ensure_sessions_web_server(&repo_root).await {
+            let local_url =
+                build_sessions_url(review::LOCAL_REVIEW_SERVER_BASE_URL, repo_name.as_deref())?;
+            if matches!(configured_open_target, Some(OpenTarget::App)) {
+                match review::try_open_in_desktop_app_for_url(&local_url) {
+                    Ok(true) => {
+                        let mut print_args = args.clone();
+                        print_args.no_open = true;
+                        print_view_result(
+                            "(default)",
+                            "sessions",
+                            None,
+                            Some(local_url),
+                            &print_args,
+                            Some(&repo_root),
+                        )?;
+                        return Ok(());
+                    }
+                    Ok(false) => {
+                        return Err(guided_error(
+                            format!(
+                                "open target is set to `app`, but OpenSession Desktop is unavailable while local sessions server is down: {err}"
+                            ),
+                            [
+                                "install OpenSession Desktop and retry",
+                                "or switch opener to web: `git config --local opensession.open-target web`",
+                            ],
+                        ));
+                    }
+                    Err(desktop_err) => {
+                        return Err(guided_error(
+                            format!(
+                                "open target is set to `app`, but desktop launch failed while local sessions server is down: {desktop_err}"
+                            ),
+                            [
+                                "check desktop app installation and retry",
+                                "or switch opener to web: `git config --local opensession.open-target web`",
+                            ],
+                        ));
+                    }
+                }
+            } else if !matches!(configured_open_target, Some(OpenTarget::Web)) {
+                match review::try_open_in_desktop_app_for_url(&local_url) {
+                    Ok(true) => {
+                        let mut print_args = args.clone();
+                        print_args.no_open = true;
+                        print_view_result(
+                            "(default)",
+                            "sessions",
+                            None,
+                            Some(local_url),
+                            &print_args,
+                            Some(&repo_root),
+                        )?;
+                        return Ok(());
+                    }
+                    Ok(false) => {}
+                    Err(desktop_err) => eprintln!(
+                        "[opensession] desktop app launch failed ({desktop_err}); trying web fallbacks"
+                    ),
+                }
+            }
+
+            let fallback = match load_repo_config(&repo_root) {
+                Ok((_config_path, config)) => {
+                    let trimmed = config.share.base_url.trim_end_matches('/').to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                }
+                Err(_) => None,
+            };
+            if let Some(fallback) = fallback {
+                eprintln!(
+                    "[opensession] local sessions server unavailable ({err}); falling back to configured base URL: {fallback}"
+                );
+                sessions_base = fallback;
+            } else {
+                return Err(guided_error(
+                    format!(
+                        "local sessions server is unavailable and no explicit web base URL is configured: {err}"
+                    ),
+                    [
+                        "for local-only output: `opensession view --no-open`",
+                        "run `opensession-server` (or in source checkout: `cargo run -p opensession-server --`) and retry",
+                        "or explicitly configure web base URL: `opensession config init --base-url <url>`",
+                    ],
+                ));
+            }
+        }
+    }
+
+    let url = build_sessions_url(&sessions_base, repo_name.as_deref())?;
+    print_view_result(
+        "(default)",
+        "sessions",
+        None,
+        Some(url),
+        args,
+        Some(&repo_root),
+    )
+}
+
+fn build_sessions_url(base_url: &str, repo_name: Option<&str>) -> Result<String> {
+    let mut url = Url::parse(&format!("{}/sessions", base_url.trim_end_matches('/')))
+        .context("build sessions URL")?;
+    if let Some(repo_name) = repo_name.map(str::trim).filter(|value| !value.is_empty()) {
+        url.query_pairs_mut()
+            .append_pair("git_repo_name", repo_name);
+    }
+    Ok(url.to_string())
+}
+
+async fn ensure_sessions_web_server(repo_root: &Path) -> Result<()> {
+    let bundle = build_sessions_bootstrap_bundle(repo_root);
+    let _ = persist_and_resolve_local_url(repo_root, &bundle, false).await?;
+    Ok(())
+}
+
+fn build_sessions_bootstrap_bundle(repo_root: &Path) -> LocalReviewBundle {
+    let repo_slug = repo_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repo");
+    let review_id = format!(
+        "sessions-{}",
+        sanitize_review_component(repo_slug).trim_matches('-')
+    );
+    let (owner, repo) = detect_repo_identity(repo_root)
+        .unwrap_or_else(|| ("local".to_string(), repo_slug.to_string()));
+    let now = chrono::Utc::now().to_rfc3339();
+    LocalReviewBundle {
+        review_id,
+        generated_at: now.clone(),
+        pr: LocalReviewPrMeta {
+            url: "sessions".to_string(),
+            owner,
+            repo,
+            number: 0,
+            remote: "local".to_string(),
+            base_sha: "local".to_string(),
+            head_sha: "local".to_string(),
+        },
+        commits: vec![LocalReviewCommit {
+            sha: "local".to_string(),
+            title: "session list bootstrap".to_string(),
+            author_name: "local".to_string(),
+            author_email: String::new(),
+            authored_at: now,
+            session_ids: vec![],
+        }],
+        sessions: vec![],
+    }
 }
 
 async fn view_source_uri(uri: SourceUri, args: &ViewArgs) -> Result<()> {
@@ -125,11 +323,12 @@ async fn view_source_uri(uri: SourceUri, args: &ViewArgs) -> Result<()> {
             let repo_root = resolve_runtime_root(args.repo.as_deref())?;
             let url = persist_and_resolve_local_url(&repo_root, &bundle, args.no_open).await?;
             print_view_result(
-                &args.target,
+                args.target.as_deref().unwrap_or("(default)"),
                 "local",
                 Some(review_id.as_str()),
                 Some(url),
                 args,
+                Some(&repo_root),
             )?;
             Ok(())
         }
@@ -143,10 +342,15 @@ async fn view_source_uri(uri: SourceUri, args: &ViewArgs) -> Result<()> {
                 Err(_) => review::LOCAL_REVIEW_SERVER_BASE_URL.to_string(),
             };
             let url = format!("{base_url}{path}");
-            if !args.no_open {
-                review::open_url_in_browser(&url)?;
-            }
-            print_view_result(&args.target, "source", None, Some(url), args)?;
+            let open_repo_root = resolve_repo_root_required(args.repo.as_deref()).ok();
+            print_view_result(
+                args.target.as_deref().unwrap_or("(default)"),
+                "source",
+                None,
+                Some(url),
+                args,
+                open_repo_root.as_deref(),
+            )?;
             Ok(())
         }
         _ => bail!("unsupported target URI"),
@@ -162,11 +366,12 @@ async fn view_jsonl_file(path: &Path, args: &ViewArgs) -> Result<()> {
     let repo_root = resolve_runtime_root(args.repo.as_deref())?;
     let url = persist_and_resolve_local_url(&repo_root, &bundle, args.no_open).await?;
     print_view_result(
-        &args.target,
+        args.target.as_deref().unwrap_or("(default)"),
         "jsonl",
         Some(review_id.as_str()),
         Some(url),
         args,
+        Some(&repo_root),
     )?;
     Ok(())
 }
@@ -205,11 +410,12 @@ async fn view_gitlab_mr(number: u64, args: &ViewArgs) -> Result<()> {
     let review_id = bundle.review_id.clone();
     let url = persist_and_resolve_local_url(&repo_root, &bundle, args.no_open).await?;
     print_view_result(
-        &args.target,
+        args.target.as_deref().unwrap_or("(default)"),
         "mr",
         Some(review_id.as_str()),
         Some(url),
         args,
+        Some(&repo_root),
     )?;
     Ok(())
 }
@@ -224,7 +430,14 @@ async fn view_commit_target(target: &str, args: &ViewArgs) -> Result<()> {
     let bundle = build_bundle_from_commits(&repo_root, target, commits, "commit-linked review")?;
     let review_id = bundle.review_id.clone();
     let url = persist_and_resolve_local_url(&repo_root, &bundle, args.no_open).await?;
-    print_view_result(target, "commit", Some(review_id.as_str()), Some(url), args)?;
+    print_view_result(
+        target,
+        "commit",
+        Some(review_id.as_str()),
+        Some(url),
+        args,
+        Some(&repo_root),
+    )?;
     Ok(())
 }
 
@@ -471,6 +684,7 @@ fn print_view_result(
     review_id: Option<&str>,
     url: Option<String>,
     args: &ViewArgs,
+    open_repo_root: Option<&Path>,
 ) -> Result<()> {
     let review_id = review_id.map(ToOwned::to_owned);
     if args.json {
@@ -487,7 +701,11 @@ fn print_view_result(
 
     if let Some(url) = url {
         if !args.no_open {
-            review::open_url_in_browser(&url)?;
+            if let Some(repo_root) = open_repo_root {
+                review::open_url_for_repo(repo_root, &url)?;
+            } else {
+                review::open_url_in_browser(&url)?;
+            }
         }
         println!("{url}");
     }

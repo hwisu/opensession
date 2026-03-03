@@ -18,6 +18,7 @@ use opensession_parsers::ingest::preview_parse_bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 type DesktopApiResult<T> = Result<T, DesktopApiError>;
@@ -49,6 +50,37 @@ fn desktop_error(
         message: message.into(),
         details,
     }
+}
+
+fn desktop_launch_route_path() -> DesktopApiResult<PathBuf> {
+    let store_root = global_store_root().map_err(|error| {
+        desktop_error(
+            "desktop.launch_route_root_unavailable",
+            500,
+            "failed to resolve OpenSession home directory",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let opensession_root = store_root.parent().ok_or_else(|| {
+        desktop_error(
+            "desktop.launch_route_root_invalid",
+            500,
+            "invalid OpenSession global store path",
+            Some(json!({ "store_root": store_root.to_string_lossy() })),
+        )
+    })?;
+    Ok(opensession_root.join("desktop").join("launch-route"))
+}
+
+fn normalize_launch_route(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.starts_with("//") {
+        return None;
+    }
+    if trimmed.chars().any(|ch| ch.is_control()) {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 fn normalize_non_empty(value: Option<String>) -> Option<String> {
@@ -652,6 +684,25 @@ fn desktop_get_session_raw(id: String) -> DesktopApiResult<String> {
 }
 
 #[tauri::command]
+fn desktop_take_launch_route() -> DesktopApiResult<Option<String>> {
+    let path = desktop_launch_route_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&path).map_err(|error| {
+        desktop_error(
+            "desktop.launch_route_read_failed",
+            500,
+            "failed to read desktop launch route",
+            Some(json!({ "cause": error.to_string(), "path": path.to_string_lossy() })),
+        )
+    })?;
+    let _ = fs::remove_file(&path);
+    Ok(normalize_launch_route(&contents))
+}
+
+#[tauri::command]
 fn desktop_build_handoff(
     request: DesktopHandoffBuildRequest,
 ) -> DesktopApiResult<DesktopHandoffBuildResponse> {
@@ -697,6 +748,7 @@ fn main() {
             desktop_list_repos,
             desktop_get_session_detail,
             desktop_get_session_raw,
+            desktop_take_launch_route,
             desktop_build_handoff
         ])
         .run(tauri::generate_context!())
@@ -708,8 +760,8 @@ mod tests {
     use super::{
         artifact_path_for_hash, build_handoff_artifact_record, build_local_filter,
         canonicalize_summaries, desktop_get_contract_version, map_link_type,
-        normalize_session_body_to_hail_jsonl, session_summary_from_local_row, validate_pin_alias,
-        DesktopSessionListQuery,
+        normalize_launch_route, normalize_session_body_to_hail_jsonl, session_summary_from_local_row,
+        validate_pin_alias, DesktopSessionListQuery,
     };
     use opensession_core::handoff::HandoffSummary;
     use opensession_core::trace::{Agent, Session as HailSession};
@@ -781,6 +833,21 @@ mod tests {
         assert_eq!(filter.tool.as_deref(), Some("codex"));
         assert_eq!(filter.git_repo_name.as_deref(), Some("org/repo"));
         assert_eq!(filter.offset, Some(30));
+    }
+
+    #[test]
+    fn normalize_launch_route_accepts_relative_session_path() {
+        assert_eq!(
+            normalize_launch_route("/sessions?git_repo_name=org%2Frepo"),
+            Some("/sessions?git_repo_name=org%2Frepo".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_launch_route_rejects_invalid_values() {
+        assert_eq!(normalize_launch_route(""), None);
+        assert_eq!(normalize_launch_route("https://opensession.io/sessions"), None);
+        assert_eq!(normalize_launch_route("//sessions"), None);
     }
 
     #[test]

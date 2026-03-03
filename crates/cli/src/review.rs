@@ -1,3 +1,4 @@
+use crate::open_target::{read_repo_open_target, OpenTarget};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, ValueEnum};
 use crossterm::{
@@ -8,7 +9,7 @@ use crossterm::{
 use opensession_api::{
     LocalReviewBundle, LocalReviewCommit, LocalReviewPrMeta, LocalReviewSession,
 };
-use opensession_core::Session;
+use opensession_core::{object_store::global_store_root, Session};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
@@ -21,7 +22,7 @@ use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::{stdout, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -29,6 +30,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) const LOCAL_REVIEW_ROOT_DIR: &str = ".opensession/review";
 pub(crate) const LOCAL_REVIEW_SERVER_BASE_URL: &str = "http://127.0.0.1:8788";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenMode {
+    Auto,
+    App,
+    Web,
+}
 
 #[derive(Debug, Clone, Args)]
 pub struct ReviewArgs {
@@ -153,7 +161,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
                 ctx.bundle_path.parent().unwrap_or(repo_root.as_path()),
             )
             .await?;
-            if let Err(err) = open_url_in_browser(&url) {
+            if let Err(err) = open_url_for_repo(&repo_root, &url) {
                 println!("review url: {url}");
                 return Err(err);
             }
@@ -1198,7 +1206,52 @@ fn find_executable_in_path_or_sibling(name: &str) -> Option<PathBuf> {
     }
 }
 
+pub(crate) fn open_url_for_repo(repo_root: &Path, url: &str) -> Result<()> {
+    let mode = match read_repo_open_target(repo_root) {
+        Ok(Some(OpenTarget::App)) => OpenMode::App,
+        Ok(Some(OpenTarget::Web)) => OpenMode::Web,
+        Ok(None) => OpenMode::Auto,
+        Err(err) => {
+            eprintln!(
+                "[opensession] failed to read repo open target ({err}); using auto open mode"
+            );
+            OpenMode::Auto
+        }
+    };
+    open_url_with_mode(url, mode)
+}
+
 pub(crate) fn open_url_in_browser(url: &str) -> Result<()> {
+    open_url_with_mode(url, OpenMode::Auto)
+}
+
+fn open_url_with_mode(url: &str, mode: OpenMode) -> Result<()> {
+    if matches!(mode, OpenMode::App | OpenMode::Auto) {
+        match try_open_in_desktop_app_for_url(url) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                if matches!(mode, OpenMode::App) {
+                    bail!(
+                        "open target is set to `app`, but OpenSession Desktop is unavailable. next: install the desktop app or run `git config --local opensession.open-target web`"
+                    );
+                }
+            }
+            Err(err) => {
+                if matches!(mode, OpenMode::App) {
+                    return Err(err.context("failed to open OpenSession Desktop"));
+                }
+                eprintln!(
+                    "[opensession] desktop app launch failed ({err}); falling back to browser open"
+                );
+            }
+        }
+    }
+    if matches!(mode, OpenMode::App) {
+        bail!(
+            "open target is set to `app`, but this URL is not routable in the desktop app. next: run `git config --local opensession.open-target web`"
+        );
+    }
+
     #[cfg(target_os = "macos")]
     {
         let status = Command::new("open")
@@ -1238,6 +1291,96 @@ pub(crate) fn open_url_in_browser(url: &str) -> Result<()> {
     bail!("failed to open browser automatically")
 }
 
+fn desktop_launch_route_from_url(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
+
+    let path = parsed.path();
+    let supported = path == "/sessions"
+        || path.starts_with("/session/")
+        || path.starts_with("/review/local/")
+        || path.starts_with("/src/");
+    if !supported {
+        return None;
+    }
+
+    let mut route = path.to_string();
+    if let Some(query) = parsed.query() {
+        route.push('?');
+        route.push_str(query);
+    }
+    if let Some(fragment) = parsed.fragment() {
+        route.push('#');
+        route.push_str(fragment);
+    }
+    Some(route)
+}
+
+fn desktop_launch_route_path() -> Result<PathBuf> {
+    let store_root = global_store_root().context("resolve global store root")?;
+    let opensession_root = store_root.parent().ok_or_else(|| {
+        anyhow!(
+            "invalid global store root path: {}",
+            store_root.to_string_lossy()
+        )
+    })?;
+    Ok(opensession_root.join("desktop").join("launch-route"))
+}
+
+fn write_desktop_launch_route(route: &str) -> Result<PathBuf> {
+    let path = desktop_launch_route_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create desktop launch dir {}", parent.display()))?;
+    }
+    fs::write(&path, route)
+        .with_context(|| format!("write desktop launch route {}", path.display()))?;
+    Ok(path)
+}
+
+pub(crate) fn try_open_in_desktop_app_for_url(url: &str) -> Result<bool> {
+    let Some(route) = desktop_launch_route_from_url(url) else {
+        return Ok(false);
+    };
+
+    let route_path = write_desktop_launch_route(&route)?;
+    let launched = try_launch_desktop_app()?;
+    if !launched {
+        let _ = fs::remove_file(route_path);
+    }
+    Ok(launched)
+}
+
+fn try_launch_desktop_app() -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let attempts: [&[&str]; 2] = [
+            &["-b", "io.opensession.desktop"],
+            &["-a", "OpenSession Desktop"],
+        ];
+        for args in attempts {
+            let status = Command::new("open")
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if let Ok(status) = status {
+                if status.success() {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(false)
+    }
+}
+
 fn git_stdout(repo_root: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -1275,9 +1418,9 @@ fn run_git(repo_root: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_review_id, parse_github_pr_url, parse_remote_repo_triplet,
-        refresh_remote_head_fetch_args, sanitize_path_component, sanitize_review_id_component,
-        GithubPrSpec,
+        build_review_id, desktop_launch_route_from_url, parse_github_pr_url,
+        parse_remote_repo_triplet, refresh_remote_head_fetch_args, sanitize_path_component,
+        sanitize_review_id_component, GithubPrSpec,
     };
 
     #[test]
@@ -1360,5 +1503,26 @@ mod tests {
         let loaded = std::fs::read_to_string(&path).expect("read temp file");
         assert_eq!(loaded, body);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn desktop_launch_route_from_sessions_url_preserves_query() {
+        let route = desktop_launch_route_from_url(
+            "http://127.0.0.1:8788/sessions?git_repo_name=acme%2Frepo",
+        )
+        .expect("route from sessions url");
+        assert_eq!(route, "/sessions?git_repo_name=acme%2Frepo");
+    }
+
+    #[test]
+    fn desktop_launch_route_rejects_unhandled_urls() {
+        assert_eq!(
+            desktop_launch_route_from_url("https://example.com/docs"),
+            None
+        );
+        assert_eq!(
+            desktop_launch_route_from_url("opensession://sessions"),
+            None
+        );
     }
 }

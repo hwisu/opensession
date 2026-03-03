@@ -55,6 +55,10 @@ fn resolve_publish_mode(settings: &DaemonSettings) -> PublishMode {
     settings.publish_on.clone()
 }
 
+fn should_auto_upload(mode: &PublishMode) -> bool {
+    !matches!(mode, PublishMode::Manual)
+}
+
 /// Resolve retention schedule for git-native session pruning.
 fn resolve_git_retention_schedule(config: &DaemonConfig) -> Option<(u32, Duration)> {
     if config.git_storage.method == GitStorageMethod::Sqlite {
@@ -284,15 +288,22 @@ pub async fn run_scheduler(
 
                 for path in ready {
                     pending.remove(&path);
-                    match effective_mode {
-                        PublishMode::Manual => {
-                            debug!("Manual mode, skipping auto-publish: {}", path.display());
-                        }
-                        PublishMode::SessionEnd | PublishMode::Realtime => {
-                            if let Err(e) = process_file(&path, &config, &db, &mut repo_registry).await {
-                                error!("Failed to process {}: {:#}", path.display(), e);
-                            }
-                        }
+                    if matches!(effective_mode, PublishMode::Manual) {
+                        debug!(
+                            "Manual mode, indexing locally without auto-upload: {}",
+                            path.display()
+                        );
+                    }
+                    if let Err(e) = process_file(
+                        &path,
+                        &config,
+                        &db,
+                        &mut repo_registry,
+                        should_auto_upload(&effective_mode),
+                    )
+                    .await
+                    {
+                        error!("Failed to process {}: {:#}", path.display(), e);
                     }
                 }
 
@@ -330,6 +341,7 @@ async fn process_file(
     config: &DaemonConfig,
     db: &LocalDb,
     repo_registry: &mut RepoRegistry,
+    auto_upload: bool,
 ) -> Result<()> {
     if was_already_uploaded(path, db)? {
         return Ok(());
@@ -348,6 +360,10 @@ async fn process_file(
     }
 
     store_locally(&session, path, db)?;
+
+    if !auto_upload {
+        return Ok(());
+    }
 
     sanitize(&mut session, &effective_config);
 
@@ -741,6 +757,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_publish_mode(&settings), PublishMode::Realtime);
+    }
+
+    #[test]
+    fn test_should_auto_upload_is_false_for_manual_mode() {
+        assert!(!should_auto_upload(&PublishMode::Manual));
+    }
+
+    #[test]
+    fn test_should_auto_upload_is_true_for_session_end_and_realtime() {
+        assert!(should_auto_upload(&PublishMode::SessionEnd));
+        assert!(should_auto_upload(&PublishMode::Realtime));
     }
 
     #[test]

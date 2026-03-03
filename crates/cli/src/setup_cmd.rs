@@ -2,6 +2,7 @@ use crate::cleanup_cmd::{self, CleanupDoctorLevel};
 use crate::hooks::{
     install_hooks_with_report, list_installed_hooks, plan_hook_install, HookInstallAction, HookType,
 };
+use crate::open_target::{read_repo_open_target, write_repo_open_target, OpenTarget};
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
@@ -105,6 +106,9 @@ pub struct SetupArgs {
     /// Set fanout mode before applying setup changes.
     #[arg(long, value_enum)]
     pub fanout_mode: Option<SetupFanoutMode>,
+    /// Set default review opener (`app` or `web`) for this repository.
+    #[arg(long, value_enum)]
+    pub open_target: Option<OpenTarget>,
     /// Print hidden ledger ref for a branch name (internal use for hooks).
     #[arg(long, hide = true)]
     pub print_ledger_ref: Option<String>,
@@ -158,6 +162,7 @@ pub fn run(args: SetupArgs) -> Result<()> {
         &repo_root,
         args.yes,
         args.fanout_mode.map(SetupFanoutMode::as_fanout_mode),
+        args.open_target,
     )
 }
 
@@ -213,6 +218,42 @@ impl FanoutInstallPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenTargetInstallPlan {
+    existing: Option<OpenTarget>,
+    requested: Option<OpenTarget>,
+}
+
+impl OpenTargetInstallPlan {
+    fn summary(self) -> String {
+        match (self.existing, self.requested) {
+            (Some(existing), Some(requested)) if existing == requested => {
+                format!(
+                    "keep {existing} (explicit via --open-target)",
+                    existing = existing.as_str()
+                )
+            }
+            (Some(existing), Some(requested)) => format!(
+                "change {existing} -> {requested} (via --open-target)",
+                existing = existing.as_str(),
+                requested = requested.as_str()
+            ),
+            (None, Some(requested)) => {
+                format!(
+                    "set {requested} (via --open-target)",
+                    requested = requested.as_str()
+                )
+            }
+            (Some(existing), None) => format!("keep {existing}", existing = existing.as_str()),
+            (None, None) => "choose interactively (app or web)".to_string(),
+        }
+    }
+
+    fn suggested_target(self) -> OpenTarget {
+        self.requested.or(self.existing).unwrap_or(OpenTarget::App)
+    }
+}
+
 fn validate_setup_args(args: &SetupArgs) -> Result<()> {
     if args.check && args.yes {
         bail!("`--yes` cannot be used with `--check`");
@@ -222,32 +263,59 @@ fn validate_setup_args(args: &SetupArgs) -> Result<()> {
             "`--fanout-mode` requires apply mode. next: run `opensession doctor --fix --yes --fanout-mode hidden_ref`"
         );
     }
+    if args.check && args.open_target.is_some() {
+        bail!(
+            "`--open-target` requires apply mode. next: run `opensession doctor --fix --yes --open-target app`"
+        );
+    }
     Ok(())
 }
 
-fn run_install(repo_root: &PathBuf, yes: bool, requested_fanout: Option<FanoutMode>) -> Result<()> {
+fn run_install(
+    repo_root: &PathBuf,
+    yes: bool,
+    requested_fanout: Option<FanoutMode>,
+    requested_open_target: Option<OpenTarget>,
+) -> Result<()> {
     let interactive = is_interactive_terminal();
     let existing_fanout = read_fanout_mode(repo_root)?;
     let fanout_plan = FanoutInstallPlan {
         existing: existing_fanout,
         requested: requested_fanout,
     };
+    let existing_open_target = read_repo_open_target(repo_root)?;
+    let open_target_plan = OpenTargetInstallPlan {
+        existing: existing_open_target,
+        requested: requested_open_target,
+    };
     enforce_apply_mode_requirements(interactive, yes, fanout_plan)?;
 
     let hook_plans = plan_hook_install(repo_root, HookType::all())?;
     let shim_plans = plan_cli_shims()?;
-    print_setup_plan(repo_root, fanout_plan, &hook_plans, &shim_plans, yes);
+    print_setup_plan(
+        repo_root,
+        fanout_plan,
+        open_target_plan,
+        &hook_plans,
+        &shim_plans,
+        yes,
+    );
 
     if !yes {
-        prompt_apply_confirmation(fanout_plan.suggested_mode())?;
+        prompt_apply_confirmation(
+            fanout_plan.suggested_mode(),
+            open_target_plan.suggested_target(),
+        )?;
     }
 
     let fanout_mode = ensure_fanout_mode(repo_root, requested_fanout, interactive)?;
+    let open_target = ensure_open_target(repo_root, requested_open_target, interactive)?;
     let shim_paths = install_cli_shims()?;
     let hook_reports = install_hooks_with_report(repo_root, HookType::all())?;
     print_applied_setup(
         repo_root,
         fanout_mode,
+        open_target,
         &hook_reports,
         &shim_plans,
         &shim_paths,
@@ -268,10 +336,11 @@ fn run_install(repo_root: &PathBuf, yes: bool, requested_fanout: Option<FanoutMo
     Ok(())
 }
 
-fn suggested_doctor_command(mode: FanoutMode) -> String {
+fn suggested_doctor_command(mode: FanoutMode, target: OpenTarget) -> String {
     format!(
-        "opensession doctor --fix --yes --fanout-mode {}",
-        mode.as_str()
+        "opensession doctor --fix --yes --fanout-mode {} --open-target {}",
+        mode.as_str(),
+        target.as_str(),
     )
 }
 
@@ -284,13 +353,13 @@ fn enforce_apply_mode_requirements(
     if !interactive && !yes {
         bail!(
             "setup requires explicit approval in non-interactive mode.\nnext: run `{}`",
-            suggested_doctor_command(suggested_mode)
+            suggested_doctor_command(suggested_mode, OpenTarget::App)
         );
     }
     if !interactive && fanout_plan.existing.is_none() && fanout_plan.requested.is_none() {
         bail!(
             "fanout mode is not configured for this repository, and setup cannot prompt in non-interactive mode.\nnext: run `{}`",
-            suggested_doctor_command(FanoutMode::HiddenRef)
+            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
         );
     }
     Ok(())
@@ -300,7 +369,7 @@ fn is_interactive_terminal() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
-fn prompt_apply_confirmation(mode_hint: FanoutMode) -> Result<()> {
+fn prompt_apply_confirmation(mode_hint: FanoutMode, open_target_hint: OpenTarget) -> Result<()> {
     print!("Apply these changes? [y/N]: ");
     io::stdout().flush().context("flush stdout")?;
     let mut line = String::new();
@@ -312,7 +381,7 @@ fn prompt_apply_confirmation(mode_hint: FanoutMode) -> Result<()> {
     }
     bail!(
         "setup cancelled by user.\nnext: run `{}`",
-        suggested_doctor_command(mode_hint)
+        suggested_doctor_command(mode_hint, open_target_hint)
     );
 }
 
@@ -360,6 +429,7 @@ fn hook_action_summary(action: HookInstallAction) -> &'static str {
 fn print_setup_plan(
     repo_root: &Path,
     fanout_plan: FanoutInstallPlan,
+    open_target_plan: OpenTargetInstallPlan,
     hook_plans: &[crate::hooks::HookInstallPlan],
     shim_plans: &[ShimInstallPlan],
     yes: bool,
@@ -367,6 +437,7 @@ fn print_setup_plan(
     println!("repo: {}", repo_root.display());
     println!("setup plan:");
     println!("  - fanout mode: {}", fanout_plan.summary());
+    println!("  - open target: {}", open_target_plan.summary());
     for plan in hook_plans {
         println!(
             "  - hook {}: {} ({})",
@@ -401,12 +472,14 @@ fn print_setup_plan(
 fn print_applied_setup(
     repo_root: &Path,
     fanout_mode: FanoutMode,
+    open_target: OpenTarget,
     hook_reports: &[crate::hooks::HookInstallReport],
     shim_plans: &[ShimInstallPlan],
     shim_paths: &ShimPaths,
 ) {
     println!("Applied setup in {}:", repo_root.display());
     println!("  - fanout mode: {}", fanout_mode.as_str());
+    println!("  - open target: {}", open_target.as_str());
     for report in hook_reports {
         println!(
             "  - hook {}: {} ({})",
@@ -1008,7 +1081,7 @@ fn ensure_fanout_mode(
     if !interactive {
         bail!(
             "fanout mode is not configured for this repository.\nnext: run `{}`",
-            suggested_doctor_command(FanoutMode::HiddenRef)
+            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
         );
     }
 
@@ -1016,6 +1089,35 @@ fn ensure_fanout_mode(
     write_fanout_mode(repo_root, mode)?;
     println!("fanout mode initialized: {}", mode.as_str());
     Ok(mode)
+}
+
+fn ensure_open_target(
+    repo_root: &std::path::Path,
+    requested: Option<OpenTarget>,
+    interactive: bool,
+) -> Result<OpenTarget> {
+    if let Some(target) = requested {
+        write_repo_open_target(repo_root, target)?;
+        println!("open target set: {}", target.as_str());
+        return Ok(target);
+    }
+    if let Some(target) = read_repo_open_target(repo_root)? {
+        return Ok(target);
+    }
+
+    let target = if interactive {
+        let selected = prompt_open_target()?;
+        println!("open target initialized: {}", selected.as_str());
+        selected
+    } else {
+        println!(
+            "open target defaulted: {} (non-interactive)",
+            OpenTarget::App.as_str()
+        );
+        OpenTarget::App
+    };
+    write_repo_open_target(repo_root, target)?;
+    Ok(target)
 }
 
 fn read_fanout_mode(repo_root: &std::path::Path) -> Result<Option<FanoutMode>> {
@@ -1066,7 +1168,7 @@ fn prompt_fanout_mode() -> Result<FanoutMode> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
             "fanout mode prompt requires an interactive terminal.\nnext: run `{}`",
-            suggested_doctor_command(FanoutMode::HiddenRef)
+            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
         );
     }
 
@@ -1083,6 +1185,29 @@ fn prompt_fanout_mode() -> Result<FanoutMode> {
 
 fn parse_fanout_choice(input: &str) -> Option<FanoutMode> {
     FanoutMode::parse(input)
+}
+
+fn prompt_open_target() -> Result<OpenTarget> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        bail!(
+            "open target prompt requires an interactive terminal.\nnext: run `{}`",
+            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
+        );
+    }
+
+    println!("Choose OpenSession review opener for this repository:");
+    println!("  1) app (default)");
+    println!("  2) web");
+    print!("select [1/2]: ");
+    io::stdout().flush().context("flush stdout")?;
+
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).context("read selection")?;
+    Ok(parse_open_target_choice(&line).unwrap_or(OpenTarget::App))
+}
+
+fn parse_open_target_choice(input: &str) -> Option<OpenTarget> {
+    OpenTarget::parse(input)
 }
 
 fn print_daemon_status() -> Result<()> {
@@ -1415,6 +1540,7 @@ mod tests {
             check: true,
             yes: true,
             fanout_mode: None,
+            open_target: None,
             print_ledger_ref: None,
             print_fanout_mode: false,
             sync_branch_session: None,
@@ -1430,6 +1556,7 @@ mod tests {
             check: true,
             yes: false,
             fanout_mode: Some(SetupFanoutMode::HiddenRef),
+            open_target: None,
             print_ledger_ref: None,
             print_fanout_mode: false,
             sync_branch_session: None,
@@ -1437,6 +1564,24 @@ mod tests {
         };
         let err = validate_setup_args(&args).expect_err("validate");
         assert!(err.to_string().contains("requires apply mode"));
+    }
+
+    #[test]
+    fn validate_setup_args_rejects_open_target_with_check() {
+        let args = SetupArgs {
+            check: true,
+            yes: false,
+            fanout_mode: None,
+            open_target: Some(OpenTarget::Web),
+            print_ledger_ref: None,
+            print_fanout_mode: false,
+            sync_branch_session: None,
+            sync_branch_commit: None,
+        };
+        let err = validate_setup_args(&args).expect_err("validate");
+        assert!(err
+            .to_string()
+            .contains("`--open-target` requires apply mode"));
     }
 
     #[test]
@@ -1496,6 +1641,16 @@ mod tests {
     fn parse_fanout_choice_rejects_unknown_values() {
         assert_eq!(parse_fanout_choice(""), None);
         assert_eq!(parse_fanout_choice("unknown"), None);
+    }
+
+    #[test]
+    fn parse_open_target_choice_accepts_aliases() {
+        assert_eq!(parse_open_target_choice("1"), Some(OpenTarget::App));
+        assert_eq!(parse_open_target_choice("app"), Some(OpenTarget::App));
+        assert_eq!(parse_open_target_choice("desktop"), Some(OpenTarget::App));
+        assert_eq!(parse_open_target_choice("2"), Some(OpenTarget::Web));
+        assert_eq!(parse_open_target_choice("web"), Some(OpenTarget::Web));
+        assert_eq!(parse_open_target_choice("browser"), Some(OpenTarget::Web));
     }
 
     #[test]

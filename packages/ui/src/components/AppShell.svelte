@@ -16,6 +16,16 @@ type DesktopWindow = Window & {
 	__TAURI_INTERNALS__?: unknown;
 };
 
+type DesktopInvoke = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
+type DesktopRuntimeWindow = DesktopWindow & {
+	__TAURI__?: {
+		core?: {
+			invoke?: DesktopInvoke;
+		};
+	};
+};
+
 type PaletteCommand = {
 	id: string;
 	label: string;
@@ -99,6 +109,13 @@ function splitShortcutHint(hint: string): { combo: string; description: string }
 	};
 }
 
+function getDesktopInvoke(): DesktopInvoke | null {
+	if (typeof window === 'undefined') return null;
+	const desktopWindow = window as DesktopRuntimeWindow;
+	const invoke = desktopWindow.__TAURI__?.core?.invoke;
+	return typeof invoke === 'function' ? invoke : null;
+}
+
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/sessions', label: 'Sessions' }];
 	links.push({ href: '/docs', label: 'Docs' });
@@ -124,6 +141,40 @@ $effect(() => {
 
 	return () => {
 		cancelled = true;
+	};
+});
+
+$effect(() => {
+	if (!desktopRuntime || typeof window === 'undefined') return;
+	const invoke = getDesktopInvoke();
+	if (!invoke) return;
+
+	let cancelled = false;
+	let commandSupported = true;
+
+	const pollLaunchRoute = async () => {
+		if (cancelled || !commandSupported) return;
+		try {
+			const maybeRoute = await invoke<unknown>('desktop_take_launch_route');
+			if (typeof maybeRoute !== 'string' || maybeRoute.trim().length === 0) return;
+			const nextPath = maybeRoute.trim();
+			const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+			if (nextPath === currentPath) return;
+			onNavigate(nextPath);
+		} catch {
+			// Older desktop runtimes may not implement this command yet.
+			commandSupported = false;
+		}
+	};
+
+	void pollLaunchRoute();
+	const timer = window.setInterval(() => {
+		void pollLaunchRoute();
+	}, 1200);
+
+	return () => {
+		cancelled = true;
+		window.clearInterval(timer);
 	};
 });
 

@@ -69,6 +69,40 @@ test.describe('Sessions', () => {
 		expect(requestedRepo).toBe('org/repo-a');
 	});
 
+	test('session list applies git_repo_name query filter on initial load', async ({ page }) => {
+		const repoA = createSessionFixture({
+			title: `PW Query Repo A ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		repoA.summary.git_repo_name = 'org/repo-a';
+		const repoB = createSessionFixture({
+			title: `PW Query Repo B ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		repoB.summary.git_repo_name = 'org/repo-b';
+
+		let requestedRepo: string | null = null;
+		await page.route('**/api/sessions**', async (route) => {
+			const url = new URL(route.request().url());
+			requestedRepo = url.searchParams.get('git_repo_name');
+			const sessions = requestedRepo === 'org/repo-a' ? [repoA.summary] : [repoA.summary, repoB.summary];
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					sessions,
+					total: sessions.length,
+					page: 1,
+					per_page: 20,
+				}),
+			});
+		});
+
+		await page.goto('/sessions?git_repo_name=org%2Frepo-a');
+		await expect(page.getByText(repoA.title)).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText(repoB.title)).toHaveCount(0);
+		await expect(page.locator('#session-repo-filter')).toHaveValue('org/repo-a');
+		expect(requestedRepo).toBe('org/repo-a');
+	});
+
 	test('session list copy shortcut copies selected session title', async ({ page }) => {
 		const fixture = createSessionFixture({
 			title: `PW Copy Target ${crypto.randomUUID().slice(0, 8)}`,

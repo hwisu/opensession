@@ -212,7 +212,7 @@ mod tests {
         let mut session = Session::new("session-1".to_string(), testing::agent());
         session.context.created_at = Utc::now();
         let source = source_from_session(&session, &temp_path).expect("source fingerprint");
-        assert!(stale_reasons(&[source.clone()]).is_empty());
+        assert!(stale_reasons(std::slice::from_ref(&source)).is_empty());
 
         std::fs::write(&temp_path, b"after-after").expect("rewrite temp file");
         let reasons = stale_reasons(&[source]);

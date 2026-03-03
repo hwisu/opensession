@@ -409,6 +409,25 @@ pub struct SessionRepoListResponse {
     pub repos: Vec<String>,
 }
 
+/// Desktop handoff build request payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopHandoffBuildRequest {
+    pub session_id: String,
+    pub pin_latest: bool,
+}
+
+/// Desktop handoff build response payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopHandoffBuildResponse {
+    pub artifact_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_alias: Option<String>,
+}
+
 /// Desktop bridge contract/version handshake response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1060,6 +1079,8 @@ mod tests {
             SessionListQuery,
             DesktopSessionListQuery,
             SessionRepoListResponse,
+            DesktopHandoffBuildRequest,
+            DesktopHandoffBuildResponse,
             DesktopContractVersionResponse,
             DesktopApiError,
             SessionDetail,

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+	ApiError,
+	buildSessionHandoff,
 	getApiCapabilities,
 	getAuthProviders,
 	getSessionDetail,
@@ -118,7 +120,7 @@ function installInvokeProbe(calls: InvokeCall[]) {
 					return { total: 3, page: 2, per_page: 30, sessions: [] };
 				case 'desktop_list_repos':
 					return { repos: ['acme/api', 'acme/web'] };
-				case 'desktop_get_session_detail':
+			case 'desktop_get_session_detail':
 					return {
 						id: args?.id ?? 'unknown',
 						user_id: null,
@@ -142,6 +144,11 @@ function installInvokeProbe(calls: InvokeCall[]) {
 						session_score: 0,
 						score_plugin: 'default',
 						linked_sessions: [],
+					};
+				case 'desktop_build_handoff':
+					return {
+						artifact_uri: 'os://artifact/test123',
+						pinned_alias: 'latest',
 					};
 			case 'desktop_get_capabilities':
 				return {
@@ -278,6 +285,37 @@ test('desktop bridge lists repos via invoke bridge', async () => {
 	assert.deepEqual(repos.repos, ['acme/api', 'acme/web']);
 	assert.equal(invokeCalls[0]?.cmd, 'desktop_get_contract_version');
 	assert.equal(invokeCalls[1]?.cmd, 'desktop_list_repos');
+});
+
+test('desktop runtime builds handoff artifact via invoke bridge', async () => {
+	const invokeCalls: InvokeCall[] = [];
+	installBrowserEnv({
+		origin: 'tauri://localhost',
+		tauriRuntime: true,
+		invoke: installInvokeProbe(invokeCalls),
+	});
+
+	const response = await buildSessionHandoff('session-1');
+	assert.equal(response.artifact_uri, 'os://artifact/test123');
+	assert.equal(response.pinned_alias, 'latest');
+	assert.equal(invokeCalls[0]?.cmd, 'desktop_get_contract_version');
+	assert.equal(invokeCalls[1]?.cmd, 'desktop_build_handoff');
+	assert.deepEqual(invokeCalls[1]?.args, {
+		request: { session_id: 'session-1', pin_latest: true },
+	});
+});
+
+test('web runtime handoff build returns unsupported error', async () => {
+	installBrowserEnv({ origin: 'http://127.0.0.1:5173' });
+	installFetchProbe([]);
+
+	await assert.rejects(
+		() => buildSessionHandoff('session-1'),
+		(error: unknown) =>
+			error instanceof ApiError &&
+			error.status === 501 &&
+			error.code === 'desktop_handoff_unsupported',
+	);
 });
 
 test('runtime override wins over desktop bridge', async () => {

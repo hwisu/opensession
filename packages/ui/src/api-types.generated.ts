@@ -63,6 +63,10 @@ export interface DesktopSessionListQuery { page: string | null, per_page: string
 
 export interface SessionRepoListResponse { repos: Array<string>, }
 
+export interface DesktopHandoffBuildRequest { session_id: string, pin_latest: boolean, }
+
+export interface DesktopHandoffBuildResponse { artifact_uri: string, pinned_alias?: string | null, }
+
 export interface DesktopContractVersionResponse { version: string, }
 
 export interface DesktopApiError { code: string, status: number, message: string, details?: Record<string, any> | null, }

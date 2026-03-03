@@ -9,6 +9,7 @@ import type {
 	AuthProvidersResponse,
 	AuthTokenResponse,
 	CapabilitiesResponse,
+	DesktopHandoffBuildResponse,
 	ParsePreviewErrorResponse,
 	ParsePreviewRequest,
 	ParsePreviewResponse,
@@ -288,6 +289,17 @@ export async function getSession(id: string): Promise<Session> {
 export async function getSessionDetail(id: string): Promise<SessionDetail> {
 	try {
 		return await getSessionReadCore().getSessionDetail(id);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function buildSessionHandoff(
+	sessionId: string,
+	pinLatest: boolean = true,
+): Promise<DesktopHandoffBuildResponse> {
+	try {
+		return await getSessionReadCore().buildHandoff(sessionId, pinLatest);
 	} catch (error) {
 		throw normalizeSessionAdapterError(error);
 	}

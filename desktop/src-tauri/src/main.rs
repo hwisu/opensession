@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use opensession_api::{
-    DesktopApiError, DesktopContractVersionResponse, DesktopSessionListQuery,
-    SessionRepoListResponse, DESKTOP_IPC_CONTRACT_VERSION,
+    DesktopApiError, DesktopContractVersionResponse, DesktopHandoffBuildRequest,
+    DesktopHandoffBuildResponse, DesktopSessionListQuery, SessionRepoListResponse,
+    DESKTOP_IPC_CONTRACT_VERSION,
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
     CapabilitiesResponse, LinkType, SessionDetail, SessionLink, SessionListResponse,
     SessionSummary,
@@ -11,7 +12,10 @@ use opensession_core::trace::Session as HailSession;
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow};
 use opensession_parsers::ingest::preview_parse_bytes;
 use serde_json::json;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 type DesktopApiResult<T> = Result<T, DesktopApiError>;
 
@@ -208,6 +212,139 @@ fn read_and_normalize_source_session(source_path: &str) -> DesktopApiResult<Stri
     normalize_session_body_to_hail_jsonl(&body, Some(source_path))
 }
 
+fn sanitize_session_id_for_filename(session_id: &str) -> String {
+    let mut out = String::with_capacity(session_id.len());
+    for ch in session_id.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "session".to_string()
+    } else {
+        out
+    }
+}
+
+fn parse_handoff_artifact_uri(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("os://artifact/"))
+        .map(ToString::to_string)
+}
+
+fn workspace_root_from_current_dir() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let content = std::fs::read_to_string(&cargo_toml).ok()?;
+            if content.contains("[workspace]") {
+                return Some(dir);
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn run_handoff_cli_output(input_path: &Path, pin_latest: bool) -> DesktopApiResult<Output> {
+    let mut cli_args = vec![
+        "handoff".to_string(),
+        "build".to_string(),
+        input_path.display().to_string(),
+    ];
+    if pin_latest {
+        cli_args.push("--pin".to_string());
+        cli_args.push("latest".to_string());
+    }
+
+    let env_cli_path = std::env::var("OPENSESSION_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let primary_program = env_cli_path.unwrap_or_else(|| "opensession".to_string());
+
+    let primary_output = Command::new(&primary_program).args(&cli_args).output();
+    match primary_output {
+        Ok(output) => return Ok(output),
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            return Err(desktop_error(
+                "desktop.handoff_cli_spawn_failed",
+                500,
+                "failed to execute handoff command",
+                Some(json!({
+                    "cause": error.to_string(),
+                    "program": primary_program,
+                })),
+            ));
+        }
+        Err(_) => {}
+    }
+
+    let Some(workspace_root) = workspace_root_from_current_dir() else {
+        return Err(desktop_error(
+            "desktop.handoff_cli_missing",
+            500,
+            "handoff command is unavailable (opensession CLI not found)",
+            Some(json!({
+                "program": primary_program,
+                "hint": "Set OPENSESSION_CLI_PATH or add opensession to PATH",
+            })),
+        ));
+    };
+
+    let mut cargo_args = vec![
+        "run".to_string(),
+        "-q".to_string(),
+        "-p".to_string(),
+        "opensession".to_string(),
+        "--".to_string(),
+    ];
+    cargo_args.extend(cli_args);
+
+    Command::new("cargo")
+        .current_dir(workspace_root)
+        .args(cargo_args)
+        .output()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.handoff_cli_spawn_failed",
+                500,
+                "failed to execute cargo fallback for handoff command",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })
+}
+
+fn write_temp_handoff_input(session_id: &str, body: &str) -> DesktopApiResult<PathBuf> {
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let filename = format!(
+        "opensession-handoff-{}-{}-{}.hail.jsonl",
+        sanitize_session_id_for_filename(session_id),
+        std::process::id(),
+        now_nanos
+    );
+    let path = std::env::temp_dir().join(filename);
+    std::fs::write(&path, body).map_err(|error| {
+        desktop_error(
+            "desktop.handoff_temp_write_failed",
+            500,
+            "failed to create temporary handoff input",
+            Some(json!({ "cause": error.to_string(), "path": path })),
+        )
+    })?;
+    Ok(path)
+}
+
 #[tauri::command]
 fn desktop_get_capabilities() -> CapabilitiesResponse {
     CapabilitiesResponse::for_runtime(false, false)
@@ -372,6 +509,141 @@ fn desktop_get_session_raw(id: String) -> DesktopApiResult<String> {
     ))
 }
 
+#[tauri::command]
+fn desktop_build_handoff(
+    request: DesktopHandoffBuildRequest,
+) -> DesktopApiResult<DesktopHandoffBuildResponse> {
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err(desktop_error(
+            "desktop.handoff_invalid_request",
+            400,
+            "session_id is required",
+            None,
+        ));
+    }
+
+    let db = open_local_db()?;
+    let source_path = db
+        .get_session_source_path(&session_id)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.session_source_path_failed",
+                500,
+                "failed to resolve session source path",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?
+        .filter(|path| !path.trim().is_empty());
+
+    let mut temp_input: Option<PathBuf> = None;
+    let input_path: PathBuf = if let Some(source_path) = source_path.as_ref() {
+        let source = PathBuf::from(source_path);
+        if source.exists() {
+            source
+        } else {
+            let cached = db.get_cached_body(&session_id).map_err(|error| {
+                desktop_error(
+                    "desktop.session_cache_read_failed",
+                    500,
+                    "failed to read cached session body",
+                    Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+                )
+            })?;
+            if let Some(cached) = cached {
+                let text = String::from_utf8(cached).map_err(|error| {
+                    desktop_error(
+                        "desktop.session_cache_invalid_utf8",
+                        500,
+                        "session body is not valid UTF-8",
+                        Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+                    )
+                })?;
+                let normalized = normalize_session_body_to_hail_jsonl(&text, Some(source_path))?;
+                let temp = write_temp_handoff_input(&session_id, &normalized)?;
+                temp_input = Some(temp.clone());
+                temp
+            } else {
+                return Err(desktop_error(
+                    "desktop.handoff_input_unavailable",
+                    404,
+                    "session source file is unavailable and no cached body exists",
+                    Some(json!({ "session_id": session_id, "source_path": source_path })),
+                ));
+            }
+        }
+    } else {
+        let cached = db.get_cached_body(&session_id).map_err(|error| {
+            desktop_error(
+                "desktop.session_cache_read_failed",
+                500,
+                "failed to read cached session body",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?;
+        let Some(cached) = cached else {
+            return Err(desktop_error(
+                "desktop.handoff_input_unavailable",
+                404,
+                "session source input is unavailable",
+                Some(json!({ "session_id": session_id })),
+            ));
+        };
+        let text = String::from_utf8(cached).map_err(|error| {
+            desktop_error(
+                "desktop.session_cache_invalid_utf8",
+                500,
+                "session body is not valid UTF-8",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?;
+        let normalized = normalize_session_body_to_hail_jsonl(&text, None)?;
+        let temp = write_temp_handoff_input(&session_id, &normalized)?;
+        temp_input = Some(temp.clone());
+        temp
+    };
+
+    let output = run_handoff_cli_output(&input_path, request.pin_latest);
+
+    if let Some(temp) = temp_input {
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    let output = output?;
+    if !output.status.success() {
+        return Err(desktop_error(
+            "desktop.handoff_build_failed",
+            422,
+            "handoff build command failed",
+            Some(json!({
+                "session_id": session_id,
+                "exit_code": output.status.code(),
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            })),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(artifact_uri) = parse_handoff_artifact_uri(&stdout) else {
+        return Err(desktop_error(
+            "desktop.handoff_parse_failed",
+            500,
+            "failed to parse handoff artifact URI from command output",
+            Some(json!({ "stdout": stdout })),
+        ));
+    };
+
+    Ok(DesktopHandoffBuildResponse {
+        artifact_uri,
+        pinned_alias: if request.pin_latest {
+            Some("latest".to_string())
+        } else {
+            None
+        },
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -381,7 +653,8 @@ fn main() {
             desktop_list_sessions,
             desktop_list_repos,
             desktop_get_session_detail,
-            desktop_get_session_raw
+            desktop_get_session_raw,
+            desktop_build_handoff
         ])
         .run(tauri::generate_context!())
         .expect("failed to run opensession desktop app");
@@ -391,7 +664,8 @@ fn main() {
 mod tests {
     use super::{
         build_local_filter, desktop_get_contract_version, map_link_type,
-        normalize_session_body_to_hail_jsonl,
+        normalize_session_body_to_hail_jsonl, parse_handoff_artifact_uri,
+        sanitize_session_id_for_filename,
         session_summary_from_local_row, DesktopSessionListQuery,
     };
     use opensession_core::trace::Session as HailSession;
@@ -513,5 +787,18 @@ mod tests {
     fn desktop_contract_version_matches_shared_constant() {
         let payload = desktop_get_contract_version();
         assert_eq!(payload.version, opensession_api::DESKTOP_IPC_CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn parse_handoff_artifact_uri_extracts_uri_line() {
+        let stdout = "building...\nos://artifact/abc123\nsaved";
+        let parsed = parse_handoff_artifact_uri(stdout);
+        assert_eq!(parsed.as_deref(), Some("os://artifact/abc123"));
+    }
+
+    #[test]
+    fn sanitize_session_id_for_filename_replaces_path_delimiters() {
+        let sanitized = sanitize_session_id_for_filename("team/repo/session:1");
+        assert_eq!(sanitized, "team_repo_session_1");
     }
 }

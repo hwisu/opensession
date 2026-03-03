@@ -400,6 +400,62 @@ test.describe('Sessions', () => {
 		await expect(page.locator('[data-testid="session-flow-bar"]')).toBeVisible({ timeout: 10000 });
 	});
 
+	test('desktop runtime handoff build uses invoke bridge and shows artifact uri', async ({
+		page,
+	}) => {
+		const fixture = createSessionFixture({
+			title: `PW Desktop Handoff ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		await page.addInitScript(
+			(data) => {
+				type InvokeCall = { cmd: string; args?: Record<string, unknown> };
+				(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+				(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = [];
+				(window as { __TAURI__?: { core?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } } }).__TAURI__ = {
+					core: {
+						invoke: async (cmd: string, args?: Record<string, unknown>) => {
+							const calls = (window as { __invokeCalls?: InvokeCall[] }).__invokeCalls ?? [];
+							calls.push({ cmd, args });
+							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
+							switch (cmd) {
+								case 'desktop_get_contract_version':
+									return { version: 'desktop-ipc-v1' };
+								case 'desktop_get_capabilities':
+									return {
+										auth_enabled: false,
+										parse_preview_enabled: false,
+										register_targets: [],
+										share_modes: [],
+									};
+								case 'desktop_get_session_raw':
+									return data.raw_jsonl;
+								case 'desktop_get_session_detail':
+									return { ...data.summary, linked_sessions: [] };
+								case 'desktop_build_handoff':
+									return {
+										artifact_uri: 'os://artifact/e2e-handoff',
+										pinned_alias: 'latest',
+									};
+								default:
+									throw new Error(`unexpected invoke command: ${cmd}`);
+							}
+						},
+					},
+				};
+			},
+			{ raw_jsonl: fixture.raw_jsonl, summary: fixture.summary },
+		);
+		await page.goto(`/session/${fixture.id}`);
+		await expect(page.getByTestId('session-handoff-panel')).toBeVisible({ timeout: 10000 });
+		await page.getByTestId('session-handoff-build').click();
+		await expect(page.getByTestId('session-handoff-uri')).toHaveText('os://artifact/e2e-handoff');
+		await expect(page.getByTestId('session-handoff-feedback')).toContainText('pinned as latest');
+		const invokeCalls = await page.evaluate(() => {
+			return (window as { __invokeCalls?: Array<{ cmd: string }> }).__invokeCalls ?? [];
+		});
+		expect(invokeCalls.some((call) => call.cmd === 'desktop_build_handoff')).toBeTruthy();
+	});
+
 	test('session flow track drag scrolls timeline smoothly', async ({ page }) => {
 		const events: SessionEventSpec[] = Array.from({ length: 90 }, (_, idx) => ({
 			type: idx % 2 === 0 ? 'UserMessage' : 'AgentMessage',

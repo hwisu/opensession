@@ -3,6 +3,8 @@ import type {
 	CapabilitiesResponse,
 	DesktopApiError,
 	DesktopContractVersionResponse,
+	DesktopHandoffBuildRequest,
+	DesktopHandoffBuildResponse,
 	DesktopSessionListQuery,
 	SessionDetail,
 	SessionListResponse,
@@ -41,6 +43,7 @@ export interface SessionReadAdapter {
 	listRepos(): Promise<string[]>;
 	getSessionDetail(id: string): Promise<SessionDetail>;
 	getSessionRaw(id: string): Promise<string>;
+	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
 	getCapabilities(): Promise<CapabilitiesResponse>;
 	getAuthProviders(): Promise<AuthProvidersResponse>;
 	getContractVersion(): Promise<string>;
@@ -185,6 +188,16 @@ export function createWebSessionReadAdapter(args: {
 		getSessionRaw(id) {
 			return requestRaw(`/api/sessions/${encodeURIComponent(id)}/raw`);
 		},
+		async buildHandoff() {
+			throw new SessionAdapterError(
+				'desktop_handoff_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_handoff_unsupported',
+					message: 'Handoff build is available only in desktop runtime.',
+				}),
+			);
+		},
 		getCapabilities() {
 			return requestJson<CapabilitiesResponse>('/api/capabilities');
 		},
@@ -273,6 +286,15 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 		},
 		async getSessionRaw(id) {
 			return invokeAfterContractCheck<string>('desktop_get_session_raw', { id });
+		},
+		async buildHandoff(sessionId, pinLatest = true) {
+			const request: DesktopHandoffBuildRequest = {
+				session_id: sessionId,
+				pin_latest: pinLatest,
+			};
+			return invokeAfterContractCheck<DesktopHandoffBuildResponse>('desktop_build_handoff', {
+				request,
+			});
 		},
 		async getCapabilities() {
 			return invokeAfterContractCheck<CapabilitiesResponse>('desktop_get_capabilities');

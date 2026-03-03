@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ApiError, buildSessionHandoff } from '../api';
 import { SCROLL_STEP_PX } from '../constants';
 import { prepareTimelineEvents } from '../event-helpers';
 import { isNativeAdapterSupported, type SessionViewMode } from '../session-filters';
@@ -45,6 +46,10 @@ let flowDragRaf: number | null = null;
 let flowPendingRatio: number | null = null;
 let flowTargetItems: HTMLElement[] = [];
 let flowLastTargetIdx: number | null = null;
+let handoffPending = $state(false);
+let handoffArtifactUri = $state<string | null>(null);
+let handoffFeedback = $state<string | null>(null);
+let handoffFeedbackLevel = $state<'success' | 'error' | null>(null);
 
 type FlowKind = 'user' | 'agent' | 'tool' | 'system';
 type FlowSegment = { kind: FlowKind; width: number; tooltip: string };
@@ -92,6 +97,11 @@ const normalizedSearchQuery = $derived(searchQuery.trim().toLowerCase());
 const timelineEvents = $derived.by(() => prepareTimelineEvents(session.events));
 const flowEvents = $derived(session.events);
 const nativeEnabled = $derived(isNativeAdapterSupported(nativeAdapter));
+const desktopRuntime = $derived.by(() => {
+	if (typeof window === 'undefined') return false;
+	const maybeTauri = window as Window & { __TAURI_INTERNALS__?: unknown };
+	return '__TAURI_INTERNALS__' in maybeTauri || window.location.protocol === 'tauri:';
+});
 const effectiveViewMode = $derived(
 	viewMode === 'native' && !nativeEnabled ? 'unified' : viewMode,
 );
@@ -278,6 +288,68 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 		}
 		searchInput?.blur();
 	}
+}
+
+function setHandoffFeedback(
+	message: string | null,
+	level: 'success' | 'error' | null = null,
+) {
+	handoffFeedback = message;
+	handoffFeedbackLevel = level;
+}
+
+async function writeClipboardText(text: string): Promise<boolean> {
+	if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+		try {
+			await navigator.clipboard.writeText(text);
+			return true;
+		} catch {
+			// Fall through to legacy copy path.
+		}
+	}
+	if (typeof document === 'undefined') return false;
+	const textarea = document.createElement('textarea');
+	textarea.value = text;
+	textarea.setAttribute('readonly', '');
+	textarea.style.position = 'fixed';
+	textarea.style.opacity = '0';
+	document.body.appendChild(textarea);
+	textarea.select();
+	let copied = false;
+	try {
+		copied = document.execCommand('copy');
+	} catch {
+		copied = false;
+	}
+	textarea.remove();
+	return copied;
+}
+
+async function handleBuildHandoff() {
+	if (handoffPending) return;
+	handoffPending = true;
+	setHandoffFeedback(null);
+	try {
+		const response = await buildSessionHandoff(session.session_id, true);
+		handoffArtifactUri = response.artifact_uri;
+		setHandoffFeedback(
+			response.pinned_alias
+				? `Handoff artifact built and pinned as ${response.pinned_alias}.`
+				: 'Handoff artifact built.',
+			'success',
+		);
+	} catch (error) {
+		const message = error instanceof ApiError ? error.message : 'Failed to build handoff artifact.';
+		setHandoffFeedback(message, 'error');
+	} finally {
+		handoffPending = false;
+	}
+}
+
+async function handleCopyHandoffUri() {
+	if (!handoffArtifactUri) return;
+	const copied = await writeClipboardText(handoffArtifactUri);
+	setHandoffFeedback(copied ? 'Artifact URI copied.' : 'Failed to copy artifact URI.', copied ? 'success' : 'error');
 }
 
 function clamp01(value: number): number {
@@ -487,6 +559,57 @@ $effect(() => {
 					</span>
 				{/if}
 			</div>
+
+			{#if desktopRuntime}
+				<div
+					data-testid="session-handoff-panel"
+					class="mt-3 rounded border border-border/80 bg-bg-secondary/55 p-2"
+				>
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<div class="text-xs text-text-secondary">Handoff Artifact</div>
+						<div class="flex items-center gap-2">
+							<button
+								type="button"
+								data-testid="session-handoff-build"
+								onclick={handleBuildHandoff}
+								disabled={handoffPending}
+								class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:opacity-60"
+							>
+								{handoffPending ? 'Building...' : 'Build (pin latest)'}
+							</button>
+							{#if handoffArtifactUri}
+								<button
+									type="button"
+									data-testid="session-handoff-copy"
+									onclick={handleCopyHandoffUri}
+									class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
+								>
+									Copy URI
+								</button>
+							{/if}
+						</div>
+					</div>
+					{#if handoffArtifactUri}
+						<div
+							data-testid="session-handoff-uri"
+							class="mt-2 rounded border border-border/70 bg-bg-primary px-2 py-1 font-mono text-[11px] text-text-secondary"
+						>
+							{handoffArtifactUri}
+						</div>
+					{/if}
+					{#if handoffFeedback}
+						<div
+							data-testid="session-handoff-feedback"
+							class="mt-2 text-xs"
+							class:text-success={handoffFeedbackLevel === 'success'}
+							class:text-error={handoffFeedbackLevel === 'error'}
+							class:text-text-muted={handoffFeedbackLevel == null}
+						>
+							{handoffFeedback}
+						</div>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	</div>
 

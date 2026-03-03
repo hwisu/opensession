@@ -99,6 +99,8 @@ export type {
 	CreateGitCredentialRequest,
 	DesktopApiError,
 	DesktopContractVersionResponse,
+	DesktopHandoffBuildRequest,
+	DesktopHandoffBuildResponse,
 	DesktopSessionListQuery,
 	GitCredentialSummary,
 	HealthResponse,

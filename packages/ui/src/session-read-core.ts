@@ -1,5 +1,10 @@
 import { parseHailInput } from './hail-parse';
-import type { Session, SessionDetail, SessionListResponse } from './types';
+import type {
+	DesktopHandoffBuildResponse,
+	Session,
+	SessionDetail,
+	SessionListResponse,
+} from './types';
 import {
 	SessionAdapterError,
 	type SessionListParams,
@@ -54,6 +59,7 @@ export interface SessionReadCore {
 	listRepos(): Promise<string[]>;
 	getSession(id: string): Promise<Session>;
 	getSessionDetail(id: string): Promise<SessionDetail>;
+	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
 	getContractVersion(): Promise<string>;
 }
 
@@ -95,6 +101,16 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 		async getSessionDetail(id: string): Promise<SessionDetail> {
 			try {
 				return await adapter.getSessionDetail(id);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async buildHandoff(
+			sessionId: string,
+			pinLatest: boolean = true,
+		): Promise<DesktopHandoffBuildResponse> {
+			try {
+				return await adapter.buildHandoff(sessionId, pinLatest);
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

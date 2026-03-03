@@ -3,6 +3,9 @@ name: Release
 on:
   workflow_dispatch:
 
+env:
+  RELEASE_PLZ_VERSION: "0.3.155"
+
 jobs:
   release-plz-update:
     name: Release-plz update
@@ -19,8 +22,30 @@ jobs:
           node-version: 22
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      - name: Cache release-plz binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/release-plz
+            ~/.cargo/.crates2.json
+            ~/.cargo/.crates.toml
+          key: release-plz-${{ runner.os }}-${{ env.RELEASE_PLZ_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-plz-install
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install release-plz CLI
-        run: cargo install --locked release-plz --version 0.3.155
+        run: |
+          set -euo pipefail
+          needs_install=1
+          if command -v release-plz >/dev/null 2>&1; then
+            if release-plz --version | grep -q "${RELEASE_PLZ_VERSION}"; then
+              needs_install=0
+            fi
+          fi
+          if [ "${needs_install}" -eq 1 ]; then
+            cargo install --locked release-plz --version "${RELEASE_PLZ_VERSION}" --force
+          fi
       - name: Run release-plz update
         run: release-plz update --config release-plz.toml
       - name: Sync desktop version with workspace version

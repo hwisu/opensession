@@ -52,6 +52,15 @@ pub struct LocalSessionRow {
     pub is_auxiliary: bool,
 }
 
+/// A lightweight local link row for session-to-session relationships.
+#[derive(Debug, Clone)]
+pub struct LocalSessionLink {
+    pub session_id: String,
+    pub linked_session_id: String,
+    pub link_type: String,
+    pub created_at: String,
+}
+
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
     let source_path = source_path.map(|path| path.to_ascii_lowercase())?;
 
@@ -826,6 +835,40 @@ impl LocalDb {
         Ok(result)
     }
 
+    /// Get a single session row by id.
+    pub fn get_session_by_id(&self, session_id: &str) -> Result<Option<LocalSessionRow>> {
+        let sql = format!(
+            "SELECT {LOCAL_SESSION_COLUMNS} \
+             {FROM_CLAUSE} WHERE s.id = ?1 LIMIT 1"
+        );
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
+        let row = stmt
+            .query_map(params![session_id], row_to_local_session)?
+            .next()
+            .transpose()?;
+        Ok(row)
+    }
+
+    /// List links where the given session is the source session.
+    pub fn list_session_links(&self, session_id: &str) -> Result<Vec<LocalSessionLink>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, linked_session_id, link_type, created_at \
+             FROM session_links WHERE session_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(LocalSessionLink {
+                session_id: row.get(0)?,
+                linked_session_id: row.get(1)?,
+                link_type: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     /// Count total sessions in the local DB.
     pub fn session_count(&self) -> Result<i64> {
         let count = self
@@ -1216,23 +1259,52 @@ fn is_codex_auxiliary_source_file(source_path: &str) -> bool {
     let Ok(file) = fs::File::open(source_path) else {
         return false;
     };
-    let mut reader = BufReader::new(file);
-    let mut first_line = String::new();
-    if reader.read_line(&mut first_line).is_err() {
-        return false;
-    }
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(32) {
+        let Ok(raw) = line else {
+            continue;
+        };
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
 
-    let line = first_line.trim();
-    if line.is_empty() {
-        return false;
-    }
+        if line.contains("\"source\":{\"subagent\"")
+            || line.contains("\"source\": {\"subagent\"")
+            || line.contains("\"agent_role\":\"awaiter\"")
+            || line.contains("\"agent_role\":\"worker\"")
+            || line.contains("\"agent_role\":\"explorer\"")
+            || line.contains("\"agent_role\":\"subagent\"")
+        {
+            return true;
+        }
 
-    line.contains("\"source\":{\"subagent\"")
-        || line.contains("\"source\": {\"subagent\"")
-        || line.contains("\"agent_role\":\"awaiter\"")
-        || line.contains("\"agent_role\":\"worker\"")
-        || line.contains("\"agent_role\":\"explorer\"")
-        || line.contains("\"agent_role\":\"subagent\"")
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+            let is_session_meta =
+                parsed.get("type").and_then(|v| v.as_str()) == Some("session_meta");
+            let payload = if is_session_meta {
+                parsed.get("payload")
+            } else {
+                Some(&parsed)
+            };
+            if let Some(payload) = payload {
+                if payload.pointer("/source/subagent").is_some() {
+                    return true;
+                }
+                let role = payload
+                    .get("agent_role")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_ascii_lowercase);
+                if matches!(
+                    role.as_deref(),
+                    Some("awaiter") | Some("worker") | Some("explorer") | Some("subagent")
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Column list for SELECT queries against sessions + session_sync + users.
@@ -1392,6 +1464,55 @@ mod tests {
         assert!(
             rows.iter().all(|row| row.id != "rollout-subagent"),
             "auxiliary codex session should be hidden after repair"
+        );
+    }
+
+    #[test]
+    fn test_open_repairs_codex_auxiliary_flag_when_session_meta_is_not_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repair-auxiliary-shifted.db");
+        let codex_dir = dir
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("03");
+        create_dir_all(&codex_dir).unwrap();
+        let source_path = codex_dir.join("rollout-subagent-shifted.jsonl");
+        write(
+            &source_path,
+            [
+                r#"{"timestamp":"2026-03-03T00:00:00.010Z","type":"event_msg","payload":{"type":"agent_message","message":"bootstrap line"}}"#,
+                r#"{"timestamp":"2026-03-03T00:00:00.020Z","type":"session_meta","payload":{"id":"rollout-subagent-shifted","timestamp":"2026-03-03T00:00:00.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.108.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session-id","depth":1,"agent_role":"worker"}}},"agent_role":"worker"}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        {
+            let _ = LocalDb::open_path(&path).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, team_id, tool, created_at, body_storage_key, is_auxiliary) VALUES (?1, 'personal', 'codex', ?2, '', 0)",
+                params!["rollout-subagent-shifted", "2026-03-03T00:00:00Z"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_sync (session_id, source_path, sync_status) VALUES (?1, ?2, 'local_only')",
+                params!["rollout-subagent-shifted", source_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        }
+
+        let db = LocalDb::open_path(&path).unwrap();
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert!(
+            rows.iter().all(|row| row.id != "rollout-subagent-shifted"),
+            "auxiliary codex session should be hidden after repair even if session_meta is not the first line"
         );
     }
 
@@ -1628,6 +1749,45 @@ mod tests {
             db.get_cached_body("s1").unwrap(),
             Some(b"hello world".to_vec())
         );
+    }
+
+    #[test]
+    fn test_get_session_by_id_and_list_session_links() {
+        let db = test_db();
+        db.upsert_remote_session(&make_summary(
+            "parent-session",
+            "codex",
+            "Parent session",
+            "2024-01-01T00:00:00Z",
+        ))
+        .unwrap();
+        db.upsert_remote_session(&make_summary(
+            "child-session",
+            "codex",
+            "Child session",
+            "2024-01-01T01:00:00Z",
+        ))
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO session_links (session_id, linked_session_id, link_type, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params!["parent-session", "child-session", "handoff", "2024-01-01T01:00:00Z"],
+            )
+            .unwrap();
+
+        let parent = db
+            .get_session_by_id("parent-session")
+            .unwrap()
+            .expect("session should exist");
+        assert_eq!(parent.id, "parent-session");
+        assert_eq!(parent.title.as_deref(), Some("Parent session"));
+
+        let links = db.list_session_links("parent-session").unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].session_id, "parent-session");
+        assert_eq!(links[0].linked_session_id, "child-session");
+        assert_eq!(links[0].link_type, "handoff");
     }
 
     #[test]

@@ -16,6 +16,24 @@ test.describe('Landing (unauthenticated)', () => {
 		await expect(page.locator('nav').getByText('Register')).toHaveCount(0);
 	});
 
+	test('desktop runtime uses compact landing sections to avoid extra scrolling', async ({ page }) => {
+		await page.addInitScript(() => {
+			(window as Window & { __TAURI_INTERNALS__?: Record<string, never> }).__TAURI_INTERNALS__ = {};
+		});
+		await page.goto('/');
+		await expect(page.locator('h1').filter({ hasText: 'Version Control for AI Work.' })).toBeVisible();
+		await expect(page.locator('[data-contract-section="goal-map"]')).toHaveCount(0);
+		await expect(page.locator('[data-contract-section="operating-loop"]')).toHaveCount(0);
+	});
+
+	test('desktop runtime without auth does not show login navigation', async ({ page }) => {
+		await page.addInitScript(() => {
+			(window as Window & { __TAURI_INTERNALS__?: Record<string, never> }).__TAURI_INTERNALS__ = {};
+		});
+		await page.goto('/');
+		await expect(page.locator('nav').getByText('Login')).toHaveCount(0);
+	});
+
 	test('landing renders goal sections without capability matrix language', async ({ page }) => {
 		await page.goto('/');
 		await expect(page.locator('[data-contract-section="goal-map"]')).toBeVisible();

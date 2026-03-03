@@ -1,0 +1,20 @@
+[package]
+name = "opensession-desktop"
+version = "0.1.0"
+description = "OpenSession desktop preview shell (Tauri + shared web UI)"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+opensession-api = { path = "../../crates/api" }
+opensession-local-db = { path = "../../crates/local-db" }
+opensession-core = { path = "../../crates/core" }
+opensession-parsers = { path = "../../crates/parsers" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]

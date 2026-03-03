@@ -366,6 +366,9 @@ pub struct SessionListResponse {
     pub per_page: u32,
 }
 
+/// Canonical desktop IPC contract version shared between Rust and TS clients.
+pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v1";
+
 /// Query parameters for `GET /api/sessions` — pagination, filtering, sorting.
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -377,10 +380,54 @@ pub struct SessionListQuery {
     pub per_page: u32,
     pub search: Option<String>,
     pub tool: Option<String>,
+    pub git_repo_name: Option<String>,
     /// Sort order (default: recent)
     pub sort: Option<SortOrder>,
     /// Time range filter (default: all)
     pub time_range: Option<TimeRange>,
+}
+
+/// Desktop session list query payload passed through Tauri invoke.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopSessionListQuery {
+    pub page: Option<String>,
+    pub per_page: Option<String>,
+    pub search: Option<String>,
+    pub tool: Option<String>,
+    pub git_repo_name: Option<String>,
+    pub sort: Option<String>,
+    pub time_range: Option<String>,
+}
+
+/// Repo list response used by server/worker/desktop adapters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct SessionRepoListResponse {
+    pub repos: Vec<String>,
+}
+
+/// Desktop bridge contract/version handshake response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopContractVersionResponse {
+    pub version: String,
+}
+
+/// Structured desktop bridge error payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopApiError {
+    pub code: String,
+    pub status: u16,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "Record<string, any> | null"))]
+    pub details: Option<serde_json::Value>,
 }
 
 impl SessionListQuery {
@@ -393,6 +440,10 @@ impl SessionListQuery {
         !has_auth_header
             && !has_session_cookie
             && self.search.as_deref().is_none_or(|s| s.trim().is_empty())
+            && self
+                .git_repo_name
+                .as_deref()
+                .is_none_or(|repo| repo.trim().is_empty())
             && self.page <= 10
             && self.per_page <= 50
     }
@@ -408,6 +459,7 @@ mod session_list_query_tests {
             per_page: 20,
             search: None,
             tool: None,
+            git_repo_name: None,
             sort: None,
             time_range: None,
         }
@@ -430,6 +482,10 @@ mod session_list_query_tests {
     fn public_feed_not_cacheable_for_search_or_large_page() {
         let mut q = base_query();
         q.search = Some("hello".into());
+        assert!(!q.is_public_feed_cacheable(false, false));
+
+        let mut q = base_query();
+        q.git_repo_name = Some("org/repo".into());
         assert!(!q.is_public_feed_cacheable(false, false));
 
         let mut q = base_query();
@@ -1002,6 +1058,10 @@ mod tests {
             SessionSummary,
             SessionListResponse,
             SessionListQuery,
+            DesktopSessionListQuery,
+            SessionRepoListResponse,
+            DesktopContractVersionResponse,
+            DesktopApiError,
             SessionDetail,
             SessionLink,
             ParseSource,

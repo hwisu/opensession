@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use opensession_api::db;
 use opensession_api::{
-    ServiceError, SessionDetail, SessionLink, SessionListQuery, SessionListResponse, SessionSummary,
+    ServiceError, SessionDetail, SessionLink, SessionListQuery, SessionListResponse,
+    SessionRepoListResponse, SessionSummary,
 };
 
 use crate::db_helpers::values_to_js;
@@ -73,6 +74,7 @@ fn parse_session_list_query(query_pairs: &[(String, String)]) -> SessionListQuer
             .unwrap_or(20),
         search: params.get("search").map(|v| (*v).to_string()),
         tool: params.get("tool").map(|v| (*v).to_string()),
+        git_repo_name: params.get("git_repo_name").map(|v| (*v).to_string()),
         sort: parse_query_enum(&params, "sort"),
         time_range: parse_query_enum(&params, "time_range"),
     }
@@ -185,6 +187,23 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     }
 
     Ok(resp)
+}
+
+/// GET /api/sessions/repos — list known repository names.
+pub async fn list_repos(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let d1 = storage::get_d1(&ctx.env)?;
+    let (sql, values) = db::sessions::list_repo_names();
+    let repos: Vec<String> = d1
+        .prepare(&sql)
+        .bind(&values_to_js(&values))?
+        .all()
+        .await?
+        .results::<storage::RepoNameRow>()?
+        .into_iter()
+        .map(|row| row.git_repo_name)
+        .collect();
+
+    Response::from_json(&SessionRepoListResponse { repos })
 }
 
 /// GET /api/sessions/:id — get session detail

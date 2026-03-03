@@ -1,5 +1,4 @@
 <script lang="ts">
-import { onDestroy, onMount } from 'svelte';
 import type { Event } from '../types';
 
 const { events }: { events: Event[] } = $props();
@@ -45,7 +44,7 @@ function scheduleActiveIndex(nextIdx: number) {
 	});
 }
 
-onMount(() => {
+$effect(() => {
 	observer = new IntersectionObserver(
 		(entries) => {
 			let closestMsgIdx: number | null = null;
@@ -71,14 +70,19 @@ onMount(() => {
 		const el = document.querySelector(`[data-timeline-idx="${timelineIdx}"]`);
 		if (el) observer.observe(el);
 	}
+	return () => {
+		observer?.disconnect();
+		observer = null;
+	};
 });
 
-onDestroy(() => {
-	observer?.disconnect();
-	if (activeUpdateRaf !== null) {
-		cancelAnimationFrame(activeUpdateRaf);
-		activeUpdateRaf = null;
-	}
+$effect(() => {
+	return () => {
+		if (activeUpdateRaf !== null) {
+			cancelAnimationFrame(activeUpdateRaf);
+			activeUpdateRaf = null;
+		}
+	};
 });
 </script>
 

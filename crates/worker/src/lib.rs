@@ -96,6 +96,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .post_async("/api/parse/preview", routes::parse::preview)
         // Public sessions (read-only)
         .get_async("/api/sessions", routes::sessions::list)
+        .get_async("/api/sessions/repos", routes::sessions::list_repos)
         .get_async("/api/sessions/:id", routes::sessions::get)
         .get_async("/api/sessions/:id/raw", routes::sessions::get_raw)
         // Auth

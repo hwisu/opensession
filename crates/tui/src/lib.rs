@@ -33,6 +33,13 @@ enum BgEvent {
     DbReady { repos: Vec<String>, count: usize },
 }
 
+enum DetailHydrationEvent {
+    Completed {
+        requested_session_id: Option<String>,
+        result: Result<opensession_core::trace::Session, String>,
+    },
+}
+
 #[derive(Clone)]
 struct LoadedSession {
     source_path: PathBuf,
@@ -441,6 +448,8 @@ fn event_loop(
     let rt = tokio::runtime::Runtime::new()?;
     let mut auto_enter_detail_pending = auto_enter_detail;
     let mut last_daemon_refresh = Instant::now() - Duration::from_secs(5);
+    let (detail_hydration_tx, detail_hydration_rx) = mpsc::channel::<DetailHydrationEvent>();
+    let mut detail_hydration_inflight = false;
 
     loop {
         // ── Poll background session loading ──────────────────────────
@@ -455,6 +464,29 @@ fn event_loop(
                     app.startup_status.sessions_cached = count;
                     app.startup_status.repos_detected = app.repos.len();
                 }
+            }
+        }
+
+        while let Ok(ev) = detail_hydration_rx.try_recv() {
+            detail_hydration_inflight = false;
+            match ev {
+                DetailHydrationEvent::Completed {
+                    requested_session_id,
+                    result,
+                } => match result {
+                    Ok(reloaded) => app.apply_reloaded_session(reloaded),
+                    Err(err) => {
+                        let message = format!("Hydration skipped: {err}");
+                        let should_surface = requested_session_id.as_deref().is_none_or(|sid| {
+                            app.selected_session()
+                                .is_some_and(|session| session.session_id == sid)
+                        });
+                        if should_surface {
+                            app.record_selected_session_detail_issue(message.clone());
+                            app.flash_error(message);
+                        }
+                    }
+                },
             }
         }
 
@@ -520,16 +552,20 @@ fn event_loop(
         }
 
         // ── Lazy hydrate stub sessions from source_path on first detail enter ──
-        if let Some(path) = app.take_detail_hydrate_path() {
-            match parse_single_session(&path) {
-                Ok(reloaded) => {
-                    app.apply_reloaded_session(reloaded);
-                }
-                Err(err) => {
-                    let message = format!("Hydration skipped: {err}");
-                    app.record_selected_session_detail_issue(message.clone());
-                    app.flash_error(message);
-                }
+        // Parsing large source logs can be expensive; hydrate in a worker thread
+        // so the TUI stays responsive while the detail data loads.
+        if !detail_hydration_inflight {
+            if let Some(path) = app.take_detail_hydrate_path() {
+                detail_hydration_inflight = true;
+                let tx = detail_hydration_tx.clone();
+                let requested_session_id = app.selected_session().map(|s| s.session_id.clone());
+                std::thread::spawn(move || {
+                    let result = parse_single_session(&path);
+                    let _ = tx.send(DetailHydrationEvent::Completed {
+                        requested_session_id,
+                        result,
+                    });
+                });
             }
         }
 

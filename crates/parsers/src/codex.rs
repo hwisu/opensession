@@ -1828,6 +1828,10 @@ fn looks_like_injected_codex_user_text(text: &str) -> bool {
         || lower.contains("</instructions>")
         || lower.contains("<environment_context>")
         || lower.contains("</environment_context>")
+        || lower.contains("<subagent_notification")
+        || lower.contains("&lt;subagent_notification")
+        || lower.contains("</subagent_notification>")
+        || lower.contains("subagent_notification>")
         || lower.contains("<turn_aborted>")
         || lower.contains("</turn_aborted>")
 }
@@ -2982,6 +2986,58 @@ provider = "anthropic"
                 && event.content.blocks.iter().any(
                     |block| matches!(block, ContentBlock::Text { text } if text.contains("turn_aborted"))
                 )
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_subagent_notification_filtered_from_user_messages() {
+        let lines = [
+            r#"{"timestamp":"2026-03-03T06:39:35.000Z","type":"session_meta","payload":{"id":"desktop-subagent-notification","timestamp":"2026-03-03T06:39:35.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.108.0"}}"#,
+            r#"{"timestamp":"2026-03-03T06:39:35.100Z","type":"event_msg","payload":{"type":"user_message","message":"<subagent_notification>Event: 99/110</subagent_notification>"}}"#,
+            r#"{"timestamp":"2026-03-03T06:39:35.200Z","type":"event_msg","payload":{"type":"user_message","message":"real user prompt"}}"#,
+            r#"{"timestamp":"2026-03-03T06:39:36.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_subagent_notification_filter_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert_eq!(session.context.title.as_deref(), Some("real user prompt"));
+        assert!(!session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::UserMessage)
+                && event.content.blocks.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text } if text.contains("subagent_notification"))
+                })
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_subagent_notification_prefix_line_filtered_from_user_messages() {
+        let lines = [
+            r#"{"timestamp":"2026-03-03T06:39:35.000Z","type":"session_meta","payload":{"id":"desktop-subagent-notification-2","timestamp":"2026-03-03T06:39:35.000Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.108.0"}}"#,
+            r#"{"timestamp":"2026-03-03T06:39:35.100Z","type":"event_msg","payload":{"type":"user_message","message":"[USER] <subagent_notification>\nEvent: 99/110"}}"#,
+            r#"{"timestamp":"2026-03-03T06:39:35.200Z","type":"event_msg","payload":{"type":"user_message","message":"real user prompt"}}"#,
+            r#"{"timestamp":"2026-03-03T06:39:36.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_subagent_notification_filter_test_2");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert_eq!(session.context.title.as_deref(), Some("real user prompt"));
+        assert!(!session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::UserMessage)
+                && event.content.blocks.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text } if text.contains("subagent_notification"))
+                })
         }));
 
         let _ = std::fs::remove_dir_all(&dir);

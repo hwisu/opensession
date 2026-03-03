@@ -1,0 +1,15 @@
+{
+	"name": "opensession-desktop",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"tauri:dev": "tauri dev",
+		"tauri:build": "tauri build",
+		"dev": "npm run tauri:dev",
+		"build": "npm run tauri:build"
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "^2.2.7"
+	}
+}

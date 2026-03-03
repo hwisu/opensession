@@ -586,6 +586,20 @@ fn session_list_footer_line(app: &App, width: u16) -> Line<'static> {
 }
 
 fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
+    let detail_visible = app
+        .selected_session()
+        .map(|session| app.get_visible_events(session));
+    let selected_supports_diff = detail_visible.as_ref().is_some_and(|visible| {
+        if visible.is_empty() {
+            return false;
+        }
+        let idx = app.detail_event_index.min(visible.len() - 1);
+        matches!(
+            visible[idx].event().event_type,
+            EventType::FileEdit { diff: Some(_), .. }
+        )
+    });
+
     let mut segments: Vec<FooterSegment> = match app.detail_view_mode {
         DetailViewMode::Linear => {
             let mut shortcuts = vec![
@@ -618,7 +632,7 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
                     desc: "filter".to_string(),
                 },
             ];
-            if selected_event_supports_diff_toggle(app) {
+            if selected_supports_diff {
                 shortcuts.push(FooterSegment::Shortcut {
                     key: "d".to_string(),
                     desc: "diff toggle".to_string(),
@@ -674,8 +688,7 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
         ],
     };
 
-    if let Some(session) = app.selected_session() {
-        let visible = app.get_visible_events(session);
+    if let (Some(session), Some(visible)) = (app.selected_session(), detail_visible.as_ref()) {
         let event_total = visible.len();
         if event_total > 0 {
             let selected_index = app.detail_event_index.min(event_total - 1);
@@ -684,7 +697,7 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
                 "event {event_idx}/{event_total}"
             )));
 
-            let turns = extract_visible_turns(&visible);
+            let turns = extract_visible_turns(visible);
             if !turns.is_empty() {
                 let turn_idx = match app.detail_view_mode {
                     DetailViewMode::Turn => app.turn_index.min(turns.len() - 1) + 1,
@@ -729,21 +742,6 @@ fn session_detail_footer_line(app: &App, width: u16) -> Line<'static> {
     )));
 
     render_footer_segments(segments, width)
-}
-
-fn selected_event_supports_diff_toggle(app: &App) -> bool {
-    let Some(session) = app.selected_session() else {
-        return false;
-    };
-    let visible = app.get_visible_events(session);
-    if visible.is_empty() {
-        return false;
-    }
-    let idx = app.detail_event_index.min(visible.len() - 1);
-    matches!(
-        visible[idx].event().event_type,
-        EventType::FileEdit { diff: Some(_), .. }
-    )
 }
 
 fn format_elapsed_compact(elapsed: ChronoDuration) -> String {

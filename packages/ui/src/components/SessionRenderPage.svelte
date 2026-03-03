@@ -1,5 +1,6 @@
 <script lang="ts">
 import { SCROLL_STEP_PX } from '../constants';
+import { prepareTimelineEvents } from '../event-helpers';
 import { isNativeAdapterSupported, type SessionViewMode } from '../session-filters';
 import type { ContentBlock, Event, Session, SessionDetail } from '../types';
 import { formatDuration, formatTimestamp, getToolConfig } from '../types';
@@ -13,9 +14,11 @@ const {
 	viewMode = 'unified',
 	nativeAdapter = null,
 	unifiedFilters = new Set<string>(),
+	branchFilters = new Set<string>(),
 	nativeFilters = new Set<string>(),
 	onViewModeChange = (_mode: SessionViewMode) => {},
 	onToggleUnifiedFilter = (_key: string) => {},
+	onToggleBranchFilter = (_key: string) => {},
 	onToggleNativeFilter = (_key: string) => {},
 }: {
 	session: Session;
@@ -23,9 +26,11 @@ const {
 	viewMode?: SessionViewMode;
 	nativeAdapter?: string | null;
 	unifiedFilters?: Set<string>;
+	branchFilters?: Set<string>;
 	nativeFilters?: Set<string>;
 	onViewModeChange?: (mode: SessionViewMode) => void;
 	onToggleUnifiedFilter?: (key: string) => void;
+	onToggleBranchFilter?: (key: string) => void;
 	onToggleNativeFilter?: (key: string) => void;
 } = $props();
 
@@ -33,6 +38,13 @@ let searchQuery = $state('');
 let searchInput: HTMLInputElement | undefined = $state();
 let searchCursor = $state(-1);
 let timelineEl: HTMLDivElement | undefined = $state();
+let flowTrackEl: HTMLButtonElement | undefined = $state();
+let flowDragging = $state(false);
+let flowDragPointerId: number | null = null;
+let flowDragRaf: number | null = null;
+let flowPendingRatio: number | null = null;
+let flowTargetItems: HTMLElement[] = [];
+let flowLastTargetIdx: number | null = null;
 
 type FlowKind = 'user' | 'agent' | 'tool' | 'system';
 type FlowSegment = { kind: FlowKind; width: number; tooltip: string };
@@ -77,20 +89,22 @@ const tool = $derived(getToolConfig(session.agent.tool));
 const displayTitle = $derived(getDisplayTitle(session));
 const fileStats = $derived(computeFileStats(session.events));
 const normalizedSearchQuery = $derived(searchQuery.trim().toLowerCase());
+const timelineEvents = $derived.by(() => prepareTimelineEvents(session.events));
+const flowEvents = $derived(session.events);
 const nativeEnabled = $derived(isNativeAdapterSupported(nativeAdapter));
 const effectiveViewMode = $derived(
 	viewMode === 'native' && !nativeEnabled ? 'unified' : viewMode,
 );
 
 const searchableEvents = $derived.by(() => {
-	return session.events.map((event) => ({
+	return timelineEvents.map((event) => ({
 		event,
 		searchText: eventToSearchText(event),
 	}));
 });
 
 const searchFilteredEvents = $derived.by(() => {
-	if (!normalizedSearchQuery) return session.events;
+	if (!normalizedSearchQuery) return timelineEvents;
 	return searchableEvents
 		.filter((entry) => entry.searchText.includes(normalizedSearchQuery))
 		.map((entry) => entry.event);
@@ -105,16 +119,16 @@ const flowCounts = $derived.by(() => {
 		tool: 0,
 		system: 0,
 	};
-	for (const event of session.events) {
+	for (const event of flowEvents) {
 		counts[eventFlowKind(event)] += 1;
 	}
 	return counts;
 });
 
 const flowSegments = $derived.by((): FlowSegment[] => {
-	if (session.events.length === 0) return [];
-	const width = 100 / session.events.length;
-	return session.events.map((event, index) => {
+	if (flowEvents.length === 0) return [];
+	const width = 100 / flowEvents.length;
+	return flowEvents.map((event, index) => {
 		const kind = eventFlowKind(event);
 		return {
 			kind,
@@ -265,6 +279,106 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 		searchInput?.blur();
 	}
 }
+
+function clamp01(value: number): number {
+	if (value < 0) return 0;
+	if (value > 1) return 1;
+	return value;
+}
+
+function flowRatioFromClientX(clientX: number): number | null {
+	const rect = flowTrackEl?.getBoundingClientRect();
+	if (!rect || rect.width <= 0) return null;
+	return clamp01((clientX - rect.left) / rect.width);
+}
+
+function applyFlowRatioScroll(ratio: number) {
+	if (!timelineEl) return;
+	if (flowTargetItems.length === 0) {
+		flowTargetItems = Array.from(timelineEl.querySelectorAll<HTMLElement>('[data-timeline-idx]'));
+	}
+	if (flowTargetItems.length === 0) return;
+	const nextIdx = Math.round(clamp01(ratio) * (flowTargetItems.length - 1));
+	if (flowLastTargetIdx === nextIdx) return;
+	flowLastTargetIdx = nextIdx;
+	flowTargetItems[nextIdx]?.scrollIntoView({ behavior: 'auto', block: 'center' });
+}
+
+function flushFlowPendingScroll() {
+	if (flowPendingRatio == null) return;
+	applyFlowRatioScroll(flowPendingRatio);
+	flowPendingRatio = null;
+}
+
+function scheduleFlowRatioScroll(ratio: number) {
+	flowPendingRatio = ratio;
+	if (flowDragRaf != null) return;
+	flowDragRaf = requestAnimationFrame(() => {
+		flowDragRaf = null;
+		flushFlowPendingScroll();
+	});
+}
+
+function finishFlowDrag(pointerId: number | null) {
+	if (flowDragPointerId == null) return;
+	if (pointerId != null && pointerId !== flowDragPointerId) return;
+	if (flowTrackEl?.hasPointerCapture(flowDragPointerId)) {
+		flowTrackEl.releasePointerCapture(flowDragPointerId);
+	}
+	flowDragPointerId = null;
+	flowDragging = false;
+	flushFlowPendingScroll();
+	flowTargetItems = [];
+	flowLastTargetIdx = null;
+}
+
+function handleFlowTrackPointerDown(event: PointerEvent) {
+	if (event.button !== 0) return;
+	const ratio = flowRatioFromClientX(event.clientX);
+	if (ratio == null) return;
+	event.preventDefault();
+	flowTrackEl?.setPointerCapture(event.pointerId);
+	flowDragPointerId = event.pointerId;
+	flowDragging = true;
+	flowTargetItems = Array.from(timelineEl?.querySelectorAll<HTMLElement>('[data-timeline-idx]') ?? []);
+	flowLastTargetIdx = null;
+	applyFlowRatioScroll(ratio);
+}
+
+function handleFlowTrackPointerMove(event: PointerEvent) {
+	if (!flowDragging || flowDragPointerId == null || event.pointerId !== flowDragPointerId) return;
+	const ratio = flowRatioFromClientX(event.clientX);
+	if (ratio == null) return;
+	event.preventDefault();
+	scheduleFlowRatioScroll(ratio);
+}
+
+function handleFlowTrackPointerUp(event: PointerEvent) {
+	if (flowDragPointerId == null || event.pointerId !== flowDragPointerId) return;
+	const ratio = flowRatioFromClientX(event.clientX);
+	if (ratio != null) {
+		scheduleFlowRatioScroll(ratio);
+	}
+	finishFlowDrag(event.pointerId);
+}
+
+function handleFlowTrackPointerCancel(event: PointerEvent) {
+	finishFlowDrag(event.pointerId);
+}
+
+$effect(() => {
+	return () => {
+		if (flowDragRaf != null) {
+			cancelAnimationFrame(flowDragRaf);
+			flowDragRaf = null;
+		}
+		flowPendingRatio = null;
+		flowDragPointerId = null;
+		flowDragging = false;
+		flowTargetItems = [];
+		flowLastTargetIdx = null;
+	};
+});
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -313,10 +427,20 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 			<div class="mt-3 rounded border border-border/80 bg-bg-secondary/55 p-2.5" data-testid="session-flow-bar">
 				<div class="flex items-center justify-between text-[11px] text-text-muted">
 					<span class="font-medium text-text-secondary">Session Flow</span>
-					<span>{session.events.length} events</span>
+					<span>{flowEvents.length} events</span>
 				</div>
 				{#if flowSegments.length > 0}
-					<div class="mt-2 flex h-2 overflow-hidden rounded-sm border border-border/70 bg-bg-tertiary/80">
+					<button
+						type="button"
+						aria-label="Drag to scrub session timeline"
+						bind:this={flowTrackEl}
+						data-testid="session-flow-track"
+						class="mt-2 flex h-2 overflow-hidden rounded-sm border bg-bg-tertiary/80 select-none touch-none cursor-ew-resize {flowDragging ? 'border-accent/70' : 'border-border/70'}"
+						onpointerdown={handleFlowTrackPointerDown}
+						onpointermove={handleFlowTrackPointerMove}
+						onpointerup={handleFlowTrackPointerUp}
+						onpointercancel={handleFlowTrackPointerCancel}
+					>
 						{#each flowSegments as segment}
 							<span
 								class={`h-full ${flowBarClass(segment.kind)}`}
@@ -324,7 +448,7 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 								title={segment.tooltip}
 							></span>
 						{/each}
-					</div>
+					</button>
 				{/if}
 				<div class="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-text-muted">
 					{#each flowLegend as item}
@@ -373,7 +497,11 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 	{/if}
 
 	<div class="session-body flex min-h-0 flex-1 overflow-hidden">
-		<div bind:this={timelineEl} class="relative flex-1 overflow-y-auto px-3 py-3">
+		<div
+			bind:this={timelineEl}
+			data-testid="session-timeline-scroll"
+			class="relative flex-1 overflow-y-auto px-3 py-3"
+		>
 			{#if normalizedSearchQuery && searchMatchCount === 0}
 				<div class="mb-2 border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
 					No matching events for "{searchQuery}".
@@ -385,9 +513,11 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 				nativeEnabled={nativeEnabled}
 				{nativeAdapter}
 				{unifiedFilters}
+				{branchFilters}
 				{nativeFilters}
 				{onViewModeChange}
 				{onToggleUnifiedFilter}
+				{onToggleBranchFilter}
 				{onToggleNativeFilter}
 			/>
 		</div>

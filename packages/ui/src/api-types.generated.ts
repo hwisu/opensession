@@ -49,7 +49,7 @@ tags: string | null, created_at: string, uploaded_at: string, message_count: num
 
 export interface SessionListResponse { sessions: Array<SessionSummary>, total: number, page: number, per_page: number, }
 
-export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, 
+export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, git_repo_name: string | null, 
 /**
  * Sort order (default: recent)
  */
@@ -58,6 +58,14 @@ sort: SortOrder | null,
  * Time range filter (default: all)
  */
 time_range: TimeRange | null, }
+
+export interface DesktopSessionListQuery { page: string | null, per_page: string | null, search: string | null, tool: string | null, git_repo_name: string | null, sort: string | null, time_range: string | null, }
+
+export interface SessionRepoListResponse { repos: Array<string>, }
+
+export interface DesktopContractVersionResponse { version: string, }
+
+export interface DesktopApiError { code: string, status: number, message: string, details?: Record<string, any> | null, }
 
 export interface SessionDetail { linked_sessions?: Array<SessionLink>, id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
 /**

@@ -13,7 +13,7 @@
 //! The last line is aggregate stats (optional on write, recomputed on read if missing).
 
 use crate::trace::{Agent, Event, Session, SessionContext, Stats};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 
 /// A single line in a HAIL JSONL file
@@ -54,6 +54,18 @@ pub enum JsonlError {
     UnexpectedLineType(usize),
 }
 
+fn json_to_writer_line<W: Write, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+    line: usize,
+) -> Result<(), JsonlError> {
+    serde_json::to_writer(writer, value).map_err(|source| JsonlError::Json { line, source })
+}
+
+fn json_from_str_line<T: DeserializeOwned>(input: &str, line: usize) -> Result<T, JsonlError> {
+    serde_json::from_str(input).map_err(|source| JsonlError::Json { line, source })
+}
+
 /// Write a Session as HAIL JSONL to a writer
 pub fn write_jsonl<W: Write>(session: &Session, mut writer: W) -> Result<(), JsonlError> {
     // Line 1: header
@@ -63,26 +75,19 @@ pub fn write_jsonl<W: Write>(session: &Session, mut writer: W) -> Result<(), Jso
         agent: session.agent.clone(),
         context: session.context.clone(),
     };
-    serde_json::to_writer(&mut writer, &header)
-        .map_err(|e| JsonlError::Json { line: 1, source: e })?;
+    json_to_writer_line(&mut writer, &header, 1)?;
     writer.write_all(b"\n")?;
 
     // Lines 2..N: events
     for (i, event) in session.events.iter().enumerate() {
         let line = HailLine::Event(event.clone());
-        serde_json::to_writer(&mut writer, &line).map_err(|e| JsonlError::Json {
-            line: i + 2,
-            source: e,
-        })?;
+        json_to_writer_line(&mut writer, &line, i + 2)?;
         writer.write_all(b"\n")?;
     }
 
     // Last line: stats
     let stats_line = HailLine::Stats(session.stats.clone());
-    serde_json::to_writer(&mut writer, &stats_line).map_err(|e| JsonlError::Json {
-        line: session.events.len() + 2,
-        source: e,
-    })?;
+    json_to_writer_line(&mut writer, &stats_line, session.events.len() + 2)?;
     writer.write_all(b"\n")?;
 
     Ok(())
@@ -102,8 +107,7 @@ pub fn read_jsonl<R: BufRead>(reader: R) -> Result<Session, JsonlError> {
 
     // Line 1: header
     let header_str = lines.next().ok_or(JsonlError::MissingHeader)??;
-    let header: HailLine =
-        serde_json::from_str(&header_str).map_err(|e| JsonlError::Json { line: 1, source: e })?;
+    let header: HailLine = json_from_str_line(&header_str, 1)?;
 
     let (version, session_id, agent, context) = match header {
         HailLine::Header {
@@ -126,11 +130,7 @@ pub fn read_jsonl<R: BufRead>(reader: R) -> Result<Session, JsonlError> {
             continue;
         }
 
-        let hail_line: HailLine =
-            serde_json::from_str(&line_str).map_err(|e| JsonlError::Json {
-                line: line_num,
-                source: e,
-            })?;
+        let hail_line: HailLine = json_from_str_line(&line_str, line_num)?;
 
         match hail_line {
             HailLine::Event(event) => events.push(event),
@@ -171,8 +171,7 @@ pub fn read_header<R: BufRead>(
 ) -> Result<(String, String, Agent, SessionContext), JsonlError> {
     let mut lines = reader.lines();
     let header_str = lines.next().ok_or(JsonlError::MissingHeader)??;
-    let header: HailLine =
-        serde_json::from_str(&header_str).map_err(|e| JsonlError::Json { line: 1, source: e })?;
+    let header: HailLine = json_from_str_line(&header_str, 1)?;
 
     match header {
         HailLine::Header {
@@ -194,8 +193,7 @@ pub fn read_header_and_stats(
 
     // First line: header
     let header_str = lines.next().ok_or(JsonlError::MissingHeader)?;
-    let header: HailLine =
-        serde_json::from_str(header_str).map_err(|e| JsonlError::Json { line: 1, source: e })?;
+    let header: HailLine = json_from_str_line(header_str, 1)?;
 
     let (version, session_id, agent, context) = match header {
         HailLine::Header {

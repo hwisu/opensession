@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use opensession_core::trace::{Agent, Content, Event, EventType, Session, SessionContext};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -224,6 +224,7 @@ pub(crate) enum ToolResultBlock {
 // ── Parsing logic ───────────────────────────────────────────────────────────
 
 pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
+    let own_meta = read_subagent_meta(path);
     let file = std::fs::File::open(path)
         .with_context(|| format!("Failed to open JSONL file: {}", path.display()))?;
     let reader = std::io::BufReader::new(file);
@@ -342,12 +343,23 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
         }
     }
 
-    // Derive session_id from file name if not found in entries
+    let parent_session_id = own_meta
+        .as_ref()
+        .and_then(|value| value.parent_session_id.clone())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    // Derive session_id from parsed entries, then metadata, then file name.
     let session_id = session_id.unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string()
+        own_meta
+            .as_ref()
+            .and_then(|value| value.session_id.clone())
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            })
     });
 
     let agent = Agent {
@@ -372,8 +384,18 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
     );
     attributes.insert(
         "session_role".to_string(),
-        serde_json::Value::String("primary".to_string()),
+        serde_json::Value::String(if parent_session_id.is_some() {
+            "auxiliary".to_string()
+        } else {
+            "primary".to_string()
+        }),
     );
+    if let Some(parent_session_id) = parent_session_id.as_ref() {
+        attributes.insert(
+            "parent_session_id".to_string(),
+            serde_json::Value::String(parent_session_id.clone()),
+        );
+    }
     if let Some(ref dir) = cwd {
         attributes.insert("cwd".to_string(), serde_json::Value::String(dir.clone()));
     }
@@ -410,7 +432,7 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
         tags: vec!["claude-code".to_string()],
         created_at,
         updated_at,
-        related_session_ids: Vec::new(),
+        related_session_ids: parent_session_id.clone().into_iter().collect(),
         attributes,
     };
 
@@ -418,9 +440,12 @@ pub(super) fn parse_claude_code_jsonl(path: &Path) -> Result<Session> {
     session.context = context;
     session.events = events;
 
-    // ── Merge subagent sessions ──────────────────────────────────────────
-    let session_id = session.session_id.clone();
-    merge_subagent_sessions(path, &session_id, &mut session);
+    // Auxiliary sessions should be hidden as child traces, not fan-in parents.
+    if parent_session_id.is_none() {
+        // ── Merge subagent sessions ──────────────────────────────────────
+        let session_id = session.session_id.clone();
+        merge_subagent_sessions(path, &session_id, &mut session);
+    }
 
     session.recompute_stats();
 
@@ -437,27 +462,27 @@ fn is_subagent_file_name(name: &str) -> bool {
 
 fn collect_subagent_dirs(parent_path: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_unique = |path: PathBuf| {
+        if seen.insert(path.clone()) {
+            dirs.push(path);
+        }
+    };
 
     // Parent default layout: `<parent-file-stem>/subagents/*.jsonl`
-    dirs.push(parent_path.with_extension("").join("subagents"));
+    push_unique(parent_path.with_extension("").join("subagents"));
 
     // Fallback for legacy/alternate layouts in the same project folder.
     if let Some(parent_dir) = parent_path.parent() {
-        dirs.push(parent_dir.join("subagents"));
+        push_unique(parent_dir.join("subagents"));
+        // Newer Claude Code layouts can place child logs directly beside the parent.
+        push_unique(parent_dir.to_path_buf());
     }
 
     dirs
 }
 
-fn merge_subagent_session_ids_match(
-    parent_session_id: &str,
-    file_name: &str,
-    meta: &SubagentMeta,
-) -> bool {
-    if is_subagent_file_name(file_name) {
-        return true;
-    }
-
+fn merge_subagent_session_ids_match(parent_session_id: &str, meta: &SubagentMeta) -> bool {
     meta.session_id
         .as_deref()
         .is_some_and(|id| id == parent_session_id)
@@ -487,6 +512,10 @@ fn merge_subagent_sessions(parent_path: &Path, parent_session_id: &str, session:
     }
 
     subagent_files.retain(|path| {
+        if path == parent_path {
+            return false;
+        }
+
         let file_name = match path.file_name().and_then(|n| n.to_str()) {
             Some(name) => name,
             None => return false,
@@ -496,14 +525,19 @@ fn merge_subagent_sessions(parent_path: &Path, parent_session_id: &str, session:
             return false;
         }
 
-        let meta = read_subagent_meta(path);
-        if is_subagent_file_name(file_name) {
+        let in_subagents_dir = path
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("subagents"));
+        if in_subagents_dir && is_subagent_file_name(file_name) {
             return true;
         }
 
+        let meta = read_subagent_meta(path);
         matches!(
             meta,
-            Some(meta) if merge_subagent_session_ids_match(parent_session_id, file_name, &meta)
+            Some(meta) if merge_subagent_session_ids_match(parent_session_id, &meta)
         )
     });
 
@@ -1806,6 +1840,120 @@ mod tests {
             .any(|e| matches!(e.event_type, EventType::TaskEnd { .. })));
         // message_count includes user+agent messages and TaskEnd summaries.
         assert_eq!(session.stats.message_count, 3);
+    }
+
+    #[test]
+    fn test_subagent_file_merge_handles_sibling_layout_with_parent_id_meta() {
+        let dir = test_temp_root();
+        let parent_path = dir.as_path().join("session-parent-sibling.jsonl");
+        let parent_session = "sess-parent-sibling";
+
+        let parent_entry = serde_json::json!({
+            "type": "user",
+            "uuid": "u1",
+            "sessionId": parent_session,
+            "timestamp": Utc::now().to_rfc3339(),
+            "message": {
+                "role": "user",
+                "content": "parent prompt"
+            }
+        })
+        .to_string();
+        write(&parent_path, parent_entry).unwrap();
+
+        let sibling_subagent_path = dir
+            .as_path()
+            .join("70dafb43-dbdd-4009-beb0-b6ac2bd9c4d1.jsonl");
+        let subagent_entry = serde_json::json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "sessionId": "subagent-random",
+            "parentUuid": parent_session,
+            "timestamp": Utc::now()
+                .checked_add_signed(Duration::seconds(1))
+                .unwrap()
+                .to_rfc3339(),
+            "message": {
+                "role": "assistant",
+                "model": "claude-3-opus",
+                "content": [{
+                    "type": "text",
+                    "text": "sibling subagent reply"
+                }]
+            }
+        })
+        .to_string();
+        write(&sibling_subagent_path, subagent_entry).unwrap();
+
+        let session = parse_claude_code_jsonl(&parent_path).unwrap();
+        assert!(session.events.iter().any(|event| {
+            event
+                .attributes
+                .get("merged_subagent")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        }));
+        assert!(session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::TaskStart { .. })
+                && event
+                    .attributes
+                    .get("subagent_id")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+        }));
+        assert!(session.events.iter().any(|event| {
+            matches!(event.event_type, EventType::AgentMessage)
+                && event.content.blocks.iter().any(|block| {
+                    matches!(block, opensession_core::trace::ContentBlock::Text { text } if text.contains("sibling subagent reply"))
+                })
+        }));
+    }
+
+    #[test]
+    fn test_parent_id_meta_marks_main_parser_session_as_auxiliary() {
+        let dir = test_temp_root();
+        let path = dir
+            .as_path()
+            .join("70dafb43-dbdd-4009-beb0-b6ac2bd9c4d1.jsonl");
+        let entry = serde_json::json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "sessionId": "subagent-random",
+            "parentId": "parent-main",
+            "timestamp": Utc::now().to_rfc3339(),
+            "message": {
+                "role": "assistant",
+                "model": "claude-3-opus",
+                "content": [{
+                    "type": "text",
+                    "text": "sub"
+                }]
+            }
+        })
+        .to_string();
+        write(&path, entry).unwrap();
+
+        let parsed = parse_claude_code_jsonl(&path).unwrap();
+        assert_eq!(
+            parsed
+                .context
+                .attributes
+                .get("session_role")
+                .and_then(|value| value.as_str()),
+            Some("auxiliary")
+        );
+        assert_eq!(
+            parsed
+                .context
+                .attributes
+                .get("parent_session_id")
+                .and_then(|value| value.as_str()),
+            Some("parent-main")
+        );
+        assert_eq!(
+            parsed.context.related_session_ids,
+            vec!["parent-main".to_string()]
+        );
     }
 
     #[test]

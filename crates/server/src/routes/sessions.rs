@@ -6,7 +6,8 @@ use axum::{
 };
 
 use opensession_api::{
-    db, LinkType, SessionDetail, SessionLink, SessionListQuery, SessionListResponse, SessionSummary,
+    db, LinkType, SessionDetail, SessionLink, SessionListQuery, SessionListResponse,
+    SessionRepoListResponse, SessionSummary,
 };
 
 use crate::error::ApiErr;
@@ -95,6 +96,26 @@ pub async fn list_sessions(
 
 fn can_access_session_list(public_feed_enabled: bool, is_authenticated: bool) -> bool {
     public_feed_enabled || is_authenticated
+}
+
+/// GET /api/sessions/repos — list known repository names.
+pub async fn list_session_repos(
+    State(db): State<Db>,
+    State(config): State<AppConfig>,
+    auth_user: Result<AuthUser, ApiErr>,
+) -> Result<Json<SessionRepoListResponse>, ApiErr> {
+    let is_authenticated = auth_user.is_ok();
+    if !can_access_session_list(config.public_feed_enabled, is_authenticated) {
+        return Err(ApiErr::unauthorized(
+            "public session feed is disabled; authentication required",
+        ));
+    }
+
+    let conn = db.conn();
+    let repos: Vec<String> = sq_query_map(&conn, db::sessions::list_repo_names(), |row| row.get(0))
+        .map_err(ApiErr::from_db("list session repos"))?;
+
+    Ok(Json(SessionRepoListResponse { repos }))
 }
 
 // ---------------------------------------------------------------------------

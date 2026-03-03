@@ -1,7 +1,8 @@
 <script lang="ts">
-import { listSessions } from '../api';
-import type { SessionSummary, SortOrder, TimeRange } from '../types';
+import { listSessionRepos, listSessions } from '../api';
+import type { SessionSummary, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
+import { stripTags } from '../utils';
 import SessionCard from './SessionCard.svelte';
 
 const {
@@ -16,13 +17,18 @@ let loading = $state(false);
 let error = $state<string | null>(null);
 let searchQuery = $state('');
 let toolFilter = $state('');
-let sortBy = $state<SortOrder>('recent');
+let repoFilter = $state('');
+let repoInput = $state('');
 let timeRange = $state<TimeRange>('all');
 let currentPage = $state(1);
 let selectedIndex = $state(0);
 let renderLimit = $state(20);
 let searchInput: HTMLInputElement | undefined = $state();
+let repoFilterInputEl: HTMLInputElement | undefined = $state();
 let fetchRequestId = 0;
+let knownRepos = $state<string[]>([]);
+let copyFeedback = $state<string | null>(null);
+let copyFeedbackTimer: number | null = null;
 
 const perPage = 20;
 const listCacheKey = 'opensession_public_list_cache_v1';
@@ -48,7 +54,6 @@ const sessionOrder = $derived.by(() => {
 	return order;
 });
 
-const sortCycle: readonly SortOrder[] = ['recent', 'popular', 'longest'];
 const rangeCycle: readonly TimeRange[] = ['all', '24h', '7d', '30d'];
 const timeRangeTabs: ReadonlyArray<{ value: TimeRange; label: string }> = [
 	{ value: 'all', label: 'All Time' },
@@ -65,7 +70,7 @@ function currentListQueryFingerprint(page: number): string {
 	return JSON.stringify({
 		search: searchQuery || '',
 		tool: toolFilter || '',
-		sort: sortBy,
+		git_repo_name: repoFilter,
 		time_range: timeRange,
 		page,
 		per_page: perPage,
@@ -77,7 +82,7 @@ function isDefaultPublicFeedQuery(page: number): boolean {
 		page === 1 &&
 		searchQuery.trim().length === 0 &&
 		toolFilter.length === 0 &&
-		sortBy === 'recent' &&
+		repoFilter.length === 0 &&
 		timeRange === 'all'
 	);
 }
@@ -125,6 +130,7 @@ async function fetchSessions(reset = false) {
 			sessions = cached.sessions;
 			total = cached.total;
 			renderLimit = Math.max(perPage, Math.min(cached.sessions.length, perPage));
+			mergeKnownRepos(cached.sessions);
 			usedWarmCache = true;
 		}
 	}
@@ -135,7 +141,7 @@ async function fetchSessions(reset = false) {
 		const res = await listSessions({
 			search: searchQuery || undefined,
 			tool: toolFilter || undefined,
-			sort: sortBy !== 'recent' ? sortBy : undefined,
+			git_repo_name: repoFilter || undefined,
 			time_range: timeRange !== 'all' ? timeRange : undefined,
 			page: targetPage,
 			per_page: perPage,
@@ -148,6 +154,7 @@ async function fetchSessions(reset = false) {
 			sessions = [...sessions, ...res.sessions];
 		}
 		total = res.total;
+		mergeKnownRepos(res.sessions);
 		if (reset && isDefaultPublicFeedQuery(targetPage)) {
 			writeListCache({
 				query: fingerprint,
@@ -163,6 +170,15 @@ async function fetchSessions(reset = false) {
 		if (requestId === fetchRequestId) {
 			loading = false;
 		}
+	}
+}
+
+async function fetchKnownRepos() {
+	try {
+		const response = await listSessionRepos();
+		knownRepos = [...response.repos].sort((a, b) => a.localeCompare(b));
+	} catch {
+		// Keep fallback behavior (derive from list payloads) when repo endpoint is unavailable.
 	}
 }
 
@@ -184,6 +200,34 @@ const tools = [
 	...Object.values(TOOL_CONFIGS).map((t) => ({ value: t.name, label: t.label })),
 ];
 
+function extractRepos(items: SessionSummary[]): string[] {
+	const values = new Set<string>();
+	for (const session of items) {
+		const repo = session.git_repo_name?.trim();
+		if (repo) values.add(repo);
+	}
+	return [...values];
+}
+
+function mergeKnownRepos(items: SessionSummary[]) {
+	const merged = new Set(knownRepos);
+	for (const repo of extractRepos(items)) {
+		merged.add(repo);
+	}
+	knownRepos = [...merged].sort((a, b) => a.localeCompare(b));
+}
+
+function applyRepoFilter(nextValue: string) {
+	const normalized = nextValue.trim();
+	repoFilter = normalized;
+	repoInput = normalized;
+	fetchSessions(true);
+}
+
+function clearRepoFilter() {
+	applyRepoFilter('');
+}
+
 function cycleFilterValue<T extends string>(current: T, options: readonly T[]): T {
 	const idx = options.indexOf(current);
 	return options[(idx + 1) % options.length] ?? options[0];
@@ -194,12 +238,107 @@ function isSearchFocusShortcut(e: KeyboardEvent): boolean {
 	return e.code === 'Slash' || e.key === '/' || e.key === '?';
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+	if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true;
+	return target instanceof HTMLElement && target.isContentEditable;
+}
+
+function hasEditableSelection(target: EventTarget | null): boolean {
+	if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+		const start = target.selectionStart ?? 0;
+		const end = target.selectionEnd ?? 0;
+		return end > start;
+	}
+	if (target instanceof HTMLElement && target.isContentEditable) {
+		const selection = window.getSelection();
+		return (selection?.toString() ?? '').trim().length > 0;
+	}
+	return false;
+}
+
 function focusSearchInput() {
 	searchInput?.focus();
 	searchInput?.select();
 }
 
+function focusRepoFilterInput() {
+	repoFilterInputEl?.focus();
+	repoFilterInputEl?.select();
+}
+
+function isCopyShortcut(e: KeyboardEvent): boolean {
+	return (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'c';
+}
+
+function selectedSessionTitleForCopy(): string {
+	const selected = navigableSessions[selectedIndex];
+	if (!selected) return '';
+	const title = stripTags(selected.title ?? '').trim();
+	if (title.length > 0) return title;
+	const description = stripTags(selected.description ?? '').trim();
+	if (description.length > 0) return description;
+	return 'Untitled Session';
+}
+
+function setCopyFeedbackMessage(message: string | null) {
+	copyFeedback = message;
+	if (copyFeedbackTimer != null) {
+		window.clearTimeout(copyFeedbackTimer);
+		copyFeedbackTimer = null;
+	}
+	if (!message) return;
+	copyFeedbackTimer = window.setTimeout(() => {
+		copyFeedback = null;
+		copyFeedbackTimer = null;
+	}, 1200);
+}
+
+async function writeClipboardText(text: string): Promise<boolean> {
+	if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+		try {
+			await navigator.clipboard.writeText(text);
+			return true;
+		} catch {
+			// Fall through to legacy copy path.
+		}
+	}
+	if (typeof document === 'undefined') return false;
+	const textarea = document.createElement('textarea');
+	textarea.value = text;
+	textarea.setAttribute('readonly', '');
+	textarea.style.position = 'fixed';
+	textarea.style.opacity = '0';
+	document.body.appendChild(textarea);
+	textarea.select();
+	let copied = false;
+	try {
+		copied = document.execCommand('copy');
+	} catch {
+		copied = false;
+	}
+	textarea.remove();
+	return copied;
+}
+
+async function handleCopyShortcut(e: KeyboardEvent) {
+	const selectedText = window.getSelection()?.toString() ?? '';
+	const fallbackText = selectedSessionTitleForCopy();
+	const textToCopy = selectedText.trim().length > 0 ? selectedText : fallbackText;
+	if (!textToCopy) return;
+	e.preventDefault();
+	const copied = await writeClipboardText(textToCopy);
+	setCopyFeedbackMessage(copied ? 'Copied' : 'Copy failed');
+}
+
+async function copySelectedSessionTitle() {
+	const text = selectedSessionTitleForCopy();
+	if (!text) return;
+	const copied = await writeClipboardText(text);
+	setCopyFeedbackMessage(copied ? 'Copied' : 'Copy failed');
+}
+
 $effect(() => {
+	void fetchKnownRepos();
 	fetchSessions(true);
 });
 
@@ -214,8 +353,22 @@ $effect(() => {
 	}
 });
 
+$effect(() => {
+	return () => {
+		if (copyFeedbackTimer != null) {
+			window.clearTimeout(copyFeedbackTimer);
+			copyFeedbackTimer = null;
+		}
+	};
+});
+
 function handleKeydown(e: KeyboardEvent) {
-	if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+	if (isCopyShortcut(e)) {
+		if (hasEditableSelection(e.target)) return;
+		void handleCopyShortcut(e);
+		return;
+	}
+	if (isEditableTarget(e.target)) return;
 	if (e.key === 'j') {
 		e.preventDefault();
 		if (selectedIndex < navigableSessions.length - 1) selectedIndex++;
@@ -233,20 +386,34 @@ function handleKeydown(e: KeyboardEvent) {
 	} else if (isSearchFocusShortcut(e)) {
 		e.preventDefault();
 		focusSearchInput();
+	} else if (e.key.toLowerCase() === 'g') {
+		e.preventDefault();
+		focusRepoFilterInput();
 	} else if (e.key === 't') {
 		e.preventDefault();
 		const toolValues = tools.map((t) => t.value);
 		toolFilter = cycleFilterValue(toolFilter, toolValues);
-		fetchSessions(true);
-	} else if (e.key === 'o') {
-		e.preventDefault();
-		sortBy = cycleFilterValue(sortBy, sortCycle);
 		fetchSessions(true);
 	} else if (e.key === 'r') {
 		e.preventDefault();
 		timeRange = cycleFilterValue(timeRange, rangeCycle);
 		fetchSessions(true);
 	}
+}
+
+function handleCopyEvent(e: ClipboardEvent) {
+	if (hasEditableSelection(e.target)) return;
+	const selectedText = window.getSelection()?.toString() ?? '';
+	const fallbackText = selectedSessionTitleForCopy();
+	const textToCopy = selectedText.trim().length > 0 ? selectedText : fallbackText;
+	if (!textToCopy) return;
+	e.preventDefault();
+	if (e.clipboardData) {
+		e.clipboardData.setData('text/plain', textToCopy);
+		setCopyFeedbackMessage('Copied');
+		return;
+	}
+	void copySelectedSessionTitle();
 }
 
 function handleSearchInputKeydown(e: KeyboardEvent) {
@@ -267,6 +434,22 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 	}
 }
 
+function handleRepoInputKeydown(e: KeyboardEvent) {
+	if (e.key === 'Enter') {
+		e.preventDefault();
+		applyRepoFilter(repoInput);
+		return;
+	}
+	if (e.key === 'Escape') {
+		e.preventDefault();
+		if (repoInput.trim().length > 0 || repoFilter.length > 0) {
+			clearRepoFilter();
+			return;
+		}
+		(e.target as HTMLInputElement | null)?.blur();
+	}
+}
+
 function scrollSelectedIntoView() {
 	const el = document.querySelector(`[data-session-idx="${selectedIndex}"]`);
 	el?.scrollIntoView({ block: 'nearest' });
@@ -284,7 +467,7 @@ $effect(() => {
 });
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window oncopy={handleCopyEvent} onkeydown={handleKeydown} />
 
 <svelte:head>
 	<title>opensession.io - AI Session Explorer</title>
@@ -330,15 +513,34 @@ $effect(() => {
 				<option value={t.value}>{t.label}</option>
 			{/each}
 		</select>
-		<select
-			bind:value={sortBy}
-			onchange={() => fetchSessions(true)}
-			class="w-full border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent sm:w-auto"
-		>
-			<option value="recent">Recent</option>
-			<option value="popular">Most Messages</option>
-			<option value="longest">Longest</option>
-		</select>
+		<div class="flex w-full items-center gap-1 sm:w-auto">
+			<label for="session-repo-filter" class="shrink-0 text-xs text-text-muted">repo</label>
+			<input
+				id="session-repo-filter"
+				list="session-repo-options"
+				type="text"
+				placeholder="org/repo"
+				bind:this={repoFilterInputEl}
+				bind:value={repoInput}
+				onkeydown={handleRepoInputKeydown}
+				onblur={() => applyRepoFilter(repoInput)}
+				class="w-full min-w-0 border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent sm:w-48"
+			/>
+			<datalist id="session-repo-options">
+				{#each knownRepos as repo}
+					<option value={repo}></option>
+				{/each}
+			</datalist>
+			{#if repoFilter}
+				<button
+					type="button"
+					onclick={clearRepoFilter}
+					class="shrink-0 border border-border bg-bg-secondary px-1.5 py-0.5 text-xs text-text-muted transition-colors hover:text-text-primary"
+				>
+					clear
+				</button>
+			{/if}
+		</div>
 		<div
 			data-testid="list-shortcut-legend"
 			class="flex w-full flex-wrap items-center gap-1 text-[11px] text-text-muted"
@@ -348,13 +550,34 @@ $effect(() => {
 				<span>tool</span>
 			</span>
 			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">o</kbd>
-				<span>order</span>
-			</span>
-			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
 				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">r</kbd>
 				<span>range</span>
 			</span>
+			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">g</kbd>
+				<span>repo</span>
+			</span>
+			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">Cmd/Ctrl+C</kbd>
+				<span>copy title</span>
+			</span>
+			{#if copyFeedback}
+				<span
+					data-testid="session-copy-feedback"
+					class="rounded border border-border bg-bg-secondary px-1.5 py-0.5"
+					class:text-success={copyFeedback === 'Copied'}
+					class:text-error={copyFeedback === 'Copy failed'}
+				>
+					{copyFeedback}
+				</span>
+			{/if}
+			<button
+				type="button"
+				onclick={copySelectedSessionTitle}
+				class="rounded border border-border bg-bg-secondary px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
+			>
+				Copy selected
+			</button>
 		</div>
 	</div>
 

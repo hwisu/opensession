@@ -10,6 +10,7 @@ export {
 	getApiCapabilities,
 	getAuthProviders,
 	getOAuthUrl,
+	getSessionDetail,
 	getLocalReviewBundle,
 	isParsePreviewApiAvailable,
 	getSession,
@@ -17,6 +18,7 @@ export {
 	handleAuthCallback,
 	isAuthApiAvailable,
 	isAuthenticated,
+	listSessionRepos,
 	listSessions,
 	previewSessionFromGitSource,
 	previewSessionFromGithubSource,
@@ -34,10 +36,12 @@ export {
 	calcContentLength,
 	findCodeStats,
 	findFirstText,
+	firstMeaningfulEventLine,
 	findJsonPayload,
 	formatContentLength,
 	getToolName,
 	isToolError,
+	prepareTimelineEvents,
 	truncate,
 } from './event-helpers';
 // HAIL parser helpers
@@ -47,8 +51,11 @@ export { highlightCode } from './highlight';
 export { isLongContent, lineCount, renderMarkdown } from './markdown';
 // Session filter/view helpers
 export {
+	branchpointFilterKeyForEvent,
+	buildBranchpointFilterOptions,
 	buildNativeFilterOptions,
 	buildUnifiedFilterOptions,
+	filterEventsByBranchpointKeys,
 	filterEventsByNativeGroups,
 	filterEventsByUnifiedKeys,
 	isNativeAdapterSupported,

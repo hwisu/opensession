@@ -256,6 +256,12 @@ pub fn list(q: &SessionListQuery) -> BuiltSessionListQuery {
         select_q.and_where(cond);
     }
 
+    if let Some(ref repo) = q.git_repo_name {
+        let cond = Expr::col((Alias::new("s"), Sessions::GitRepoName)).eq(repo.as_str());
+        count_q.and_where(cond.clone());
+        select_q.and_where(cond);
+    }
+
     if let Some(ref search) = q.search {
         let like = format!("%{search}%");
         let cond = Expr::col((Alias::new("s"), Sessions::Title))
@@ -313,6 +319,18 @@ pub fn list(q: &SessionListQuery) -> BuiltSessionListQuery {
         page: q.page,
         per_page,
     }
+}
+
+/// SELECT distinct non-empty git repo names ordered alphabetically.
+pub fn list_repo_names() -> Built {
+    Query::select()
+        .column(Sessions::GitRepoName)
+        .from(Sessions::Table)
+        .and_where(Expr::col(Sessions::GitRepoName).is_not_null())
+        .and_where(Expr::cust("TRIM(git_repo_name) <> ''"))
+        .group_by_col(Sessions::GitRepoName)
+        .order_by(Sessions::GitRepoName, Order::Asc)
+        .build(SqliteQueryBuilder)
 }
 
 /// INSERT a session link.

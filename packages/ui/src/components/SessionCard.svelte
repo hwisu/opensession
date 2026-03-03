@@ -45,7 +45,7 @@ const modelLabel = $derived(getSessionModelLabel(session));
 	</span>
 
 	<!-- Title (truncate) -->
-	<span class="min-w-0 flex-1 truncate text-text-primary group-hover:text-accent">
+	<span class="min-w-0 flex-1 truncate select-text text-text-primary group-hover:text-accent">
 		{displayTitle}
 	</span>
 

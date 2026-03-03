@@ -82,6 +82,18 @@ cargo run -p opensession-daemon -- run
 
 daemon이 없으면 parse/register/share는 수동으로 사용할 수 있지만 백그라운드 자동 수집은 동작하지 않습니다.
 
+## 데스크톱 프리뷰 (Tauri)
+
+기존 Svelte UI를 재사용하는 데스크톱 프리뷰 셸은 [`desktop/`](desktop/README.md)에 있습니다.
+
+```bash
+cd desktop
+npm install
+npm run dev
+```
+
+위 명령은 `opensession-server`와 Tauri 데스크톱 창을 함께 실행합니다.
+
 ## 빠른 시작
 
 ```bash

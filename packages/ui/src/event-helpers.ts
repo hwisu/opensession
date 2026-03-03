@@ -1,6 +1,8 @@
 import { TRUNCATE_LENGTH } from './constants';
 import type { ContentBlock, Event, EventType } from './types';
 
+const LOW_SIGNAL_LINE_RE = /^[.\u00B7\u2022\-_=~`]+$/;
+
 /** Extract tool name from ToolCall/ToolResult event types */
 export function getToolName(eventType: EventType): string {
 	if ('data' in eventType && 'name' in eventType.data) {
@@ -80,26 +82,45 @@ function blockTextFragments(block: ContentBlock): string[] {
 	return [];
 }
 
-function firstEventTextLine(event: Event): string | null {
+function eventTextLines(event: Event): string[] {
+	const out: string[] = [];
 	for (const block of event.content.blocks) {
 		for (const fragment of blockTextFragments(block)) {
 			for (const line of fragment.split('\n')) {
 				const trimmed = line.trim();
-				if (trimmed.length > 0) return trimmed;
+				if (trimmed.length > 0) out.push(trimmed);
 			}
 		}
+	}
+	return out;
+}
+
+function firstEventTextLine(event: Event): string | null {
+	return eventTextLines(event)[0] ?? null;
+}
+
+function isLowSignalLine(line: string): boolean {
+	const trimmed = line.trim();
+	return trimmed.length > 0 && trimmed.length <= 8 && LOW_SIGNAL_LINE_RE.test(trimmed);
+}
+
+/** First non-empty text line that is not a keepalive marker (".", "...", "----"). */
+export function firstMeaningfulEventLine(event: Event): string | null {
+	for (const line of eventTextLines(event)) {
+		if (!isLowSignalLine(line)) return line;
 	}
 	return null;
 }
 
 function isRunningSessionStatusLine(line: string | null): boolean {
-	if (!line) return true;
+	if (!line) return false;
 	const lowered = line.trim().toLowerCase();
 	return (
 		lowered.length === 0 ||
 		lowered.includes('process running with session id') ||
 		lowered === 'ok' ||
-		lowered === 'output:'
+		lowered === 'output:' ||
+		isLowSignalLine(lowered)
 	);
 }
 
@@ -136,6 +157,124 @@ export function isBoilerplateEvent(event: Event): boolean {
 		return line ? isMarkdownProgressLine(line) : false;
 	}
 	return false;
+}
+
+function stableStringify(value: unknown): string {
+	if (value == null) return 'null';
+	if (typeof value === 'string') return JSON.stringify(value);
+	if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+	if (Array.isArray(value)) {
+		return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+	}
+	if (typeof value === 'object') {
+		const obj = value as Record<string, unknown>;
+		const keys = Object.keys(obj).sort();
+		const pairs = keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`);
+		return `{${pairs.join(',')}}`;
+	}
+	return JSON.stringify(String(value));
+}
+
+function normalizeTextForSignature(text: string): string {
+	return text.replace(/\r\n?/g, '\n').trim();
+}
+
+function blockSignature(block: ContentBlock): string {
+	switch (block.type) {
+		case 'Text':
+			return `Text:${normalizeTextForSignature(block.text)}`;
+		case 'Code':
+			return `Code:${block.language ?? ''}:${normalizeTextForSignature(block.code)}`;
+		case 'Json':
+			return `Json:${stableStringify(block.data)}`;
+		case 'File':
+			return `File:${block.path}:${normalizeTextForSignature(block.content ?? '')}`;
+		case 'Image':
+			return `Image:${block.url}:${block.alt ?? ''}:${block.mime}`;
+		case 'Video':
+			return `Video:${block.url}:${block.mime}`;
+		case 'Audio':
+			return `Audio:${block.url}:${block.mime}`;
+		case 'Reference':
+			return `Reference:${block.uri}:${block.media_type}`;
+	}
+}
+
+function eventSignature(event: Event): string {
+	const typeData = 'data' in event.event_type ? stableStringify(event.event_type.data) : '';
+	const contentSignature = event.content.blocks.map((block) => blockSignature(block)).join('\u241e');
+	const stableTaskId = event.event_type.type === 'Thinking' ? '' : (event.task_id ?? '');
+	return [
+		event.event_type.type,
+		stableTaskId,
+		semanticCallId(event) ?? '',
+		typeData,
+		contentSignature,
+	].join('\u241f');
+}
+
+function eventInfoScore(event: Event): number {
+	let textLen = 0;
+	for (const block of event.content.blocks) {
+		if (block.type === 'Text') textLen += block.text.length;
+		else if (block.type === 'Code') textLen += block.code.length;
+	}
+	return (
+		event.content.blocks.length * 4 +
+		Object.keys(event.attributes ?? {}).length * 2 +
+		Math.min(64, textLen)
+	);
+}
+
+function shouldCoalesceConsecutiveEvents(previous: Event, current: Event): boolean {
+	return eventSignature(previous) === eventSignature(current);
+}
+
+function pickPreferredDuplicate(previous: Event, current: Event): Event {
+	const prevScore = eventInfoScore(previous);
+	const currScore = eventInfoScore(current);
+	if (currScore > prevScore) return current;
+	return previous;
+}
+
+function isLowSignalStandaloneEvent(event: Event): boolean {
+	const typeName = event.event_type.type;
+	if (
+		typeName !== 'AgentMessage' &&
+		typeName !== 'Thinking' &&
+		typeName !== 'ToolResult' &&
+		typeName !== 'SystemMessage' &&
+		typeName !== 'Custom'
+	) {
+		return false;
+	}
+	if (typeName === 'ToolResult' && isToolError(event.event_type)) return false;
+	if (event.content.blocks.length === 0) return false;
+	if (!event.content.blocks.every((block) => block.type === 'Text')) return false;
+	const lines = eventTextLines(event);
+	if (lines.length === 0) return false;
+	return lines.every((line) => isLowSignalLine(line));
+}
+
+/**
+ * Canonical timeline projection used by web/desktop rendering:
+ * - removes boilerplate transport noise
+ * - removes low-signal keepalive rows (".", "...")
+ * - coalesces adjacent duplicate events with identical semantic payload
+ */
+export function prepareTimelineEvents(events: Event[]): Event[] {
+	const kept: Event[] = [];
+	for (const event of events) {
+		if (isBoilerplateEvent(event)) continue;
+		if (isLowSignalStandaloneEvent(event)) continue;
+		const previous = kept[kept.length - 1];
+		if (previous && shouldCoalesceConsecutiveEvents(previous, event)) {
+			kept[kept.length - 1] = pickPreferredDuplicate(previous, event);
+			continue;
+		}
+		kept.push(event);
+	}
+	return kept;
 }
 
 function semanticCallId(event: Event): string | null {

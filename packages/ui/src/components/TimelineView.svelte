@@ -1,8 +1,10 @@
 <script lang="ts">
-import { isBoilerplateEvent, isToolError, pairToolCallResults } from '../event-helpers';
+import { isToolError, pairToolCallResults } from '../event-helpers';
 import {
+	buildBranchpointFilterOptions,
 	buildNativeFilterOptions,
 	buildUnifiedFilterOptions,
+	filterEventsByBranchpointKeys,
 	filterEventsByNativeGroups,
 	filterEventsByUnifiedKeys,
 	type FilterOption,
@@ -17,9 +19,11 @@ const {
 	viewMode = 'unified',
 	nativeEnabled = false,
 	unifiedFilters = new Set<string>(),
+	branchFilters = new Set<string>(),
 	nativeFilters = new Set<string>(),
 	onViewModeChange = (_mode: SessionViewMode) => {},
 	onToggleUnifiedFilter = (_key: string) => {},
+	onToggleBranchFilter = (_key: string) => {},
 	onToggleNativeFilter = (_key: string) => {},
 	nativeAdapter = null,
 }: {
@@ -27,9 +31,11 @@ const {
 	viewMode?: SessionViewMode;
 	nativeEnabled?: boolean;
 	unifiedFilters?: Set<string>;
+	branchFilters?: Set<string>;
 	nativeFilters?: Set<string>;
 	onViewModeChange?: (mode: SessionViewMode) => void;
 	onToggleUnifiedFilter?: (key: string) => void;
+	onToggleBranchFilter?: (key: string) => void;
 	onToggleNativeFilter?: (key: string) => void;
 	nativeAdapter?: string | null;
 } = $props();
@@ -37,20 +43,29 @@ const {
 type TimelineItem = { event: Event; pairedResult?: Event; resultOk?: boolean };
 type EventGroup = 'user' | 'agent' | 'tool' | 'system';
 
-const timelineEvents = $derived.by(() => events.filter((event) => !isBoilerplateEvent(event)));
+const timelineEvents = $derived(events);
 const unifiedOptions = $derived.by(() => buildUnifiedFilterOptions(timelineEvents));
+const branchOptions = $derived.by(() => buildBranchpointFilterOptions(timelineEvents));
 const nativeOptions = $derived.by(() => buildNativeFilterOptions(timelineEvents));
-const activeOptions = $derived.by(() => (viewMode === 'native' ? nativeOptions : unifiedOptions));
+const activeOptions = $derived.by(() => {
+	if (viewMode === 'native') return nativeOptions;
+	if (viewMode === 'branch') return branchOptions;
+	return unifiedOptions;
+});
 
 function isFilterEnabled(optionKey: string): boolean {
-	return viewMode === 'native'
-		? nativeFilters.has(optionKey)
-		: unifiedFilters.has(optionKey);
+	if (viewMode === 'native') return nativeFilters.has(optionKey);
+	if (viewMode === 'branch') return branchFilters.has(optionKey);
+	return unifiedFilters.has(optionKey);
 }
 
 function toggleFilter(optionKey: string) {
 	if (viewMode === 'native') {
 		onToggleNativeFilter(optionKey);
+		return;
+	}
+	if (viewMode === 'branch') {
+		onToggleBranchFilter(optionKey);
 		return;
 	}
 	onToggleUnifiedFilter(optionKey);
@@ -59,6 +74,9 @@ function toggleFilter(optionKey: string) {
 const filteredTimelineEvents = $derived.by(() => {
 	if (viewMode === 'native') {
 		return filterEventsByNativeGroups(timelineEvents, nativeFilters);
+	}
+	if (viewMode === 'branch') {
+		return filterEventsByBranchpointKeys(timelineEvents, branchFilters);
 	}
 	return filterEventsByUnifiedKeys(timelineEvents, unifiedFilters);
 });
@@ -105,14 +123,20 @@ function timelineDotClass(event: Event): string {
 
 function handleFilterKeydown(e: KeyboardEvent) {
 	if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-	const num = parseInt(e.key, 10);
-	if (num < 1 || num > activeOptions.length) return;
+	const num = Number.parseInt(e.key, 10);
+	let optionIndex = -1;
+	if (num >= 1 && num <= 9) {
+		optionIndex = num - 1;
+	} else if (e.key === '0') {
+		optionIndex = 9;
+	}
+	if (optionIndex < 0 || optionIndex >= activeOptions.length) return;
 	e.preventDefault();
-	toggleFilter(activeOptions[num - 1].key);
+	toggleFilter(activeOptions[optionIndex].key);
 }
 
 function buttonLabel(option: FilterOption, index: number): string {
-	return `${index + 1}: ${option.label} (${option.count})`;
+	return `${index === 9 ? 0 : index + 1}: ${option.label} (${option.count})`;
 }
 
 const groupedCounts = $derived.by(() => {
@@ -144,6 +168,7 @@ const groupedCounts = $derived.by(() => {
 			<div class="flex items-center gap-1" role="tablist" aria-label="Session view mode">
 				{#each [
 					{ mode: 'unified', label: 'Unified', enabled: true },
+					{ mode: 'branch', label: 'Branchpoints', enabled: true },
 					{
 						mode: 'native',
 						label: nativeAdapter ? `Native (${nativeAdapter})` : 'Native',
@@ -193,6 +218,7 @@ const groupedCounts = $derived.by(() => {
 		<div class="mt-2 flex flex-wrap items-center gap-1" role="group" aria-label="Event filters">
 			{#each activeOptions as option, i}
 				<button
+					data-filter-key={option.key}
 					aria-pressed={isFilterEnabled(option.key)}
 					onclick={() => toggleFilter(option.key)}
 					class="rounded border px-2 py-0.5 text-[11px] font-medium transition-colors

@@ -12,6 +12,10 @@ import {
 import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
+type DesktopWindow = Window & {
+	__TAURI_INTERNALS__?: unknown;
+};
+
 type PaletteCommand = {
 	id: string;
 	label: string;
@@ -41,9 +45,11 @@ let accountMenuOpen = $state(false);
 let accountMenuRoot: HTMLDivElement | undefined = $state();
 let authEnabled = $state(false);
 let hasLocalAuth = $state(false);
+let desktopRuntime = $state(false);
 
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/sessions');
+const showLoginLink = $derived(!hasLocalAuth && (!desktopRuntime || authEnabled));
 
 function trimNonEmpty(value: string | null | undefined): string | null {
 	if (typeof value !== 'string') return null;
@@ -101,6 +107,11 @@ const navLinks = $derived.by(() => {
 
 $effect(() => {
 	let cancelled = false;
+	if (typeof window !== 'undefined') {
+		const desktopWindow = window as DesktopWindow;
+		desktopRuntime =
+			'__TAURI_INTERNALS__' in desktopWindow || desktopWindow.location.protocol === 'tauri:';
+	}
 	getApiCapabilities()
 		.then((capabilities) => {
 			if (cancelled) return;
@@ -118,19 +129,19 @@ $effect(() => {
 
 const shortcutHints = $derived.by(() => {
 	if (isSessionDetail) {
-		return ['Cmd/Ctrl+K palette', 'j/k scroll', '1-5 filters', '/ search', 'n/p match', 'Esc back'];
+		return ['Cmd/Ctrl+K palette', 'j/k scroll', '1-0 filters', '/ search', 'n/p match', 'Esc back'];
 	}
-	if (isSessionList) {
-		return [
-			'Cmd/Ctrl+K palette',
-			'j/k navigate',
-			'Enter open',
-			'/ search',
-			't tool',
-			'o order',
-			'r range',
-		];
-	}
+		if (isSessionList) {
+			return [
+				'Cmd/Ctrl+K palette',
+				'j/k navigate',
+				'Enter open',
+				'/ search',
+				't tool',
+				'r range',
+				'g repo',
+			];
+		}
 	return ['Cmd/Ctrl+K palette', 'Esc back'];
 });
 
@@ -225,7 +236,7 @@ const allPaletteCommands = $derived.by(() => {
 		),
 	];
 
-	if (!hasLocalAuth) {
+	if (!hasLocalAuth && (!desktopRuntime || authEnabled)) {
 		commands.push(
 			createPaletteCommand(
 				'go-login',
@@ -513,7 +524,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 						</div>
 					{/if}
 				</div>
-			{:else}
+			{:else if showLoginLink}
 				<a
 					href="/login"
 					class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
@@ -540,16 +551,16 @@ function handleGlobalKey(e: KeyboardEvent) {
 				Cmd/Ctrl+K
 			</kbd>
 		</span>
-		{#if isSessionList}
-			<span data-testid="tor-footer-hint" class="inline-flex items-center gap-1 text-text-secondary">
-				<kbd class="font-mono text-[10px] font-semibold text-accent">t</kbd>
-				<span>tool</span>
-				<kbd class="font-mono text-[10px] font-semibold text-accent">o</kbd>
-				<span>order</span>
-				<kbd class="font-mono text-[10px] font-semibold text-accent">r</kbd>
-				<span>range</span>
-			</span>
-		{/if}
+			{#if isSessionList}
+				<span data-testid="tor-footer-hint" class="inline-flex items-center gap-1 text-text-secondary">
+					<kbd class="font-mono text-[10px] font-semibold text-accent">t</kbd>
+					<span>tool</span>
+					<kbd class="font-mono text-[10px] font-semibold text-accent">r</kbd>
+					<span>range</span>
+					<kbd class="font-mono text-[10px] font-semibold text-accent">g</kbd>
+					<span>repo</span>
+				</span>
+			{/if}
 		{#each shortcutHints as hint}
 			{@const parsedHint = splitShortcutHint(hint)}
 			<span class="hidden sm:inline-flex items-center gap-1 text-text-secondary">

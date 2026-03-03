@@ -1,4 +1,10 @@
-import { parseHailJsonl } from './hail-parse';
+import {
+	createDesktopSessionReadAdapter,
+	createWebSessionReadAdapter,
+	type DesktopInvoke,
+	type SessionListParams,
+} from './session-adapter';
+import { createSessionReadCore, SessionReadCoreError } from './session-read-core';
 import type {
 	AuthProvidersResponse,
 	AuthTokenResponse,
@@ -11,16 +17,64 @@ import type {
 	GitCredentialSummary,
 	ListGitCredentialsResponse,
 	LocalReviewBundle,
+	SessionRepoListResponse,
 	Session,
+	SessionDetail,
 	SessionListResponse,
 	UserSettings,
 } from './types';
 
+declare global {
+	interface Window {
+		__OPENSESSION_API_URL__?: string;
+		__TAURI_INTERNALS__?: unknown;
+	}
+}
+
+function isHttpLikeOrigin(origin: string): boolean {
+	return origin.startsWith('http://') || origin.startsWith('https://');
+}
+
+function isTauriRuntime(): boolean {
+	if (typeof window === 'undefined') return false;
+	if ('__TAURI_INTERNALS__' in window) return true;
+	return window.location.protocol === 'tauri:';
+}
+
+function getDesktopInvoke(): DesktopInvoke | null {
+	if (!isTauriRuntime()) return null;
+	const tauri = (window as unknown as { __TAURI__?: { core?: { invoke?: DesktopInvoke } } })
+		.__TAURI__;
+	const invoke = tauri?.core?.invoke;
+	return typeof invoke === 'function' ? invoke : null;
+}
+
+function hasDesktopApiOverride(): boolean {
+	if (typeof window === 'undefined') return false;
+	const runtimeOverride = window.__OPENSESSION_API_URL__?.trim();
+	if (runtimeOverride) return true;
+	const stored = localStorage.getItem('opensession_api_url')?.trim();
+	return Boolean(stored);
+}
+
 function getBaseUrl(): string {
 	if (typeof window !== 'undefined') {
+		const runtimeOverride = window.__OPENSESSION_API_URL__?.trim();
+		if (runtimeOverride) return runtimeOverride;
+
 		const stored = localStorage.getItem('opensession_api_url');
 		if (stored) return stored;
-		return window.location.origin;
+
+		const origin = window.location.origin;
+		if (isHttpLikeOrigin(origin)) return origin;
+
+		if (isTauriRuntime()) {
+			// Desktop bridge handles supported endpoints; keep local server fallback for unsupported paths.
+			return 'http://127.0.0.1:3000';
+		}
+
+		if (origin === 'null' || !origin) return '';
+		return origin;
 	}
 	return '';
 }
@@ -81,23 +135,73 @@ async function getAuthHeader(): Promise<string | null> {
 	return null;
 }
 
+function getSessionReadAdapter() {
+	const invoke = getDesktopInvoke();
+	if (invoke && !hasDesktopApiOverride()) {
+		return createDesktopSessionReadAdapter(invoke);
+	}
+	return createWebSessionReadAdapter({
+		baseUrl: getBaseUrl(),
+		fetchImpl: fetch,
+		getAuthHeader,
+	});
+}
+
+function getSessionReadCore() {
+	return createSessionReadCore(getSessionReadAdapter());
+}
+
+function parseBodyErrorShape(body: string): {
+	code?: string;
+	message?: string;
+	details?: Record<string, unknown> | null;
+} | null {
+	try {
+		return JSON.parse(body) as {
+			code?: string;
+			message?: string;
+			details?: Record<string, unknown> | null;
+		};
+	} catch {
+		return null;
+	}
+}
+
+function normalizeSessionAdapterError(error: unknown): ApiError {
+	if (error instanceof ApiError) return error;
+	if (error instanceof SessionReadCoreError) {
+		return new ApiError(error.status, error.body, error.code, error.details);
+	}
+	return new ApiError(500, '{"message":"Session adapter request failed"}');
+}
+
 export class ApiError extends Error {
 	constructor(
 		public status: number,
 		public body: string,
+		public code: string = 'unknown',
+		public details: Record<string, unknown> | null = null,
 	) {
 		let msg = body.trimStart().startsWith('<') ? `Server returned ${status}` : body.slice(0, 200);
+		let resolvedCode = code;
+		let resolvedDetails = details;
 		if (!body.trimStart().startsWith('<')) {
-			try {
-				const parsed = JSON.parse(body) as { message?: unknown };
+			const parsed = parseBodyErrorShape(body);
+			if (parsed) {
 				if (typeof parsed.message === 'string' && parsed.message.trim()) {
 					msg = parsed.message.trim();
 				}
-			} catch {
-				// ignore non-json error bodies
+				if (typeof parsed.code === 'string' && parsed.code.trim()) {
+					resolvedCode = parsed.code.trim();
+				}
+				if (parsed.details && typeof parsed.details === 'object') {
+					resolvedDetails = parsed.details;
+				}
 			}
 		}
 		super(msg);
+		this.code = resolvedCode;
+		this.details = resolvedDetails;
 	}
 }
 
@@ -156,48 +260,41 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 	return JSON.parse(text) as T;
 }
 
-function buildQuery(params?: Record<string, string | number | undefined>): string {
-	if (!params) return '';
-	const query = new URLSearchParams();
-	for (const [key, val] of Object.entries(params)) {
-		if (val != null) query.set(key, String(val));
+export async function listSessions(params?: SessionListParams): Promise<SessionListResponse> {
+	try {
+		return await getSessionReadCore().listSessions(params);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
 	}
-	const qs = query.toString();
-	return qs ? `?${qs}` : '';
 }
 
-export async function listSessions(params?: {
-	tool?: string;
-	search?: string;
-	page?: number;
-	per_page?: number;
-	sort?: string;
-	time_range?: string;
-}): Promise<SessionListResponse> {
-	return request<SessionListResponse>(`/api/sessions${buildQuery(params)}`);
+export async function listSessionRepos(): Promise<SessionRepoListResponse> {
+	try {
+		const repos = await getSessionReadCore().listRepos();
+		return { repos };
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
 }
 
 export async function getSession(id: string): Promise<Session> {
-	return requestRaw(`/api/sessions/${encodeURIComponent(id)}/raw`).then(parseHailJsonl);
+	try {
+		return await getSessionReadCore().getSession(id);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function getSessionDetail(id: string): Promise<SessionDetail> {
+	try {
+		return await getSessionReadCore().getSessionDetail(id);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
 }
 
 export async function getLocalReviewBundle(reviewId: string): Promise<LocalReviewBundle> {
 	return request<LocalReviewBundle>(`/api/review/local/${encodeURIComponent(reviewId)}`);
-}
-
-async function requestRaw(path: string): Promise<string> {
-	const url = `${getBaseUrl()}${path}`;
-	const headers: Record<string, string> = {};
-	const auth = await getAuthHeader();
-	if (auth) headers.Authorization = auth;
-
-	const res = await fetch(url, { headers, credentials: 'include' });
-	if (!res.ok) {
-		const body = await res.text();
-		throw new ApiError(res.status, body);
-	}
-
-	return res.text();
 }
 
 export async function getSettings(): Promise<UserSettings> {
@@ -304,21 +401,18 @@ export async function authLogout(): Promise<void> {
 }
 
 export async function getAuthProviders(): Promise<AuthProvidersResponse> {
-	const url = `${getBaseUrl()}/api/auth/providers`;
-	const res = await fetch(url, { credentials: 'include' });
-	if (!res.ok) return { email_password: false, oauth: [] };
-	return res.json();
+	try {
+		return await getSessionReadAdapter().getAuthProviders();
+	} catch {
+		return { email_password: false, oauth: [] };
+	}
 }
 
 export async function getApiCapabilities(): Promise<CapabilitiesResponse> {
-	const url = `${getBaseUrl()}/api/capabilities`;
 	try {
-		const res = await fetch(url, { credentials: 'include' });
-		if (res.ok) {
-			return res.json();
-		}
+		return await getSessionReadAdapter().getCapabilities();
 	} catch {
-		// ignore and fall through
+		// ignore and fall through to safe defaults
 	}
 	return {
 		auth_enabled: false,

@@ -2,6 +2,7 @@ use crate::app::{App, ListLayout, ViewMode};
 use crate::config::CalendarDisplayMode;
 use crate::theme::{self, Theme};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, Utc};
+use opensession_core::trace::EventType;
 use opensession_local_db::LocalSessionRow;
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, Paragraph};
@@ -887,6 +888,146 @@ fn json_value_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
     }
 }
 
+fn trace_event_type_is_live_activity(value: &serde_json::Value) -> bool {
+    let type_name = value
+        .get("type")
+        .and_then(|entry| entry.as_str())
+        .or_else(|| value.as_str())
+        .unwrap_or_default();
+    matches!(
+        type_name,
+        "UserMessage"
+            | "AgentMessage"
+            | "Thinking"
+            | "ToolCall"
+            | "ToolResult"
+            | "FileRead"
+            | "CodeSearch"
+            | "FileSearch"
+            | "FileEdit"
+            | "FileCreate"
+            | "FileDelete"
+            | "ShellCommand"
+            | "WebSearch"
+            | "WebFetch"
+            | "ImageGenerate"
+            | "VideoGenerate"
+            | "AudioGenerate"
+            | "TaskStart"
+            | "TaskEnd"
+            | "Custom"
+    )
+}
+
+fn top_level_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    let obj = value.as_object()?;
+    for key in ["timestamp", "ts", "time", "created_at", "updated_at"] {
+        if let Some(ts) = obj.get(key).and_then(json_value_timestamp) {
+            return Some(ts);
+        }
+    }
+    None
+}
+
+fn json_line_activity_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    let obj = value.as_object()?;
+    if let Some(event_type) = obj.get("event_type") {
+        if trace_event_type_is_live_activity(event_type) {
+            return top_level_timestamp(value);
+        }
+        return None;
+    }
+
+    let line_type = obj
+        .get("type")
+        .and_then(|entry| entry.as_str())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match line_type.as_str() {
+        "user" | "assistant" => top_level_timestamp(value),
+        "message" => {
+            let role = obj
+                .get("role")
+                .and_then(|entry| entry.as_str())
+                .map(str::trim)
+                .unwrap_or_default();
+            if role.is_empty() || matches!(role, "user" | "assistant") {
+                return top_level_timestamp(value);
+            }
+            None
+        }
+        "response_item" => {
+            let payload = obj.get("payload").and_then(|entry| entry.as_object())?;
+            let payload_type = payload
+                .get("type")
+                .and_then(|entry| entry.as_str())
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            match payload_type.as_str() {
+                "function_call" | "function_call_output" => top_level_timestamp(value),
+                "message" => {
+                    let role = payload
+                        .get("role")
+                        .and_then(|entry| entry.as_str())
+                        .map(str::trim)
+                        .unwrap_or_default();
+                    if role.is_empty() || matches!(role, "user" | "assistant") {
+                        return top_level_timestamp(value);
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+        "event_msg" => {
+            let payload_type = obj
+                .get("payload")
+                .and_then(|entry| entry.as_object())
+                .and_then(|payload| payload.get("type"))
+                .and_then(|entry| entry.as_str())
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if matches!(
+                payload_type.as_str(),
+                "user_message"
+                    | "agent_message"
+                    | "task_started"
+                    | "task_complete"
+                    | "task_completed"
+                    | "task_finished"
+            ) {
+                return top_level_timestamp(value);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn session_blob_last_activity_at(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    if let Some(events) = value.get("events").and_then(|entry| entry.as_array()) {
+        for event in events.iter().rev() {
+            let Some(event_obj) = event.as_object() else {
+                continue;
+            };
+            let Some(event_type) = event_obj.get("event_type") else {
+                continue;
+            };
+            if !trace_event_type_is_live_activity(event_type) {
+                continue;
+            }
+            if let Some(ts) = event_obj.get("timestamp").and_then(json_value_timestamp) {
+                return Some(ts);
+            }
+        }
+    }
+    json_line_activity_timestamp(value)
+}
+
 fn source_path_last_event_at(path: &Path) -> Option<DateTime<Utc>> {
     let raw = std::fs::read_to_string(path).ok()?;
 
@@ -898,13 +1039,13 @@ fn source_path_last_event_at(path: &Path) -> Option<DateTime<Utc>> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
             continue;
         };
-        if let Some(ts) = json_value_timestamp(&value) {
+        if let Some(ts) = json_line_activity_timestamp(&value) {
             return Some(ts);
         }
     }
 
     let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
-    json_value_timestamp(&value)
+    session_blob_last_activity_at(&value)
 }
 
 fn source_path_has_recent_event(path: &Path) -> bool {
@@ -927,9 +1068,10 @@ fn is_live_row(row: &LocalSessionRow) -> bool {
 fn is_live_local_session(session: &opensession_core::trace::Session) -> bool {
     if session
         .events
-        .last()
-        .map(|event| is_live_timestamp(event.timestamp))
-        .unwrap_or(false)
+        .iter()
+        .rev()
+        .find(|event| is_live_activity_event_type(&event.event_type))
+        .is_some_and(|event| is_live_timestamp(event.timestamp))
     {
         return true;
     }
@@ -944,6 +1086,32 @@ fn is_live_local_session(session: &opensession_core::trace::Session) -> bool {
     }
 
     false
+}
+
+fn is_live_activity_event_type(event_type: &EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::UserMessage
+            | EventType::AgentMessage
+            | EventType::Thinking
+            | EventType::ToolCall { .. }
+            | EventType::ToolResult { .. }
+            | EventType::FileRead { .. }
+            | EventType::CodeSearch { .. }
+            | EventType::FileSearch { .. }
+            | EventType::FileEdit { .. }
+            | EventType::FileCreate { .. }
+            | EventType::FileDelete { .. }
+            | EventType::ShellCommand { .. }
+            | EventType::WebSearch { .. }
+            | EventType::WebFetch { .. }
+            | EventType::ImageGenerate { .. }
+            | EventType::VideoGenerate { .. }
+            | EventType::AudioGenerate { .. }
+            | EventType::TaskStart { .. }
+            | EventType::TaskEnd { .. }
+            | EventType::Custom { .. }
+    )
 }
 
 fn is_live_timestamp(ts: DateTime<Utc>) -> bool {
@@ -979,7 +1147,7 @@ mod tests {
     use crate::app::{App, ListLayout, ViewMode};
     use crate::config::CalendarDisplayMode;
     use chrono::{Duration as ChronoDuration, Utc};
-    use opensession_core::trace::{Agent, Content, Event, EventType, Session};
+    use opensession_core::trace::{Agent, Content, ContentBlock, Event, EventType, Session};
     use opensession_local_db::LocalSessionRow;
     use std::collections::HashMap;
 
@@ -1256,7 +1424,7 @@ mod tests {
         let stale_line_ts = (Utc::now() - ChronoDuration::hours(12)).to_rfc3339();
         std::fs::write(
             &source_path,
-            format!(r#"{{"timestamp":"{stale_line_ts}","type":"message"}}"#),
+            format!(r#"{{"timestamp":"{stale_line_ts}","type":"assistant"}}"#),
         )
         .expect("write");
 
@@ -1290,5 +1458,77 @@ mod tests {
 
         std::fs::remove_file(&source_path).ok();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn live_row_ignores_recent_non_activity_source_lines() {
+        let unique = format!(
+            "ops-live-row-progress-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let source_path = dir.join("session.jsonl");
+        let stale_activity_ts = (Utc::now() - ChronoDuration::hours(12)).to_rfc3339();
+        let recent_progress_ts = Utc::now().to_rfc3339();
+        std::fs::write(
+            &source_path,
+            format!(
+                r#"{{"type":"assistant","timestamp":"{stale_activity_ts}"}}
+{{"type":"progress","timestamp":"{recent_progress_ts}"}}"#
+            ),
+        )
+        .expect("write");
+
+        let mut row = sample_row();
+        row.created_at = (Utc::now() - ChronoDuration::hours(6)).to_rfc3339();
+        row.source_path = Some(source_path.to_string_lossy().to_string());
+        assert!(!is_live_row(&row));
+
+        std::fs::remove_file(&source_path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn local_session_live_ignores_recent_system_event_without_recent_activity() {
+        let mut session = Session::new(
+            "not-live-by-system-only".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let stale_ts = Utc::now() - ChronoDuration::hours(8);
+        session.context.created_at = stale_ts;
+        session.context.updated_at = Utc::now();
+        session.events.push(Event {
+            event_id: "old-agent".to_string(),
+            timestamp: stale_ts,
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content::text("old output"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+        session.events.push(Event {
+            event_id: "recent-system".to_string(),
+            timestamp: Utc::now(),
+            event_type: EventType::SystemMessage,
+            task_id: None,
+            content: Content {
+                blocks: vec![ContentBlock::Text {
+                    text: "progress only".to_string(),
+                }],
+            },
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+
+        assert!(!is_live_local_session(&session));
     }
 }

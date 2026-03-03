@@ -132,6 +132,11 @@ pub struct CountRow {
     pub count: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RepoNameRow {
+    pub git_repo_name: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StorageInfoRow {
     pub body_storage_key: String,

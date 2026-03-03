@@ -344,33 +344,41 @@ export async function mockSessionApis(
 		page: 1,
 		per_page: 50,
 	};
+	const escapedId = fixture.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const sessionsListPattern = /\/api\/sessions(?:\?.*)?$/;
+	const sessionsReposPattern = /\/api\/sessions\/repos(?:\?.*)?$/;
+	const sessionByIdPattern = new RegExp(`/api/sessions/${escapedId}(?:\\?.*)?$`);
+	const sessionRawPattern = new RegExp(`/api/sessions/${escapedId}/raw(?:\\?.*)?$`);
 
-	await page.route('**/api/sessions', async (route) => {
+	await page.route(sessionRawPattern, async (route) => {
 		await route.fulfill({
 			status: 200,
-			contentType: 'application/json',
-			body: JSON.stringify(listPayload),
+			contentType: 'text/plain; charset=utf-8',
+			body: fixture.raw_jsonl,
 		});
 	});
-	await page.route('**/api/sessions?*', async (route) => {
-		await route.fulfill({
-			status: 200,
-			contentType: 'application/json',
-			body: JSON.stringify(listPayload),
-		});
-	});
-	await page.route(`**/api/sessions/${fixture.id}`, async (route) => {
+	await page.route(sessionByIdPattern, async (route) => {
 		await route.fulfill({
 			status: 200,
 			contentType: 'application/json',
 			body: JSON.stringify(fixture.summary),
 		});
 	});
-	await page.route(`**/api/sessions/${fixture.id}/raw`, async (route) => {
+	await page.route(sessionsReposPattern, async (route) => {
+		const repos = listPayload.sessions
+			.map((session) => (session as { git_repo_name?: string | null }).git_repo_name ?? null)
+			.filter((repo): repo is string => typeof repo === 'string' && repo.length > 0);
 		await route.fulfill({
 			status: 200,
-			contentType: 'text/plain; charset=utf-8',
-			body: fixture.raw_jsonl,
+			contentType: 'application/json',
+			body: JSON.stringify({ repos }),
+		});
+	});
+	await page.route(sessionsListPattern, async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify(listPayload),
 		});
 	});
 }

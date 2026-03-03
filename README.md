@@ -82,6 +82,18 @@ cargo run -p opensession-daemon -- run
 
 Without daemon, parse/register/share still work manually, but background auto-capture is not active.
 
+## Desktop Preview (Tauri)
+
+A desktop preview shell is available in [`desktop/`](desktop/README.md), reusing the existing Svelte UI.
+
+```bash
+cd desktop
+npm install
+npm run dev
+```
+
+This starts both `opensession-server` and the Tauri desktop window.
+
 ## Quick Start
 
 ```bash

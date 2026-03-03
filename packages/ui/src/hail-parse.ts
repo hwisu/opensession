@@ -24,6 +24,26 @@ function isSessionLike(value: unknown): value is Session {
 	);
 }
 
+function normalizeContext(context: Session['context']): Session['context'] {
+	const tags = Array.isArray(context.tags)
+		? context.tags.filter((tag): tag is string => typeof tag === 'string')
+		: [];
+	const relatedSessionIds = Array.isArray(context.related_session_ids)
+		? context.related_session_ids.filter((id): id is string => typeof id === 'string')
+		: [];
+	const attributes =
+		context.attributes != null && typeof context.attributes === 'object' && !Array.isArray(context.attributes)
+			? context.attributes
+			: {};
+
+	return {
+		...context,
+		tags,
+		related_session_ids: relatedSessionIds,
+		attributes,
+	};
+}
+
 function withDefaultStats(events: Session['events']): Session['stats'] {
 	return {
 		event_count: events.length,
@@ -33,6 +53,19 @@ function withDefaultStats(events: Session['events']): Session['stats'] {
 		duration_seconds: 0,
 		total_input_tokens: 0,
 		total_output_tokens: 0,
+		user_message_count: 0,
+		files_changed: 0,
+		lines_added: 0,
+		lines_removed: 0,
+	};
+}
+
+function normalizeStats(events: Session['events'], stats: Session['stats'] | null | undefined): Session['stats'] {
+	const defaults = withDefaultStats(events);
+	if (!stats) return defaults;
+	return {
+		...defaults,
+		...stats,
 	};
 }
 
@@ -44,7 +77,8 @@ function parseHailObject(value: unknown): Session {
 	const session = value as Session;
 	return {
 		...session,
-		stats: session.stats ?? withDefaultStats(session.events),
+		context: normalizeContext(session.context),
+		stats: normalizeStats(session.events, session.stats),
 	};
 }
 
@@ -80,9 +114,9 @@ export function parseHailJsonl(text: string): Session {
 		version: header.version,
 		session_id: header.session_id,
 		agent: header.agent,
-		context: header.context,
+		context: normalizeContext(header.context),
 		events,
-		stats: stats ?? withDefaultStats(events),
+		stats: normalizeStats(events, stats),
 	};
 }
 

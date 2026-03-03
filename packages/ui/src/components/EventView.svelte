@@ -4,6 +4,7 @@ import {
 	calcContentLength,
 	findCodeStats,
 	findFirstText,
+	firstMeaningfulEventLine,
 	formatContentLength,
 	getToolName,
 	isToolError,
@@ -386,13 +387,9 @@ const summaryLabel = $derived.by(() => {
 					if (requestUserInputResultPayload.answers.length === 1) return `${first.id}: ${preview}`;
 					return `${first.id}: ${preview} +${requestUserInputResultPayload.answers.length - 1}`;
 				}
-				for (const block of event.content.blocks) {
-					if (block.type === 'Text' && block.text.trim()) {
-						return truncate(block.text.trim().split('\n')[0]);
-					}
+				const line = firstMeaningfulEventLine(event);
+				return line ? truncate(line) : 'output';
 			}
-			return '';
-		}
 		case 'TaskStart':
 			return t.data.title ?? '';
 		case 'TaskEnd':

@@ -23,6 +23,7 @@ export interface SessionContext {
 	tags: string[];
 	created_at: string;
 	updated_at: string;
+	related_session_ids?: string[];
 	attributes?: Record<string, unknown>;
 }
 
@@ -81,6 +82,10 @@ export interface Stats {
 	duration_seconds: number;
 	total_input_tokens: number;
 	total_output_tokens: number;
+	user_message_count: number;
+	files_changed: number;
+	lines_added: number;
+	lines_removed: number;
 }
 
 // ─── API types (auto-generated from Rust — single source of truth) ───────────
@@ -92,6 +97,9 @@ export type {
 	AuthProvidersResponse,
 	CapabilitiesResponse,
 	CreateGitCredentialRequest,
+	DesktopApiError,
+	DesktopContractVersionResponse,
+	DesktopSessionListQuery,
 	GitCredentialSummary,
 	HealthResponse,
 	IssueApiKeyResponse,
@@ -111,6 +119,7 @@ export type {
 	SessionDetail,
 	SessionLink,
 	SessionListResponse,
+	SessionRepoListResponse,
 	SessionSummary,
 	SortOrder,
 	TimeRange,

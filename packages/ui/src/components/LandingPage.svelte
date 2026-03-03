@@ -5,6 +5,11 @@ const {
 	onNavigate?: (path: string) => void;
 } = $props();
 
+type DesktopWindow = Window & {
+	__TAURI_INTERNALS__?: unknown;
+	__OPENSESSION_DESKTOP_COMPACT_LANDING__?: boolean;
+};
+
 type GoalCard = {
 	id: string;
 	title: string;
@@ -49,6 +54,20 @@ const operatingLoop = [
 	{ label: 'Share', detail: 'Distribute reproducible artifacts through web and git refs.' },
 	{ label: 'Refine', detail: 'Use findings to improve prompts, tools, and ownership transfer.' },
 ];
+
+let compactDesktopLanding = $state(false);
+
+$effect(() => {
+	if (typeof window === 'undefined') return;
+	const desktopWindow = window as DesktopWindow;
+	const forced = desktopWindow.__OPENSESSION_DESKTOP_COMPACT_LANDING__;
+	if (typeof forced === 'boolean') {
+		compactDesktopLanding = forced;
+		return;
+	}
+	compactDesktopLanding =
+		'__TAURI_INTERNALS__' in desktopWindow || desktopWindow.location.protocol === 'tauri:';
+});
 </script>
 
 <svelte:head>
@@ -115,37 +134,39 @@ const operatingLoop = [
 		</div>
 	</section>
 
-	<section data-contract-section="goal-map" class="mise-panel mt-6 p-4 sm:p-5">
-		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ goal-map</div>
-		<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">What This Means</h2>
-		<div class="grid gap-3 md:grid-cols-2">
-			{#each goalCards as card}
-				<article class="mise-card border border-border bg-bg-secondary/70 p-4" data-goal-id={card.id}>
-					<div class="mb-2 flex items-center justify-between">
-						<span class="text-xs text-accent">{card.id}</span>
-						<span class="text-[11px] uppercase text-text-muted">Goal</span>
-					</div>
-					<h3 class="text-base font-semibold text-text-primary">{card.title}</h3>
-					<p class="mt-2 text-xs leading-relaxed text-text-secondary">{card.summary}</p>
-					<p class="mt-3 border-t border-border pt-2 text-xs text-text-muted">{card.proof}</p>
-				</article>
-			{/each}
-		</div>
-	</section>
+	{#if !compactDesktopLanding}
+		<section data-contract-section="goal-map" class="mise-panel mt-6 p-4 sm:p-5">
+			<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ goal-map</div>
+			<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">What This Means</h2>
+			<div class="grid gap-3 md:grid-cols-2">
+				{#each goalCards as card}
+					<article class="mise-card border border-border bg-bg-secondary/70 p-4" data-goal-id={card.id}>
+						<div class="mb-2 flex items-center justify-between">
+							<span class="text-xs text-accent">{card.id}</span>
+							<span class="text-[11px] uppercase text-text-muted">Goal</span>
+						</div>
+						<h3 class="text-base font-semibold text-text-primary">{card.title}</h3>
+						<p class="mt-2 text-xs leading-relaxed text-text-secondary">{card.summary}</p>
+						<p class="mt-3 border-t border-border pt-2 text-xs text-text-muted">{card.proof}</p>
+					</article>
+				{/each}
+			</div>
+		</section>
 
-	<section data-contract-section="operating-loop" class="mise-panel mt-6 p-4 sm:p-5">
-		<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ operating-loop</div>
-		<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">Work Loop</h2>
-		<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-			{#each operatingLoop as step, idx}
-				<div class="mise-card border border-border bg-bg-secondary/70 p-3" data-flow-step={step.label}>
-					<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Step {idx + 1}</div>
-					<div class="mt-1 text-sm font-semibold text-text-primary">{step.label}</div>
-					<p class="mt-2 text-xs leading-relaxed text-text-secondary">{step.detail}</p>
-				</div>
-			{/each}
-		</div>
-	</section>
+		<section data-contract-section="operating-loop" class="mise-panel mt-6 p-4 sm:p-5">
+			<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ operating-loop</div>
+			<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">Work Loop</h2>
+			<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+				{#each operatingLoop as step, idx}
+					<div class="mise-card border border-border bg-bg-secondary/70 p-3" data-flow-step={step.label}>
+						<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Step {idx + 1}</div>
+						<div class="mt-1 text-sm font-semibold text-text-primary">{step.label}</div>
+						<p class="mt-2 text-xs leading-relaxed text-text-secondary">{step.detail}</p>
+					</div>
+				{/each}
+			</div>
+		</section>
+	{/if}
 </div>
 
 <style>

@@ -237,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
         // Sessions (read-only)
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
         .route("/sessions", get(routes::sessions::list_sessions))
+        .route("/sessions/repos", get(routes::sessions::list_session_repos))
         .route("/sessions/{id}", get(routes::sessions::get_session))
         .route("/sessions/{id}/raw", get(routes::sessions::get_session_raw))
         // Admin

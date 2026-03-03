@@ -8,6 +8,9 @@
 web/node_modules/
 web/build/
 web/.svelte-kit/
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
 
 # Data & DB
 /data/
@@ -22,6 +25,7 @@ web/data/
 *.jpg
 *.jpeg
 *.webp
+!desktop/src-tauri/icons/icon.png
 
 # Playwright MCP
 .playwright-mcp/

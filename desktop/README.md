@@ -39,3 +39,11 @@ Build flow:
   1. `release-plz update` + release publish
   2. macOS Tauri bundle build (`.dmg`, `.app.zip`, checksum)
   3. upload artifacts to tag `v<workspace-version>`
+- Security gate: desktop artifacts are uploaded only when code signing + notarization validation passes.
+  Required repo secrets:
+  - `APPLE_CERTIFICATE`
+  - `APPLE_CERTIFICATE_PASSWORD`
+  - `APPLE_SIGNING_IDENTITY`
+  - `APPLE_ID`
+  - `APPLE_PASSWORD`
+  - `APPLE_TEAM_ID`

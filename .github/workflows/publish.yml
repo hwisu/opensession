@@ -103,9 +103,63 @@ jobs:
         working-directory: desktop
       - name: Check product version sync
         run: node scripts/sync-product-version.mjs --check
+      - name: Verify signing/notarization secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!key:-}" ]; then
+              echo "::error::Missing required secret: ${key}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Desktop release requires signed+notarized bundles. Configure required Apple signing secrets."
+            exit 1
+          fi
       - name: Build desktop bundle
         run: npm run build
         working-directory: desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Verify code signing and notarization
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="desktop/src-tauri/target/release/bundle"
+          MACOS_DIR="${BUNDLE_DIR}/macos"
+          DMG_PATH="$(find "${BUNDLE_DIR}/dmg" -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
+          APP_PATH="$(find "${MACOS_DIR}" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
+          if [ -z "${APP_PATH}" ]; then
+            echo "No .app bundle found under ${MACOS_DIR}"
+            exit 1
+          fi
+          if [ -z "${DMG_PATH}" ]; then
+            echo "No .dmg artifact found under ${BUNDLE_DIR}/dmg"
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+          codesign -dv --verbose=4 "${APP_PATH}" 2>&1 | tee /tmp/codesign-info.txt
+          grep -q "Authority=Developer ID Application" /tmp/codesign-info.txt || (echo "Missing Developer ID Application signature" && exit 1)
+          grep -q "TeamIdentifier=${APPLE_TEAM_ID}" /tmp/codesign-info.txt || (echo "Unexpected TeamIdentifier in app signature" && exit 1)
+
+          spctl --assess --type execute --verbose=4 "${APP_PATH}"
+          xcrun stapler validate "${APP_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
       - name: Resolve release version
         id: version
         run: |

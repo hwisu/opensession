@@ -11,6 +11,7 @@ mod register;
 mod review;
 mod setup_cmd;
 mod share;
+mod url_opener;
 mod user_guidance;
 mod view;
 

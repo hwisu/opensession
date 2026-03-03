@@ -2,8 +2,6 @@ use opensession_core::testing;
 use opensession_core::{Agent, Content, Event, EventType, Session};
 use serde_json::Value;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 

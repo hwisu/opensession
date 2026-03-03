@@ -1,7 +1,7 @@
 use crate::{
     config_cmd::load_repo_config,
     open_target::{read_repo_open_target, OpenTarget},
-    review,
+    review, url_opener,
     user_guidance::guided_error,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -159,7 +159,7 @@ async fn view_repo_sessions(args: &ViewArgs) -> Result<()> {
             let local_url =
                 build_sessions_url(review::LOCAL_REVIEW_SERVER_BASE_URL, repo_name.as_deref())?;
             if matches!(configured_open_target, Some(OpenTarget::App)) {
-                match review::try_open_in_desktop_app_for_url(&local_url) {
+                match url_opener::try_open_in_desktop_app_for_url(&local_url) {
                     Ok(true) => {
                         let mut print_args = args.clone();
                         print_args.no_open = true;
@@ -197,7 +197,7 @@ async fn view_repo_sessions(args: &ViewArgs) -> Result<()> {
                     }
                 }
             } else if !matches!(configured_open_target, Some(OpenTarget::Web)) {
-                match review::try_open_in_desktop_app_for_url(&local_url) {
+                match url_opener::try_open_in_desktop_app_for_url(&local_url) {
                     Ok(true) => {
                         let mut print_args = args.clone();
                         print_args.no_open = true;
@@ -702,9 +702,9 @@ fn print_view_result(
     if let Some(url) = url {
         if !args.no_open {
             if let Some(repo_root) = open_repo_root {
-                review::open_url_for_repo(repo_root, &url)?;
+                url_opener::open_url_for_repo(repo_root, &url)?;
             } else {
-                review::open_url_in_browser(&url)?;
+                url_opener::open_url_in_browser(&url)?;
             }
         }
         println!("{url}");

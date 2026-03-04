@@ -1,0 +1,32 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "79ef4f62aecda483289f1db3d484945765d39810",
+      "3adc3ebc6fac60e37cddcd050366a896e994617c",
+      "350f19bbb2d09ce3ce05f704501d6b49720612a6"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019c9d86-be0c-78b2-a754-aa378c81a95a",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 5352,
+    "event_count": 2408,
+    "files_changed": 10,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 106,
+    "task_count": 7,
+    "tool_call_count": 47,
+    "total_input_tokens": 42413790,
+    "total_output_tokens": 112045,
+    "user_message_count": 10
+  },
+  "title": "지금 새로 작업되는 로컬의 maum.pizza의 세션은 잘 추적되고 잇어 ?",
+  "tool": "codex"
+}

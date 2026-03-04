@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "b50932e9d5f2ce195f4e9582f064c7be932d6b56"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019cb704-ae91-7b22-aae6-5ae97db1a986",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 12346,
+    "event_count": 8693,
+    "files_changed": 56,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 261,
+    "task_count": 22,
+    "tool_call_count": 40,
+    "total_input_tokens": 161625128,
+    "total_output_tokens": 424902,
+    "user_message_count": 27
+  },
+  "title": "'요약' 뷰를 강화하고 싶어 기본적으로 로컬에서 llm 중에서 가능한게 있는지 체크하고 설정하면 (초반설치시) 그 이후로 그걸 이용해서 요...",
+  "tool": "codex"
+}

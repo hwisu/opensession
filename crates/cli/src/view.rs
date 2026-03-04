@@ -280,6 +280,7 @@ fn build_sessions_bootstrap_bundle(repo_root: &Path) -> LocalReviewBundle {
             author_email: String::new(),
             authored_at: now,
             session_ids: vec![],
+            reviewer_digest: review::build_reviewer_digest_for_commit(&[], "local"),
             semantic_summary: None,
         }],
         sessions: vec![],
@@ -464,6 +465,7 @@ fn build_bundle_from_sessions(label: &str, sessions: Vec<Session>) -> LocalRevie
         .iter()
         .map(|session| session.session_id.clone())
         .collect::<Vec<_>>();
+    let reviewer_digest = review::build_reviewer_digest_for_commit(&session_rows, &commit_sha);
 
     LocalReviewBundle {
         review_id,
@@ -484,6 +486,7 @@ fn build_bundle_from_sessions(label: &str, sessions: Vec<Session>) -> LocalRevie
             author_email: String::new(),
             authored_at: chrono::Utc::now().to_rfc3339(),
             session_ids,
+            reviewer_digest,
             semantic_summary: None,
         }],
         sessions: session_rows,
@@ -554,6 +557,7 @@ async fn build_bundle_from_commits(
 
         let semantic_summary =
             review::summarize_commit_for_review(repo_root, &info.sha, &summary_settings).await;
+        let reviewer_digest = review::build_reviewer_digest_for_commit(&sessions, &info.sha);
         let title = if info.title.trim().is_empty() {
             title_prefix.to_string()
         } else {
@@ -567,6 +571,7 @@ async fn build_bundle_from_commits(
             author_email: info.author_email,
             authored_at: info.authored_at,
             session_ids: session_ids_for_commit,
+            reviewer_digest,
             semantic_summary,
         });
     }

@@ -166,5 +166,5 @@ Parser alignment applied:
 
 - Parser unit/integration: `cargo test -p opensession-parsers`
 - Hook parity:
-- pre-commit: `cargo fmt --all -- --check` + `cargo test -p opensession-daemon --quiet`
-- pre-push: clippy/wasm/web checks + docker e2e
+- pre-commit: node guardrail scripts + `cargo fmt --all -- --check` + `cargo test -p opensession-daemon --quiet`
+- pre-push: pre-commit + frontend test/check + workspace clippy + worker wasm clippy + workspace tests + `opensession-e2e` compile smoke (`--no-run`)

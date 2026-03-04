@@ -194,6 +194,131 @@ function collectIndexedSessions(ledgerRef, commits) {
   return Array.from(bySession.values()).sort((a, b) => a.session_id.localeCompare(b.session_id));
 }
 
+function isTestFilePath(filePath) {
+  const normalized = String(filePath || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes('/tests/') ||
+    normalized.includes('/test/') ||
+    normalized.includes('/__tests__/') ||
+    normalized.endsWith('.test.ts') ||
+    normalized.endsWith('.test.tsx') ||
+    normalized.endsWith('.test.js') ||
+    normalized.endsWith('.test.jsx') ||
+    normalized.endsWith('.spec.ts') ||
+    normalized.endsWith('.spec.tsx') ||
+    normalized.endsWith('.spec.js') ||
+    normalized.endsWith('.spec.jsx') ||
+    normalized.endsWith('_test.rs') ||
+    normalized.endsWith('_spec.rs') ||
+    normalized.endsWith('_test.py')
+  );
+}
+
+function collectChangedFiles(base, head) {
+  if (base && head) {
+    const out = tryRun(`git diff --name-only ${base}..${head}`);
+    if (out) return unique(out.split('\n').map((line) => line.trim()).filter(Boolean)).sort();
+  }
+  if (head) {
+    const out = tryRun(`git show --name-only --pretty=format: ${head}`);
+    if (out) return unique(out.split('\n').map((line) => line.trim()).filter(Boolean)).sort();
+  }
+  return [];
+}
+
+function normalizeDigestText(value, maxLen = 220) {
+  const compact = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!compact) return '';
+  if (compact.length <= maxLen) return compact;
+  return `${compact.slice(0, maxLen - 1)}…`;
+}
+
+function extractTextFromEventContent(content) {
+  if (!content || !Array.isArray(content.blocks)) return '';
+  for (const block of content.blocks) {
+    if (block?.type !== 'Text') continue;
+    const normalized = normalizeDigestText(block.text);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function extractEventRecord(parsedLine) {
+  if (parsedLine && parsedLine.event_type && parsedLine.content) return parsedLine;
+  if (parsedLine?.data?.event_type && parsedLine?.data?.content) return parsedLine.data;
+  if (parsedLine?.event?.event_type && parsedLine?.event?.content) return parsedLine.event;
+  if (parsedLine?.type === 'event' && parsedLine?.data?.event_type && parsedLine?.data?.content) {
+    return parsedLine.data;
+  }
+  return null;
+}
+
+function collectEventsFromSessionRaw(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && Array.isArray(parsed.events)) {
+      return parsed.events.filter((event) => event && event.event_type && event.content);
+    }
+  } catch {
+    // continue with JSONL parsing
+  }
+
+  const events = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      const event = extractEventRecord(parsed);
+      if (event) events.push(event);
+    } catch {
+      // ignore malformed line
+    }
+  }
+  return events;
+}
+
+function collectQaDigestFromSessions(ledgerRef, sessions) {
+  const pairs = [];
+  const pendingQuestions = [];
+
+  for (const session of sessions) {
+    if (!session.hail_path) continue;
+    const raw = tryRunRaw(`git show ${ledgerRef}:${session.hail_path}`);
+    if (!raw) continue;
+    const events = collectEventsFromSessionRaw(raw);
+    for (const event of events) {
+      const source = String(event?.attributes?.source ?? '').trim().toLowerCase();
+      if (source === 'interactive_question') {
+        const question = extractTextFromEventContent(event.content);
+        if (question) pendingQuestions.push(question);
+        continue;
+      }
+      if (source === 'interactive') {
+        const answer = extractTextFromEventContent(event.content);
+        if (!answer) continue;
+        const question = pendingQuestions.shift() ?? '(interactive question missing)';
+        pairs.push({ question, answer });
+      }
+    }
+  }
+
+  for (const question of pendingQuestions) {
+    pairs.push({ question, answer: null });
+  }
+
+  return {
+    pairs: pairs.slice(0, 6),
+  };
+}
+
 function writeFileAt(worktreeDir, relPath, body) {
   const normalized = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
   if (!normalized) return;
@@ -360,6 +485,9 @@ function renderReport({
   head,
   commits,
   sessions,
+  changedFiles = [],
+  testFiles = [],
+  qaDigest = null,
   missingLedgerRef = false,
   artifact = null,
 }) {
@@ -405,6 +533,41 @@ function renderReport({
   }
   if (missingLedgerRef) {
     lines.push(`- Ledger status: missing (\`${ledgerRef}\`)`);
+  }
+  lines.push('');
+
+  lines.push('#### Reviewer Quick Digest');
+  if ((qaDigest?.pairs?.length ?? 0) > 0) {
+    lines.push(`- Q&A excerpts: ${qaDigest.pairs.length}`);
+    lines.push('| Question | Answer |');
+    lines.push('| --- | --- |');
+    for (const pair of qaDigest.pairs) {
+      const question = String(pair.question ?? '').replace(/\|/g, '\\|');
+      const answer = String(pair.answer ?? '-').replace(/\|/g, '\\|');
+      lines.push(`| ${question} | ${answer} |`);
+    }
+  } else {
+    lines.push('- Q&A excerpts: none captured');
+  }
+  lines.push(`- Modified files: ${changedFiles.length}`);
+  lines.push(`- Added/updated test files: ${testFiles.length}`);
+  if (changedFiles.length > 0) {
+    lines.push('- Key modified files:');
+    for (const filePath of changedFiles.slice(0, 12)) {
+      lines.push(`  - \`${filePath}\``);
+    }
+    if (changedFiles.length > 12) {
+      lines.push(`  - ...and ${changedFiles.length - 12} more`);
+    }
+  }
+  if (testFiles.length > 0) {
+    lines.push('- Added/updated tests:');
+    for (const filePath of testFiles.slice(0, 12)) {
+      lines.push(`  - \`${filePath}\``);
+    }
+    if (testFiles.length > 12) {
+      lines.push(`  - ...and ${testFiles.length - 12} more`);
+    }
   }
   lines.push('');
 
@@ -499,6 +662,11 @@ function main() {
   const refExists = tryRun(`git show-ref ${ledgerRef}`);
   const commits = collectCommitRange(base, head);
   const sessions = refExists ? collectIndexedSessions(ledgerRef, commits) : [];
+  const changedFiles = collectChangedFiles(base, head);
+  const testFiles = changedFiles.filter((filePath) => isTestFilePath(filePath));
+  const qaDigest = refExists
+    ? collectQaDigestFromSessions(ledgerRef, sessions)
+    : { pairs: [] };
   const reviewId = buildReviewId(repoFullName, prNumber, head);
   const artifact = publishArtifactsBranch({
     enabled: publishArtifacts,
@@ -523,6 +691,9 @@ function main() {
     head,
     commits,
     sessions,
+    changedFiles,
+    testFiles,
+    qaDigest,
     missingLedgerRef: !refExists,
     artifact,
   });

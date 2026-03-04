@@ -3,6 +3,14 @@
 OpenSession is a local-first workflow for registering, sharing, and inspecting AI session traces.
 The public contract is a single Source URI model shared by CLI, Web, and API.
 
+## Documentation Map
+
+- Root quick reference: `README.md` / `README.ko.md`
+- This file (`docs.md`): product contract and command semantics
+- Development and CI parity runbook: `docs/development-validation-flow.md`
+- Harness failure loop policy: `docs/harness-auto-improve-loop.md`
+- Parser source/reuse boundaries: `docs/parser-source-matrix.md`
+
 ## Getting Started
 
 Core principles:
@@ -163,6 +171,20 @@ Provider matrix:
 - GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. PR updates publish/refresh `opensession/pr-<number>-sessions` and upsert a PR comment.
 - GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note.
 - Generic git: `.opensession/cleanup/cron.example` is generated for cron/system scheduler wiring.
+- Session-review comments include `Reviewer Quick Digest` with Q&A excerpts (`Question | Answer` rows), modified file summary, and added/updated tests.
+
+## Development & Validation
+
+Canonical validation flow (hooks, API/worker/web/desktop E2E, CI parity, artifact policy):
+
+- `docs/development-validation-flow.md`
+
+Quick local gate commands:
+
+```bash
+./.githooks/pre-commit
+./.githooks/pre-push
+```
 
 ## Failure Recovery
 
@@ -257,6 +279,7 @@ Default mode is web. Use `--no-open` to print URL only.
 
 Local `view` targets do not require registered git credentials.
 They use local git objects / local source bytes and generate a local review bundle.
+Commit-linked local review pages expose a `Reviewer Quick Digest` panel that renders Q&A content excerpts (not just counts), modified files, and added/updated tests.
 
 ## Handoff
 

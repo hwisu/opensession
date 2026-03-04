@@ -116,6 +116,8 @@ export type {
 	LocalReviewCommit,
 	LocalReviewLayerFileChange,
 	LocalReviewPrMeta,
+	LocalReviewReviewerQa,
+	LocalReviewReviewerDigest,
 	LocalReviewSemanticSummary,
 	LocalReviewSession,
 	OAuthProviderInfo,

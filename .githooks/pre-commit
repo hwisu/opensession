@@ -20,6 +20,14 @@ run_cargo() {
   cargo "$@"
 }
 
+run_node_check() {
+  label="$1"
+  script="$2"
+  shift 2
+  echo "Running $label..."
+  node "$script" "$@"
+}
+
 hash_file_sha256() {
   file="$1"
   if [ ! -f "$file" ]; then
@@ -54,18 +62,12 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Running content contract check..."
-node scripts/verify-content-contract.mjs --check
-echo "Running session-review workflow check..."
-node scripts/check-session-review-workflow.mjs
-echo "Running publishable dependency check..."
-node scripts/check-publishable-deps.mjs
-echo "Running validation hook guardrail check..."
-node scripts/check-validation-hooks.mjs
-echo "Running docs portability check..."
-node scripts/check-doc-portability.mjs
-echo "Running product version sync check..."
-node scripts/sync-product-version.mjs --check
+run_node_check "content contract check" scripts/verify-content-contract.mjs --check
+run_node_check "session-review workflow check" scripts/check-session-review-workflow.mjs
+run_node_check "publishable dependency check" scripts/check-publishable-deps.mjs
+run_node_check "validation hook guardrail check" scripts/check-validation-hooks.mjs
+run_node_check "docs portability check" scripts/check-doc-portability.mjs
+run_node_check "product version sync check" scripts/sync-product-version.mjs --check
 
 echo "Running cargo fmt check..."
 run_cargo fmt --all -- --check

@@ -716,6 +716,29 @@ pub struct LocalReviewPrMeta {
     pub head_sha: String,
 }
 
+/// Reviewer-focused digest extracted from mapped sessions for a commit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewReviewerQa {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+}
+
+/// Reviewer-focused digest extracted from mapped sessions for a commit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewReviewerDigest {
+    #[serde(default)]
+    pub qa: Vec<LocalReviewReviewerQa>,
+    #[serde(default)]
+    pub modified_files: Vec<String>,
+    #[serde(default)]
+    pub test_files: Vec<String>,
+}
+
 /// Commit row in a local review bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -728,6 +751,8 @@ pub struct LocalReviewCommit {
     pub authored_at: String,
     #[serde(default)]
     pub session_ids: Vec<String>,
+    #[serde(default)]
+    pub reviewer_digest: LocalReviewReviewerDigest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_summary: Option<LocalReviewSemanticSummary>,
 }
@@ -1054,6 +1079,17 @@ mod schema_tests {
                 author_email: "alice@example.com".to_string(),
                 authored_at: "2026-02-24T00:00:00Z".to_string(),
                 session_ids: vec!["s-review-1".to_string()],
+                reviewer_digest: LocalReviewReviewerDigest {
+                    qa: vec![LocalReviewReviewerQa {
+                        question: "Which route should we verify first?".to_string(),
+                        answer: Some("Start with /review/local/:id live path.".to_string()),
+                    }],
+                    modified_files: vec![
+                        "crates/cli/src/review.rs".to_string(),
+                        "web/src/routes/review/local/[id]/+page.svelte".to_string(),
+                    ],
+                    test_files: vec!["web/e2e-live/live-review-local.spec.ts".to_string()],
+                },
                 semantic_summary: Some(LocalReviewSemanticSummary {
                     changes: "Updated review flow wiring".to_string(),
                     auth_security: "none detected".to_string(),
@@ -1088,6 +1124,15 @@ mod schema_tests {
         assert_eq!(decoded.commits.len(), 1);
         assert_eq!(decoded.sessions.len(), 1);
         assert_eq!(decoded.sessions[0].session_id, "s-review-1");
+        assert_eq!(
+            decoded.commits[0]
+                .reviewer_digest
+                .qa
+                .first()
+                .map(|row| row.question.as_str()),
+            Some("Which route should we verify first?")
+        );
+        assert_eq!(decoded.commits[0].reviewer_digest.test_files.len(), 1);
     }
 
     #[test]
@@ -1204,6 +1249,8 @@ mod tests {
             ParsePreviewErrorResponse,
             LocalReviewBundle,
             LocalReviewPrMeta,
+            LocalReviewReviewerQa,
+            LocalReviewReviewerDigest,
             LocalReviewCommit,
             LocalReviewLayerFileChange,
             LocalReviewSemanticSummary,

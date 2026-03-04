@@ -79,6 +79,21 @@ function main() {
   if (!reportScript.includes('#### Commit trail')) {
     fail('Report must include commit trail for direct change navigation.');
   }
+  if (!reportScript.includes('#### Reviewer Quick Digest')) {
+    fail('Report must include Reviewer Quick Digest block for high-signal review context.');
+  }
+  if (!reportScript.includes('Q&A excerpts:')) {
+    fail('Report must summarize interactive Q&A excerpts.');
+  }
+  if (!reportScript.includes('Added/updated test files:')) {
+    fail('Report must summarize added/updated test file coverage.');
+  }
+  if (!reportScript.includes('| Question | Answer |')) {
+    fail('Report must render Q&A digest as a question/answer table.');
+  }
+  if (!reportScript.includes('collectQaDigestFromSessions')) {
+    fail('Report script must derive Q&A digest rows from session payloads.');
+  }
   if (!reportScript.includes('Updated at (UTC)')) {
     fail('Report must include update timestamp for per-run freshness.');
   }

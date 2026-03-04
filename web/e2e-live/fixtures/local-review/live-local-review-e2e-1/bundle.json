@@ -10,16 +10,30 @@
 		"base_sha": "0000000000000000000000000000000000000000",
 		"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	},
-	"commits": [
-		{
-			"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			"title": "feat: review local route live test",
-			"author_name": "Live E2E",
-			"author_email": "live-e2e@example.com",
-			"authored_at": "2026-01-02T00:00:00Z",
-			"session_ids": ["live-review-session-1"]
-		}
-	],
+		"commits": [
+			{
+				"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"title": "feat: review local route live test",
+				"author_name": "Live E2E",
+				"author_email": "live-e2e@example.com",
+				"authored_at": "2026-01-02T00:00:00Z",
+				"session_ids": ["live-review-session-1"],
+				"reviewer_digest": {
+					"qa": [
+						{
+							"question": "What should we verify first?",
+							"answer": "Check /review/local/:id digest panel and mapped session render."
+						}
+					],
+					"modified_files": [
+						"crates/cli/src/review.rs",
+						"web/src/routes/review/local/[id]/+page.svelte",
+						"web/e2e-live/live-review-local.spec.ts"
+					],
+					"test_files": ["web/e2e-live/live-review-local.spec.ts"]
+				}
+			}
+		],
 	"sessions": [
 		{
 			"session_id": "live-review-session-1",

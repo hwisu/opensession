@@ -7,6 +7,7 @@ import {
 	getLocalReviewBundle,
 	type LocalReviewBundle,
 	type LocalReviewCommit,
+	type LocalReviewReviewerDigest,
 	type LocalReviewSemanticSummary,
 	type LocalReviewSession,
 	type Session,
@@ -56,6 +57,11 @@ const selectedSession = $derived.by((): LocalReviewSession | null => {
 const selectedCommitSummary = $derived.by((): LocalReviewSemanticSummary | null => {
 	const commit = selectedCommit;
 	return commit?.semantic_summary ?? null;
+});
+
+const selectedReviewerDigest = $derived.by((): LocalReviewReviewerDigest | null => {
+	const commit = selectedCommit;
+	return commit?.reviewer_digest ?? null;
 });
 
 function selectCommit(index: number) {
@@ -206,8 +212,8 @@ $effect(() => {
 			</div>
 		</div>
 
-		<div class="grid gap-3 lg:grid-cols-[320px_minmax(0,1fr)]">
-			<div class="rounded border border-border bg-bg-secondary">
+			<div class="grid gap-3 lg:grid-cols-[320px_minmax(0,1fr)]">
+				<div class="rounded border border-border bg-bg-secondary">
 				<div class="border-b border-border px-3 py-2 text-xs font-medium text-text-secondary">
 					Commit Groups ({bundle.commits.length})
 				</div>
@@ -233,10 +239,95 @@ $effect(() => {
 				</div>
 			</div>
 
-			<div class="space-y-3">
-				<div class="rounded border border-border bg-bg-secondary p-3">
-					<div class="border-b border-border pb-2 text-xs font-medium text-text-secondary">
-						Commit Semantic Summary
+				<div class="space-y-3">
+					<div class="rounded border border-border bg-bg-secondary p-3">
+						<div class="border-b border-border pb-2 text-xs font-medium text-text-secondary">
+							Reviewer Quick Digest
+						</div>
+						{#if !selectedCommit}
+							<div class="px-1 py-3 text-xs text-text-muted">Select a commit.</div>
+						{:else if selectedReviewerDigest}
+							<div class="space-y-3 pt-3">
+								<div class="grid gap-2 text-xs sm:grid-cols-3">
+									<div class="rounded border border-border/70 p-2">
+										<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Q&A Pairs</div>
+										<div class="mt-1 text-text-primary">{selectedReviewerDigest.qa.length}</div>
+									</div>
+									<div class="rounded border border-border/70 p-2">
+										<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Modified Files</div>
+										<div class="mt-1 text-text-primary">{selectedReviewerDigest.modified_files.length}</div>
+									</div>
+									<div class="rounded border border-border/70 p-2">
+										<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Test Files</div>
+										<div class="mt-1 text-text-primary">{selectedReviewerDigest.test_files.length}</div>
+									</div>
+								</div>
+								<div class="grid gap-2 sm:grid-cols-2">
+									<div class="rounded border border-border/70 p-2 text-xs">
+										<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Modified Paths</div>
+										{#if selectedReviewerDigest.modified_files.length === 0}
+											<div class="mt-1 text-text-muted">No file edits captured in mapped sessions.</div>
+										{:else}
+											<div class="mt-1 space-y-1">
+												{#each selectedReviewerDigest.modified_files.slice(0, 12) as filePath}
+													<div class="font-mono text-[11px] text-text-secondary">{filePath}</div>
+												{/each}
+												{#if selectedReviewerDigest.modified_files.length > 12}
+													<div class="text-[11px] text-text-muted">
+														... {selectedReviewerDigest.modified_files.length - 12} more
+													</div>
+												{/if}
+											</div>
+										{/if}
+										</div>
+										<div class="rounded border border-border/70 p-2 text-xs">
+											<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Interactive Q&A</div>
+											{#if selectedReviewerDigest.qa.length === 0}
+												<div class="mt-1 text-text-muted">No interactive Q&A content detected.</div>
+											{:else}
+												<div class="mt-1 space-y-2">
+													{#each selectedReviewerDigest.qa.slice(0, 6) as qa}
+														<div class="rounded border border-border/60 p-2">
+															<div class="text-[11px] text-text-muted">Q</div>
+															<div class="text-[11px] text-text-secondary">{qa.question}</div>
+															{#if qa.answer}
+																<div class="mt-1 text-[11px] text-text-muted">A</div>
+																<div class="text-[11px] text-text-secondary">{qa.answer}</div>
+															{/if}
+														</div>
+													{/each}
+													{#if selectedReviewerDigest.qa.length > 6}
+														<div class="text-[11px] text-text-muted">
+															... {selectedReviewerDigest.qa.length - 6} more
+														</div>
+													{/if}
+												</div>
+											{/if}
+										</div>
+										<div class="rounded border border-border/70 p-2 text-xs">
+											<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Added/Updated Tests</div>
+											{#if selectedReviewerDigest.test_files.length === 0}
+												<div class="mt-1 text-text-muted">No test files detected.</div>
+										{:else}
+											<div class="mt-1 space-y-1">
+												{#each selectedReviewerDigest.test_files as filePath}
+													<div class="font-mono text-[11px] text-text-secondary">{filePath}</div>
+												{/each}
+											</div>
+										{/if}
+									</div>
+								</div>
+							</div>
+						{:else}
+							<div class="px-1 py-3 text-xs text-text-muted">
+								No reviewer digest is available for this commit.
+							</div>
+						{/if}
+					</div>
+
+					<div class="rounded border border-border bg-bg-secondary p-3">
+						<div class="border-b border-border pb-2 text-xs font-medium text-text-secondary">
+							Commit Semantic Summary
 					</div>
 					{#if !selectedCommit}
 						<div class="px-1 py-3 text-xs text-text-muted">Select a commit.</div>

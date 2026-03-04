@@ -10,8 +10,10 @@ const checks = [
 		file: '.githooks/pre-commit',
 		requiredSnippets: [
 			'ERROR: node is required for pre-commit validation.',
-			'node scripts/check-validation-hooks.mjs',
-			'node scripts/check-doc-portability.mjs',
+			'run_node_check()',
+			'scripts/check-validation-hooks.mjs',
+			'scripts/check-doc-portability.mjs',
+			'scripts/verify-content-contract.mjs',
 		],
 	},
 	{

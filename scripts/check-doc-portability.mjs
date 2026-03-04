@@ -10,6 +10,7 @@ const docTargets = [
 	'README.ko.md',
 	'CONTRIBUTING.md',
 	'docs.md',
+	'docs/development-validation-flow.md',
 	'web/README.md',
 	'docs/harness-auto-improve-loop.md',
 ];

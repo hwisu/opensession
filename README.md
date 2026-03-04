@@ -10,6 +10,13 @@ OpenSession is a local-first workflow for recording, registering, sharing, and i
 Website: [opensession.io](https://opensession.io)  
 Docs: [opensession.io/docs](https://opensession.io/docs)
 
+## Documentation Map
+
+- Product contract and command model: [`docs.md`](docs.md)
+- Development and validation runbook: [`docs/development-validation-flow.md`](docs/development-validation-flow.md)
+- Harness loop policy: [`docs/harness-auto-improve-loop.md`](docs/harness-auto-improve-loop.md)
+- Parser source/reuse matrix: [`docs/parser-source-matrix.md`](docs/parser-source-matrix.md)
+
 ## DX Reset v1
 
 The CLI/Web/API contract is now centered on three actions:
@@ -170,6 +177,7 @@ Defaults:
 - hidden ref TTL: 30 days
 - artifact branch TTL: 30 days
 - GitHub/GitLab setup also writes PR/MR session-review automation that updates an artifact branch and posts a review comment on PR/MR updates.
+- Session review comments now include a `Reviewer Quick Digest` block with Q&A excerpts (question/answer rows), modified files, and added/updated tests.
 
 Sensitive repositories can force immediate cleanup:
 
@@ -277,7 +285,14 @@ opensession share os://src/local/<sha256> --git --remote origin
 ```
 
 ```bash
-# Runtime web validation
-npx wrangler dev --ip 127.0.0.1 --port 8788 --persist-to .wrangler/state
-BASE_URL=http://127.0.0.1:8788 npx playwright test e2e/git-share.spec.ts --config playwright.config.ts
+# Runtime web validation (after starting wrangler + opensession-server)
+cd web
+OPENSESSION_E2E_WORKER_BASE_URL=http://127.0.0.1:8788 \
+OPENSESSION_E2E_SERVER_BASE_URL=http://127.0.0.1:3000 \
+OPENSESSION_E2E_ALLOW_REMOTE=0 \
+CI=1 \
+npm run test:e2e:live -- --reporter=list
 ```
+
+For full local/CI parity details (hooks, API E2E, desktop E2E, artifact policy), use:
+[`docs/development-validation-flow.md`](docs/development-validation-flow.md)

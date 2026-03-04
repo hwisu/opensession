@@ -3,14 +3,15 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, ValueEnum};
 use opensession_api::{
     LocalReviewBundle, LocalReviewCommit, LocalReviewLayerFileChange, LocalReviewPrMeta,
-    LocalReviewSemanticSummary, LocalReviewSession,
+    LocalReviewReviewerDigest, LocalReviewReviewerQa, LocalReviewSemanticSummary,
+    LocalReviewSession,
 };
-use opensession_core::Session;
+use opensession_core::{ContentBlock, EventType, Session};
 use opensession_runtime_config::SummarySettings;
 use opensession_summary::{summarize_git_commit, SemanticSummaryArtifact};
 use reqwest::Url;
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -589,6 +590,130 @@ fn enum_label<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+pub(crate) fn build_reviewer_digest_for_commit(
+    sessions: &[LocalReviewSession],
+    commit_sha: &str,
+) -> LocalReviewReviewerDigest {
+    let mut pending_questions = VecDeque::<String>::new();
+    let mut qa = Vec::<LocalReviewReviewerQa>::new();
+    let mut modified_files = BTreeSet::<String>::new();
+
+    for row in sessions
+        .iter()
+        .filter(|row| row.commit_shas.iter().any(|sha| sha == commit_sha))
+    {
+        for event in &row.session.events {
+            let source = event
+                .attributes
+                .get("source")
+                .and_then(|value| value.as_str())
+                .map(|value| value.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+
+            match &event.event_type {
+                EventType::SystemMessage if source == "interactive_question" => {
+                    if let Some(text) = first_text_for_reviewer_digest(&event.content.blocks) {
+                        pending_questions.push_back(text);
+                    }
+                }
+                EventType::UserMessage if source == "interactive" => {
+                    let Some(answer) = first_text_for_reviewer_digest(&event.content.blocks) else {
+                        continue;
+                    };
+                    let question = pending_questions
+                        .pop_front()
+                        .unwrap_or_else(|| "(interactive question missing)".to_string());
+                    qa.push(LocalReviewReviewerQa {
+                        question,
+                        answer: Some(answer),
+                    });
+                }
+                EventType::FileEdit { path, .. }
+                | EventType::FileCreate { path }
+                | EventType::FileDelete { path } => {
+                    let trimmed = path.trim();
+                    if !trimmed.is_empty() {
+                        modified_files.insert(trimmed.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    qa.extend(
+        pending_questions
+            .into_iter()
+            .map(|question| LocalReviewReviewerQa {
+                question,
+                answer: None,
+            }),
+    );
+    if qa.len() > 12 {
+        qa.truncate(12);
+    }
+
+    let modified_files = modified_files.into_iter().collect::<Vec<_>>();
+    let test_files = modified_files
+        .iter()
+        .filter(|path| is_test_file_path(path))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    LocalReviewReviewerDigest {
+        qa,
+        modified_files,
+        test_files,
+    }
+}
+
+fn first_text_for_reviewer_digest(blocks: &[ContentBlock]) -> Option<String> {
+    for block in blocks {
+        if let ContentBlock::Text { text } = block {
+            let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let trimmed = compact.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            return Some(truncate_for_reviewer_digest(trimmed, 220));
+        }
+    }
+    None
+}
+
+fn truncate_for_reviewer_digest(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= max_chars {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn is_test_file_path(path: &str) -> bool {
+    let normalized = path.trim().replace('\\', "/").to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    normalized.contains("/tests/")
+        || normalized.contains("/test/")
+        || normalized.contains("/__tests__/")
+        || normalized.ends_with(".test.ts")
+        || normalized.ends_with(".test.tsx")
+        || normalized.ends_with(".test.js")
+        || normalized.ends_with(".test.jsx")
+        || normalized.ends_with(".spec.ts")
+        || normalized.ends_with(".spec.tsx")
+        || normalized.ends_with(".spec.js")
+        || normalized.ends_with(".spec.jsx")
+        || normalized.ends_with("_test.rs")
+        || normalized.ends_with("_spec.rs")
+        || normalized.ends_with("_test.py")
+}
+
 async fn build_review_bundle(input: BuildReviewBundleInput<'_>) -> Result<LocalReviewBundle> {
     let BuildReviewBundleInput {
         repo_root,
@@ -673,6 +798,7 @@ async fn build_review_bundle(input: BuildReviewBundleInput<'_>) -> Result<LocalR
 
         let semantic_summary =
             summarize_commit_for_review(repo_root, &commit.sha, summary_settings).await;
+        let reviewer_digest = build_reviewer_digest_for_commit(&session_rows, &commit.sha);
 
         commit_rows.push(LocalReviewCommit {
             sha: commit.sha,
@@ -681,6 +807,7 @@ async fn build_review_bundle(input: BuildReviewBundleInput<'_>) -> Result<LocalR
             author_email: commit.author_email,
             authored_at: commit.authored_at,
             session_ids: session_ids_for_commit,
+            reviewer_digest,
             semantic_summary,
         });
     }
@@ -955,10 +1082,13 @@ fn run_git(repo_root: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_review_id, parse_github_pr_url, parse_remote_repo_triplet,
-        refresh_remote_head_fetch_args, resolve_view_mode, sanitize_path_component,
-        sanitize_review_id_component, GithubPrSpec, ReviewView,
+        build_review_id, build_reviewer_digest_for_commit, parse_github_pr_url,
+        parse_remote_repo_triplet, refresh_remote_head_fetch_args, resolve_view_mode,
+        sanitize_path_component, sanitize_review_id_component, GithubPrSpec, ReviewView,
     };
+    use opensession_api::LocalReviewSession;
+    use opensession_core::{Agent, Content, Event, EventType, Session};
+    use std::collections::HashMap;
 
     #[test]
     fn parse_github_pr_url_accepts_standard_link() {
@@ -1032,5 +1162,96 @@ mod tests {
     fn review_auto_view_resolves_to_web() {
         assert_eq!(resolve_view_mode(ReviewView::Auto), ReviewView::Web);
         assert_eq!(resolve_view_mode(ReviewView::Web), ReviewView::Web);
+    }
+
+    #[test]
+    fn reviewer_digest_captures_qa_content_and_modified_test_files() {
+        let mut session = Session::new(
+            "session-1".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        let ts = chrono::Utc::now();
+
+        let mut question_attrs = HashMap::new();
+        question_attrs.insert(
+            "source".to_string(),
+            serde_json::Value::String("interactive_question".to_string()),
+        );
+        session.events.push(Event {
+            event_id: "q-1".to_string(),
+            timestamp: ts,
+            event_type: EventType::SystemMessage,
+            task_id: None,
+            content: Content::text("What should we test?"),
+            duration_ms: None,
+            attributes: question_attrs,
+        });
+
+        let mut answer_attrs = HashMap::new();
+        answer_attrs.insert(
+            "source".to_string(),
+            serde_json::Value::String("interactive".to_string()),
+        );
+        session.events.push(Event {
+            event_id: "a-1".to_string(),
+            timestamp: ts + chrono::Duration::seconds(1),
+            event_type: EventType::UserMessage,
+            task_id: None,
+            content: Content::text("Please add e2e coverage."),
+            duration_ms: None,
+            attributes: answer_attrs,
+        });
+
+        session.events.push(Event {
+            event_id: "f-1".to_string(),
+            timestamp: ts + chrono::Duration::seconds(2),
+            event_type: EventType::FileEdit {
+                path: "crates/cli/src/review.rs".to_string(),
+                diff: None,
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+        session.events.push(Event {
+            event_id: "f-2".to_string(),
+            timestamp: ts + chrono::Duration::seconds(3),
+            event_type: EventType::FileCreate {
+                path: "web/e2e-live/live-review-local.spec.ts".to_string(),
+            },
+            task_id: None,
+            content: Content::empty(),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        });
+
+        let digest = build_reviewer_digest_for_commit(
+            &[LocalReviewSession {
+                session_id: "session-1".to_string(),
+                ledger_ref: "refs/remotes/origin/opensession/branches/main".to_string(),
+                hail_path: "v1/sr/session-1.hail.jsonl".to_string(),
+                commit_shas: vec!["a".repeat(40)],
+                session,
+            }],
+            &"a".repeat(40),
+        );
+
+        assert_eq!(digest.qa.len(), 1);
+        assert_eq!(digest.qa[0].question, "What should we test?");
+        assert_eq!(
+            digest.qa[0].answer.as_deref(),
+            Some("Please add e2e coverage.")
+        );
+        assert_eq!(digest.modified_files.len(), 2);
+        assert_eq!(
+            digest.test_files,
+            vec!["web/e2e-live/live-review-local.spec.ts".to_string()]
+        );
     }
 }

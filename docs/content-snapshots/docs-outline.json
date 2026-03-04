@@ -11,6 +11,11 @@
   "required_template_subheadings": [],
   "chapters": [
     {
+      "heading": "Documentation Map",
+      "subheadings": [],
+      "code_blocks": 0
+    },
+    {
       "heading": "Getting Started",
       "subheadings": [],
       "code_blocks": 3
@@ -24,6 +29,11 @@
       "heading": "Cleanup Automation",
       "subheadings": [],
       "code_blocks": 2
+    },
+    {
+      "heading": "Development & Validation",
+      "subheadings": [],
+      "code_blocks": 1
     },
     {
       "heading": "Failure Recovery",

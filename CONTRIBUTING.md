@@ -15,11 +15,14 @@
    ./.githooks/pre-commit
    ./.githooks/pre-push
    ```
-4. API route changes: update the endpoint table in README.
+4. For web/runtime-web changes, validate at least one real user path with `wrangler dev` + Playwright live suite.
+5. API route changes: update the endpoint table in README.
+
+Validation details (local + CI parity) live in `docs/development-validation-flow.md`.
 
 ## Project Structure
 
-Single Cargo workspace with 12 crates under `crates/`:
+Single Cargo workspace with 13 crates under `crates/`:
 
 ```
 crates/
@@ -32,7 +35,8 @@ crates/
 ├── server        # Axum HTTP server
 ├── daemon        # Background file watcher and sync
 ├── cli           # CLI entry point (binary: opensession)
-├── tui           # Terminal UI
+├── runtime-config # Runtime settings config and validation
+├── summary       # Summary extraction/normalization domain
 ├── worker        # Cloudflare Worker (excluded, wasm target)
 └── e2e           # End-to-end tests
 ```

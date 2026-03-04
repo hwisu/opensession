@@ -105,7 +105,11 @@ export interface LocalReviewBundle { review_id: string, generated_at: string, pr
 
 export interface LocalReviewPrMeta { url: string, owner: string, repo: string, number: number, remote: string, base_sha: string, head_sha: string, }
 
-export interface LocalReviewCommit { sha: string, title: string, author_name: string, author_email: string, authored_at: string, session_ids: Array<string>, semantic_summary?: LocalReviewSemanticSummary | null, }
+export interface LocalReviewReviewerQa { question: string, answer?: string | null, }
+
+export interface LocalReviewReviewerDigest { qa: Array<LocalReviewReviewerQa>, modified_files: Array<string>, test_files: Array<string>, }
+
+export interface LocalReviewCommit { sha: string, title: string, author_name: string, author_email: string, authored_at: string, session_ids: Array<string>, reviewer_digest: LocalReviewReviewerDigest, semantic_summary?: LocalReviewSemanticSummary | null, }
 
 export interface LocalReviewLayerFileChange { layer: string, summary: string, files: Array<string>, }
 

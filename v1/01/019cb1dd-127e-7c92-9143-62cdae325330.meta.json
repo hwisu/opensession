@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "c28d63ffb803e5000f85a0545c6766e6d760c7da"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019cb1dd-127e-7c92-9143-62cdae325330",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 500,
+    "event_count": 381,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 19,
+    "task_count": 2,
+    "tool_call_count": 3,
+    "total_input_tokens": 2734990,
+    "total_output_tokens": 15411,
+    "user_message_count": 2
+  },
+  "title": "최신화 해줄래 ?",
+  "tool": "codex"
+}

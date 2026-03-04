@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"description": "Domain function coverage policy for shared business logic in opensession-api.",
+	"targets": [
+		"crates/api/src/service.rs",
+		"crates/api/src/oauth.rs",
+		"crates/api/src/deploy.rs"
+	],
+	"test_roots": [
+		"crates/api/src",
+		"crates/api/tests"
+	]
+}

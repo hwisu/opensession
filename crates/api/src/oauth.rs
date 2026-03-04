@@ -441,8 +441,15 @@ fn hex_value(b: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{github_preset, normalize_oauth_config_value, parse_access_token_response};
+    use serde_json::json;
 
+    use super::{
+        build_authorize_url, build_token_request_body, build_token_request_form,
+        build_token_request_form_encoded, extract_user_info, github_preset, gitlab_preset,
+        normalize_oauth_config_value, parse_access_token_response,
+    };
+
+    // @coversfn oauth.parse_access_token_response success
     #[test]
     fn parse_access_token_json_ok() {
         let raw = r#"{"access_token":"gho_123","scope":"read:user","token_type":"bearer"}"#;
@@ -450,6 +457,7 @@ mod tests {
         assert_eq!(token, "gho_123");
     }
 
+    // @coversfn oauth.parse_access_token_response success
     #[test]
     fn parse_access_token_form_ok() {
         let raw = "access_token=gho_abc&scope=read%3Auser&token_type=bearer";
@@ -457,6 +465,7 @@ mod tests {
         assert_eq!(token, "gho_abc");
     }
 
+    // @coversfn oauth.parse_access_token_response error
     #[test]
     fn parse_access_token_json_error_has_reason() {
         let raw = r#"{"error":"bad_verification_code","error_description":"The code passed is incorrect or expired."}"#;
@@ -464,17 +473,112 @@ mod tests {
         assert!(err.message().contains("bad_verification_code"));
     }
 
+    // @coversfn oauth.parse_access_token_response error
+    #[test]
+    fn parse_access_token_empty_body_is_error() {
+        let err = parse_access_token_response("   ").expect_err("must fail");
+        assert!(err.message().contains("empty response body"));
+    }
+
+    // @coversfn oauth.build_authorize_url success
+    #[test]
+    fn build_authorize_url_prefers_external_and_encodes_values() {
+        let mut provider = github_preset("cid".into(), "secret".into());
+        provider.external_authorize_url = Some("https://external.example/oauth/authorize".into());
+        provider.scopes = "read:user user:email".into();
+        let built = build_authorize_url(
+            &provider,
+            "https://app.local/auth/callback?mode=web",
+            "state value",
+        );
+        assert!(built.starts_with("https://external.example/oauth/authorize?"));
+        assert!(built.contains("client_id=cid"));
+        assert!(
+            built.contains("redirect_uri=https%3A%2F%2Fapp.local%2Fauth%2Fcallback%3Fmode%3Dweb")
+        );
+        assert!(built.contains("state=state%20value"));
+        assert!(built.contains("scope=read%3Auser%20user%3Aemail"));
+    }
+
+    // @coversfn oauth.build_token_request_body success
+    #[test]
+    fn build_token_request_body_contains_required_fields() {
+        let provider = github_preset("cid".into(), "secret".into());
+        let body = build_token_request_body(&provider, "code-1", "https://app/callback");
+        assert_eq!(body["client_id"], "cid");
+        assert_eq!(body["client_secret"], "secret");
+        assert_eq!(body["code"], "code-1");
+        assert_eq!(body["grant_type"], "authorization_code");
+        assert_eq!(body["redirect_uri"], "https://app/callback");
+    }
+
+    // @coversfn oauth.build_token_request_form success
+    #[test]
+    fn build_token_request_form_contains_required_fields() {
+        let provider = github_preset("cid".into(), "secret".into());
+        let form = build_token_request_form(&provider, "code-1", "https://app/callback");
+        assert_eq!(
+            form,
+            vec![
+                ("client_id".into(), "cid".into()),
+                ("client_secret".into(), "secret".into()),
+                ("code".into(), "code-1".into()),
+                ("grant_type".into(), "authorization_code".into()),
+                ("redirect_uri".into(), "https://app/callback".into()),
+            ]
+        );
+    }
+
+    // @coversfn oauth.build_token_request_form_encoded success
     #[test]
     fn build_form_encoded_contains_required_fields() {
         let provider = github_preset("cid".into(), "secret".into());
-        let encoded =
-            super::build_token_request_form_encoded(&provider, "code-1", "https://app/callback");
+        let encoded = build_token_request_form_encoded(&provider, "code-1", "https://app/callback");
         assert!(encoded.contains("client_id=cid"));
         assert!(encoded.contains("client_secret=secret"));
         assert!(encoded.contains("grant_type=authorization_code"));
         assert!(encoded.contains("code=code-1"));
     }
 
+    // @coversfn oauth.extract_user_info success
+    #[test]
+    fn extract_user_info_prefers_primary_email() {
+        let provider = github_preset("cid".into(), "secret".into());
+        let userinfo = json!({
+            "id": 42,
+            "login": "alice",
+            "avatar_url": "https://avatar.example/alice.png",
+            "email": null
+        });
+        let emails = vec![
+            json!({"email":"secondary@example.com","primary":false}),
+            json!({"email":"primary@example.com","primary":true}),
+        ];
+
+        let info =
+            extract_user_info(&provider, &userinfo, Some(&emails)).expect("userinfo should parse");
+        assert_eq!(info.provider_id, "github");
+        assert_eq!(info.provider_user_id, "42");
+        assert_eq!(info.username, "alice");
+        assert_eq!(info.email.as_deref(), Some("primary@example.com"));
+        assert_eq!(
+            info.avatar_url.as_deref(),
+            Some("https://avatar.example/alice.png")
+        );
+    }
+
+    // @coversfn oauth.extract_user_info error
+    #[test]
+    fn extract_user_info_requires_id_field() {
+        let provider = github_preset("cid".into(), "secret".into());
+        let userinfo = json!({
+            "login": "alice"
+        });
+        let err = extract_user_info(&provider, &userinfo, None).expect_err("must fail");
+        assert!(err.message().contains("missing 'id' field"));
+    }
+
+    // @coversfn oauth.normalize_oauth_config_value success
     #[test]
     fn normalize_oauth_config_value_trims_and_rejects_empty() {
         assert_eq!(
@@ -484,6 +588,7 @@ mod tests {
         assert_eq!(normalize_oauth_config_value("   \n\t  "), None);
     }
 
+    // @coversfn oauth.normalize_oauth_config_value success
     #[test]
     fn normalize_oauth_config_value_strips_wrapping_quotes() {
         assert_eq!(
@@ -495,5 +600,40 @@ mod tests {
             Some("another".to_string())
         );
         assert_eq!(normalize_oauth_config_value("  \"   \" "), None);
+    }
+
+    // @coversfn oauth.github_preset success
+    #[test]
+    fn github_preset_populates_expected_defaults() {
+        let provider = github_preset("cid".into(), "secret".into());
+        assert_eq!(provider.id, "github");
+        assert_eq!(provider.display_name, "GitHub");
+        assert_eq!(
+            provider.email_url.as_deref(),
+            Some("https://api.github.com/user/emails")
+        );
+        assert_eq!(provider.scopes, "read:user,user:email");
+    }
+
+    // @coversfn oauth.gitlab_preset success
+    #[test]
+    fn gitlab_preset_trims_urls_and_sets_external_authorize_url() {
+        let provider = gitlab_preset(
+            "https://gitlab.internal/".into(),
+            Some("https://gitlab.example.com/".into()),
+            "cid".into(),
+            "secret".into(),
+        );
+        assert_eq!(provider.id, "gitlab");
+        assert_eq!(
+            provider.authorize_url,
+            "https://gitlab.internal/oauth/authorize"
+        );
+        assert_eq!(provider.token_url, "https://gitlab.internal/oauth/token");
+        assert_eq!(provider.userinfo_url, "https://gitlab.internal/api/v4/user");
+        assert_eq!(
+            provider.external_authorize_url.as_deref(),
+            Some("https://gitlab.example.com/oauth/authorize")
+        );
     }
 }

@@ -64,8 +64,8 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  functional-coverage:
-    name: Functional Coverage (${{ matrix.os }})
+  domain-function-coverage:
+    name: Domain Function Coverage (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node scripts/check-functional-coverage.mjs
+      - run: node scripts/check-domain-function-coverage.mjs
 
   clippy:
     name: Clippy (${{ matrix.os }})

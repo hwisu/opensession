@@ -125,7 +125,7 @@ function main() {
 		run('npm', ['run', 'check'], { cwd: path.join(repoRoot, 'web') });
 	}
 
-	run('node', ['scripts/check-functional-coverage.mjs']);
+	run('node', ['scripts/check-domain-function-coverage.mjs']);
 	runCargo(rustToolchain, ['clippy', '--workspace', '--quiet', '--', '-D', 'warnings']);
 
 	if (rustToolchain.usingRustupStable) {

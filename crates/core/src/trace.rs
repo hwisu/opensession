@@ -12,8 +12,6 @@ pub const ATTR_SEMANTIC_GROUP_ID: &str = "semantic.group_id";
 pub const ATTR_SEMANTIC_CALL_ID: &str = "semantic.call_id";
 /// Canonical event attribute key for semantic tool kind classification.
 pub const ATTR_SEMANTIC_TOOL_KIND: &str = "semantic.tool_kind";
-/// Legacy attribute key historically used for tool call correlation.
-pub const ATTR_LEGACY_CALL_ID: &str = "call_id";
 
 /// Top-level session - the root of a HAIL (Human AI Interaction Log) trace
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,7 +273,6 @@ impl Event {
     /// Resolution order:
     /// 1) `semantic.call_id`
     /// 2) `ToolResult.call_id`
-    /// 3) legacy `call_id` attribute
     pub fn semantic_call_id(&self) -> Option<&str> {
         if let Some(call_id) = self.attr_str(ATTR_SEMANTIC_CALL_ID) {
             return Some(call_id);
@@ -291,8 +288,7 @@ impl Event {
                 return Some(trimmed);
             }
         }
-
-        self.attr_str(ATTR_LEGACY_CALL_ID)
+        None
     }
 }
 
@@ -902,15 +898,11 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_call_id_prefers_canonical_then_fallbacks() {
+    fn test_semantic_call_id_prefers_canonical_then_tool_result_call_id() {
         let mut canonical_attrs = HashMap::new();
         canonical_attrs.insert(
             ATTR_SEMANTIC_CALL_ID.to_string(),
             serde_json::Value::String("cid-1".to_string()),
-        );
-        canonical_attrs.insert(
-            ATTR_LEGACY_CALL_ID.to_string(),
-            serde_json::Value::String("legacy-1".to_string()),
         );
         let canonical = Event {
             event_id: "e-canonical".to_string(),
@@ -939,13 +931,16 @@ mod tests {
             attributes: HashMap::new(),
         };
         assert_eq!(tool_result.semantic_call_id(), Some("cid-2"));
+    }
 
-        let mut legacy_attrs = HashMap::new();
-        legacy_attrs.insert(
-            ATTR_LEGACY_CALL_ID.to_string(),
+    #[test]
+    fn test_semantic_call_id_ignores_legacy_call_id_attribute() {
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "call_id".to_string(),
             serde_json::Value::String(" legacy-2 ".to_string()),
         );
-        let legacy = Event {
+        let event = Event {
             event_id: "e-legacy".to_string(),
             timestamp: Utc::now(),
             event_type: EventType::ToolCall {
@@ -954,8 +949,8 @@ mod tests {
             task_id: None,
             content: Content::empty(),
             duration_ms: None,
-            attributes: legacy_attrs,
+            attributes: attrs,
         };
-        assert_eq!(legacy.semantic_call_id(), Some("legacy-2"));
+        assert_eq!(event.semantic_call_id(), None);
     }
 }

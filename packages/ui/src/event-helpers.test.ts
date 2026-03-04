@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isBoilerplateEvent, prepareTimelineEvents } from './event-helpers';
+import { isBoilerplateEvent, pairToolCallResults, prepareTimelineEvents } from './event-helpers';
 import type { Event } from './types';
 
 function textEvent(args: {
@@ -116,4 +116,54 @@ test('prepareTimelineEvents filters low-signal custom dot events', () => {
 		prepared.map((event) => event.event_id),
 		['a1'],
 	);
+});
+
+test('pairToolCallResults matches semantic.call_id and ignores legacy attrs.call_id', () => {
+	const events: Event[] = [
+		{
+			...textEvent({
+				id: 'call',
+				type: { type: 'ToolCall', data: { name: 'exec_command' } },
+			}),
+			attributes: {
+				'semantic.call_id': 'cid-1',
+				call_id: 'legacy-cid-should-be-ignored',
+			},
+		},
+		textEvent({
+			id: 'result',
+			type: { type: 'ToolResult', data: { name: 'exec_command', is_error: false, call_id: 'cid-1' } },
+			text: 'ok',
+		}),
+	];
+
+	const pairs = pairToolCallResults(events);
+	assert.equal(pairs.get(0)?.event_id, 'result');
+});
+
+test('pairToolCallResults does not use legacy attrs.call_id for direct matching', () => {
+	const events: Event[] = [
+		{
+			...textEvent({
+				id: 'call',
+				type: { type: 'ToolCall', data: { name: 'exec_command' } },
+			}),
+			attributes: {
+				call_id: 'legacy-only-id',
+			},
+		},
+		{
+			...textEvent({
+				id: 'result',
+				type: { type: 'ToolResult', data: { name: 'different_tool', is_error: false } },
+				text: 'ok',
+			}),
+			attributes: {
+				call_id: 'legacy-only-id',
+			},
+		},
+	];
+
+	const pairs = pairToolCallResults(events);
+	assert.equal(pairs.has(0), false);
 });

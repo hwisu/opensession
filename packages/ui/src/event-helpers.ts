@@ -285,8 +285,7 @@ function semanticCallId(event: Event): string | null {
 		const fromType = event.event_type.data.call_id;
 		if (typeof fromType === 'string' && fromType.trim().length > 0) return fromType;
 	}
-	const fromLegacy = attrs.call_id;
-	return typeof fromLegacy === 'string' && fromLegacy.trim().length > 0 ? fromLegacy : null;
+	return null;
 }
 
 /** Pair ToolCall rows with ToolResult rows for stable status coloring/chips. */

@@ -285,6 +285,29 @@ jobs:
           echo "wrangler dev did not start in time (api=$api_code root=$root_code)"
           cat .ci-logs/wrangler.log || true
           exit 1
+      - name: Start opensession-server for web live API
+        run: |
+          mkdir -p .ci-logs .ci-data/server
+          PORT=3000 \
+          BASE_URL=http://127.0.0.1:3000 \
+          JWT_SECRET=ci-jwt-secret \
+          OPENSESSION_ADMIN_KEY=ci-admin-key \
+          OPENSESSION_DATA_DIR="$PWD/.ci-data/server" \
+          OPENSESSION_LOCAL_REVIEW_ROOT="$PWD/web/e2e-live/fixtures/local-review" \
+          OPENSESSION_ALLOWED_ORIGINS=http://127.0.0.1:8788 \
+          cargo run -p opensession-server > .ci-logs/server.log 2>&1 &
+          echo $! > .ci-logs/server.pid
+      - name: Wait for server health endpoint
+        run: |
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "opensession-server did not start in time"
+          cat .ci-logs/server.log || true
+          exit 1
       - name: Run worker API E2E suite
         env:
           OPENSESSION_E2E_WORKER_BASE_URL: http://127.0.0.1:8788
@@ -293,10 +316,17 @@ jobs:
       - name: Run web live Playwright suite
         env:
           OPENSESSION_E2E_WORKER_BASE_URL: http://127.0.0.1:8788
+          OPENSESSION_E2E_SERVER_BASE_URL: http://127.0.0.1:3000
           OPENSESSION_E2E_ALLOW_REMOTE: "0"
           CI: "1"
         run: npm run test:e2e:live -- --reporter=list,junit --output=e2e-live-results
         working-directory: web
+      - name: Stop opensession-server
+        if: always()
+        run: |
+          if [ -f .ci-logs/server.pid ]; then
+            kill "$(cat .ci-logs/server.pid)" || true
+          fi
       - name: Stop wrangler dev
         if: always()
         run: |
@@ -310,6 +340,7 @@ jobs:
           name: worker-web-live-e2e-${{ matrix.os }}
           path: |
             .ci-logs/wrangler.log
+            .ci-logs/server.log
             web/e2e-live-results
             web/test-results
             web/playwright-report

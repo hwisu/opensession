@@ -42,7 +42,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "2.3.15",
 		"jsdom": "^28.1.0",
-		"svelte": "^5.51.5",
+		"svelte": "^5.53.5",
 		"tsx": "^4.20.5",
 		"turndown": "^7.2.0",
 		"typescript": "^5.9.3"

@@ -1,0 +1,33 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "da78b4880a82749cfb7fbca473fc6b238f3bbac5",
+      "43507d91cd176f6c81c6826893428d39f5b9970b",
+      "12a0d373ef3cde1b22075eac3e2c63a88cfcf6c6",
+      "a745c8c1b6afd13b2cd3a97fbfec24b0508846ec"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019c9e43-f8d0-7093-ae38-716f8938f84f",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 2781,
+    "event_count": 1190,
+    "files_changed": 10,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 77,
+    "task_count": 11,
+    "tool_call_count": 62,
+    "total_input_tokens": 15324935,
+    "total_output_tokens": 84736,
+    "user_message_count": 13
+  },
+  "title": "글로벌로 설치, 실행하려면 어떤 루트를 타야해?\n\n그리고 깃헙 대비 깃랩이나 커밋바이 커밋일때는 어떻게 동작해?\n\n깃헙은 머지하면 사라지잖아.",
+  "tool": "codex"
+}

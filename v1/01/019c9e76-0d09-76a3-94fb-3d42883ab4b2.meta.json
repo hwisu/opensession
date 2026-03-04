@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "489a976c00b8c971bda3ee1b9cf38995f0173aec"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019c9e76-0d09-76a3-94fb-3d42883ab4b2",
+  "session_role": "auxiliary",
+  "stats": {
+    "duration_seconds": 29,
+    "event_count": 15,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 4,
+    "task_count": 1,
+    "tool_call_count": 0,
+    "total_input_tokens": 24314,
+    "total_output_tokens": 256,
+    "user_message_count": 1
+  },
+  "title": "In `/Users/hwisookim/opensession`, run:\n1) git add crates/local-db/src/lib.rs...",
+  "tool": "codex"
+}

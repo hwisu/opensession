@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "b50932e9d5f2ce195f4e9582f064c7be932d6b56"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019cb7bd-6696-7673-b19b-2739eda6ab2c",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 8,
+    "event_count": 7,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 3,
+    "task_count": 1,
+    "tool_call_count": 0,
+    "total_input_tokens": 12080,
+    "total_output_tokens": 231,
+    "user_message_count": 1
+  },
+  "title": "Convert a real coding session into semantic compression.\nPipeline: session ->...",
+  "tool": "codex"
+}

@@ -1,0 +1,40 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "3954aa8a1fd7ff43d96b9e60d2cf206d33c7d487",
+      "03e8fc133c5b921de16f35886f48e715864e1768",
+      "6db1a0907383c7975be4f6935896a190475782e7",
+      "2961d27054298154cd53ae8f9fa167c80fd37f94",
+      "925b8eb1770ae99440a43b2d54de34efb495d7b1",
+      "0ca8049d8583958069800fc35bbdd861e603889b",
+      "c885873d648d18184c3f67ad59189791adc54903",
+      "0a6e0e553e1cd002eebf800b3a8e87672d292314",
+      "881228f8c7e86a7b4f4bf0e947b21bc0f8dcb3e2",
+      "a5315f72877e24b2d1fa30ddd32f3f93f668629b",
+      "2669ea672da220adc31fe5220e9054f9be3e85cf"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019cb1e5-a18a-77c2-bc14-fca231d6876a",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 26097,
+    "event_count": 9499,
+    "files_changed": 56,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 429,
+    "task_count": 47,
+    "tool_call_count": 110,
+    "total_input_tokens": 153599538,
+    "total_output_tokens": 479060,
+    "user_message_count": 56
+  },
+  "title": "또, 엄청 오래된 클로드 코드 세션이 tui에 (혹은 로컬에) '등록' 되는 순간 라이브 세션인 것처럼 추적되고 있어. 동시에 클로드 코드...",
+  "tool": "codex"
+}

@@ -1,0 +1,32 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "255c441e48c6cf4a1e91709dafcb8762db0ff499",
+      "52850718231cd3edeba2f67299ac762912a50409",
+      "b50932e9d5f2ce195f4e9582f064c7be932d6b56"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019cb6f9-d01e-7941-afc9-86338cbe139b",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 524,
+    "event_count": 288,
+    "files_changed": 1,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 27,
+    "task_count": 2,
+    "tool_call_count": 5,
+    "total_input_tokens": 1385790,
+    "total_output_tokens": 9784,
+    "user_message_count": 2
+  },
+  "title": "레포 최신화하고 기능들 잘되는지 테스트해줘",
+  "tool": "codex"
+}

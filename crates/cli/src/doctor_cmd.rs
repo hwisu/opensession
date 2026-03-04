@@ -1,4 +1,7 @@
 use crate::open_target::OpenTarget;
+use crate::runtime_settings::{
+    apply_summary_profile, detect_local_summary_profile, load_runtime_config, save_runtime_config,
+};
 use crate::setup_cmd::{self, SetupArgs, SetupFanoutMode};
 use crate::user_guidance::guided_error;
 use anyhow::Result;
@@ -61,6 +64,23 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         sync_branch_session: None,
         sync_branch_commit: None,
     })?;
+
+    if args.fix {
+        let mut runtime = load_runtime_config()?;
+        if !runtime.summary.is_configured() {
+            if let Some(profile) = detect_local_summary_profile() {
+                apply_summary_profile(&mut runtime, &profile);
+                let path = save_runtime_config(&runtime)?;
+                println!(
+                    "summary provider detected and applied: {:?} ({})",
+                    profile.provider,
+                    path.display()
+                );
+            } else {
+                println!("summary provider detect: none (keep disabled)");
+            }
+        }
+    }
 
     if !args.fix {
         println!("hint: run `opensession doctor --fix` to apply recommended setup values.");

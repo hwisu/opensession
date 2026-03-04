@@ -14,10 +14,16 @@ pub const MIGRATIONS: &[Migration] = &[(
 
 /// Local-only migrations (TUI + Daemon).
 /// These run AFTER the shared MIGRATIONS to add sync-tracking tables.
-pub const LOCAL_MIGRATIONS: &[Migration] = &[(
-    "local_0001_schema",
-    include_str!("../../migrations/local_0001_schema.sql"),
-)];
+pub const LOCAL_MIGRATIONS: &[Migration] = &[
+    (
+        "local_0001_schema",
+        include_str!("../../migrations/local_0001_schema.sql"),
+    ),
+    (
+        "local_0002_session_summaries",
+        include_str!("../../migrations/local_0002_session_summaries.sql"),
+    ),
+];
 
 #[cfg(test)]
 mod tests {
@@ -27,8 +33,9 @@ mod tests {
     fn schema_migration_set_is_minimal() {
         assert_eq!(MIGRATIONS.len(), 1);
         assert_eq!(MIGRATIONS[0].0, "0001_schema");
-        assert_eq!(LOCAL_MIGRATIONS.len(), 1);
+        assert_eq!(LOCAL_MIGRATIONS.len(), 2);
         assert_eq!(LOCAL_MIGRATIONS[0].0, "local_0001_schema");
+        assert_eq!(LOCAL_MIGRATIONS[1].0, "local_0002_session_summaries");
     }
 
     #[test]

@@ -1,32 +1,21 @@
 use crate::url_opener::open_url_for_repo;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, ValueEnum};
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    ExecutableCommand,
-};
 use opensession_api::{
-    LocalReviewBundle, LocalReviewCommit, LocalReviewPrMeta, LocalReviewSession,
+    LocalReviewBundle, LocalReviewCommit, LocalReviewLayerFileChange, LocalReviewPrMeta,
+    LocalReviewSemanticSummary, LocalReviewSession,
 };
 use opensession_core::Session;
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Layout},
-    style::{Modifier, Style},
-    text::Line,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame, Terminal,
-};
+use opensession_runtime_config::SummarySettings;
+use opensession_summary::{summarize_git_commit, SemanticSummaryArtifact};
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::OpenOptions;
-use std::io::{stdout, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub(crate) const LOCAL_REVIEW_ROOT_DIR: &str = ".opensession/review";
 pub(crate) const LOCAL_REVIEW_SERVER_BASE_URL: &str = "http://127.0.0.1:8788";
@@ -35,7 +24,7 @@ pub(crate) const LOCAL_REVIEW_SERVER_BASE_URL: &str = "http://127.0.0.1:8788";
 pub struct ReviewArgs {
     /// GitHub PR URL (`https://github.com/<owner>/<repo>/pull/<number>`).
     pub pr_link: String,
-    /// Review view mode (`auto` picks TUI when attached to a terminal).
+    /// Review view mode (`auto` resolves to web).
     #[arg(long, value_enum, default_value_t = ReviewView::Auto)]
     pub view: ReviewView,
     /// Repository root path (defaults to current repository).
@@ -52,7 +41,6 @@ pub struct ReviewArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ReviewView {
     Auto,
-    Tui,
     Web,
 }
 
@@ -94,6 +82,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     let repo_root = resolve_repo_root(args.repo.as_deref())?;
     let pr = parse_github_pr_url(&args.pr_link)?;
     let remote = resolve_matching_remote(&repo_root, &pr)?;
+    let summary_settings = load_review_summary_settings();
 
     let pr_head_ref = format!("refs/opensession/review/pr/{}/head", pr.number);
     if !args.no_fetch {
@@ -113,7 +102,23 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     let ctx = prepare_bundle_paths(&repo_root, &pr, &pr_head_sha)?;
     let bundle =
         if let Some(cached) = load_cached_bundle_if_head_matches(&ctx.bundle_path, &pr_head_sha)? {
-            cached
+            if bundle_has_commit_semantic_summaries(&cached) {
+                cached
+            } else {
+                let built = build_review_bundle(
+                    &repo_root,
+                    &args.pr_link,
+                    &pr,
+                    &remote.name,
+                    &base_sha,
+                    &pr_head_sha,
+                    commits,
+                    &summary_settings,
+                )
+                .await?;
+                write_review_bundle(&ctx.bundle_path, &built)?;
+                built
+            }
         } else {
             let built = build_review_bundle(
                 &repo_root,
@@ -123,7 +128,9 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
                 &base_sha,
                 &pr_head_sha,
                 commits,
-            )?;
+                &summary_settings,
+            )
+            .await?;
             write_review_bundle(&ctx.bundle_path, &built)?;
             built
         };
@@ -145,7 +152,6 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
 
     let effective_view = resolve_view_mode(args.view);
     match effective_view {
-        ReviewView::Tui => run_review_tui(&bundle, &repo_root)?,
         ReviewView::Web => {
             let url = ensure_web_review_server(
                 &repo_root,
@@ -495,7 +501,84 @@ fn write_review_bundle(path: &Path, bundle: &LocalReviewBundle) -> Result<()> {
     std::fs::write(path, body).with_context(|| format!("write review bundle {}", path.display()))
 }
 
-fn build_review_bundle(
+fn bundle_has_commit_semantic_summaries(bundle: &LocalReviewBundle) -> bool {
+    bundle
+        .commits
+        .iter()
+        .all(|commit| commit.semantic_summary.is_some())
+}
+
+pub(crate) fn load_review_summary_settings() -> SummarySettings {
+    match crate::runtime_settings::load_runtime_config() {
+        Ok(config) => config.summary,
+        Err(error) => {
+            eprintln!(
+                "[opensession] failed to load runtime summary settings ({error}); using defaults"
+            );
+            SummarySettings::default()
+        }
+    }
+}
+
+pub(crate) async fn summarize_commit_for_review(
+    repo_root: &Path,
+    commit_sha: &str,
+    settings: &SummarySettings,
+) -> Option<LocalReviewSemanticSummary> {
+    match summarize_git_commit(repo_root, commit_sha, settings).await {
+        Ok(artifact) => Some(local_review_semantic_summary_from_artifact(artifact)),
+        Err(error) => Some(LocalReviewSemanticSummary {
+            changes: "commit semantic summary unavailable".to_string(),
+            auth_security: "none detected".to_string(),
+            layer_file_changes: Vec::new(),
+            source_kind: "git_commit".to_string(),
+            generation_kind: "heuristic_fallback".to_string(),
+            provider: "disabled".to_string(),
+            model: None,
+            error: Some(error),
+            diff_tree: Vec::new(),
+        }),
+    }
+}
+
+pub(crate) fn local_review_semantic_summary_from_artifact(
+    artifact: SemanticSummaryArtifact,
+) -> LocalReviewSemanticSummary {
+    LocalReviewSemanticSummary {
+        changes: artifact.summary.changes,
+        auth_security: artifact.summary.auth_security,
+        layer_file_changes: artifact
+            .summary
+            .layer_file_changes
+            .into_iter()
+            .map(|layer| LocalReviewLayerFileChange {
+                layer: layer.layer,
+                summary: layer.summary,
+                files: layer.files,
+            })
+            .collect(),
+        source_kind: enum_label(&artifact.source_kind),
+        generation_kind: enum_label(&artifact.generation_kind),
+        provider: enum_label(&artifact.provider),
+        model: (!artifact.model.trim().is_empty()).then_some(artifact.model),
+        error: artifact.error,
+        diff_tree: artifact
+            .diff_tree
+            .into_iter()
+            .filter_map(|layer| serde_json::to_value(layer).ok())
+            .collect(),
+    }
+}
+
+fn enum_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .ok()
+        .map(|raw| raw.trim_matches('"').to_string())
+        .filter(|raw| !raw.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+async fn build_review_bundle(
     repo_root: &Path,
     pr_url: &str,
     pr: &GithubPrSpec,
@@ -503,6 +586,7 @@ fn build_review_bundle(
     base_sha: &str,
     head_sha: &str,
     commits: Vec<CommitInfo>,
+    summary_settings: &SummarySettings,
 ) -> Result<LocalReviewBundle> {
     let ledger_refs = list_remote_ledger_refs(repo_root, remote)?;
     let mut session_rows: Vec<LocalReviewSession> = Vec::new();
@@ -574,6 +658,9 @@ fn build_review_bundle(
             }
         }
 
+        let semantic_summary =
+            summarize_commit_for_review(repo_root, &commit.sha, summary_settings).await;
+
         commit_rows.push(LocalReviewCommit {
             sha: commit.sha,
             title: commit.title,
@@ -581,6 +668,7 @@ fn build_review_bundle(
             author_email: commit.author_email,
             authored_at: commit.authored_at,
             session_ids: session_ids_for_commit,
+            semantic_summary,
         });
     }
 
@@ -648,392 +736,10 @@ fn sanitize_path_component(raw: &str) -> String {
 }
 
 fn resolve_view_mode(requested: ReviewView) -> ReviewView {
-    if requested != ReviewView::Auto {
-        return requested;
+    match requested {
+        ReviewView::Auto => ReviewView::Web,
+        ReviewView::Web => ReviewView::Web,
     }
-
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        ReviewView::Tui
-    } else {
-        ReviewView::Web
-    }
-}
-
-fn run_review_tui(bundle: &LocalReviewBundle, repo_root: &Path) -> Result<()> {
-    enable_raw_mode().context("enable raw terminal mode")?;
-    let mut out = stdout();
-    out.execute(EnterAlternateScreen)
-        .context("enter alternate screen")?;
-    let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend).context("initialize terminal backend")?;
-
-    let run_result = run_review_tui_loop(&mut terminal, bundle, repo_root);
-
-    disable_raw_mode().ok();
-    terminal.backend_mut().execute(LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
-
-    run_result
-}
-
-fn run_review_tui_loop(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    bundle: &LocalReviewBundle,
-    repo_root: &Path,
-) -> Result<()> {
-    let mut state = ReviewTuiState::default();
-
-    loop {
-        terminal
-            .draw(|frame| render_review_tui(frame, bundle, &state))
-            .context("draw review TUI frame")?;
-
-        if !event::poll(Duration::from_millis(120)).context("poll TUI events")? {
-            continue;
-        }
-        let Event::Key(key) = event::read().context("read TUI event")? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-            KeyCode::Enter => {
-                let Some(commit) = bundle.commits.get(state.selected_commit) else {
-                    continue;
-                };
-                let Some(session) =
-                    resolve_selected_session(bundle, commit, state.selected_session)
-                else {
-                    continue;
-                };
-                with_suspended_tui(terminal, || open_session_in_tui(repo_root, session))?;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                state.selected_commit = state.selected_commit.saturating_sub(1);
-                state.selected_session = 0;
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if !bundle.commits.is_empty() {
-                    state.selected_commit =
-                        (state.selected_commit + 1).min(bundle.commits.len().saturating_sub(1));
-                    state.selected_session = 0;
-                }
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                state.selected_session = state.selected_session.saturating_sub(1);
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(commit) = bundle.commits.get(state.selected_commit) {
-                    if !commit.session_ids.is_empty() {
-                        state.selected_session = (state.selected_session + 1)
-                            .min(commit.session_ids.len().saturating_sub(1));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct ReviewTuiState {
-    selected_commit: usize,
-    selected_session: usize,
-}
-
-fn render_review_tui(frame: &mut Frame<'_>, bundle: &LocalReviewBundle, state: &ReviewTuiState) {
-    let outer = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(frame.area());
-    let title = format!(
-        " PR #{} {}/{}  commits:{}  sessions:{}  (q: quit, j/k: commits, h/l: sessions, Enter: open) ",
-        bundle.pr.number,
-        bundle.pr.owner,
-        bundle.pr.repo,
-        bundle.commits.len(),
-        bundle.sessions.len()
-    );
-    let header = Paragraph::new(title).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(header, outer[0]);
-
-    let content = Layout::horizontal([Constraint::Percentage(36), Constraint::Percentage(64)])
-        .split(outer[1]);
-    render_commit_panel(frame, content[0], bundle, state.selected_commit);
-    render_session_panel(
-        frame,
-        content[1],
-        bundle,
-        state.selected_commit,
-        state.selected_session,
-    );
-}
-
-fn with_suspended_tui<F>(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    op: F,
-) -> Result<()>
-where
-    F: FnOnce() -> Result<()>,
-{
-    disable_raw_mode().ok();
-    terminal.backend_mut().execute(LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
-
-    let op_result = op();
-
-    terminal.backend_mut().execute(EnterAlternateScreen).ok();
-    enable_raw_mode().ok();
-    terminal.clear().ok();
-
-    op_result
-}
-
-fn open_session_in_tui(repo_root: &Path, session: &LocalReviewSession) -> Result<()> {
-    let hail = session
-        .session
-        .to_jsonl()
-        .context("serialize selected review session as canonical HAIL JSONL")?;
-    let temp_path = write_temp_review_session(&session.session_id, &hail)?;
-
-    let status = if let Some(bin) = resolve_review_tui_binary(repo_root) {
-        Command::new(bin)
-            .arg(&temp_path)
-            .status()
-            .context("launch opensession-tui for selected review session")?
-    } else if repo_root.join("Cargo.toml").exists() {
-        Command::new("cargo")
-            .current_dir(repo_root)
-            .arg("run")
-            .arg("-p")
-            .arg("opensession-tui")
-            .arg("--")
-            .arg(&temp_path)
-            .status()
-            .context("launch opensession-tui via cargo fallback")?
-    } else {
-        let _ = std::fs::remove_file(&temp_path);
-        bail!(
-            "could not find `opensession-tui`; install it or run from a workspace build directory"
-        );
-    };
-
-    let _ = std::fs::remove_file(&temp_path);
-    if !status.success() {
-        bail!("opensession-tui exited with non-zero status: {}", status);
-    }
-    Ok(())
-}
-
-fn resolve_review_tui_binary(repo_root: &Path) -> Option<PathBuf> {
-    if let Some(bin) = find_executable_in_path_or_sibling("opensession-tui") {
-        return Some(bin);
-    }
-
-    let local_debug = repo_root
-        .join("target")
-        .join("debug")
-        .join("opensession-tui");
-    if local_debug.exists() {
-        return Some(local_debug);
-    }
-
-    #[cfg(windows)]
-    {
-        let local_debug_exe = repo_root
-            .join("target")
-            .join("debug")
-            .join("opensession-tui.exe");
-        if local_debug_exe.exists() {
-            return Some(local_debug_exe);
-        }
-    }
-
-    None
-}
-
-fn write_temp_review_session(session_id: &str, body: &str) -> Result<PathBuf> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let file_name = format!(
-        "opensession-review-{}-{}-{}.hail.jsonl",
-        sanitize_path_component(session_id),
-        std::process::id(),
-        nonce
-    );
-    let path = std::env::temp_dir().join(file_name);
-    std::fs::write(&path, body)
-        .with_context(|| format!("write temporary review session file {}", path.display()))?;
-    Ok(path)
-}
-
-fn render_commit_panel(
-    frame: &mut Frame<'_>,
-    area: ratatui::layout::Rect,
-    bundle: &LocalReviewBundle,
-    selected_commit: usize,
-) {
-    let items = if bundle.commits.is_empty() {
-        vec![ListItem::new(Line::from("No commits in PR range"))]
-    } else {
-        bundle
-            .commits
-            .iter()
-            .map(|commit| {
-                let short = commit.sha.chars().take(7).collect::<String>();
-                let label = format!(
-                    "{short}  {}  [{} sessions]",
-                    truncate_for_tui(&commit.title, 42),
-                    commit.session_ids.len()
-                );
-                ListItem::new(Line::from(label))
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let mut state = ListState::default();
-    if !bundle.commits.is_empty() {
-        state.select(Some(selected_commit.min(bundle.commits.len() - 1)));
-    }
-
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Commits "))
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-    frame.render_stateful_widget(list, area, &mut state);
-}
-
-fn render_session_panel(
-    frame: &mut Frame<'_>,
-    area: ratatui::layout::Rect,
-    bundle: &LocalReviewBundle,
-    selected_commit: usize,
-    selected_session: usize,
-) {
-    let columns = Layout::vertical([Constraint::Length(9), Constraint::Min(1)]).split(area);
-
-    let Some(commit) = bundle.commits.get(selected_commit) else {
-        let empty = Paragraph::new("No commit selected")
-            .block(Block::default().borders(Borders::ALL).title(" Sessions "));
-        frame.render_widget(empty, columns[0]);
-        return;
-    };
-
-    let session_items = if commit.session_ids.is_empty() {
-        vec![ListItem::new(Line::from(
-            "No mapped sessions for this commit",
-        ))]
-    } else {
-        commit
-            .session_ids
-            .iter()
-            .map(|id| ListItem::new(Line::from(id.clone())))
-            .collect::<Vec<_>>()
-    };
-    let mut list_state = ListState::default();
-    if !commit.session_ids.is_empty() {
-        list_state.select(Some(selected_session.min(commit.session_ids.len() - 1)));
-    }
-
-    let list = List::new(session_items)
-        .block(Block::default().borders(Borders::ALL).title(" Sessions "))
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-    frame.render_stateful_widget(list, columns[0], &mut list_state);
-
-    let details = resolve_selected_session(bundle, commit, selected_session)
-        .map(render_session_detail_lines)
-        .unwrap_or_else(|| {
-            vec![
-                "No session payload for this commit.".to_string(),
-                "".to_string(),
-                format!("commit: {}", commit.sha),
-                format!("title: {}", commit.title),
-            ]
-        });
-    let paragraph = Paragraph::new(details.join("\n"))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Session Detail "),
-        )
-        .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, columns[1]);
-}
-
-fn resolve_selected_session<'a>(
-    bundle: &'a LocalReviewBundle,
-    commit: &'a LocalReviewCommit,
-    selected_session: usize,
-) -> Option<&'a LocalReviewSession> {
-    let session_id = commit
-        .session_ids
-        .get(selected_session.min(commit.session_ids.len().saturating_sub(1)))?;
-    bundle.sessions.iter().find(|row| {
-        row.session_id == *session_id && row.commit_shas.iter().any(|sha| sha == &commit.sha)
-    })
-}
-
-fn render_session_detail_lines(session: &LocalReviewSession) -> Vec<String> {
-    let summary = first_session_summary_line(&session.session);
-    vec![
-        format!("session_id: {}", session.session_id),
-        format!(
-            "tool/model: {} / {}",
-            session.session.agent.tool, session.session.agent.model
-        ),
-        format!(
-            "stats: events={} messages={} tasks={}",
-            session.session.stats.event_count,
-            session.session.stats.message_count,
-            session.session.stats.task_count
-        ),
-        format!(
-            "tokens: in={} out={}",
-            session.session.stats.total_input_tokens, session.session.stats.total_output_tokens
-        ),
-        format!("ledger_ref: {}", session.ledger_ref),
-        format!("hail_path: {}", session.hail_path),
-        format!(
-            "mapped_commits: {}",
-            if session.commit_shas.is_empty() {
-                "(none)".to_string()
-            } else {
-                session.commit_shas.join(", ")
-            }
-        ),
-        "".to_string(),
-        format!(
-            "summary: {}",
-            summary.unwrap_or_else(|| "(none)".to_string())
-        ),
-    ]
-}
-
-fn first_session_summary_line(session: &Session) -> Option<String> {
-    for event in &session.events {
-        for block in &event.content.blocks {
-            if let opensession_core::ContentBlock::Text { text } = block {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(truncate_for_tui(trimmed, 140));
-                }
-            }
-        }
-    }
-    None
-}
-
-fn truncate_for_tui(value: &str, limit: usize) -> String {
-    if value.chars().count() <= limit {
-        return value.to_string();
-    }
-    let mut out = String::new();
-    for ch in value.chars().take(limit.saturating_sub(1)) {
-        out.push(ch);
-    }
-    out.push('…');
-    out
 }
 
 pub(crate) async fn ensure_web_review_server(
@@ -1237,8 +943,8 @@ fn run_git(repo_root: &Path, args: &[String]) -> Result<()> {
 mod tests {
     use super::{
         build_review_id, parse_github_pr_url, parse_remote_repo_triplet,
-        refresh_remote_head_fetch_args, sanitize_path_component, sanitize_review_id_component,
-        GithubPrSpec,
+        refresh_remote_head_fetch_args, resolve_view_mode, sanitize_path_component,
+        sanitize_review_id_component, GithubPrSpec, ReviewView,
     };
 
     #[test]
@@ -1310,16 +1016,8 @@ mod tests {
     }
 
     #[test]
-    fn write_temp_review_session_creates_hail_jsonl_file() {
-        let body = r#"{"type":"header","version":"hail-1.0.0","session_id":"s"}"#;
-        let path = super::write_temp_review_session("session/id", body).expect("write temp file");
-        let file_name = path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or_default();
-        assert!(file_name.ends_with(".hail.jsonl"));
-        let loaded = std::fs::read_to_string(&path).expect("read temp file");
-        assert_eq!(loaded, body);
-        let _ = std::fs::remove_file(path);
+    fn review_auto_view_resolves_to_web() {
+        assert_eq!(resolve_view_mode(ReviewView::Auto), ReviewView::Web);
+        assert_eq!(resolve_view_mode(ReviewView::Web), ReviewView::Web);
     }
 }

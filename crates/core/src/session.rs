@@ -1,4 +1,4 @@
-use crate::trace::Session;
+use crate::trace::{Event, EventType, Session, Stats};
 use serde::{Deserialize, Serialize};
 
 pub const ATTR_CWD: &str = "cwd";
@@ -57,6 +57,68 @@ pub fn is_auxiliary_session(session: &Session) -> bool {
     session_role(session) == SessionRole::Auxiliary
 }
 
+/// Build an interaction-focused compressed session.
+///
+/// Only interaction-like events are retained and stats are recomputed.
+pub fn interaction_compressed_session(session: &Session) -> Session {
+    let mut compressed = session.clone();
+    compressed.events.retain(is_interaction_flow_event);
+    compressed.recompute_stats();
+    compressed
+}
+
+/// Build compressed stats by keeping only interaction-focused events.
+///
+/// This is intended for lightweight local index/cache storage where
+/// chronological full fidelity is not required.
+pub fn interaction_compressed_stats(session: &Session) -> Stats {
+    interaction_compressed_session(session).stats
+}
+
+fn is_interaction_flow_event(event: &Event) -> bool {
+    if is_interrupt_like_event(event) {
+        return true;
+    }
+
+    if matches!(
+        event.event_type,
+        EventType::UserMessage | EventType::AgentMessage
+    ) {
+        return true;
+    }
+
+    if matches!(event.event_type, EventType::SystemMessage)
+        && event
+            .attr_str("source")
+            .is_some_and(|source| source.eq_ignore_ascii_case("interactive_question"))
+    {
+        return true;
+    }
+
+    match &event.event_type {
+        EventType::ToolCall { name } | EventType::ToolResult { name, .. } => {
+            event
+                .semantic_tool_kind()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("interactive"))
+                || matches!(
+                    name.trim().to_ascii_lowercase().as_str(),
+                    "request_user_input" | "ask_followup_question"
+                )
+        }
+        _ => false,
+    }
+}
+
+fn is_interrupt_like_event(event: &Event) -> bool {
+    if let EventType::Custom { kind } = &event.event_type {
+        let lowered = kind.trim().to_ascii_lowercase();
+        return lowered == "turn_aborted"
+            || lowered.contains("interrupt")
+            || lowered.contains("aborted");
+    }
+    false
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,12 +170,14 @@ pub fn build_git_storage_meta_json(session: &Session) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_git_storage_meta_json, build_git_storage_meta_json_with_git, is_auxiliary_session,
+        build_git_storage_meta_json, build_git_storage_meta_json_with_git,
+        interaction_compressed_session, interaction_compressed_stats, is_auxiliary_session,
         session_role, source_path, working_directory, GitMeta, SessionRole, ATTR_PARENT_SESSION_ID,
         ATTR_SESSION_ROLE,
     };
-    use crate::trace::{Agent, Session};
+    use crate::trace::{Agent, Content, Event, EventType, Session};
     use serde_json::Value;
+    use std::collections::HashMap;
 
     fn make_session() -> Session {
         Session::new(
@@ -227,5 +291,112 @@ mod tests {
         assert_eq!(parsed["schema_version"], 2);
         assert_eq!(parsed["git"]["repo_name"], "org/repo");
         assert_eq!(parsed["git"]["commits"][0], "abcd1234");
+    }
+
+    #[test]
+    fn interaction_compressed_stats_keeps_only_interaction_events() {
+        let mut session = make_session();
+        let mut interactive_system = Event {
+            event_id: "e-system".to_string(),
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::SystemMessage,
+            task_id: None,
+            content: Content::text("question"),
+            duration_ms: None,
+            attributes: HashMap::new(),
+        };
+        interactive_system.attributes.insert(
+            "source".to_string(),
+            Value::String("interactive_question".to_string()),
+        );
+
+        session.events = vec![
+            Event {
+                event_id: "e-user".to_string(),
+                timestamp: chrono::Utc::now(),
+                event_type: EventType::UserMessage,
+                task_id: None,
+                content: Content::text("hello"),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+            Event {
+                event_id: "e-tool-non-interactive".to_string(),
+                timestamp: chrono::Utc::now(),
+                event_type: EventType::ToolCall {
+                    name: "write_file".to_string(),
+                },
+                task_id: None,
+                content: Content::text(""),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+            Event {
+                event_id: "e-tool-interactive".to_string(),
+                timestamp: chrono::Utc::now(),
+                event_type: EventType::ToolCall {
+                    name: "request_user_input".to_string(),
+                },
+                task_id: None,
+                content: Content::text(""),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+            Event {
+                event_id: "e-interrupt".to_string(),
+                timestamp: chrono::Utc::now(),
+                event_type: EventType::Custom {
+                    kind: "turn_aborted".to_string(),
+                },
+                task_id: None,
+                content: Content::text(""),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+            interactive_system,
+        ];
+        session.recompute_stats();
+        assert_eq!(session.stats.event_count, 5);
+
+        let compressed = interaction_compressed_stats(&session);
+        assert_eq!(compressed.event_count, 4);
+        assert_eq!(compressed.user_message_count, 1);
+        assert_eq!(compressed.tool_call_count, 1);
+    }
+
+    #[test]
+    fn interaction_compressed_session_retains_only_interaction_events() {
+        let mut session = make_session();
+        session.events = vec![
+            Event {
+                event_id: "e-user".to_string(),
+                timestamp: chrono::Utc::now(),
+                event_type: EventType::UserMessage,
+                task_id: None,
+                content: Content::text("hello"),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+            Event {
+                event_id: "e-tool-non-interactive".to_string(),
+                timestamp: chrono::Utc::now(),
+                event_type: EventType::ToolCall {
+                    name: "write_file".to_string(),
+                },
+                task_id: None,
+                content: Content::text(""),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+        ];
+        session.recompute_stats();
+
+        let compressed = interaction_compressed_session(&session);
+        assert_eq!(compressed.events.len(), 1);
+        assert!(matches!(
+            compressed.events[0].event_type,
+            EventType::UserMessage
+        ));
+        assert_eq!(compressed.stats.event_count, 1);
     }
 }

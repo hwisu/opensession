@@ -11,9 +11,13 @@ export {
 	getAuthProviders,
 	getOAuthUrl,
 	buildSessionHandoff,
+	detectSummaryProvider,
 	getSessionDetail,
+	getSessionSemanticSummary,
 	getLocalReviewBundle,
+	getRuntimeSettings,
 	isParsePreviewApiAvailable,
+	regenerateSessionSemanticSummary,
 	getSession,
 	getSettings,
 	handleAuthCallback,
@@ -26,6 +30,7 @@ export {
 	previewSessionFromInlineSource,
 	PreviewApiError,
 	setBaseUrl,
+	updateRuntimeSettings,
 	verifyAuth,
 } from './api';
 // API types (auto-generated)

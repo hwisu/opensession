@@ -436,6 +436,65 @@ pub struct DesktopContractVersionResponse {
     pub version: String,
 }
 
+/// Desktop runtime settings payload for App settings UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSettingsResponse {
+    pub session_default_view: String,
+    #[cfg_attr(feature = "ts", ts(type = "any"))]
+    pub summary: serde_json::Value,
+}
+
+/// Desktop runtime settings update request.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSettingsUpdateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_default_view: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "any"))]
+    pub summary: Option<serde_json::Value>,
+}
+
+/// Local summary provider detection result for desktop setup/settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopSummaryProviderDetectResponse {
+    pub detected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+/// Session summary payload returned by desktop runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopSessionSummaryResponse {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "any"))]
+    pub summary: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "any"))]
+    pub source_details: Option<serde_json::Value>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "any[]"))]
+    pub diff_tree: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Structured desktop bridge error payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -669,6 +728,40 @@ pub struct LocalReviewCommit {
     pub authored_at: String,
     #[serde(default)]
     pub session_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_summary: Option<LocalReviewSemanticSummary>,
+}
+
+/// Layer/file summary section for local review semantic payloads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewLayerFileChange {
+    pub layer: String,
+    pub summary: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+/// Commit-level semantic summary used when session mappings are weak or absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct LocalReviewSemanticSummary {
+    pub changes: String,
+    pub auth_security: String,
+    #[serde(default)]
+    pub layer_file_changes: Vec<LocalReviewLayerFileChange>,
+    pub source_kind: String,
+    pub generation_kind: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "any[]"))]
+    pub diff_tree: Vec<serde_json::Value>,
 }
 
 /// Session payload mapped into a local review bundle.
@@ -961,6 +1054,21 @@ mod schema_tests {
                 author_email: "alice@example.com".to_string(),
                 authored_at: "2026-02-24T00:00:00Z".to_string(),
                 session_ids: vec!["s-review-1".to_string()],
+                semantic_summary: Some(LocalReviewSemanticSummary {
+                    changes: "Updated review flow wiring".to_string(),
+                    auth_security: "none detected".to_string(),
+                    layer_file_changes: vec![LocalReviewLayerFileChange {
+                        layer: "application".to_string(),
+                        summary: "Added bundle resolver".to_string(),
+                        files: vec!["crates/cli/src/review.rs".to_string()],
+                    }],
+                    source_kind: "git_commit".to_string(),
+                    generation_kind: "heuristic_fallback".to_string(),
+                    provider: "disabled".to_string(),
+                    model: None,
+                    error: None,
+                    diff_tree: Vec::new(),
+                }),
             }],
             sessions: vec![LocalReviewSession {
                 session_id: "s-review-1".to_string(),
@@ -1082,6 +1190,10 @@ mod tests {
             DesktopHandoffBuildRequest,
             DesktopHandoffBuildResponse,
             DesktopContractVersionResponse,
+            DesktopRuntimeSettingsResponse,
+            DesktopRuntimeSettingsUpdateRequest,
+            DesktopSummaryProviderDetectResponse,
+            DesktopSessionSummaryResponse,
             DesktopApiError,
             SessionDetail,
             SessionLink,
@@ -1093,6 +1205,8 @@ mod tests {
             LocalReviewBundle,
             LocalReviewPrMeta,
             LocalReviewCommit,
+            LocalReviewLayerFileChange,
+            LocalReviewSemanticSummary,
             LocalReviewSession,
             // OAuth
             oauth::AuthProvidersResponse,

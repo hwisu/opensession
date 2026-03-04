@@ -13,6 +13,10 @@ name = "opensession-runtime-config"
 publish = true
 
 [[package]]
+name = "opensession-summary"
+publish = true
+
+[[package]]
 name = "opensession-parsers"
 publish = true
 
@@ -56,13 +60,6 @@ git_tag_enable = false
 
 [[package]]
 name = "opensession-e2e"
-publish = false
-release = true
-git_release_enable = false
-git_tag_enable = false
-
-[[package]]
-name = "opensession-tui"
 publish = false
 release = true
 git_release_enable = false

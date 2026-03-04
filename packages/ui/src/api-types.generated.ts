@@ -69,6 +69,14 @@ export interface DesktopHandoffBuildResponse { artifact_uri: string, pinned_alia
 
 export interface DesktopContractVersionResponse { version: string, }
 
+export interface DesktopRuntimeSettingsResponse { session_default_view: string, summary: any, }
+
+export interface DesktopRuntimeSettingsUpdateRequest { session_default_view?: string | null, summary?: any, }
+
+export interface DesktopSummaryProviderDetectResponse { detected: boolean, provider?: string | null, model?: string | null, endpoint?: string | null, }
+
+export interface DesktopSessionSummaryResponse { session_id: string, summary?: any, source_details?: any, diff_tree: any[], source_kind?: string | null, generation_kind?: string | null, error?: string | null, }
+
 export interface DesktopApiError { code: string, status: number, message: string, details?: Record<string, any> | null, }
 
 export interface SessionDetail { linked_sessions?: Array<SessionLink>, id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
@@ -97,7 +105,11 @@ export interface LocalReviewBundle { review_id: string, generated_at: string, pr
 
 export interface LocalReviewPrMeta { url: string, owner: string, repo: string, number: number, remote: string, base_sha: string, head_sha: string, }
 
-export interface LocalReviewCommit { sha: string, title: string, author_name: string, author_email: string, authored_at: string, session_ids: Array<string>, }
+export interface LocalReviewCommit { sha: string, title: string, author_name: string, author_email: string, authored_at: string, session_ids: Array<string>, semantic_summary?: LocalReviewSemanticSummary | null, }
+
+export interface LocalReviewLayerFileChange { layer: string, summary: string, files: Array<string>, }
+
+export interface LocalReviewSemanticSummary { changes: string, auth_security: string, layer_file_changes: Array<LocalReviewLayerFileChange>, source_kind: string, generation_kind: string, provider: string, model?: string | null, error?: string | null, diff_tree: any[], }
 
 export interface LocalReviewSession { session_id: string, ledger_ref: string, hail_path: string, commit_shas: Array<string>, session: any, }
 

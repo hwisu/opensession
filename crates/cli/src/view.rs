@@ -30,9 +30,6 @@ use std::process::Command;
 pub struct ViewArgs {
     /// Review target: source URI, local *.jsonl file, PR/MR URL, or commit/ref/range.
     pub target: Option<String>,
-    /// Prefer TUI mode when supported by the target.
-    #[arg(long)]
-    pub tui: bool,
     /// Do not open a browser window.
     #[arg(long)]
     pub no_open: bool,
@@ -70,26 +67,12 @@ pub async fn run(args: ViewArgs) -> Result<()> {
     if is_github_pr_url(&target) {
         let review_args = review::ReviewArgs {
             pr_link: target.clone(),
-            view: if args.tui {
-                review::ReviewView::Tui
-            } else {
-                review::ReviewView::Web
-            },
+            view: review::ReviewView::Web,
             repo: args.repo.clone(),
             no_fetch: args.no_fetch,
             json: args.json,
         };
         return review::run(review_args).await;
-    }
-
-    if args.tui {
-        return Err(guided_error(
-            "`view --tui` is currently supported for GitHub PR URLs only",
-            [
-                "use web mode for other targets: `opensession view <target>`",
-                "or provide a GitHub PR URL with `--tui`",
-            ],
-        ));
     }
 
     if let Ok(uri) = SourceUri::parse(&target) {
@@ -122,16 +105,6 @@ pub async fn run(args: ViewArgs) -> Result<()> {
 }
 
 async fn view_repo_sessions(args: &ViewArgs) -> Result<()> {
-    if args.tui {
-        return Err(guided_error(
-            "`view --tui` currently requires an explicit GitHub PR URL target",
-            [
-                "provide a PR URL: `opensession view https://github.com/<owner>/<repo>/pull/<number> --tui`",
-                "or use web mode without target: `opensession view`",
-            ],
-        ));
-    }
-
     let repo_root = resolve_repo_root_required(args.repo.as_deref()).map_err(|err| {
         guided_error(
             format!("`opensession view` without a target requires a git repository: {err}"),
@@ -307,6 +280,7 @@ fn build_sessions_bootstrap_bundle(repo_root: &Path) -> LocalReviewBundle {
             author_email: String::new(),
             authored_at: now,
             session_ids: vec![],
+            semantic_summary: None,
         }],
         sessions: vec![],
     }
@@ -406,7 +380,8 @@ async fn view_gitlab_mr(number: u64, args: &ViewArgs) -> Result<()> {
         &format!("gitlab-mr-{number}"),
         commits,
         &format!("gitlab mr {number}"),
-    )?;
+    )
+    .await?;
     let review_id = bundle.review_id.clone();
     let url = persist_and_resolve_local_url(&repo_root, &bundle, args.no_open).await?;
     print_view_result(
@@ -427,7 +402,8 @@ async fn view_commit_target(target: &str, args: &ViewArgs) -> Result<()> {
         bail!("no commits resolved from target `{target}`");
     }
 
-    let bundle = build_bundle_from_commits(&repo_root, target, commits, "commit-linked review")?;
+    let bundle =
+        build_bundle_from_commits(&repo_root, target, commits, "commit-linked review").await?;
     let review_id = bundle.review_id.clone();
     let url = persist_and_resolve_local_url(&repo_root, &bundle, args.no_open).await?;
     print_view_result(
@@ -508,12 +484,13 @@ fn build_bundle_from_sessions(label: &str, sessions: Vec<Session>) -> LocalRevie
             author_email: String::new(),
             authored_at: chrono::Utc::now().to_rfc3339(),
             session_ids,
+            semantic_summary: None,
         }],
         sessions: session_rows,
     }
 }
 
-fn build_bundle_from_commits(
+async fn build_bundle_from_commits(
     repo_root: &Path,
     target: &str,
     commit_shas: Vec<String>,
@@ -521,6 +498,7 @@ fn build_bundle_from_commits(
 ) -> Result<LocalReviewBundle> {
     let infos = load_commit_infos(repo_root, &commit_shas)?;
     let ledger_refs = list_ledger_refs(repo_root)?;
+    let summary_settings = review::load_review_summary_settings();
     let mut sessions = Vec::<LocalReviewSession>::new();
     let mut session_key_to_index = HashMap::<String, usize>::new();
     let mut commit_rows = Vec::<LocalReviewCommit>::with_capacity(infos.len());
@@ -574,17 +552,22 @@ fn build_bundle_from_commits(
             }
         }
 
+        let semantic_summary =
+            review::summarize_commit_for_review(repo_root, &info.sha, &summary_settings).await;
+        let title = if info.title.trim().is_empty() {
+            title_prefix.to_string()
+        } else {
+            info.title.clone()
+        };
+
         commit_rows.push(LocalReviewCommit {
             sha: info.sha,
-            title: if info.title.trim().is_empty() {
-                title_prefix.to_string()
-            } else {
-                info.title
-            },
+            title,
             author_name: info.author_name,
             author_email: info.author_email,
             authored_at: info.authored_at,
             session_ids: session_ids_for_commit,
+            semantic_summary,
         });
     }
 

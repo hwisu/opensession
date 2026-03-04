@@ -92,8 +92,17 @@ pub struct ArtifactRecord {
     pub source_uris: Vec<String>,
     pub canonical_jsonl: String,
     pub raw_sessions: Vec<Session>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_meta: Option<HandoffSummaryMeta>,
     #[serde(default)]
     pub validation_reports: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffSummaryMeta {
+    pub session_default_view: String,
+    pub summary_source_mode: String,
+    pub summary_provider: String,
 }
 
 pub fn run(args: HandoffArgs) -> Result<()> {
@@ -105,6 +114,7 @@ pub fn run(args: HandoffArgs) -> Result<()> {
 
 fn run_build(args: HandoffBuildArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("read current directory")?;
+    let runtime = crate::runtime_settings::load_runtime_config().unwrap_or_default();
     let mut sessions = Vec::<Session>::new();
     let mut source_uris = Vec::<String>::new();
 
@@ -187,6 +197,11 @@ fn run_build(args: HandoffBuildArgs) -> Result<()> {
         source_uris: sorted_uris,
         canonical_jsonl,
         raw_sessions: sessions,
+        summary_meta: Some(HandoffSummaryMeta {
+            session_default_view: enum_label(&runtime.daemon.session_default_view),
+            summary_source_mode: enum_label(&runtime.summary.source_mode),
+            summary_provider: enum_label(&runtime.summary.provider),
+        }),
         validation_reports: reports
             .iter()
             .map(serde_json::to_value)
@@ -201,6 +216,14 @@ fn run_build(args: HandoffBuildArgs) -> Result<()> {
 
     println!("{artifact_uri}");
     Ok(())
+}
+
+fn enum_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .ok()
+        .map(|raw| raw.trim_matches('"').to_string())
+        .filter(|raw| !raw.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn run_artifacts(action: HandoffArtifactsCommand) -> Result<()> {

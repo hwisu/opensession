@@ -5,7 +5,8 @@ use opensession_api_client::retry::{retry_post, RetryConfig};
 use opensession_api_client::ApiClient;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_core::session::{
-    build_git_storage_meta_json_with_git, is_auxiliary_session, working_directory, GitMeta,
+    build_git_storage_meta_json_with_git, interaction_compressed_session, is_auxiliary_session,
+    working_directory, GitMeta,
 };
 use opensession_core::Session;
 use opensession_git_native::{
@@ -13,6 +14,7 @@ use opensession_git_native::{
 };
 use opensession_local_db::LocalDb;
 use opensession_parsers::parse_with_default_parsers;
+use opensession_summary::{summarize_session, GitSummaryRequest};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,7 +23,9 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::config::{DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode};
+use crate::config::{
+    DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode, SessionDefaultView,
+};
 use crate::repo_registry::RepoRegistry;
 use crate::watcher::FileChangeEvent;
 
@@ -359,7 +363,13 @@ async fn process_file(
         return Ok(());
     }
 
-    store_locally(&session, path, db)?;
+    store_locally(&session, path, db, &effective_config)?;
+    if let Err(error) = maybe_generate_semantic_summary(&session, db, &effective_config).await {
+        warn!(
+            session_id = %session.session_id,
+            "semantic summary generation skipped/failed: {error}"
+        );
+    }
 
     if !auto_upload {
         return Ok(());
@@ -443,9 +453,23 @@ fn is_tool_excluded(session: &Session, config: &DaemonConfig) -> bool {
     excluded
 }
 
-fn store_locally(session: &Session, path: &Path, db: &LocalDb) -> Result<()> {
+fn store_locally(
+    session: &Session,
+    path: &Path,
+    db: &LocalDb,
+    config: &DaemonConfig,
+) -> Result<()> {
     let path_str = path.to_string_lossy().to_string();
-    let git = session_cwd(session)
+    let local_session = if matches!(
+        config.daemon.session_default_view,
+        SessionDefaultView::Compressed
+    ) {
+        interaction_compressed_session(session)
+    } else {
+        session.clone()
+    };
+
+    let git = session_cwd(&local_session)
         .map(extract_git_context)
         .unwrap_or_default();
     let local_git = opensession_local_db::git::GitContext {
@@ -455,8 +479,89 @@ fn store_locally(session: &Session, path: &Path, db: &LocalDb) -> Result<()> {
         repo_name: git.repo_name.clone(),
     };
 
-    db.upsert_local_session(session, &path_str, &local_git)?;
+    db.upsert_local_session(&local_session, &path_str, &local_git)?;
     Ok(())
+}
+
+async fn maybe_generate_semantic_summary(
+    session: &Session,
+    db: &LocalDb,
+    config: &DaemonConfig,
+) -> Result<()> {
+    let settings = &config.summary;
+    if !settings.should_generate_on_session_save() {
+        return Ok(());
+    }
+    if !settings.persists_to_local_db() {
+        return Ok(());
+    }
+    if !settings.is_configured() {
+        return Ok(());
+    }
+
+    let git_request = if settings.allows_git_changes_fallback() {
+        session_cwd(session).and_then(|cwd| {
+            crate::config::find_repo_root(cwd).map(|repo_root| GitSummaryRequest {
+                repo_root,
+                commit: extract_git_context(cwd).commit,
+            })
+        })
+    } else {
+        None
+    };
+
+    let artifact = summarize_session(session, settings, git_request.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let summary_json = serde_json::to_string(&artifact.summary)?;
+    let source_details_json = if artifact.source_details.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&artifact.source_details)?)
+    };
+    let diff_tree_json = if artifact.diff_tree.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&artifact.diff_tree)?)
+    };
+    let generated_at = chrono::Utc::now().to_rfc3339();
+    let provider = enum_label(&artifact.provider);
+    let source_kind = enum_label(&artifact.source_kind);
+    let generation_kind = enum_label(&artifact.generation_kind);
+    let model = if artifact.model.trim().is_empty() {
+        None
+    } else {
+        Some(artifact.model.clone())
+    };
+    let prompt_fingerprint = if artifact.prompt_fingerprint.trim().is_empty() {
+        None
+    } else {
+        Some(artifact.prompt_fingerprint)
+    };
+
+    db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
+        session_id: &session.session_id,
+        summary_json: &summary_json,
+        generated_at: &generated_at,
+        provider: &provider,
+        model: model.as_deref(),
+        source_kind: &source_kind,
+        generation_kind: &generation_kind,
+        prompt_fingerprint: prompt_fingerprint.as_deref(),
+        source_details_json: source_details_json.as_deref(),
+        diff_tree_json: diff_tree_json.as_deref(),
+        error: artifact.error.as_deref(),
+    })?;
+
+    Ok(())
+}
+
+fn enum_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .ok()
+        .map(|raw| raw.trim_matches('"').to_string())
+        .filter(|raw| !raw.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn sanitize(session: &mut Session, config: &DaemonConfig) {
@@ -597,9 +702,12 @@ async fn upload_to_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opensession_core::{Agent, Session};
+    use opensession_core::{Agent, Content, Event, EventType, Session};
+    use opensession_runtime_config::{SummaryPersistMode, SummaryProvider, SummaryTriggerMode};
     use serde_json::json;
     use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
 
     /// Helper: build a minimal Session with the given context attributes.
     fn make_session_with_attrs(attrs: HashMap<String, serde_json::Value>) -> Session {
@@ -614,6 +722,42 @@ mod tests {
         );
         s.context.attributes = attrs;
         s
+    }
+
+    fn make_interaction_fixture_session(session_id: &str) -> Session {
+        let mut session = Session::new(
+            session_id.to_string(),
+            Agent {
+                provider: "anthropic".into(),
+                model: "claude-opus-4-6".into(),
+                tool: "claude-code".into(),
+                tool_version: None,
+            },
+        );
+        session.events = vec![
+            Event {
+                event_id: format!("{session_id}-user"),
+                timestamp: Utc::now(),
+                event_type: EventType::UserMessage,
+                task_id: None,
+                content: Content::text("hello"),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+            Event {
+                event_id: format!("{session_id}-tool"),
+                timestamp: Utc::now(),
+                event_type: EventType::ToolCall {
+                    name: "write_file".to_string(),
+                },
+                task_id: None,
+                content: Content::text(""),
+                duration_ms: None,
+                attributes: HashMap::new(),
+            },
+        ];
+        session.recompute_stats();
+        session
     }
 
     #[test]
@@ -800,5 +944,115 @@ mod tests {
         let (_, interval) =
             resolve_git_retention_schedule(&config).expect("retention should be enabled");
         assert_eq!(interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_store_locally_uses_compressed_session_only_when_default_view_is_compressed() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = PathBuf::from(tmp.path()).join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let full_session = make_interaction_fixture_session("store-full");
+        let mut full_config = DaemonConfig::default();
+        full_config.daemon.session_default_view = SessionDefaultView::Full;
+        store_locally(
+            &full_session,
+            Path::new("/tmp/store-full.jsonl"),
+            &db,
+            &full_config,
+        )
+        .expect("store full session");
+
+        let stored_full = db
+            .get_session_by_id("store-full")
+            .expect("query full")
+            .expect("full session exists");
+        assert_eq!(stored_full.event_count, 2);
+
+        let compressed_session = make_interaction_fixture_session("store-compressed");
+        let mut compressed_config = DaemonConfig::default();
+        compressed_config.daemon.session_default_view = SessionDefaultView::Compressed;
+        store_locally(
+            &compressed_session,
+            Path::new("/tmp/store-compressed.jsonl"),
+            &db,
+            &compressed_config,
+        )
+        .expect("store compressed session");
+
+        let stored_compressed = db
+            .get_session_by_id("store-compressed")
+            .expect("query compressed")
+            .expect("compressed session exists");
+        assert_eq!(stored_compressed.event_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_auto_summary_runs_on_session_save_and_persists_row() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = PathBuf::from(tmp.path()).join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let session = make_interaction_fixture_session("summary-auto");
+        let mut config = DaemonConfig::default();
+        config.summary.provider = SummaryProvider::CodexExec;
+        config.summary.trigger_mode = SummaryTriggerMode::OnSessionSave;
+        config.summary.persist_mode = SummaryPersistMode::LocalDb;
+
+        maybe_generate_semantic_summary(&session, &db, &config)
+            .await
+            .expect("summary generation should not fail hard");
+
+        let row = db
+            .get_session_semantic_summary("summary-auto")
+            .expect("query summary")
+            .expect("summary row should exist");
+        assert_eq!(row.provider, "codex_exec");
+        assert_eq!(row.source_kind, "session_signals");
+        assert!(!row.summary_json.trim().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_auto_summary_skips_when_trigger_mode_is_manual() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = PathBuf::from(tmp.path()).join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let session = make_interaction_fixture_session("summary-manual");
+        let mut config = DaemonConfig::default();
+        config.summary.provider = SummaryProvider::CodexExec;
+        config.summary.trigger_mode = SummaryTriggerMode::Manual;
+        config.summary.persist_mode = SummaryPersistMode::LocalDb;
+
+        maybe_generate_semantic_summary(&session, &db, &config)
+            .await
+            .expect("manual trigger should no-op");
+
+        let row = db
+            .get_session_semantic_summary("summary-manual")
+            .expect("query summary");
+        assert!(row.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auto_summary_skips_when_persist_mode_is_none() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = PathBuf::from(tmp.path()).join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let session = make_interaction_fixture_session("summary-no-persist");
+        let mut config = DaemonConfig::default();
+        config.summary.provider = SummaryProvider::CodexExec;
+        config.summary.trigger_mode = SummaryTriggerMode::OnSessionSave;
+        config.summary.persist_mode = SummaryPersistMode::None;
+
+        maybe_generate_semantic_summary(&session, &db, &config)
+            .await
+            .expect("none persist should no-op");
+
+        let row = db
+            .get_session_semantic_summary("summary-no-persist")
+            .expect("query summary");
+        assert!(row.is_none());
     }
 }

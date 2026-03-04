@@ -61,6 +61,39 @@ pub struct LocalSessionLink {
     pub created_at: String,
 }
 
+/// Session-level semantic summary row persisted in local SQLite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSemanticSummaryRow {
+    pub session_id: String,
+    pub summary_json: String,
+    pub generated_at: String,
+    pub provider: String,
+    pub model: Option<String>,
+    pub source_kind: String,
+    pub generation_kind: String,
+    pub prompt_fingerprint: Option<String>,
+    pub source_details_json: Option<String>,
+    pub diff_tree_json: Option<String>,
+    pub error: Option<String>,
+    pub updated_at: String,
+}
+
+/// Upsert payload for session-level semantic summaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSemanticSummaryUpsert<'a> {
+    pub session_id: &'a str,
+    pub summary_json: &'a str,
+    pub generated_at: &'a str,
+    pub provider: &'a str,
+    pub model: Option<&'a str>,
+    pub source_kind: &'a str,
+    pub generation_kind: &'a str,
+    pub prompt_fingerprint: Option<&'a str>,
+    pub source_details_json: Option<&'a str>,
+    pub diff_tree_json: Option<&'a str>,
+    pub error: Option<&'a str>,
+}
+
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
     let source_path = source_path.map(|path| path.to_ascii_lowercase())?;
 
@@ -882,6 +915,10 @@ impl LocalDb {
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let conn = self.conn();
         conn.execute(
+            "DELETE FROM session_semantic_summaries WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
             "DELETE FROM body_cache WHERE session_id = ?1",
             params![session_id],
         )?;
@@ -891,6 +928,84 @@ impl LocalDb {
         )?;
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
         Ok(())
+    }
+
+    // ── Semantic summary cache ───────────────────────────────────────────
+
+    pub fn upsert_session_semantic_summary(
+        &self,
+        payload: &SessionSemanticSummaryUpsert<'_>,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO session_semantic_summaries (\
+                session_id, summary_json, generated_at, provider, model, \
+                source_kind, generation_kind, prompt_fingerprint, source_details_json, \
+                diff_tree_json, error, updated_at\
+             ) VALUES (\
+                ?1, ?2, ?3, ?4, ?5, \
+                ?6, ?7, ?8, ?9, \
+                ?10, ?11, datetime('now')\
+             ) \
+             ON CONFLICT(session_id) DO UPDATE SET \
+                summary_json=excluded.summary_json, \
+                generated_at=excluded.generated_at, \
+                provider=excluded.provider, \
+                model=excluded.model, \
+                source_kind=excluded.source_kind, \
+                generation_kind=excluded.generation_kind, \
+                prompt_fingerprint=excluded.prompt_fingerprint, \
+                source_details_json=excluded.source_details_json, \
+                diff_tree_json=excluded.diff_tree_json, \
+                error=excluded.error, \
+                updated_at=datetime('now')",
+            params![
+                payload.session_id,
+                payload.summary_json,
+                payload.generated_at,
+                payload.provider,
+                payload.model,
+                payload.source_kind,
+                payload.generation_kind,
+                payload.prompt_fingerprint,
+                payload.source_details_json,
+                payload.diff_tree_json,
+                payload.error,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_session_semantic_summary(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionSemanticSummaryRow>> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT session_id, summary_json, generated_at, provider, model, \
+                        source_kind, generation_kind, prompt_fingerprint, source_details_json, \
+                        diff_tree_json, error, updated_at \
+                 FROM session_semantic_summaries WHERE session_id = ?1 LIMIT 1",
+                params![session_id],
+                |row| {
+                    Ok(SessionSemanticSummaryRow {
+                        session_id: row.get(0)?,
+                        summary_json: row.get(1)?,
+                        generated_at: row.get(2)?,
+                        provider: row.get(3)?,
+                        model: row.get(4)?,
+                        source_kind: row.get(5)?,
+                        generation_kind: row.get(6)?,
+                        prompt_fingerprint: row.get(7)?,
+                        source_details_json: row.get(8)?,
+                        diff_tree_json: row.get(9)?,
+                        error: row.get(10)?,
+                        updated_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
     }
 
     // ── Sync cursor ────────────────────────────────────────────────────
@@ -1800,10 +1915,14 @@ mod tests {
             migration_names.contains(&"local_0001_schema"),
             "expected local_0001_schema migration from opensession-api"
         );
+        assert!(
+            migration_names.contains(&"local_0002_session_summaries"),
+            "expected local_0002_session_summaries migration from opensession-api"
+        );
         assert_eq!(
             migration_names.len(),
-            1,
-            "local schema should be single-step"
+            2,
+            "local schema should include baseline + summary cache steps"
         );
 
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2334,6 +2453,67 @@ mod tests {
         seed_sessions(&db);
         let rows = db.get_sessions_by_tool_latest("gemini", 10).unwrap();
         assert_eq!(rows.len(), 1); // only 1 gemini session
+    }
+
+    #[test]
+    fn test_upsert_and_get_session_semantic_summary() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        db.upsert_session_semantic_summary(&SessionSemanticSummaryUpsert {
+            session_id: "s1",
+            summary_json: r#"{"changes":"updated files","auth_security":"none detected","layer_file_changes":[]}"#,
+            generated_at: "2026-03-04T10:00:00Z",
+            provider: "codex_exec",
+            model: Some("gpt-5"),
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: Some("abc123"),
+            source_details_json: Some(r#"{"source":"session"}"#),
+            diff_tree_json: Some(r#"[]"#),
+            error: None,
+        })
+        .expect("upsert semantic summary");
+
+        let row = db
+            .get_session_semantic_summary("s1")
+            .expect("query semantic summary")
+            .expect("summary row exists");
+        assert_eq!(row.session_id, "s1");
+        assert_eq!(row.provider, "codex_exec");
+        assert_eq!(row.model.as_deref(), Some("gpt-5"));
+        assert_eq!(row.source_kind, "session_signals");
+        assert_eq!(row.generation_kind, "provider");
+        assert_eq!(row.prompt_fingerprint.as_deref(), Some("abc123"));
+        assert!(row.error.is_none());
+    }
+
+    #[test]
+    fn test_delete_session_removes_semantic_summary_row() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        db.upsert_session_semantic_summary(&SessionSemanticSummaryUpsert {
+            session_id: "s1",
+            summary_json: r#"{"changes":"updated files","auth_security":"none detected","layer_file_changes":[]}"#,
+            generated_at: "2026-03-04T10:00:00Z",
+            provider: "heuristic",
+            model: None,
+            source_kind: "heuristic",
+            generation_kind: "heuristic_fallback",
+            prompt_fingerprint: None,
+            source_details_json: None,
+            diff_tree_json: None,
+            error: Some("provider disabled"),
+        })
+        .expect("upsert semantic summary");
+
+        db.delete_session("s1").expect("delete session");
+
+        let missing = db
+            .get_session_semantic_summary("s1")
+            .expect("query semantic summary");
+        assert!(missing.is_none());
     }
 
     #[test]

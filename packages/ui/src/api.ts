@@ -10,6 +10,10 @@ import type {
 	AuthTokenResponse,
 	CapabilitiesResponse,
 	DesktopHandoffBuildResponse,
+	DesktopRuntimeSettingsResponse,
+	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSessionSummaryResponse,
+	DesktopSummaryProviderDetectResponse,
 	ParsePreviewErrorResponse,
 	ParsePreviewRequest,
 	ParsePreviewResponse,
@@ -294,12 +298,58 @@ export async function getSessionDetail(id: string): Promise<SessionDetail> {
 	}
 }
 
+export async function getSessionSemanticSummary(
+	sessionId: string,
+): Promise<DesktopSessionSummaryResponse> {
+	try {
+		return await getSessionReadCore().getSessionSummary(sessionId);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function regenerateSessionSemanticSummary(
+	sessionId: string,
+): Promise<DesktopSessionSummaryResponse> {
+	try {
+		return await getSessionReadCore().regenerateSessionSummary(sessionId);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
 export async function buildSessionHandoff(
 	sessionId: string,
 	pinLatest: boolean = true,
 ): Promise<DesktopHandoffBuildResponse> {
 	try {
 		return await getSessionReadCore().buildHandoff(sessionId, pinLatest);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse> {
+	try {
+		return await getSessionReadCore().getRuntimeSettings();
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function updateRuntimeSettings(
+	request: DesktopRuntimeSettingsUpdateRequest,
+): Promise<DesktopRuntimeSettingsResponse> {
+	try {
+		return await getSessionReadCore().updateRuntimeSettings(request);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse> {
+	try {
+		return await getSessionReadCore().detectSummaryProvider();
 	} catch (error) {
 		throw normalizeSessionAdapterError(error);
 	}

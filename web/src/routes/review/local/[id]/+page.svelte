@@ -7,6 +7,7 @@ import {
 	getLocalReviewBundle,
 	type LocalReviewBundle,
 	type LocalReviewCommit,
+	type LocalReviewSemanticSummary,
 	type LocalReviewSession,
 	type Session,
 	type SessionViewMode,
@@ -50,6 +51,11 @@ const selectedSession = $derived.by((): LocalReviewSession | null => {
 	);
 	if (fromCommit) return fromCommit;
 	return bundle.sessions.find((row) => row.session_id === sessionId) ?? null;
+});
+
+const selectedCommitSummary = $derived.by((): LocalReviewSemanticSummary | null => {
+	const commit = selectedCommit;
+	return commit?.semantic_summary ?? null;
 });
 
 function selectCommit(index: number) {
@@ -228,6 +234,99 @@ $effect(() => {
 			</div>
 
 			<div class="space-y-3">
+				<div class="rounded border border-border bg-bg-secondary p-3">
+					<div class="border-b border-border pb-2 text-xs font-medium text-text-secondary">
+						Commit Semantic Summary
+					</div>
+					{#if !selectedCommit}
+						<div class="px-1 py-3 text-xs text-text-muted">Select a commit.</div>
+					{:else if selectedCommitSummary}
+						<div class="space-y-2 pt-3">
+							<div>
+								<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Changes</p>
+								<p class="mt-1 text-xs text-text-primary">{selectedCommitSummary.changes}</p>
+							</div>
+							<div>
+								<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Auth/Security</p>
+								<p class="mt-1 text-xs text-text-primary">{selectedCommitSummary.auth_security}</p>
+							</div>
+							{#if selectedCommitSummary.layer_file_changes.length}
+								<div>
+									<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Layer/File Changes</p>
+									<div class="mt-2 space-y-2">
+										{#each selectedCommitSummary.layer_file_changes as row}
+											<div class="rounded border border-border/70 p-2 text-xs">
+												<div class="font-medium text-text-primary">{row.layer}</div>
+												<div class="mt-1 text-text-secondary">{row.summary}</div>
+												{#if row.files.length}
+													<div class="mt-1 text-[11px] text-text-muted">{row.files.join(', ')}</div>
+												{/if}
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/if}
+							{#if selectedCommitSummary.diff_tree.length}
+								<div>
+									<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Diff Tree</p>
+									<div class="mt-2 space-y-2">
+										{#each selectedCommitSummary.diff_tree as layer}
+											{@const layerObj = layer as {
+												layer?: string;
+												file_count?: number;
+												lines_added?: number;
+												lines_removed?: number;
+												files?: Array<{
+													path?: string;
+													operation?: string;
+													lines_added?: number;
+													lines_removed?: number;
+													is_large?: boolean;
+													hunks?: Array<{ header?: string; lines?: string[]; omitted_lines?: number }>;
+												}>;
+											}}
+											<details class="rounded border border-border/70 p-2" open={layerObj.file_count != null && layerObj.file_count <= 5}>
+												<summary class="cursor-pointer text-xs text-text-primary">
+													{layerObj.layer ?? '(layer)'} · files={layerObj.file_count ?? 0} · +{layerObj.lines_added ?? 0}/-{layerObj.lines_removed ?? 0}
+												</summary>
+												<div class="mt-2 space-y-2">
+													{#each layerObj.files ?? [] as file}
+														<details class="rounded border border-border/60 p-2" open={!file.is_large}>
+															<summary class="cursor-pointer text-[11px] text-text-secondary">
+																{file.path ?? '(file)'} [{file.operation ?? 'edit'}] +{file.lines_added ?? 0}/-{file.lines_removed ?? 0}
+															</summary>
+															{#if file.hunks?.length}
+																<div class="mt-2 space-y-1">
+																	{#each file.hunks as hunk}
+																		<div class="rounded border border-border/50 bg-bg-primary p-2">
+																			<div class="text-[11px] font-mono text-text-muted">{hunk.header ?? '(hunk)'}</div>
+																			{#if hunk.lines?.length}
+																				<pre class="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] text-text-secondary">{hunk.lines.join('\n')}</pre>
+																			{/if}
+																			{#if (hunk.omitted_lines ?? 0) > 0}
+																				<div class="mt-1 text-[11px] text-text-muted">… {hunk.omitted_lines} lines omitted</div>
+																			{/if}
+																		</div>
+																	{/each}
+																</div>
+															{/if}
+														</details>
+													{/each}
+												</div>
+											</details>
+										{/each}
+									</div>
+								</div>
+							{/if}
+							{#if selectedCommitSummary.error}
+								<p class="text-xs text-warning">generation note: {selectedCommitSummary.error}</p>
+							{/if}
+						</div>
+					{:else}
+						<div class="px-1 py-3 text-xs text-text-muted">No semantic summary generated for this commit.</div>
+					{/if}
+				</div>
+
 				<div class="rounded border border-border bg-bg-secondary">
 					<div class="border-b border-border px-3 py-2 text-xs font-medium text-text-secondary">
 						Sessions

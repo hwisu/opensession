@@ -1,6 +1,10 @@
 import { parseHailInput } from './hail-parse';
 import type {
 	DesktopHandoffBuildResponse,
+	DesktopRuntimeSettingsResponse,
+	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSessionSummaryResponse,
+	DesktopSummaryProviderDetectResponse,
 	Session,
 	SessionDetail,
 	SessionListResponse,
@@ -59,7 +63,14 @@ export interface SessionReadCore {
 	listRepos(): Promise<string[]>;
 	getSession(id: string): Promise<Session>;
 	getSessionDetail(id: string): Promise<SessionDetail>;
+	getSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
+	regenerateSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
+	getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse>;
+	updateRuntimeSettings(
+		request: DesktopRuntimeSettingsUpdateRequest,
+	): Promise<DesktopRuntimeSettingsResponse>;
+	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
 	getContractVersion(): Promise<string>;
 }
 
@@ -105,12 +116,49 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 				throw SessionReadCoreError.fromUnknown(error);
 			}
 		},
+		async getSessionSummary(id: string): Promise<DesktopSessionSummaryResponse> {
+			try {
+				return await adapter.getSessionSummary(id);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async regenerateSessionSummary(id: string): Promise<DesktopSessionSummaryResponse> {
+			try {
+				return await adapter.regenerateSessionSummary(id);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
 		async buildHandoff(
 			sessionId: string,
 			pinLatest: boolean = true,
 		): Promise<DesktopHandoffBuildResponse> {
 			try {
 				return await adapter.buildHandoff(sessionId, pinLatest);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse> {
+			try {
+				return await adapter.getRuntimeSettings();
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async updateRuntimeSettings(
+			request: DesktopRuntimeSettingsUpdateRequest,
+		): Promise<DesktopRuntimeSettingsResponse> {
+			try {
+				return await adapter.updateRuntimeSettings(request);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse> {
+			try {
+				return await adapter.detectSummaryProvider();
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

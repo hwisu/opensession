@@ -3,9 +3,10 @@
 use opensession_api::{
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
     CapabilitiesResponse, DesktopApiError, DesktopContractVersionResponse,
-    DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopSessionListQuery, LinkType,
-    SessionDetail, SessionLink, SessionListResponse, SessionRepoListResponse, SessionSummary,
-    DESKTOP_IPC_CONTRACT_VERSION,
+    DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopRuntimeSettingsResponse,
+    DesktopRuntimeSettingsUpdateRequest, DesktopSessionListQuery, DesktopSessionSummaryResponse,
+    DesktopSummaryProviderDetectResponse, LinkType, SessionDetail, SessionLink,
+    SessionListResponse, SessionRepoListResponse, SessionSummary, DESKTOP_IPC_CONTRACT_VERSION,
 };
 use opensession_core::handoff::{validate_handoff_summaries, HandoffSummary};
 use opensession_core::object_store::{
@@ -13,8 +14,14 @@ use opensession_core::object_store::{
 };
 use opensession_core::source_uri::SourceUri;
 use opensession_core::trace::Session as HailSession;
+use opensession_git_native::{extract_git_context, ops::find_repo_root as find_git_repo_root};
 use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow};
 use opensession_parsers::ingest::preview_parse_bytes;
+use opensession_runtime_config::{
+    DaemonConfig, SessionDefaultView, SummaryPersistMode, SummaryProvider, SummaryResponseStyle,
+    SummarySourceMode, SummaryTriggerMode,
+};
+use opensession_summary::{summarize_session, GitSummaryRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -34,8 +41,17 @@ struct DesktopHandoffArtifactRecord {
     source_uris: Vec<String>,
     canonical_jsonl: String,
     raw_sessions: Vec<HailSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary_meta: Option<DesktopHandoffSummaryMeta>,
     #[serde(default)]
     validation_reports: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DesktopHandoffSummaryMeta {
+    session_default_view: String,
+    summary_source_mode: String,
+    summary_provider: String,
 }
 
 fn desktop_error(
@@ -50,6 +66,14 @@ fn desktop_error(
         message: message.into(),
         details,
     }
+}
+
+fn enum_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .ok()
+        .map(|raw| raw.trim_matches('"').to_string())
+        .filter(|raw| !raw.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn desktop_launch_route_path() -> DesktopApiResult<PathBuf> {
@@ -208,6 +232,138 @@ fn open_local_db() -> DesktopApiResult<LocalDb> {
             Some(json!({ "cause": error.to_string() })),
         )
     })
+}
+
+fn runtime_config_path() -> DesktopApiResult<PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|error| {
+            desktop_error(
+                "desktop.runtime_config_home_unavailable",
+                500,
+                "failed to resolve home directory for runtime config",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("opensession")
+        .join(opensession_runtime_config::CONFIG_FILE_NAME))
+}
+
+fn load_runtime_config() -> DesktopApiResult<DaemonConfig> {
+    let path = runtime_config_path()?;
+    if !path.exists() {
+        return Ok(DaemonConfig::default());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|error| {
+        desktop_error(
+            "desktop.runtime_config_read_failed",
+            500,
+            "failed to read runtime config",
+            Some(json!({ "cause": error.to_string(), "path": path })),
+        )
+    })?;
+    toml::from_str(&content).map_err(|error| {
+        desktop_error(
+            "desktop.runtime_config_parse_failed",
+            500,
+            "failed to parse runtime config",
+            Some(json!({ "cause": error.to_string(), "path": path })),
+        )
+    })
+}
+
+fn save_runtime_config(config: &DaemonConfig) -> DesktopApiResult<()> {
+    let path = runtime_config_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            desktop_error(
+                "desktop.runtime_config_write_failed",
+                500,
+                "failed to create runtime config directory",
+                Some(json!({ "cause": error.to_string(), "path": parent })),
+            )
+        })?;
+    }
+
+    let body = toml::to_string_pretty(config).map_err(|error| {
+        desktop_error(
+            "desktop.runtime_config_serialize_failed",
+            500,
+            "failed to serialize runtime config",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+
+    std::fs::write(&path, body).map_err(|error| {
+        desktop_error(
+            "desktop.runtime_config_write_failed",
+            500,
+            "failed to write runtime config",
+            Some(json!({ "cause": error.to_string(), "path": path })),
+        )
+    })
+}
+
+fn map_summary_provider_from_str(raw: &str) -> Option<SummaryProvider> {
+    match raw.trim() {
+        "disabled" => Some(SummaryProvider::Disabled),
+        "ollama" => Some(SummaryProvider::Ollama),
+        "codex_exec" => Some(SummaryProvider::CodexExec),
+        "claude_cli" => Some(SummaryProvider::ClaudeCli),
+        _ => None,
+    }
+}
+
+fn map_summary_source_mode_from_str(raw: &str) -> Option<SummarySourceMode> {
+    match raw.trim() {
+        "session_only" => Some(SummarySourceMode::SessionOnly),
+        "session_or_git_changes" => Some(SummarySourceMode::SessionOrGitChanges),
+        _ => None,
+    }
+}
+
+fn map_summary_response_style_from_str(raw: &str) -> Option<SummaryResponseStyle> {
+    match raw.trim() {
+        "compact" => Some(SummaryResponseStyle::Compact),
+        "standard" => Some(SummaryResponseStyle::Standard),
+        "detailed" => Some(SummaryResponseStyle::Detailed),
+        _ => None,
+    }
+}
+
+fn map_summary_output_shape_from_str(raw: &str) -> Option<opensession_runtime_config::SummaryOutputShape> {
+    match raw.trim() {
+        "layered" => Some(opensession_runtime_config::SummaryOutputShape::Layered),
+        "file_list" => Some(opensession_runtime_config::SummaryOutputShape::FileList),
+        "security_first" => Some(opensession_runtime_config::SummaryOutputShape::SecurityFirst),
+        _ => None,
+    }
+}
+
+fn map_summary_trigger_mode_from_str(raw: &str) -> Option<SummaryTriggerMode> {
+    match raw.trim() {
+        "manual" => Some(SummaryTriggerMode::Manual),
+        "on_session_save" => Some(SummaryTriggerMode::OnSessionSave),
+        _ => None,
+    }
+}
+
+fn map_summary_persist_mode_from_str(raw: &str) -> Option<SummaryPersistMode> {
+    match raw.trim() {
+        "none" => Some(SummaryPersistMode::None),
+        "local_db" => Some(SummaryPersistMode::LocalDb),
+        _ => None,
+    }
+}
+
+fn map_session_default_view_from_str(raw: &str) -> Option<SessionDefaultView> {
+    match raw.trim() {
+        "full" => Some(SessionDefaultView::Full),
+        "compressed" => Some(SessionDefaultView::Compressed),
+        _ => None,
+    }
 }
 
 fn session_to_hail_jsonl(session: HailSession) -> DesktopApiResult<String> {
@@ -538,6 +694,7 @@ fn build_handoff_artifact_record(
 
     let mut deduped_source_uris = BTreeSet::new();
     deduped_source_uris.insert(source_object.uri.to_string());
+    let runtime = load_runtime_config().unwrap_or_default();
 
     let record = DesktopHandoffArtifactRecord {
         version: HANDOFF_RECORD_VERSION.to_string(),
@@ -546,6 +703,11 @@ fn build_handoff_artifact_record(
         source_uris: deduped_source_uris.into_iter().collect(),
         canonical_jsonl,
         raw_sessions: vec![session],
+        summary_meta: Some(DesktopHandoffSummaryMeta {
+            session_default_view: enum_label(&runtime.daemon.session_default_view),
+            summary_source_mode: enum_label(&runtime.summary.source_mode),
+            summary_provider: enum_label(&runtime.summary.provider),
+        }),
         validation_reports,
     };
     store_handoff_artifact_record(&record, cwd)?;
@@ -583,6 +745,334 @@ fn desktop_get_contract_version() -> DesktopContractVersionResponse {
     DesktopContractVersionResponse {
         version: DESKTOP_IPC_CONTRACT_VERSION.to_string(),
     }
+}
+
+#[tauri::command]
+fn desktop_get_runtime_settings() -> DesktopApiResult<DesktopRuntimeSettingsResponse> {
+    let config = load_runtime_config()?;
+    let summary = serde_json::to_value(&config.summary).map_err(|error| {
+        desktop_error(
+            "desktop.runtime_settings_serialize_failed",
+            500,
+            "failed to serialize runtime summary settings",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let session_default_view = match config.daemon.session_default_view {
+        SessionDefaultView::Full => "full",
+        SessionDefaultView::Compressed => "compressed",
+    }
+    .to_string();
+
+    Ok(DesktopRuntimeSettingsResponse {
+        session_default_view,
+        summary,
+    })
+}
+
+#[tauri::command]
+fn desktop_update_runtime_settings(
+    request: DesktopRuntimeSettingsUpdateRequest,
+) -> DesktopApiResult<DesktopRuntimeSettingsResponse> {
+    let mut config = load_runtime_config()?;
+
+    if let Some(session_default_view) = request.session_default_view.as_deref() {
+        let mapped = map_session_default_view_from_str(session_default_view).ok_or_else(|| {
+            desktop_error(
+                "desktop.runtime_settings_invalid_view",
+                422,
+                "invalid session_default_view (expected full|compressed)",
+                Some(json!({ "session_default_view": session_default_view })),
+            )
+        })?;
+        config.daemon.session_default_view = mapped;
+    }
+
+    if let Some(summary) = request.summary {
+        let obj = summary.as_object().ok_or_else(|| {
+            desktop_error(
+                "desktop.runtime_settings_invalid_summary",
+                422,
+                "summary payload must be a JSON object",
+                None,
+            )
+        })?;
+
+        if let Some(provider) = obj.get("provider").and_then(serde_json::Value::as_str) {
+            config.summary.provider = map_summary_provider_from_str(provider).ok_or_else(|| {
+                desktop_error(
+                    "desktop.runtime_settings_invalid_provider",
+                    422,
+                    "invalid summary.provider",
+                    Some(json!({ "provider": provider })),
+                )
+            })?;
+        }
+        if let Some(endpoint) = obj.get("endpoint").and_then(serde_json::Value::as_str) {
+            config.summary.endpoint = endpoint.to_string();
+        }
+        if let Some(model) = obj.get("model").and_then(serde_json::Value::as_str) {
+            config.summary.model = model.to_string();
+        }
+        if let Some(source_mode) = obj.get("source_mode").and_then(serde_json::Value::as_str) {
+            config.summary.source_mode =
+                map_summary_source_mode_from_str(source_mode).ok_or_else(|| {
+                    desktop_error(
+                        "desktop.runtime_settings_invalid_source_mode",
+                        422,
+                        "invalid summary.source_mode",
+                        Some(json!({ "source_mode": source_mode })),
+                    )
+                })?;
+        }
+        if let Some(response_style) = obj
+            .get("response_style")
+            .and_then(serde_json::Value::as_str)
+        {
+            config.summary.response_style =
+                map_summary_response_style_from_str(response_style).ok_or_else(|| {
+                    desktop_error(
+                        "desktop.runtime_settings_invalid_response_style",
+                        422,
+                        "invalid summary.response_style",
+                        Some(json!({ "response_style": response_style })),
+                    )
+                })?;
+        }
+        if let Some(output_shape) = obj.get("output_shape").and_then(serde_json::Value::as_str) {
+            config.summary.output_shape =
+                map_summary_output_shape_from_str(output_shape).ok_or_else(|| {
+                    desktop_error(
+                        "desktop.runtime_settings_invalid_output_shape",
+                        422,
+                        "invalid summary.output_shape",
+                        Some(json!({ "output_shape": output_shape })),
+                    )
+                })?;
+        }
+        if let Some(output_instruction) = obj
+            .get("output_instruction")
+            .and_then(serde_json::Value::as_str)
+        {
+            config.summary.output_instruction = output_instruction.to_string();
+        }
+        if let Some(trigger_mode) = obj.get("trigger_mode").and_then(serde_json::Value::as_str) {
+            config.summary.trigger_mode =
+                map_summary_trigger_mode_from_str(trigger_mode).ok_or_else(|| {
+                    desktop_error(
+                        "desktop.runtime_settings_invalid_trigger_mode",
+                        422,
+                        "invalid summary.trigger_mode",
+                        Some(json!({ "trigger_mode": trigger_mode })),
+                    )
+                })?;
+        }
+        if let Some(persist_mode) = obj.get("persist_mode").and_then(serde_json::Value::as_str) {
+            config.summary.persist_mode =
+                map_summary_persist_mode_from_str(persist_mode).ok_or_else(|| {
+                    desktop_error(
+                        "desktop.runtime_settings_invalid_persist_mode",
+                        422,
+                        "invalid summary.persist_mode",
+                        Some(json!({ "persist_mode": persist_mode })),
+                    )
+                })?;
+        }
+        if let Some(template_slots) = obj
+            .get("template_slots")
+            .and_then(serde_json::Value::as_object)
+        {
+            config.summary.template_slots = template_slots
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.to_string(), value.to_string()))
+                })
+                .collect();
+        }
+    }
+
+    save_runtime_config(&config)?;
+    desktop_get_runtime_settings()
+}
+
+#[tauri::command]
+fn desktop_detect_summary_provider() -> DesktopSummaryProviderDetectResponse {
+    if let Some(profile) = opensession_summary::detect_summary_provider() {
+        let provider = serde_json::to_string(&profile.provider)
+            .ok()
+            .map(|raw| raw.trim_matches('"').to_string());
+        return DesktopSummaryProviderDetectResponse {
+            detected: true,
+            provider,
+            model: (!profile.model.trim().is_empty()).then_some(profile.model),
+            endpoint: (!profile.endpoint.trim().is_empty()).then_some(profile.endpoint),
+        };
+    }
+
+    DesktopSummaryProviderDetectResponse {
+        detected: false,
+        provider: None,
+        model: None,
+        endpoint: None,
+    }
+}
+
+fn session_summary_response_from_row(
+    row: opensession_local_db::SessionSemanticSummaryRow,
+) -> DesktopSessionSummaryResponse {
+    DesktopSessionSummaryResponse {
+        session_id: row.session_id,
+        summary: serde_json::from_str(&row.summary_json).ok(),
+        source_details: row
+            .source_details_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok()),
+        diff_tree: row
+            .diff_tree_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default(),
+        source_kind: Some(row.source_kind),
+        generation_kind: Some(row.generation_kind),
+        error: row.error,
+    }
+}
+
+#[tauri::command]
+fn desktop_get_session_summary(id: String) -> DesktopApiResult<DesktopSessionSummaryResponse> {
+    let db = open_local_db()?;
+    let summary = db
+        .get_session_semantic_summary(&id)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_query_failed",
+                500,
+                "failed to load session summary",
+                Some(json!({ "cause": error.to_string(), "session_id": id })),
+            )
+        })?
+        .map(session_summary_response_from_row);
+
+    Ok(summary.unwrap_or(DesktopSessionSummaryResponse {
+        session_id: id,
+        summary: None,
+        source_details: None,
+        diff_tree: Vec::new(),
+        source_kind: None,
+        generation_kind: None,
+        error: None,
+    }))
+}
+
+#[tauri::command]
+async fn desktop_regenerate_session_summary(
+    id: String,
+) -> DesktopApiResult<DesktopSessionSummaryResponse> {
+    let db = open_local_db()?;
+    let normalized_session = load_normalized_session_body(&db, &id)?;
+    let session = HailSession::from_jsonl(&normalized_session).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_parse_failed",
+            422,
+            "failed to decode session body for summary regeneration",
+            Some(json!({ "cause": error.to_string(), "session_id": id })),
+        )
+    })?;
+    let runtime = load_runtime_config()?;
+    let git_request = if runtime.summary.allows_git_changes_fallback() {
+        opensession_core::session::working_directory(&session)
+            .and_then(|cwd| find_git_repo_root(Path::new(cwd)).map(|repo_root| (cwd, repo_root)))
+            .map(|(cwd, repo_root)| GitSummaryRequest {
+                repo_root,
+                commit: extract_git_context(cwd).commit,
+            })
+    } else {
+        None
+    };
+    let artifact = summarize_session(&session, &runtime.summary, git_request.as_ref())
+        .await
+        .map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_generate_failed",
+                500,
+                "failed to generate semantic summary",
+                Some(json!({ "cause": error.to_string(), "session_id": id })),
+            )
+        })?;
+
+    if runtime.summary.persists_to_local_db() {
+        let summary_json = serde_json::to_string(&artifact.summary).map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_serialize_failed",
+                500,
+                "failed to serialize generated summary",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+        let source_details_json = if artifact.source_details.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&artifact.source_details).map_err(|error| {
+                desktop_error(
+                    "desktop.session_summary_serialize_failed",
+                    500,
+                    "failed to serialize source details",
+                    Some(json!({ "cause": error.to_string() })),
+                )
+            })?)
+        };
+        let diff_tree_json = if artifact.diff_tree.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&artifact.diff_tree).map_err(|error| {
+                desktop_error(
+                    "desktop.session_summary_serialize_failed",
+                    500,
+                    "failed to serialize diff tree",
+                    Some(json!({ "cause": error.to_string() })),
+                )
+            })?)
+        };
+        let provider = serde_json::to_string(&artifact.provider)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        let source_kind = serde_json::to_string(&artifact.source_kind)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        let generation_kind = serde_json::to_string(&artifact.generation_kind)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        let model = (!artifact.model.trim().is_empty()).then_some(artifact.model.as_str());
+        let prompt_fingerprint = (!artifact.prompt_fingerprint.trim().is_empty())
+            .then_some(artifact.prompt_fingerprint.as_str());
+
+        db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
+            session_id: &id,
+            summary_json: &summary_json,
+            generated_at: &chrono::Utc::now().to_rfc3339(),
+            provider: &provider,
+            model,
+            source_kind: &source_kind,
+            generation_kind: &generation_kind,
+            prompt_fingerprint,
+            source_details_json: source_details_json.as_deref(),
+            diff_tree_json: diff_tree_json.as_deref(),
+            error: artifact.error.as_deref(),
+        })
+        .map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_persist_failed",
+                500,
+                "failed to persist generated session summary",
+                Some(json!({ "cause": error.to_string(), "session_id": id })),
+            )
+        })?;
+    }
+
+    desktop_get_session_summary(id)
 }
 
 #[tauri::command]
@@ -744,10 +1234,15 @@ fn main() {
             desktop_get_capabilities,
             desktop_get_auth_providers,
             desktop_get_contract_version,
+            desktop_get_runtime_settings,
+            desktop_update_runtime_settings,
+            desktop_detect_summary_provider,
             desktop_list_sessions,
             desktop_list_repos,
             desktop_get_session_detail,
             desktop_get_session_raw,
+            desktop_get_session_summary,
+            desktop_regenerate_session_summary,
             desktop_take_launch_route,
             desktop_build_handoff
         ])

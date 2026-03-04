@@ -5,7 +5,11 @@ import type {
 	DesktopContractVersionResponse,
 	DesktopHandoffBuildRequest,
 	DesktopHandoffBuildResponse,
+	DesktopRuntimeSettingsResponse,
+	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSessionSummaryResponse,
 	DesktopSessionListQuery,
+	DesktopSummaryProviderDetectResponse,
 	SessionDetail,
 	SessionListResponse,
 	SessionRepoListResponse,
@@ -43,7 +47,14 @@ export interface SessionReadAdapter {
 	listRepos(): Promise<string[]>;
 	getSessionDetail(id: string): Promise<SessionDetail>;
 	getSessionRaw(id: string): Promise<string>;
+	getSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
+	regenerateSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
+	getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse>;
+	updateRuntimeSettings(
+		request: DesktopRuntimeSettingsUpdateRequest,
+	): Promise<DesktopRuntimeSettingsResponse>;
+	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
 	getCapabilities(): Promise<CapabilitiesResponse>;
 	getAuthProviders(): Promise<AuthProvidersResponse>;
 	getContractVersion(): Promise<string>;
@@ -188,6 +199,26 @@ export function createWebSessionReadAdapter(args: {
 		getSessionRaw(id) {
 			return requestRaw(`/api/sessions/${encodeURIComponent(id)}/raw`);
 		},
+		async getSessionSummary() {
+			throw new SessionAdapterError(
+				'desktop_summary_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_summary_unsupported',
+					message: 'Session semantic summary is available only in desktop runtime.',
+				}),
+			);
+		},
+		async regenerateSessionSummary() {
+			throw new SessionAdapterError(
+				'desktop_summary_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_summary_unsupported',
+					message: 'Session semantic summary regeneration is available only in desktop runtime.',
+				}),
+			);
+		},
 		async buildHandoff() {
 			throw new SessionAdapterError(
 				'desktop_handoff_unsupported',
@@ -195,6 +226,36 @@ export function createWebSessionReadAdapter(args: {
 				serializeErrorBody({
 					code: 'desktop_handoff_unsupported',
 					message: 'Handoff build is available only in desktop runtime.',
+				}),
+			);
+		},
+		async getRuntimeSettings() {
+			throw new SessionAdapterError(
+				'desktop_runtime_settings_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_runtime_settings_unsupported',
+					message: 'Runtime settings are available only in desktop runtime.',
+				}),
+			);
+		},
+		async updateRuntimeSettings() {
+			throw new SessionAdapterError(
+				'desktop_runtime_settings_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_runtime_settings_unsupported',
+					message: 'Runtime settings are available only in desktop runtime.',
+				}),
+			);
+		},
+		async detectSummaryProvider() {
+			throw new SessionAdapterError(
+				'desktop_runtime_settings_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_runtime_settings_unsupported',
+					message: 'Provider detection is available only in desktop runtime.',
 				}),
 			);
 		},
@@ -287,6 +348,18 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 		async getSessionRaw(id) {
 			return invokeAfterContractCheck<string>('desktop_get_session_raw', { id });
 		},
+		async getSessionSummary(id) {
+			return invokeAfterContractCheck<DesktopSessionSummaryResponse>(
+				'desktop_get_session_summary',
+				{ id },
+			);
+		},
+		async regenerateSessionSummary(id) {
+			return invokeAfterContractCheck<DesktopSessionSummaryResponse>(
+				'desktop_regenerate_session_summary',
+				{ id },
+			);
+		},
 		async buildHandoff(sessionId, pinLatest = true) {
 			const request: DesktopHandoffBuildRequest = {
 				session_id: sessionId,
@@ -295,6 +368,22 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 			return invokeAfterContractCheck<DesktopHandoffBuildResponse>('desktop_build_handoff', {
 				request,
 			});
+		},
+		async getRuntimeSettings() {
+			return invokeAfterContractCheck<DesktopRuntimeSettingsResponse>(
+				'desktop_get_runtime_settings',
+			);
+		},
+		async updateRuntimeSettings(request) {
+			return invokeAfterContractCheck<DesktopRuntimeSettingsResponse>(
+				'desktop_update_runtime_settings',
+				{ request },
+			);
+		},
+		async detectSummaryProvider() {
+			return invokeAfterContractCheck<DesktopSummaryProviderDetectResponse>(
+				'desktop_detect_summary_provider',
+			);
 		},
 		async getCapabilities() {
 			return invokeAfterContractCheck<CapabilitiesResponse>('desktop_get_capabilities');

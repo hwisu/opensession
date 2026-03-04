@@ -1,13 +1,13 @@
-//! Shared daemon/TUI configuration types.
+//! Shared runtime configuration types.
 //!
-//! Both `opensession-daemon` and `opensession-tui` read/write `opensession.toml`
-//! using these types. Daemon-specific logic (watch-path resolution, project
-//! config merging) lives in the daemon crate; TUI-specific logic (settings
-//! layout, field editing) lives in the TUI crate.
+//! `opensession-daemon`, desktop runtime, and CLI read/write `opensession.toml`
+//! using these types. Runtime-specific logic (watch-path resolution, project
+//! config merging, UI/IPC adapters) lives in each runtime crate.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-/// Canonical config file name used by daemon/cli/tui.
+/// Canonical config file name used by daemon/desktop/cli.
 pub const CONFIG_FILE_NAME: &str = "opensession.toml";
 
 /// Top-level daemon configuration (persisted as `opensession.toml`).
@@ -25,6 +25,8 @@ pub struct DaemonConfig {
     pub watchers: WatcherSettings,
     #[serde(default)]
     pub git_storage: GitStorageSettings,
+    #[serde(default)]
+    pub summary: SummarySettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +49,9 @@ pub struct DaemonSettings {
     /// Expand selected timeline event detail rows by default in TUI session detail.
     #[serde(default = "default_detail_auto_expand_selected_event")]
     pub detail_auto_expand_selected_event: bool,
+    /// Default detail view mode for session timeline rendering.
+    #[serde(default = "default_session_default_view")]
+    pub session_default_view: SessionDefaultView,
 }
 
 impl Default for DaemonSettings {
@@ -60,6 +65,7 @@ impl Default for DaemonSettings {
             realtime_debounce_ms: 500,
             detail_realtime_preview_enabled: false,
             detail_auto_expand_selected_event: true,
+            session_default_view: SessionDefaultView::default(),
         }
     }
 }
@@ -96,6 +102,14 @@ pub enum CalendarDisplayMode {
     Smart,
     Relative,
     Absolute,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionDefaultView {
+    #[default]
+    Full,
+    Compressed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +201,121 @@ impl Default for GitStorageSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarySettings {
+    #[serde(default)]
+    pub provider: SummaryProvider,
+    #[serde(default = "default_summary_endpoint")]
+    pub endpoint: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub source_mode: SummarySourceMode,
+    #[serde(default)]
+    pub response_style: SummaryResponseStyle,
+    #[serde(default)]
+    pub output_shape: SummaryOutputShape,
+    #[serde(default)]
+    pub output_instruction: String,
+    #[serde(default)]
+    pub trigger_mode: SummaryTriggerMode,
+    #[serde(default)]
+    pub persist_mode: SummaryPersistMode,
+    #[serde(default)]
+    pub template_slots: BTreeMap<String, String>,
+}
+
+impl Default for SummarySettings {
+    fn default() -> Self {
+        Self {
+            provider: SummaryProvider::default(),
+            endpoint: default_summary_endpoint(),
+            model: String::new(),
+            source_mode: SummarySourceMode::default(),
+            response_style: SummaryResponseStyle::default(),
+            output_shape: SummaryOutputShape::default(),
+            output_instruction: String::new(),
+            trigger_mode: SummaryTriggerMode::default(),
+            persist_mode: SummaryPersistMode::default(),
+            template_slots: BTreeMap::new(),
+        }
+    }
+}
+
+impl SummarySettings {
+    pub fn is_configured(&self) -> bool {
+        match self.provider {
+            SummaryProvider::Disabled => false,
+            SummaryProvider::Ollama => !self.model.trim().is_empty(),
+            SummaryProvider::CodexExec | SummaryProvider::ClaudeCli => true,
+        }
+    }
+
+    pub fn allows_git_changes_fallback(&self) -> bool {
+        matches!(self.source_mode, SummarySourceMode::SessionOrGitChanges)
+    }
+
+    pub fn should_generate_on_session_save(&self) -> bool {
+        matches!(self.trigger_mode, SummaryTriggerMode::OnSessionSave)
+    }
+
+    pub fn persists_to_local_db(&self) -> bool {
+        matches!(self.persist_mode, SummaryPersistMode::LocalDb)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryProvider {
+    #[default]
+    Disabled,
+    Ollama,
+    CodexExec,
+    ClaudeCli,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryResponseStyle {
+    Compact,
+    #[default]
+    Standard,
+    Detailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummarySourceMode {
+    #[default]
+    SessionOnly,
+    SessionOrGitChanges,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryOutputShape {
+    #[default]
+    Layered,
+    FileList,
+    SecurityFirst,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryTriggerMode {
+    Manual,
+    #[default]
+    OnSessionSave,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryPersistMode {
+    None,
+    #[default]
+    LocalDb,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitRetentionSettings {
     #[serde(default = "default_false")]
     pub enabled: bool,
@@ -242,6 +371,9 @@ fn default_detail_realtime_preview_enabled() -> bool {
 fn default_detail_auto_expand_selected_event() -> bool {
     true
 }
+fn default_session_default_view() -> SessionDefaultView {
+    SessionDefaultView::Full
+}
 fn default_publish_on() -> PublishMode {
     PublishMode::Manual
 }
@@ -250,6 +382,9 @@ fn default_git_retention_keep_days() -> u32 {
 }
 fn default_git_retention_interval_secs() -> u64 {
     86_400
+}
+fn default_summary_endpoint() -> String {
+    "http://127.0.0.1:11434".to_string()
 }
 fn default_server_url() -> String {
     "https://opensession.io".to_string()
@@ -355,5 +490,226 @@ interval_secs = 43200
         assert!(cfg.git_storage.retention.enabled);
         assert_eq!(cfg.git_storage.retention.keep_days, 14);
         assert_eq!(cfg.git_storage.retention.interval_secs, 43_200);
+    }
+
+    #[test]
+    fn summary_provider_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary]
+provider = "openai"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary provider must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_settings_deserialize_from_toml() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[summary]
+provider = "ollama"
+endpoint = "http://localhost:11434"
+model = "llama3.2:3b"
+source_mode = "session_or_git_changes"
+response_style = "detailed"
+output_shape = "security_first"
+output_instruction = "Call out risky auth delta first."
+trigger_mode = "on_session_save"
+persist_mode = "local_db"
+
+[summary.template_slots]
+changes = "focus on modifications"
+auth_security = "security-first"
+"#,
+        )
+        .expect("parse summary settings");
+
+        assert_eq!(cfg.summary.provider, SummaryProvider::Ollama);
+        assert_eq!(cfg.summary.endpoint, "http://localhost:11434");
+        assert_eq!(cfg.summary.model, "llama3.2:3b");
+        assert_eq!(
+            cfg.summary.source_mode,
+            SummarySourceMode::SessionOrGitChanges
+        );
+        assert_eq!(cfg.summary.response_style, SummaryResponseStyle::Detailed);
+        assert_eq!(cfg.summary.output_shape, SummaryOutputShape::SecurityFirst);
+        assert_eq!(
+            cfg.summary.output_instruction,
+            "Call out risky auth delta first."
+        );
+        assert_eq!(cfg.summary.trigger_mode, SummaryTriggerMode::OnSessionSave);
+        assert_eq!(cfg.summary.persist_mode, SummaryPersistMode::LocalDb);
+        assert_eq!(
+            cfg.summary
+                .template_slots
+                .get("changes")
+                .map(String::as_str),
+            Some("focus on modifications")
+        );
+        assert!(cfg.summary.is_configured());
+    }
+
+    #[test]
+    fn summary_response_style_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary]
+response_style = "verbose"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary response_style must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_source_mode_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary]
+source_mode = "git_only"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary source_mode must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_output_shape_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary]
+output_shape = "grouped"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary output_shape must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_trigger_mode_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary]
+trigger_mode = "always"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary trigger_mode must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_persist_mode_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary]
+persist_mode = "remote_db"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary persist_mode must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_provider_accepts_cli_variants() {
+        let codex_cfg: DaemonConfig = toml::from_str(
+            r#"
+[summary]
+provider = "codex_exec"
+"#,
+        )
+        .expect("parse codex summary provider");
+        assert_eq!(codex_cfg.summary.provider, SummaryProvider::CodexExec);
+        assert!(codex_cfg.summary.is_configured());
+
+        let claude_cfg: DaemonConfig = toml::from_str(
+            r#"
+[summary]
+provider = "claude_cli"
+"#,
+        )
+        .expect("parse claude summary provider");
+        assert_eq!(claude_cfg.summary.provider, SummaryProvider::ClaudeCli);
+        assert!(claude_cfg.summary.is_configured());
+    }
+
+    #[test]
+    fn summary_is_configured_requires_model_only_for_ollama() {
+        let mut cfg = DaemonConfig::default();
+        cfg.summary.provider = SummaryProvider::Ollama;
+        cfg.summary.model.clear();
+        assert!(!cfg.summary.is_configured());
+
+        cfg.summary.model = "llama3.2:3b".to_string();
+        assert!(cfg.summary.is_configured());
+
+        cfg.summary.provider = SummaryProvider::CodexExec;
+        cfg.summary.model.clear();
+        assert!(cfg.summary.is_configured());
+
+        cfg.summary.provider = SummaryProvider::ClaudeCli;
+        assert!(cfg.summary.is_configured());
+    }
+
+    #[test]
+    fn summary_git_fallback_availability_depends_on_source_mode() {
+        let mut cfg = DaemonConfig::default();
+        cfg.summary.source_mode = SummarySourceMode::SessionOnly;
+        assert!(!cfg.summary.allows_git_changes_fallback());
+
+        cfg.summary.source_mode = SummarySourceMode::SessionOrGitChanges;
+        assert!(cfg.summary.allows_git_changes_fallback());
+    }
+
+    #[test]
+    fn summary_default_trigger_and_persist_modes_are_automatic_local() {
+        let cfg = DaemonConfig::default();
+        assert_eq!(cfg.summary.trigger_mode, SummaryTriggerMode::OnSessionSave);
+        assert_eq!(cfg.summary.persist_mode, SummaryPersistMode::LocalDb);
+        assert!(cfg.summary.should_generate_on_session_save());
+        assert!(cfg.summary.persists_to_local_db());
+    }
+
+    #[test]
+    fn daemon_default_session_view_deserializes_from_toml() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[daemon]
+session_default_view = "compressed"
+"#,
+        )
+        .expect("parse daemon session_default_view");
+
+        assert_eq!(
+            cfg.daemon.session_default_view,
+            SessionDefaultView::Compressed
+        );
+    }
+
+    #[test]
+    fn daemon_default_session_view_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[daemon]
+session_default_view = "compact"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported session_default_view must fail"
+        );
     }
 }

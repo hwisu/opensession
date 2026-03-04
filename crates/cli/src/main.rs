@@ -9,8 +9,10 @@ mod open_target;
 mod parse_cmd;
 mod register;
 mod review;
+mod runtime_settings;
 mod setup_cmd;
 mod share;
+mod summary_cmd;
 mod url_opener;
 mod user_guidance;
 mod view;
@@ -56,6 +58,8 @@ enum Commands {
     Handoff(handoff_v1::HandoffArgs),
     /// Parse agent-native logs into canonical HAIL JSONL.
     Parse(parse_cmd::ParseArgs),
+    /// Generate/show local semantic summaries.
+    Summary(summary_cmd::SummaryArgs),
     /// Manage explicit repo config (`.opensession/config.toml`).
     Config(config_cmd::ConfigArgs),
     /// Configure and run hidden-ref cleanup automation.
@@ -110,6 +114,7 @@ async fn main() {
         Commands::Review(args) => review::run(args).await,
         Commands::Handoff(args) => handoff_v1::run(args),
         Commands::Parse(args) => parse_cmd::run(args),
+        Commands::Summary(args) => summary_cmd::run(args).await,
         Commands::Config(args) => config_cmd::run(args),
         Commands::Cleanup(args) => cleanup_cmd::run(args),
         Commands::Setup(args) => setup_cmd::run(args),

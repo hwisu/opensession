@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "489a976c00b8c971bda3ee1b9cf38995f0173aec"
+    ],
+    "head": "b50932e9d5f2ce195f4e9582f064c7be932d6b56",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.3-codex",
+  "schema_version": 2,
+  "session_id": "019c9e6f-4fc8-7a93-aceb-ca158bd3ed77",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 474,
+    "event_count": 346,
+    "files_changed": 1,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 24,
+    "task_count": 3,
+    "tool_call_count": 18,
+    "total_input_tokens": 3934299,
+    "total_output_tokens": 15584,
+    "user_message_count": 3
+  },
+  "title": "리팩토링할 것 혹은\n서비스상 비워 있는 지점 혹은\n레거시 코드 남은거 있다면 정리해줘.",
+  "tool": "codex"
+}

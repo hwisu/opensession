@@ -2266,6 +2266,7 @@ name = "opensession-e2e"
 version = "0.2.33"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "opensession-api",
  "opensession-api-client",

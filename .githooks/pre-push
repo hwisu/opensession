@@ -33,6 +33,13 @@ fi
 original_hook="$(dirname "$0")/pre-push.original.pre-opensession"
 if [ -f "$original_hook" ]; then
     sh "$original_hook" "$@" || exit $?
+else
+    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+        echo "ERROR: npm is required for pre-push validation."
+        echo "Install Node.js/npm and re-run ./.githooks/pre-push."
+        exit 1
+    fi
+    node scripts/validate/pre-push.mjs || exit $?
 fi
 
 tmp_fanout="/tmp/opensession-ledger-fanout.$$"

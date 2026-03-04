@@ -78,6 +78,17 @@ struct BundleBuildContext {
     bundle_path: PathBuf,
 }
 
+struct BuildReviewBundleInput<'a> {
+    repo_root: &'a Path,
+    pr_url: &'a str,
+    pr: &'a GithubPrSpec,
+    remote: &'a str,
+    base_sha: &'a str,
+    head_sha: &'a str,
+    commits: Vec<CommitInfo>,
+    summary_settings: &'a SummarySettings,
+}
+
 pub async fn run(args: ReviewArgs) -> Result<()> {
     let repo_root = resolve_repo_root(args.repo.as_deref())?;
     let pr = parse_github_pr_url(&args.pr_link)?;
@@ -105,31 +116,31 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
             if bundle_has_commit_semantic_summaries(&cached) {
                 cached
             } else {
-                let built = build_review_bundle(
-                    &repo_root,
-                    &args.pr_link,
-                    &pr,
-                    &remote.name,
-                    &base_sha,
-                    &pr_head_sha,
+                let built = build_review_bundle(BuildReviewBundleInput {
+                    repo_root: &repo_root,
+                    pr_url: &args.pr_link,
+                    pr: &pr,
+                    remote: &remote.name,
+                    base_sha: &base_sha,
+                    head_sha: &pr_head_sha,
                     commits,
-                    &summary_settings,
-                )
+                    summary_settings: &summary_settings,
+                })
                 .await?;
                 write_review_bundle(&ctx.bundle_path, &built)?;
                 built
             }
         } else {
-            let built = build_review_bundle(
-                &repo_root,
-                &args.pr_link,
-                &pr,
-                &remote.name,
-                &base_sha,
-                &pr_head_sha,
+            let built = build_review_bundle(BuildReviewBundleInput {
+                repo_root: &repo_root,
+                pr_url: &args.pr_link,
+                pr: &pr,
+                remote: &remote.name,
+                base_sha: &base_sha,
+                head_sha: &pr_head_sha,
                 commits,
-                &summary_settings,
-            )
+                summary_settings: &summary_settings,
+            })
             .await?;
             write_review_bundle(&ctx.bundle_path, &built)?;
             built
@@ -578,16 +589,18 @@ fn enum_label<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-async fn build_review_bundle(
-    repo_root: &Path,
-    pr_url: &str,
-    pr: &GithubPrSpec,
-    remote: &str,
-    base_sha: &str,
-    head_sha: &str,
-    commits: Vec<CommitInfo>,
-    summary_settings: &SummarySettings,
-) -> Result<LocalReviewBundle> {
+async fn build_review_bundle(input: BuildReviewBundleInput<'_>) -> Result<LocalReviewBundle> {
+    let BuildReviewBundleInput {
+        repo_root,
+        pr_url,
+        pr,
+        remote,
+        base_sha,
+        head_sha,
+        commits,
+        summary_settings,
+    } = input;
+
     let ledger_refs = list_remote_ledger_refs(repo_root, remote)?;
     let mut session_rows: Vec<LocalReviewSession> = Vec::new();
     let mut session_key_to_index: HashMap<String, usize> = HashMap::new();

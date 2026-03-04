@@ -20,8 +20,33 @@ run_cargo() {
   cargo "$@"
 }
 
+hash_file_sha256() {
+  file="$1"
+  if [ ! -f "$file" ]; then
+    echo "none"
+    return 0
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+    return 0
+  fi
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+    return 0
+  fi
+
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$file" | awk '{print $NF}'
+    return 0
+  fi
+
+  echo "none"
+}
+
 # Cargo.lock 변경 감지를 위한 스냅샷
-LOCK_HASH_BEFORE=$(shasum Cargo.lock 2>/dev/null || echo "none")
+LOCK_HASH_BEFORE=$(hash_file_sha256 Cargo.lock)
 
 if ! command -v node >/dev/null 2>&1; then
   echo "ERROR: node is required for pre-commit validation."
@@ -49,7 +74,7 @@ echo "Running daemon smoke tests..."
 run_cargo test -p opensession-daemon --quiet
 
 # Cargo.lock 변경 여부 확인
-LOCK_HASH_AFTER=$(shasum Cargo.lock 2>/dev/null || echo "none")
+LOCK_HASH_AFTER=$(hash_file_sha256 Cargo.lock)
 if [ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]; then
   echo ""
   echo "ERROR: Cargo.lock was modified during pre-commit checks."

@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "rows": [
+    {
+      "surface": "server",
+      "runtime": "api",
+      "path_or_flow": "PUT /api/auth/password",
+      "scenario": "authenticated user changes password and can login with the new password",
+      "test_id": "server.auth.password.change.success",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "server",
+      "runtime": "api",
+      "path_or_flow": "GET/POST/DELETE /api/auth/git-credentials",
+      "scenario": "git credential create-list-delete flow for authenticated user",
+      "test_id": "server.auth.git_credentials.crud",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "server",
+      "runtime": "api",
+      "path_or_flow": "GET /api/sessions/repos",
+      "scenario": "session repository list endpoint returns a valid response shape",
+      "test_id": "server.sessions.repos.list",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "server",
+      "runtime": "api",
+      "path_or_flow": "DELETE /api/admin/sessions/:id",
+      "scenario": "admin delete endpoint rejects unauthorized requests",
+      "test_id": "server.admin.delete_session.authz",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "worker",
+      "runtime": "api",
+      "path_or_flow": "POST /api/parse/preview (inline)",
+      "scenario": "inline parse preview succeeds for a valid HAIL payload",
+      "test_id": "worker.parse.preview.inline.success",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "worker",
+      "runtime": "api",
+      "path_or_flow": "POST /api/parse/preview (git)",
+      "scenario": "git parse preview returns missing_git_credential when remote denies access",
+      "test_id": "worker.parse.preview.git.credential_required",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "worker",
+      "runtime": "api",
+      "path_or_flow": "GET /api/auth/oauth/:provider and /api/auth/oauth/:provider/callback",
+      "scenario": "oauth redirect is exposed and callback route responds for enabled provider",
+      "test_id": "worker.auth.oauth.redirect.callback",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "web",
+      "runtime": "live",
+      "path_or_flow": "/login -> /sessions",
+      "scenario": "user can sign in from login page and land on sessions",
+      "test_id": "web.live.login.to.sessions",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "web",
+      "runtime": "live",
+      "path_or_flow": "/src/git/* parser selection retry",
+      "scenario": "parser selection required flow allows retry with explicit parser hint",
+      "test_id": "web.live.src.git.parser_selection_retry",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "web",
+      "runtime": "live",
+      "path_or_flow": "/review/local/:id",
+      "scenario": "review local page renders commit/session surface from review bundle payload",
+      "test_id": "web.live.review.local.render",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "desktop",
+      "runtime": "tauri",
+      "path_or_flow": "desktop list/detail/raw commands",
+      "scenario": "desktop session list/detail/raw flow works against isolated local db",
+      "test_id": "desktop.live.list.detail.raw",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "desktop",
+      "runtime": "tauri",
+      "path_or_flow": "desktop runtime settings get/update",
+      "scenario": "desktop runtime settings update is persisted and returned",
+      "test_id": "desktop.live.runtime_settings.update",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "desktop",
+      "runtime": "tauri",
+      "path_or_flow": "desktop handoff build + latest pin",
+      "scenario": "desktop handoff artifact build produces artifact URI and latest pin",
+      "test_id": "desktop.live.handoff.build_and_pin",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "compat",
+      "runtime": "cli",
+      "path_or_flow": "linux clipboard command fallback",
+      "scenario": "linux clipboard fallback order remains wl-copy -> xclip -> xsel",
+      "test_id": "compat.clipboard.linux_fallback_order",
+      "os": ["ubuntu-latest"]
+    },
+    {
+      "surface": "compat",
+      "runtime": "cli",
+      "path_or_flow": "daemon PATH lookup",
+      "scenario": "daemon path resolution works without shelling out to which",
+      "test_id": "compat.daemon_path_lookup.no_which",
+      "os": ["ubuntu-latest", "macos-latest"]
+    },
+    {
+      "surface": "compat",
+      "runtime": "hooks",
+      "path_or_flow": ".githooks/pre-commit hash tool selection",
+      "scenario": "pre-commit supports sha256sum/shasum/openssl fallback chain",
+      "test_id": "compat.precommit.hash_command_fallback",
+      "os": ["ubuntu-latest", "macos-latest"]
+    }
+  ]
+}

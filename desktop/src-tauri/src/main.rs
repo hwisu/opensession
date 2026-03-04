@@ -1254,14 +1254,82 @@ fn main() {
 mod tests {
     use super::{
         artifact_path_for_hash, build_handoff_artifact_record, build_local_filter,
-        canonicalize_summaries, desktop_get_contract_version, map_link_type,
-        normalize_launch_route, normalize_session_body_to_hail_jsonl, session_summary_from_local_row,
-        validate_pin_alias, DesktopSessionListQuery,
+        canonicalize_summaries, desktop_get_contract_version, desktop_get_runtime_settings,
+        desktop_get_session_detail, desktop_get_session_raw, desktop_list_sessions,
+        desktop_update_runtime_settings, map_link_type, normalize_launch_route,
+        normalize_session_body_to_hail_jsonl, session_summary_from_local_row, validate_pin_alias,
+        DesktopSessionListQuery,
     };
+    use opensession_api::DesktopRuntimeSettingsUpdateRequest;
     use opensession_core::handoff::HandoffSummary;
-    use opensession_core::trace::{Agent, Session as HailSession};
+    use opensession_core::trace::{Agent, Content, Event, EventType, Session as HailSession};
+    use opensession_local_db::LocalDb;
+    use opensession_local_db::git::GitContext;
+    use serde_json::json;
     use std::path::{Path, PathBuf};
+    use std::sync::{LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct EnvVarGuard {
+        key: String,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self {
+                key: key.to_string(),
+                previous,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(&self.key, previous);
+            } else {
+                std::env::remove_var(&self.key);
+            }
+        }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be monotonic")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{unique}"));
+        std::fs::create_dir_all(&path).expect("create test temp dir");
+        path
+    }
+
+    fn build_test_session(session_id: &str) -> HailSession {
+        let mut session = HailSession::new(
+            session_id.to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.events.push(Event {
+            event_id: "evt-1".to_string(),
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::UserMessage,
+            task_id: None,
+            content: Content::text("desktop test message"),
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        });
+        session.recompute_stats();
+        session
+    }
 
     fn sample_row() -> opensession_local_db::LocalSessionRow {
         opensession_local_db::LocalSessionRow {
@@ -1444,6 +1512,88 @@ mod tests {
     }
 
     #[test]
+    // @covers desktop.live.list.detail.raw
+    fn desktop_list_detail_raw_flow_uses_isolated_db() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_root = unique_temp_dir("opensession-desktop-list-detail-raw");
+        let db_path = temp_root.join("local.db");
+        let source_path = temp_root.join("session.hail.jsonl");
+        let _db_env = EnvVarGuard::set("OPENSESSION_LOCAL_DB_PATH", db_path.as_os_str());
+
+        let session = build_test_session("desktop-flow-session");
+        let session_jsonl = session.to_jsonl().expect("serialize session jsonl");
+        std::fs::write(&source_path, &session_jsonl).expect("write session source");
+
+        let db = LocalDb::open_path(&db_path).expect("open isolated local db");
+        db.upsert_local_session(
+            &session,
+            source_path
+                .to_str()
+                .expect("session source path must be valid utf-8"),
+            &GitContext::default(),
+        )
+        .expect("upsert local session");
+
+        let listed = desktop_list_sessions(None).expect("list sessions");
+        assert!(
+            listed.sessions.iter().any(|row| row.id == session.session_id),
+            "session list must include inserted session",
+        );
+
+        let detail =
+            desktop_get_session_detail(session.session_id.clone()).expect("get session detail");
+        assert_eq!(detail.summary.id, session.session_id);
+
+        let raw = desktop_get_session_raw(detail.summary.id.clone()).expect("get raw session");
+        assert!(
+            raw.contains("\"session_id\":\"desktop-flow-session\""),
+            "raw session output should include the normalized session id",
+        );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    // @covers desktop.live.runtime_settings.update
+    fn desktop_runtime_settings_update_persists_values() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-runtime-home");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+
+        let updated = desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: Some("compressed".to_string()),
+            summary: Some(json!({
+                "provider": "disabled",
+                "response_style": "compact",
+                "output_instruction": "summarize briefly",
+            })),
+        })
+        .expect("update runtime settings");
+        assert_eq!(updated.session_default_view, "compressed");
+
+        let loaded = desktop_get_runtime_settings().expect("load runtime settings");
+        assert_eq!(loaded.session_default_view, "compressed");
+        assert_eq!(
+            loaded
+                .summary
+                .get("provider")
+                .and_then(serde_json::Value::as_str),
+            Some("disabled")
+        );
+        assert_eq!(
+            loaded
+                .summary
+                .get("output_instruction")
+                .and_then(serde_json::Value::as_str),
+            Some("summarize briefly")
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    // @covers desktop.live.handoff.build_and_pin
     fn handoff_build_writes_artifact_record_and_pin() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

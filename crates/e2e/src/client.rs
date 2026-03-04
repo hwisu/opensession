@@ -15,6 +15,18 @@ impl TestContext {
         }
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn absolute_url(&self, path: &str) -> String {
+        if path.starts_with('/') {
+            format!("{}{}", self.base_url, path)
+        } else {
+            format!("{}/{}", self.base_url, path)
+        }
+    }
+
     /// Build a full API URL from a path like `/health`.
     pub fn url(&self, path: &str) -> String {
         format!("{}/api{}", self.base_url, path)

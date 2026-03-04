@@ -356,53 +356,38 @@ fn parse_remote_host_and_path(remote_url: &str) -> Option<(String, String)> {
     Some((host, path))
 }
 
+#[cfg(target_os = "linux")]
+fn linux_clipboard_candidates() -> [(&'static str, &'static [&'static str]); 3] {
+    [
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+    ]
+}
+
 fn try_copy_to_clipboard(value: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let mut child = Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .context("launch pbcopy")?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin.write_all(value.as_bytes()).context("write pbcopy")?;
-        }
-        let status = child.wait().context("wait pbcopy")?;
-        if status.success() {
+        if try_clipboard_command("pbcopy", &[], value)? {
             return Ok(());
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        let mut child = Command::new("xclip")
-            .arg("-selection")
-            .arg("clipboard")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .context("launch xclip")?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin.write_all(value.as_bytes()).context("write xclip")?;
+        for (program, args) in linux_clipboard_candidates() {
+            if try_clipboard_command(program, args, value)? {
+                return Ok(());
+            }
         }
-        let status = child.wait().context("wait xclip")?;
-        if status.success() {
-            return Ok(());
-        }
+        bail!(
+            "clipboard copy is unavailable on this platform (install one of: wl-clipboard, xclip, xsel)"
+        );
     }
 
     #[cfg(target_os = "windows")]
     {
-        let mut child = Command::new("clip")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .context("launch clip")?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin.write_all(value.as_bytes()).context("write clip")?;
-        }
-        let status = child.wait().context("wait clip")?;
-        if status.success() {
+        if try_clipboard_command("clip", &[], value)? {
             return Ok(());
         }
     }
@@ -410,8 +395,35 @@ fn try_copy_to_clipboard(value: &str) -> Result<()> {
     bail!("clipboard copy is unavailable on this platform")
 }
 
+fn try_clipboard_command(program: &str, args: &[&str], value: &str) -> Result<bool> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(anyhow::Error::new(err).context(format!("launch {program}"))),
+    };
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        if let Err(err) = stdin.write_all(value.as_bytes()) {
+            return Err(anyhow::Error::new(err).context(format!("write {program}")));
+        }
+    }
+
+    let status = child.wait().with_context(|| format!("wait {program}"))?;
+    Ok(status.success())
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::linux_clipboard_candidates;
     use super::{parse_remote_host_and_path, uri_for_remote, validate_rel_path};
     use opensession_core::source_uri::SourceSpec;
     use opensession_core::source_uri::SourceUri;
@@ -518,5 +530,15 @@ mod tests {
     fn path_validation_rejects_traversal() {
         assert!(validate_rel_path("sessions/ok.jsonl").is_ok());
         assert!(validate_rel_path("../bad").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    // @covers compat.clipboard.linux_fallback_order
+    fn linux_clipboard_fallback_order_is_stable() {
+        let candidates = linux_clipboard_candidates();
+        assert_eq!(candidates[0].0, "wl-copy");
+        assert_eq!(candidates[1].0, "xclip");
+        assert_eq!(candidates[2].0, "xsel");
     }
 }

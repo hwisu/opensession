@@ -1,6 +1,10 @@
 import { request } from '@playwright/test';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL =
+	process.env.OPENSESSION_E2E_WORKER_BASE_URL ||
+	process.env.OPENSESSION_E2E_SERVER_BASE_URL ||
+	process.env.BASE_URL ||
+	'http://localhost:3000';
 
 /**
  * Global setup: register the admin user before any tests run.

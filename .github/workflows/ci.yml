@@ -64,12 +64,27 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  functional-coverage:
+    name: Functional Coverage (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-functional-coverage.mjs
+
   clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Dwarnings -C link-arg=-fuse-ld=mold"
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -77,27 +92,24 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: cargo-check
+          shared-key: cargo-clippy-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
       - run: cargo clippy --workspace --quiet -- -D warnings
 
   test:
-    name: Test
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Dwarnings -C link-arg=-fuse-ld=mold"
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: cargo-check
+          shared-key: cargo-test-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
       - run: cargo test --workspace --exclude opensession-e2e --quiet
 
   audit:
@@ -111,8 +123,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   wasm-check:
-    name: Worker (wasm)
-    runs-on: ubuntu-latest
+    name: Worker (wasm) (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -121,13 +137,17 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: wasm-check
+          shared-key: wasm-check-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --manifest-path crates/worker/Cargo.toml --target wasm32-unknown-unknown --quiet -- -D warnings
 
   frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
+    name: Frontend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -147,3 +167,182 @@ jobs:
         working-directory: web
       - run: npm run check
         working-directory: web
+
+  api-e2e-server:
+    name: API E2E Server (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: api-e2e-server-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Start opensession-server
+        run: |
+          mkdir -p .ci-logs .ci-data/server
+          PORT=3000 \
+          BASE_URL=http://127.0.0.1:3000 \
+          JWT_SECRET=ci-jwt-secret \
+          OPENSESSION_ADMIN_KEY=ci-admin-key \
+          OPENSESSION_DATA_DIR="$PWD/.ci-data/server" \
+          cargo run -p opensession-server > .ci-logs/server.log 2>&1 &
+          echo $! > .ci-logs/server.pid
+      - name: Wait for server health endpoint
+        run: |
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not start in time"
+          cat .ci-logs/server.log || true
+          exit 1
+      - name: Run server API E2E suite
+        env:
+          OPENSESSION_E2E_SERVER_BASE_URL: http://127.0.0.1:3000
+          OPENSESSION_E2E_ALLOW_REMOTE: "0"
+        run: cargo test -p opensession-e2e --test server -- --nocapture
+      - name: Stop opensession-server
+        if: always()
+        run: |
+          if [ -f .ci-logs/server.pid ]; then
+            kill "$(cat .ci-logs/server.pid)" || true
+          fi
+      - name: Upload server E2E logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-e2e-server-logs-${{ matrix.os }}
+          path: .ci-logs/server.log
+          if-no-files-found: ignore
+
+  worker-web-live-e2e:
+    name: Worker + Web Live E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            packages/ui/package-lock.json
+      - name: Install UI deps
+        run: npm ci --prefer-offline --no-audit --no-fund --silent
+        working-directory: packages/ui
+      - name: Install web deps
+        run: npm ci --prefer-offline --no-audit --no-fund --silent
+        working-directory: web
+      - name: Install Playwright browser (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Install Playwright browser (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npx playwright install chromium
+        working-directory: web
+      - name: Start wrangler dev (local)
+        run: |
+          mkdir -p .ci-logs
+          npx --yes wrangler@4 dev \
+            --ip 127.0.0.1 \
+            --port 8788 \
+            --persist-to .wrangler/state \
+            --show-interactive-dev-session=false \
+            --log-level=warn \
+            --var BASE_URL:http://127.0.0.1:8788 \
+            --var OPENSESSION_BASE_URL:http://127.0.0.1:8788 \
+            --var JWT_SECRET:ci-jwt-secret \
+            --var OPENSESSION_ADMIN_KEY:ci-admin-key \
+            --var GITHUB_CLIENT_ID:ci-github-client \
+            --var GITHUB_CLIENT_SECRET:ci-github-secret \
+            > .ci-logs/wrangler.log 2>&1 &
+          echo $! > .ci-logs/wrangler.pid
+      - name: Wait for worker health endpoint
+        run: |
+          for i in $(seq 1 360); do
+            api_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8788/api/health || true)"
+            root_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8788/ || true)"
+            if [ "$api_code" = "200" ] && [ "$root_code" = "200" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "wrangler dev did not start in time (api=$api_code root=$root_code)"
+          cat .ci-logs/wrangler.log || true
+          exit 1
+      - name: Run worker API E2E suite
+        env:
+          OPENSESSION_E2E_WORKER_BASE_URL: http://127.0.0.1:8788
+          OPENSESSION_E2E_ALLOW_REMOTE: "0"
+        run: cargo test -p opensession-e2e --test worker -- --nocapture
+      - name: Run web live Playwright suite
+        env:
+          OPENSESSION_E2E_WORKER_BASE_URL: http://127.0.0.1:8788
+          OPENSESSION_E2E_ALLOW_REMOTE: "0"
+          CI: "1"
+        run: npm run test:e2e:live -- --reporter=list,junit --output=e2e-live-results
+        working-directory: web
+      - name: Stop wrangler dev
+        if: always()
+        run: |
+          if [ -f .ci-logs/wrangler.pid ]; then
+            kill "$(cat .ci-logs/wrangler.pid)" || true
+          fi
+      - name: Upload worker/web live E2E artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-web-live-e2e-${{ matrix.os }}
+          path: |
+            .ci-logs/wrangler.log
+            web/e2e-live-results
+            web/test-results
+            web/playwright-report
+          if-no-files-found: ignore
+
+  desktop-e2e:
+    name: Desktop E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux desktop test dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev
+      - name: Run desktop test suite (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          OPENSESSION_E2E_DESKTOP: "1"
+        run: xvfb-run -a cargo test --manifest-path desktop/src-tauri/Cargo.toml --quiet
+      - name: Run desktop test suite (macOS)
+        if: matrix.os == 'macos-latest'
+        env:
+          OPENSESSION_E2E_DESKTOP: "1"
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --quiet

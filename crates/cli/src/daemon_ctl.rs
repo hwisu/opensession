@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use crate::config::config_dir;
@@ -161,21 +162,77 @@ fn find_daemon_binary() -> Result<PathBuf> {
         }
     }
 
-    // Try PATH
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("opensession-daemon")
-        .output()
-    {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
+    // Try PATH without shelling out to `which` for portability.
+    if let Some(path) = find_in_path("opensession-daemon", std::env::var_os("PATH").as_deref()) {
+        return Ok(path);
     }
 
     bail!(
         "Could not find opensession-daemon binary.\n\
          Install it with: cargo install opensession-daemon"
     )
+}
+
+fn find_in_path(binary: &str, path_value: Option<&OsStr>) -> Option<PathBuf> {
+    let path_value = path_value?;
+    for dir in std::env::split_paths(path_value) {
+        let candidate = dir.join(binary);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+
+        #[cfg(windows)]
+        {
+            let candidate_exe = dir.join(format!("{binary}.exe"));
+            if is_executable_file(&candidate_exe) {
+                return Some(candidate_exe);
+            }
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            return metadata.permissions().mode() & 0o111 != 0;
+        }
+        false
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_in_path;
+    use std::ffi::OsString;
+
+    #[cfg(unix)]
+    #[test]
+    // @covers compat.daemon_path_lookup.no_which
+    fn find_in_path_resolves_executable_without_using_which() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        let daemon = bin_dir.join("opensession-daemon");
+        std::fs::write(&daemon, "#!/bin/sh\necho daemon\n").expect("write daemon");
+        let mut perms = std::fs::metadata(&daemon).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&daemon, perms).expect("chmod");
+
+        let found = find_in_path("opensession-daemon", Some(&OsString::from(bin_dir)));
+        assert_eq!(found.as_deref(), Some(daemon.as_path()));
+    }
 }

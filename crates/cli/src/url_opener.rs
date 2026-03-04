@@ -103,13 +103,20 @@ impl UrlAdapter for SystemBrowserAdapter {
 
         #[cfg(target_os = "linux")]
         {
-            let status = Command::new("xdg-open")
-                .arg(url)
-                .status()
-                .context("launch browser via `xdg-open`")?;
-            if status.success() {
-                return Ok(());
+            let linux_attempts: [(&str, &[&str]); 3] = [
+                ("xdg-open", &[url]),
+                ("gio", &["open", url]),
+                ("sensible-browser", &[url]),
+            ];
+            for (program, args) in linux_attempts {
+                match Command::new(program).args(args).status() {
+                    Ok(status) if status.success() => return Ok(()),
+                    Ok(_) => continue,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(_) => continue,
+                }
             }
+            bail!("{}", linux_open_help_message());
         }
 
         #[cfg(target_os = "windows")]
@@ -128,6 +135,11 @@ impl UrlAdapter for SystemBrowserAdapter {
 
         bail!("failed to open browser automatically")
     }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_open_help_message() -> &'static str {
+    "failed to open browser automatically on Linux (tried: xdg-open, gio open, sensible-browser). install xdg-utils or set `opensession.open-target app|web` explicitly"
 }
 
 struct MacDesktopAdapter;
@@ -213,7 +225,7 @@ fn write_desktop_launch_route(route: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::desktop_launch_route_from_url;
+    use super::{desktop_launch_route_from_url, linux_open_help_message};
 
     #[test]
     fn desktop_launch_route_from_sessions_url_preserves_query() {
@@ -234,5 +246,13 @@ mod tests {
             desktop_launch_route_from_url("opensession://sessions"),
             None
         );
+    }
+
+    #[test]
+    fn linux_open_help_mentions_install_hints() {
+        let message = linux_open_help_message();
+        assert!(message.contains("xdg-open"));
+        assert!(message.contains("gio open"));
+        assert!(message.contains("sensible-browser"));
     }
 }

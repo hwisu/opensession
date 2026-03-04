@@ -90,7 +90,7 @@ fn run_show(session_id: &str) -> Result<()> {
         generation_kind: row.generation_kind,
         prompt_fingerprint: row.prompt_fingerprint,
         summary: serde_json::from_str(&row.summary_json)
-            .unwrap_or_else(|_| serde_json::Value::String(row.summary_json)),
+            .unwrap_or(serde_json::Value::String(row.summary_json)),
         source_details: row
             .source_details_json
             .as_deref()

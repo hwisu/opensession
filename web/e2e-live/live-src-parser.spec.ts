@@ -11,7 +11,6 @@ function base64UrlEncode(value: string): string {
 const serverApiBaseUrl = process.env.OPENSESSION_E2E_SERVER_BASE_URL?.trim();
 
 test.describe('Live Source Route', () => {
-	// @covers web.live.src.git.parser_selection_retry
 	test('parser selection route retries with explicit parser hint', async ({ page }) => {
 		test.skip(
 			!serverApiBaseUrl,

@@ -125,7 +125,6 @@ async fn worker_auth_register_login_me_refresh_logout_flow() {
 }
 
 #[tokio::test]
-// @covers worker.auth.oauth.redirect.callback
 async fn worker_auth_oauth_redirect_callback_routes_are_exposed() {
     let ctx = get_ctx();
     let providers_response = ctx.get("/auth/providers").await.expect("request failed");
@@ -188,7 +187,6 @@ async fn worker_auth_oauth_redirect_callback_routes_are_exposed() {
 }
 
 #[tokio::test]
-// @covers worker.parse.preview.inline.success
 async fn worker_parse_preview_inline_success() {
     let ctx = get_ctx();
     let session = opensession_e2e::fixtures::minimal_session();
@@ -231,7 +229,6 @@ async fn worker_parse_preview_inline_success() {
 }
 
 #[tokio::test]
-// @covers worker.parse.preview.git.credential_required
 async fn worker_parse_preview_git_credential_required() {
     let ctx = get_ctx();
     let user = register_user(&ctx, "worker-git-credential", "testpass-12345").await;

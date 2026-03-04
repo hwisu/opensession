@@ -178,8 +178,6 @@ pub fn prepare_token_bundle(
 mod tests {
     use super::*;
 
-    // @coversfn service.validate_email success
-    // @coversfn service.validate_email error
     #[test]
     fn test_validate_email() {
         assert_eq!(
@@ -190,8 +188,6 @@ mod tests {
         assert!(validate_email("not-an-email").is_err());
     }
 
-    // @coversfn service.validate_password success
-    // @coversfn service.validate_password error
     #[test]
     fn test_validate_password_bounds() {
         assert!(validate_password("x".repeat(11).as_str()).is_err());
@@ -200,8 +196,6 @@ mod tests {
         assert!(validate_password("x".repeat(129).as_str()).is_err());
     }
 
-    // @coversfn service.validate_nickname success
-    // @coversfn service.validate_nickname error
     #[test]
     fn test_validate_nickname() {
         assert!(validate_nickname("alice").is_ok());
@@ -212,7 +206,6 @@ mod tests {
         assert!(validate_nickname(&"x".repeat(64)).is_ok());
     }
 
-    // @coversfn service.generate_api_key success
     #[test]
     fn test_generate_api_key_prefix_and_length() {
         let key = generate_api_key();
@@ -220,7 +213,6 @@ mod tests {
         assert_eq!(key.len(), 36);
     }
 
-    // @coversfn service.hash_api_key success
     #[test]
     fn test_hash_api_key_is_stable() {
         let raw = "osk_1234567890abcdef";
@@ -231,15 +223,12 @@ mod tests {
         assert_eq!(hash_a.len(), 64);
     }
 
-    // @coversfn service.key_prefix success
     #[test]
     fn test_key_prefix_truncates_to_twelve_chars() {
         assert_eq!(key_prefix("osk_abcdefghijklmnopqrstuvwxyz"), "osk_abcdefgh");
         assert_eq!(key_prefix("short"), "short");
     }
 
-    // @coversfn service.grace_until_sqlite success
-    // @coversfn service.grace_until_sqlite error
     #[test]
     fn test_grace_until_sqlite() {
         assert_eq!(
@@ -250,7 +239,6 @@ mod tests {
         assert!(matches!(err, ServiceError::Internal(_)));
     }
 
-    // @coversfn service.resolve_auth_token success
     #[test]
     fn test_resolve_auth_token_success_paths() {
         match resolve_auth_token("osk_live_token", "", 0).expect("api keys should bypass jwt") {
@@ -267,7 +255,6 @@ mod tests {
         }
     }
 
-    // @coversfn service.resolve_auth_token error
     #[test]
     fn test_resolve_auth_token_error_paths() {
         let missing_secret = match resolve_auth_token("definitely-not-an-api-key", "", 0) {
@@ -283,7 +270,6 @@ mod tests {
         assert!(matches!(invalid_jwt, ServiceError::Unauthorized(_)));
     }
 
-    // @coversfn service.prepare_token_bundle success
     #[test]
     fn test_prepare_token_bundle_success() {
         let now = 1_700_000_000_u64;
@@ -301,7 +287,6 @@ mod tests {
         assert_eq!(bundle.expires_at.len(), 19);
     }
 
-    // @coversfn service.prepare_token_bundle error
     #[test]
     fn test_prepare_token_bundle_rejects_invalid_timestamp() {
         let err = match prepare_token_bundle("jwt-secret", "user-2", "alice", i64::MIN as u64) {

@@ -4,7 +4,6 @@ const REVIEW_ID = 'live-local-review-e2e-1';
 const serverApiBaseUrl = process.env.OPENSESSION_E2E_SERVER_BASE_URL?.trim();
 
 test.describe('Live Local Review Route', () => {
-	// @covers web.live.review.local.render
 	test('renders review bundle data on /review/local/:id', async ({ page }) => {
 		test.skip(
 			!serverApiBaseUrl,

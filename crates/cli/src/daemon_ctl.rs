@@ -219,7 +219,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    // @covers compat.daemon_path_lookup.no_which
     fn find_in_path_resolves_executable_without_using_which() {
         use std::os::unix::fs::PermissionsExt;
 

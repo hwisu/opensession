@@ -534,7 +534,6 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    // @covers compat.clipboard.linux_fallback_order
     fn linux_clipboard_fallback_order_is_stable() {
         let candidates = linux_clipboard_candidates();
         assert_eq!(candidates[0].0, "wl-copy");

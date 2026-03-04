@@ -22,7 +22,6 @@ macro_rules! e2e_test {
 opensession_e2e::for_each_spec!(e2e_test);
 
 #[tokio::test]
-// @covers server.sessions.repos.list
 async fn server_sessions_repos_list() {
     let ctx = get_ctx();
     let response = ctx.get("/sessions/repos").await.expect("request failed");
@@ -42,7 +41,6 @@ async fn server_sessions_repos_list() {
 }
 
 #[tokio::test]
-// @covers server.auth.password.change.success
 async fn server_auth_password_change_success() {
     let ctx = get_ctx();
     let user = register_user(&ctx, "server-password", "old-pass-123").await;
@@ -87,7 +85,6 @@ async fn server_auth_password_change_success() {
 }
 
 #[tokio::test]
-// @covers server.auth.git_credentials.crud
 async fn server_auth_git_credentials_crud() {
     let ctx = get_ctx();
     let user = register_user(&ctx, "server-git-cred", "test-pass-123").await;
@@ -181,7 +178,6 @@ async fn server_auth_git_credentials_crud() {
 }
 
 #[tokio::test]
-// @covers server.admin.delete_session.authz
 async fn server_admin_delete_session_authz() {
     let ctx = get_ctx();
     let response = reqwest::Client::new()

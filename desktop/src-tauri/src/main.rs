@@ -1512,7 +1512,6 @@ mod tests {
     }
 
     #[test]
-    // @covers desktop.live.list.detail.raw
     fn desktop_list_detail_raw_flow_uses_isolated_db() {
         let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
         let temp_root = unique_temp_dir("opensession-desktop-list-detail-raw");
@@ -1555,7 +1554,6 @@ mod tests {
     }
 
     #[test]
-    // @covers desktop.live.runtime_settings.update
     fn desktop_runtime_settings_update_persists_values() {
         let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
         let temp_home = unique_temp_dir("opensession-desktop-runtime-home");
@@ -1593,7 +1591,6 @@ mod tests {
     }
 
     #[test]
-    // @covers desktop.live.handoff.build_and_pin
     fn handoff_build_writes_artifact_record_and_pin() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

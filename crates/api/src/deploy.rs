@@ -27,7 +27,6 @@ pub fn parse_bool_flag(raw: Option<&str>, default: bool) -> bool {
 mod tests {
     use super::parse_bool_flag;
 
-    // @coversfn deploy.parse_bool_flag success
     #[test]
     fn parses_truthy_values() {
         for value in ["1", "true", "TRUE", "yes", "on"] {

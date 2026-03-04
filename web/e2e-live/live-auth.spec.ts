@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('Live Auth Flow', () => {
-	// @covers web.live.login.to.sessions
 	test('login flow reaches sessions page', async ({ page, request }) => {
 		const capabilitiesResponse = await request.get('/api/capabilities');
 		expect(capabilitiesResponse.ok()).toBeTruthy();

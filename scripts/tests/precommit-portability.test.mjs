@@ -3,7 +3,6 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// @covers compat.precommit.hash_command_fallback
 
 test('pre-commit lock hash uses sha256sum/shasum/openssl fallback chain', () => {
 	const repoRoot = process.cwd();

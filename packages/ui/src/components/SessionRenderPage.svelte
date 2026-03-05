@@ -48,6 +48,8 @@ let flowTargetItems: HTMLElement[] = [];
 let flowLastTargetIdx: number | null = null;
 let handoffPending = $state(false);
 let handoffArtifactUri = $state<string | null>(null);
+let handoffDownloadFileName = $state<string | null>(null);
+let handoffDownloadContent = $state<string | null>(null);
 let handoffFeedback = $state<string | null>(null);
 let handoffFeedbackLevel = $state<'success' | 'error' | null>(null);
 
@@ -58,7 +60,12 @@ function eventFlowKind(event: Event): FlowKind {
 	const type = event.event_type.type;
 	if (type === 'UserMessage') return 'user';
 	if (type === 'SystemMessage') return 'system';
-	if (type === 'AgentMessage' || type === 'Thinking' || type === 'TaskStart' || type === 'TaskEnd') {
+	if (
+		type === 'AgentMessage' ||
+		type === 'Thinking' ||
+		type === 'TaskStart' ||
+		type === 'TaskEnd'
+	) {
 		return 'agent';
 	}
 	return 'tool';
@@ -102,9 +109,7 @@ const desktopRuntime = $derived.by(() => {
 	const maybeTauri = window as Window & { __TAURI_INTERNALS__?: unknown };
 	return '__TAURI_INTERNALS__' in maybeTauri || window.location.protocol === 'tauri:';
 });
-const effectiveViewMode = $derived(
-	viewMode === 'native' && !nativeEnabled ? 'unified' : viewMode,
-);
+const effectiveViewMode = $derived(viewMode === 'native' && !nativeEnabled ? 'unified' : viewMode);
 
 const searchableEvents = $derived.by(() => {
 	return timelineEvents.map((event) => ({
@@ -290,10 +295,7 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 	}
 }
 
-function setHandoffFeedback(
-	message: string | null,
-	level: 'success' | 'error' | null = null,
-) {
+function setHandoffFeedback(message: string | null, level: 'success' | 'error' | null = null) {
 	handoffFeedback = message;
 	handoffFeedbackLevel = level;
 }
@@ -332,10 +334,22 @@ async function handleBuildHandoff() {
 	try {
 		const response = await buildSessionHandoff(session.session_id, true);
 		handoffArtifactUri = response.artifact_uri;
+		const downloadFileName = response.download_file_name ?? null;
+		const downloadContent = response.download_content ?? null;
+		handoffDownloadFileName = downloadFileName;
+		handoffDownloadContent = downloadContent;
+		let downloaded = false;
+		if (downloadFileName && downloadContent) {
+			downloaded = downloadTextFile(downloadFileName, downloadContent);
+		}
 		setHandoffFeedback(
 			response.pinned_alias
-				? `Handoff artifact built and pinned as ${response.pinned_alias}.`
-				: 'Handoff artifact built.',
+				? downloaded
+					? `Handoff artifact built, pinned as ${response.pinned_alias}, and downloaded.`
+					: `Handoff artifact built and pinned as ${response.pinned_alias}.`
+				: downloaded
+					? 'Handoff artifact built and downloaded.'
+					: 'Handoff artifact built.',
 			'success',
 		);
 	} catch (error) {
@@ -349,7 +363,40 @@ async function handleBuildHandoff() {
 async function handleCopyHandoffUri() {
 	if (!handoffArtifactUri) return;
 	const copied = await writeClipboardText(handoffArtifactUri);
-	setHandoffFeedback(copied ? 'Artifact URI copied.' : 'Failed to copy artifact URI.', copied ? 'success' : 'error');
+	setHandoffFeedback(
+		copied ? 'Artifact URI copied.' : 'Failed to copy artifact URI.',
+		copied ? 'success' : 'error',
+	);
+}
+
+function downloadTextFile(fileName: string, content: string): boolean {
+	if (typeof document === 'undefined') return false;
+	try {
+		const blob = new Blob([content], { type: 'application/x-ndjson;charset=utf-8' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = fileName;
+		link.style.display = 'none';
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(url);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function handleDownloadHandoffFile() {
+	if (!handoffDownloadFileName || !handoffDownloadContent) return;
+	const downloaded = downloadTextFile(handoffDownloadFileName, handoffDownloadContent);
+	setHandoffFeedback(
+		downloaded
+			? `Downloaded ${handoffDownloadFileName}.`
+			: 'Failed to download handoff artifact file.',
+		downloaded ? 'success' : 'error',
+	);
 }
 
 function clamp01(value: number): number {
@@ -412,7 +459,9 @@ function handleFlowTrackPointerDown(event: PointerEvent) {
 	flowTrackEl?.setPointerCapture(event.pointerId);
 	flowDragPointerId = event.pointerId;
 	flowDragging = true;
-	flowTargetItems = Array.from(timelineEl?.querySelectorAll<HTMLElement>('[data-timeline-idx]') ?? []);
+	flowTargetItems = Array.from(
+		timelineEl?.querySelectorAll<HTMLElement>('[data-timeline-idx]') ?? [],
+	);
 	flowLastTargetIdx = null;
 	applyFlowRatioScroll(ratio);
 }
@@ -585,6 +634,16 @@ $effect(() => {
 									class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
 								>
 									Copy URI
+								</button>
+							{/if}
+							{#if handoffDownloadFileName && handoffDownloadContent}
+								<button
+									type="button"
+									data-testid="session-handoff-download"
+									onclick={handleDownloadHandoffFile}
+									class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
+								>
+									Download file
 								</button>
 							{/if}
 						</div>

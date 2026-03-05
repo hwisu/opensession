@@ -4,6 +4,7 @@ import type { SessionSummary, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import { stripTags } from '../utils';
 import SessionCard from './SessionCard.svelte';
+import { onMount } from 'svelte';
 
 const {
 	onNavigate,
@@ -30,6 +31,7 @@ let knownRepos = $state<string[]>([]);
 let copyFeedback = $state<string | null>(null);
 let copyFeedbackTimer: number | null = null;
 let hydratedFromQuery = false;
+let lastResetFingerprint = $state<string | null>(null);
 
 const perPage = 20;
 const listCacheKey = 'opensession_public_list_cache_v1';
@@ -112,20 +114,32 @@ function writeListCache(entry: SessionListCacheEntry) {
 	}
 }
 
-async function fetchSessions(reset = false) {
+function clearListCache() {
+	if (typeof window === 'undefined') return;
+	try {
+		localStorage.removeItem(listCacheKey);
+	} catch {
+		// Ignore storage failures.
+	}
+}
+
+async function fetchSessions(reset = false, opts: { force?: boolean } = {}) {
+	const forceRefresh = opts.force === true;
 	const requestId = ++fetchRequestId;
 	const targetPage = reset ? 1 : currentPage;
 
+	let usedWarmCache = false;
+	const fingerprint = currentListQueryFingerprint(targetPage);
+	if (reset && !forceRefresh && lastResetFingerprint === fingerprint && sessions.length > 0) {
+		return;
+	}
 	if (reset) {
 		currentPage = targetPage;
 		sessions = [];
 		selectedIndex = 0;
 		renderLimit = perPage;
 	}
-
-	let usedWarmCache = false;
-	const fingerprint = currentListQueryFingerprint(targetPage);
-	if (reset && isDefaultPublicFeedQuery(targetPage)) {
+	if (reset && !forceRefresh && isDefaultPublicFeedQuery(targetPage)) {
 		const cached = readListCache(fingerprint);
 		if (cached) {
 			sessions = cached.sessions;
@@ -146,11 +160,13 @@ async function fetchSessions(reset = false) {
 			time_range: timeRange !== 'all' ? timeRange : undefined,
 			page: targetPage,
 			per_page: perPage,
+			force_refresh: forceRefresh,
 		});
 		if (requestId !== fetchRequestId) return;
 		if (reset) {
 			sessions = res.sessions;
 			renderLimit = Math.max(perPage, Math.min(res.sessions.length, perPage));
+			lastResetFingerprint = fingerprint;
 		} else {
 			sessions = [...sessions, ...res.sessions];
 		}
@@ -185,6 +201,12 @@ async function fetchKnownRepos() {
 
 function handleSearch() {
 	fetchSessions(true);
+}
+
+function forceRefreshSessions() {
+	clearListCache();
+	void fetchKnownRepos();
+	fetchSessions(true, { force: true });
 }
 
 function loadMore() {
@@ -365,13 +387,13 @@ async function copySelectedSessionTitle() {
 	setCopyFeedbackMessage(copied ? 'Copied' : 'Copy failed');
 }
 
-$effect(() => {
+onMount(() => {
 	if (!hydratedFromQuery) {
 		hydrateFiltersFromQuery();
 		hydratedFromQuery = true;
 	}
 	void fetchKnownRepos();
-	fetchSessions(true);
+	void fetchSessions(true);
 });
 
 $effect(() => {
@@ -430,6 +452,9 @@ function handleKeydown(e: KeyboardEvent) {
 		e.preventDefault();
 		timeRange = cycleFilterValue(timeRange, rangeCycle);
 		fetchSessions(true);
+	} else if (e.key === 'R') {
+		e.preventDefault();
+		forceRefreshSessions();
 	}
 }
 
@@ -528,7 +553,7 @@ $effect(() => {
 			<input
 				id="session-search"
 				type="text"
-				placeholder="search..."
+				placeholder="search... (vector: semantic query)"
 				bind:this={searchInput}
 				bind:value={searchQuery}
 				onkeydown={handleSearchInputKeydown}
@@ -593,6 +618,10 @@ $effect(() => {
 				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">Cmd/Ctrl+C</kbd>
 				<span>copy title</span>
 			</span>
+			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
+				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">Shift+R</kbd>
+				<span>force refresh</span>
+			</span>
 			{#if copyFeedback}
 				<span
 					data-testid="session-copy-feedback"
@@ -610,6 +639,15 @@ $effect(() => {
 			>
 				Copy selected
 			</button>
+			<button
+				type="button"
+				data-testid="session-force-refresh"
+				onclick={forceRefreshSessions}
+				disabled={loading}
+				class="rounded border border-border bg-bg-secondary px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:text-text-primary disabled:opacity-60"
+			>
+				{loading ? 'Refreshing...' : 'Force refresh'}
+			</button>
 		</div>
 	</div>
 
@@ -623,6 +661,7 @@ $effect(() => {
 		<div data-testid="session-layout-summary" class="border-b border-border px-3 py-1 text-xs text-text-muted">
 			Sessions ({total})
 			<span class="ml-2 text-text-secondary">[single chronological feed]</span>
+			<span class="ml-2 text-text-secondary">[vector:query for open-model search]</span>
 		</div>
 
 			{#if sessions.length === 0 && !loading}

@@ -94,6 +94,42 @@ pub struct SessionSemanticSummaryUpsert<'a> {
     pub error: Option<&'a str>,
 }
 
+/// Vector chunk payload persisted per session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorChunkUpsert {
+    pub chunk_id: String,
+    pub session_id: String,
+    pub chunk_index: u32,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub line_count: u32,
+    pub content: String,
+    pub content_hash: String,
+    pub embedding: Vec<f32>,
+}
+
+/// Candidate row used for local semantic vector ranking.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorChunkCandidateRow {
+    pub chunk_id: String,
+    pub session_id: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub content: String,
+    pub embedding: Vec<f32>,
+}
+
+/// Vector indexing progress/status snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorIndexJobRow {
+    pub status: String,
+    pub processed_sessions: u32,
+    pub total_sessions: u32,
+    pub message: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
     let source_path = source_path.map(|path| path.to_ascii_lowercase())?;
 
@@ -127,6 +163,22 @@ fn normalize_non_empty(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn build_fts_query(raw: &str) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for token in raw.split_whitespace() {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let escaped = trimmed.replace('"', "\"\"");
+        parts.push(format!("\"{escaped}\""));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join(" OR "))
 }
 
 fn json_object_string(value: &Value, keys: &[&str]) -> Option<String> {
@@ -915,6 +967,23 @@ impl LocalDb {
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let conn = self.conn();
         conn.execute(
+            "DELETE FROM vector_embeddings \
+             WHERE chunk_id IN (SELECT id FROM vector_chunks WHERE session_id = ?1)",
+            params![session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM vector_chunks_fts WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM vector_chunks WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM vector_index_sessions WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
             "DELETE FROM session_semantic_summaries WHERE session_id = ?1",
             params![session_id],
         )?;
@@ -1001,6 +1070,218 @@ impl LocalDb {
                         diff_tree_json: row.get(9)?,
                         error: row.get(10)?,
                         updated_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    // ── Semantic vector index cache ────────────────────────────────────
+
+    pub fn vector_index_source_hash(&self, session_id: &str) -> Result<Option<String>> {
+        let hash = self
+            .conn()
+            .query_row(
+                "SELECT source_hash FROM vector_index_sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(hash)
+    }
+
+    pub fn clear_vector_index(&self) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM vector_embeddings", [])?;
+        conn.execute("DELETE FROM vector_chunks_fts", [])?;
+        conn.execute("DELETE FROM vector_chunks", [])?;
+        conn.execute("DELETE FROM vector_index_sessions", [])?;
+        Ok(())
+    }
+
+    pub fn replace_session_vector_chunks(
+        &self,
+        session_id: &str,
+        source_hash: &str,
+        model: &str,
+        chunks: &[VectorChunkUpsert],
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "DELETE FROM vector_embeddings \
+             WHERE chunk_id IN (SELECT id FROM vector_chunks WHERE session_id = ?1)",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM vector_chunks_fts WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM vector_chunks WHERE session_id = ?1",
+            params![session_id],
+        )?;
+
+        for chunk in chunks {
+            let embedding_json = serde_json::to_string(&chunk.embedding)
+                .context("serialize vector embedding for local cache")?;
+            tx.execute(
+                "INSERT INTO vector_chunks \
+                 (id, session_id, chunk_index, start_line, end_line, line_count, content, content_hash, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))",
+                params![
+                    &chunk.chunk_id,
+                    &chunk.session_id,
+                    chunk.chunk_index as i64,
+                    chunk.start_line as i64,
+                    chunk.end_line as i64,
+                    chunk.line_count as i64,
+                    &chunk.content,
+                    &chunk.content_hash,
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO vector_embeddings \
+                 (chunk_id, model, embedding_dim, embedding_json, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+                params![
+                    &chunk.chunk_id,
+                    model,
+                    chunk.embedding.len() as i64,
+                    &embedding_json
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO vector_chunks_fts (chunk_id, session_id, content) VALUES (?1, ?2, ?3)",
+                params![&chunk.chunk_id, &chunk.session_id, &chunk.content],
+            )?;
+        }
+
+        tx.execute(
+            "INSERT INTO vector_index_sessions \
+             (session_id, source_hash, chunk_count, last_indexed_at, updated_at) \
+             VALUES (?1, ?2, ?3, datetime('now'), datetime('now')) \
+             ON CONFLICT(session_id) DO UPDATE SET \
+             source_hash=excluded.source_hash, \
+             chunk_count=excluded.chunk_count, \
+             last_indexed_at=datetime('now'), \
+             updated_at=datetime('now')",
+            params![session_id, source_hash, chunks.len() as i64],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_vector_chunk_candidates(
+        &self,
+        query: &str,
+        model: &str,
+        limit: u32,
+    ) -> Result<Vec<VectorChunkCandidateRow>> {
+        let Some(fts_query) = build_fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.session_id, c.start_line, c.end_line, c.content, e.embedding_json \
+             FROM vector_chunks_fts f \
+             INNER JOIN vector_chunks c ON c.id = f.chunk_id \
+             INNER JOIN vector_embeddings e ON e.chunk_id = c.id \
+             WHERE f.content MATCH ?1 AND e.model = ?2 \
+             ORDER BY bm25(vector_chunks_fts) ASC, c.updated_at DESC \
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![fts_query, model, limit as i64], |row| {
+            let embedding_json: String = row.get(5)?;
+            let embedding =
+                serde_json::from_str::<Vec<f32>>(&embedding_json).unwrap_or_else(|_| Vec::new());
+            Ok(VectorChunkCandidateRow {
+                chunk_id: row.get(0)?,
+                session_id: row.get(1)?,
+                start_line: row.get::<_, i64>(2)?.max(0) as u32,
+                end_line: row.get::<_, i64>(3)?.max(0) as u32,
+                content: row.get(4)?,
+                embedding,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_recent_vector_chunks_for_model(
+        &self,
+        model: &str,
+        limit: u32,
+    ) -> Result<Vec<VectorChunkCandidateRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.session_id, c.start_line, c.end_line, c.content, e.embedding_json \
+             FROM vector_chunks c \
+             INNER JOIN vector_embeddings e ON e.chunk_id = c.id \
+             WHERE e.model = ?1 \
+             ORDER BY c.updated_at DESC \
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![model, limit as i64], |row| {
+            let embedding_json: String = row.get(5)?;
+            let embedding =
+                serde_json::from_str::<Vec<f32>>(&embedding_json).unwrap_or_else(|_| Vec::new());
+            Ok(VectorChunkCandidateRow {
+                chunk_id: row.get(0)?,
+                session_id: row.get(1)?,
+                start_line: row.get::<_, i64>(2)?.max(0) as u32,
+                end_line: row.get::<_, i64>(3)?.max(0) as u32,
+                content: row.get(4)?,
+                embedding,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn set_vector_index_job(&self, payload: &VectorIndexJobRow) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO vector_index_jobs \
+             (id, status, processed_sessions, total_sessions, message, started_at, finished_at, updated_at) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, datetime('now')) \
+             ON CONFLICT(id) DO UPDATE SET \
+             status=excluded.status, \
+             processed_sessions=excluded.processed_sessions, \
+             total_sessions=excluded.total_sessions, \
+             message=excluded.message, \
+             started_at=excluded.started_at, \
+             finished_at=excluded.finished_at, \
+             updated_at=datetime('now')",
+            params![
+                payload.status,
+                payload.processed_sessions as i64,
+                payload.total_sessions as i64,
+                payload.message,
+                payload.started_at,
+                payload.finished_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_vector_index_job(&self) -> Result<Option<VectorIndexJobRow>> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT status, processed_sessions, total_sessions, message, started_at, finished_at \
+                 FROM vector_index_jobs WHERE id = 1 LIMIT 1",
+                [],
+                |row| {
+                    Ok(VectorIndexJobRow {
+                        status: row.get(0)?,
+                        processed_sessions: row.get::<_, i64>(1)?.max(0) as u32,
+                        total_sessions: row.get::<_, i64>(2)?.max(0) as u32,
+                        message: row.get(3)?,
+                        started_at: row.get(4)?,
+                        finished_at: row.get(5)?,
                     })
                 },
             )
@@ -1919,10 +2200,14 @@ mod tests {
             migration_names.contains(&"local_0002_session_summaries"),
             "expected local_0002_session_summaries migration from opensession-api"
         );
+        assert!(
+            migration_names.contains(&"local_0003_vector_index"),
+            "expected local_0003_vector_index migration from opensession-api"
+        );
         assert_eq!(
             migration_names.len(),
-            2,
-            "local schema should include baseline + summary cache steps"
+            3,
+            "local schema should include baseline + summary cache + vector index steps"
         );
 
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2514,6 +2799,120 @@ mod tests {
             .get_session_semantic_summary("s1")
             .expect("query semantic summary");
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_build_fts_query_quotes_tokens() {
+        assert_eq!(
+            build_fts_query("parser retry"),
+            Some("\"parser\" OR \"retry\"".to_string())
+        );
+        assert!(build_fts_query("   ").is_none());
+    }
+
+    #[test]
+    fn test_vector_chunk_replace_and_candidate_query() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        let chunks = vec![
+            VectorChunkUpsert {
+                chunk_id: "chunk-s1-0".to_string(),
+                session_id: "s1".to_string(),
+                chunk_index: 0,
+                start_line: 1,
+                end_line: 8,
+                line_count: 8,
+                content: "parser selection retry after auth error".to_string(),
+                content_hash: "hash-0".to_string(),
+                embedding: vec![0.1, 0.2, 0.3],
+            },
+            VectorChunkUpsert {
+                chunk_id: "chunk-s1-1".to_string(),
+                session_id: "s1".to_string(),
+                chunk_index: 1,
+                start_line: 9,
+                end_line: 15,
+                line_count: 7,
+                content: "session list refresh control wired to runtime".to_string(),
+                content_hash: "hash-1".to_string(),
+                embedding: vec![0.3, 0.2, 0.1],
+            },
+        ];
+
+        db.replace_session_vector_chunks("s1", "source-hash-s1", "bge-m3", &chunks)
+            .expect("replace vector chunks");
+
+        let source_hash = db
+            .vector_index_source_hash("s1")
+            .expect("read source hash")
+            .expect("source hash should exist");
+        assert_eq!(source_hash, "source-hash-s1");
+
+        let matches = db
+            .list_vector_chunk_candidates("parser retry", "bge-m3", 10)
+            .expect("query vector chunk candidates");
+        assert!(
+            !matches.is_empty(),
+            "vector FTS query should return at least one candidate"
+        );
+        assert_eq!(matches[0].session_id, "s1");
+        assert!(matches[0].content.contains("parser"));
+    }
+
+    #[test]
+    fn test_delete_session_removes_vector_index_rows() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        let chunks = vec![VectorChunkUpsert {
+            chunk_id: "chunk-s1-delete".to_string(),
+            session_id: "s1".to_string(),
+            chunk_index: 0,
+            start_line: 1,
+            end_line: 2,
+            line_count: 2,
+            content: "delete me from vector cache".to_string(),
+            content_hash: "hash-delete".to_string(),
+            embedding: vec![0.7, 0.1, 0.2],
+        }];
+        db.replace_session_vector_chunks("s1", "delete-hash", "bge-m3", &chunks)
+            .expect("insert vector chunk");
+
+        db.delete_session("s1")
+            .expect("delete session with vector rows");
+
+        let candidates = db
+            .list_vector_chunk_candidates("delete", "bge-m3", 10)
+            .expect("query candidates after delete");
+        assert!(
+            candidates.iter().all(|row| row.session_id != "s1"),
+            "vector rows for deleted session should be removed"
+        );
+    }
+
+    #[test]
+    fn test_vector_index_job_round_trip() {
+        let db = test_db();
+        let payload = VectorIndexJobRow {
+            status: "running".to_string(),
+            processed_sessions: 2,
+            total_sessions: 10,
+            message: Some("indexing".to_string()),
+            started_at: Some("2026-03-05T10:00:00Z".to_string()),
+            finished_at: None,
+        };
+        db.set_vector_index_job(&payload)
+            .expect("set vector index job snapshot");
+
+        let loaded = db
+            .get_vector_index_job()
+            .expect("read vector index job snapshot")
+            .expect("vector index job row should exist");
+        assert_eq!(loaded.status, "running");
+        assert_eq!(loaded.processed_sessions, 2);
+        assert_eq!(loaded.total_sessions, 10);
+        assert_eq!(loaded.message.as_deref(), Some("indexing"));
     }
 
     #[test]

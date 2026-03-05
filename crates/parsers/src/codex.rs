@@ -1746,7 +1746,7 @@ fn extract_total_token_counts(payload: &serde_json::Value) -> Option<(Option<u64
 /// Returns (text, is_error, duration_ms).
 fn parse_function_output(raw: &str) -> (String, bool, Option<u64>) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-        let output = v
+        let mut output = v
             .get("output")
             .and_then(|v| v.as_str())
             .unwrap_or(raw)
@@ -1761,10 +1761,49 @@ fn parse_function_output(raw: &str) -> (String, bool, Option<u64>) {
             .and_then(|d| d.as_f64())
             .map(|s| (s * 1000.0) as u64);
         let is_error = exit_code.is_some_and(|c| c != 0);
+        if is_low_signal_output_marker(&output) || output.trim().is_empty() {
+            let metadata = v.get("metadata");
+            let recovered = [
+                v.get("stdout"),
+                v.get("stderr"),
+                v.get("message"),
+                v.get("result"),
+                v.get("content"),
+                metadata.and_then(|value| value.get("stdout")),
+                metadata.and_then(|value| value.get("stderr")),
+                metadata.and_then(|value| value.get("message")),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str())
+            .map(str::trim)
+            .find(|value| !value.is_empty() && !is_low_signal_output_marker(value))
+            .map(str::to_string);
+
+            if let Some(restored) = recovered {
+                output = restored;
+            } else if let Ok(serialized) = serde_json::to_string(&v) {
+                if !serialized.trim().is_empty() && !is_low_signal_output_marker(&serialized) {
+                    output = serialized;
+                }
+            }
+        }
         (output, is_error, duration)
     } else {
         (raw.to_string(), false, None)
     }
+}
+
+fn is_low_signal_output_marker(text: &str) -> bool {
+    let trimmed = text.trim();
+    !trimmed.is_empty()
+        && trimmed.chars().count() <= 8
+        && trimmed.chars().all(|ch| {
+            matches!(
+                ch,
+                '.' | '\u{00B7}' | '\u{2022}' | '-' | '_' | '=' | '~' | '`'
+            )
+        })
 }
 
 fn extract_message_text_blocks(content: Option<&serde_json::Value>) -> String {
@@ -2329,6 +2368,15 @@ provider = "anthropic"
         assert_eq!(text, "hello world\n");
         assert!(!is_error);
         assert_eq!(duration, Some(500));
+    }
+
+    #[test]
+    fn test_parse_function_output_recovers_meaningful_stdout_when_output_is_dot() {
+        let raw = r#"{"output":".","stdout":"Session still running (pid=1234)","metadata":{"exit_code":0,"duration_seconds":0.01}}"#;
+        let (text, is_error, duration) = parse_function_output(raw);
+        assert_eq!(text, "Session still running (pid=1234)");
+        assert!(!is_error);
+        assert_eq!(duration, Some(10));
     }
 
     #[test]

@@ -4,16 +4,32 @@ import {
 	createGitCredential,
 	detectSummaryProvider,
 	deleteGitCredential,
+	getApiCapabilities,
 	getSettings,
 	getRuntimeSettings,
 	isAuthenticated,
 	issueApiKey,
 	listGitCredentials,
 	updateRuntimeSettings,
+	vectorIndexRebuild,
+	vectorIndexStatus,
+	vectorInstallModel,
+	vectorPreflight,
 } from '../api';
 import type {
 	DesktopRuntimeSettingsResponse,
+	DesktopSummaryOutputShape,
+	DesktopSummaryProviderId,
 	DesktopSummaryProviderDetectResponse,
+	DesktopSummaryProviderTransport,
+	DesktopSummaryResponseStyle,
+	DesktopSummarySourceMode,
+	DesktopSummaryStorageBackend,
+	DesktopSummaryTriggerMode,
+	DesktopVectorIndexStatusResponse,
+	DesktopVectorPreflightResponse,
+	DesktopVectorSearchGranularity,
+	DesktopVectorSearchProvider,
 	GitCredentialSummary,
 	UserSettings,
 } from '../types';
@@ -29,6 +45,7 @@ const {
 let settings = $state<UserSettings | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
+let authApiEnabled = $state(true);
 let issuing = $state(false);
 let issuedApiKey = $state<string | null>(null);
 let copyMessage = $state<string | null>(null);
@@ -48,16 +65,76 @@ let runtimeSupported = $state(true);
 let runtimeError = $state<string | null>(null);
 let runtimeDetectMessage = $state<string | null>(null);
 let runtimeSessionDefaultView = $state<'full' | 'compressed'>('full');
-let runtimeProvider = $state('disabled');
+let runtimeProvider = $state<DesktopSummaryProviderId>('disabled');
+let runtimeProviderTransport = $state<DesktopSummaryProviderTransport>('none');
 let runtimeEndpoint = $state('');
 let runtimeModel = $state('');
-let runtimeSourceMode = $state('session_only');
-let runtimeResponseStyle = $state('standard');
-let runtimeOutputShape = $state('layered');
-let runtimeOutputInstruction = $state('');
-let runtimeTriggerMode = $state('on_session_save');
-let runtimePersistMode = $state('local_db');
-let runtimeTemplateSlotsText = $state('');
+let runtimeSourceMode = $state<DesktopSummarySourceMode>('session_only');
+let runtimeResponseStyle = $state<DesktopSummaryResponseStyle>('standard');
+let runtimeOutputShape = $state<DesktopSummaryOutputShape>('layered');
+let runtimePromptTemplate = $state('');
+let runtimePromptDefaultTemplate = $state('');
+let runtimeTriggerMode = $state<DesktopSummaryTriggerMode>('on_session_save');
+let runtimeStorageBackend = $state<DesktopSummaryStorageBackend>('hidden_ref');
+let runtimeVectorEnabled = $state(false);
+let runtimeVectorProvider = $state<DesktopVectorSearchProvider>('ollama');
+let runtimeVectorModel = $state('bge-m3');
+let runtimeVectorEndpoint = $state('http://127.0.0.1:11434');
+let runtimeVectorGranularity = $state<DesktopVectorSearchGranularity>('event_line_chunk');
+let runtimeVectorChunkSizeLines = $state(12);
+let runtimeVectorChunkOverlapLines = $state(3);
+let runtimeVectorTopKChunks = $state(30);
+let runtimeVectorTopKSessions = $state(20);
+let runtimeVectorPreflight = $state<DesktopVectorPreflightResponse | null>(null);
+let runtimeVectorIndex = $state<DesktopVectorIndexStatusResponse | null>(null);
+let runtimeVectorInstalling = $state(false);
+let runtimeVectorReindexing = $state(false);
+
+function providerTransportForId(id: DesktopSummaryProviderId): DesktopSummaryProviderTransport {
+	if (id === 'ollama') return 'http';
+	if (id === 'codex_exec' || id === 'claude_cli') return 'cli';
+	return 'none';
+}
+
+function currentRuntimeProviderTransport(): DesktopSummaryProviderTransport {
+	if (runtimeProvider === 'disabled') return 'none';
+	return providerTransportForId(runtimeProvider);
+}
+
+function responsePreview(style: DesktopSummaryResponseStyle, shape: DesktopSummaryOutputShape): string {
+	const changesPrefix =
+		style === 'compact'
+			? 'Updated session summary pipeline.'
+			: style === 'detailed'
+				? 'Refactored the desktop summary pipeline, split provider/prompt/response/storage concerns, and updated hidden-ref persistence semantics.'
+				: 'Updated desktop summary pipeline with clearer runtime settings.';
+	const security =
+		shape === 'security_first'
+			? 'Credential paths were isolated and storage policy now defaults to hidden_ref.'
+			: 'none detected';
+
+	const files =
+		shape === 'file_list'
+			? ['desktop/src-tauri/src/main.rs', 'packages/ui/src/components/SettingsPage.svelte']
+			: ['desktop/src-tauri/src/main.rs'];
+	const layer = shape === 'file_list' ? 'application' : 'presentation';
+
+	return JSON.stringify(
+		{
+			changes: changesPrefix,
+			auth_security: security,
+			layer_file_changes: [
+				{
+					layer,
+					summary: style === 'compact' ? 'Settings/runtime summary flow updated.' : 'Runtime settings and summary persistence behavior were updated.',
+					files,
+				},
+			],
+		},
+		null,
+		2,
+	);
+}
 
 let credentialLabel = $state('');
 let credentialHost = $state('');
@@ -78,16 +155,36 @@ function normalizeError(err: unknown, fallback: string): string {
 	return fallback;
 }
 
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		window.setTimeout(resolve, ms);
+	});
+}
+
 async function loadSettings() {
+	loading = true;
+	error = null;
+	authRequired = false;
+	try {
+		const capabilities = await getApiCapabilities();
+		authApiEnabled = capabilities.auth_enabled;
+	} catch {
+		authApiEnabled = false;
+	}
+
+	if (!authApiEnabled) {
+		settings = null;
+		credentials = [];
+		loading = false;
+		return;
+	}
+
 	if (!isAuthenticated()) {
 		authRequired = true;
 		loading = false;
 		return;
 	}
 
-	loading = true;
-	error = null;
-	authRequired = false;
 	try {
 		settings = await getSettings();
 		await loadGitCredentials();
@@ -124,26 +221,28 @@ async function loadGitCredentials() {
 function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimeSessionDefaultView =
 		settings.session_default_view === 'compressed' ? 'compressed' : 'full';
-	const summary =
-		settings.summary && typeof settings.summary === 'object'
-			? (settings.summary as Record<string, unknown>)
-			: {};
-	runtimeProvider = String(summary.provider ?? 'disabled');
-	runtimeEndpoint = String(summary.endpoint ?? '');
-	runtimeModel = String(summary.model ?? '');
-	runtimeSourceMode = String(summary.source_mode ?? 'session_only');
-	runtimeResponseStyle = String(summary.response_style ?? 'standard');
-	runtimeOutputShape = String(summary.output_shape ?? 'layered');
-	runtimeOutputInstruction = String(summary.output_instruction ?? '');
-	runtimeTriggerMode = String(summary.trigger_mode ?? 'on_session_save');
-	runtimePersistMode = String(summary.persist_mode ?? 'local_db');
-	const templateSlots =
-		summary.template_slots && typeof summary.template_slots === 'object'
-			? (summary.template_slots as Record<string, unknown>)
-			: {};
-	runtimeTemplateSlotsText = Object.entries(templateSlots)
-		.map(([key, value]) => `${key}=${String(value)}`)
-		.join('\n');
+	runtimeProvider = settings.summary.provider.id;
+	runtimeProviderTransport = settings.summary.provider.transport;
+	runtimeEndpoint = settings.summary.provider.endpoint ?? '';
+	runtimeModel = settings.summary.provider.model ?? '';
+	runtimeSourceMode = settings.ui_constraints.source_mode_locked
+		? settings.ui_constraints.source_mode_locked_value
+		: (settings.summary.source_mode ?? 'session_only');
+	runtimeResponseStyle = settings.summary.response.style ?? 'standard';
+	runtimeOutputShape = settings.summary.response.shape ?? 'layered';
+	runtimePromptTemplate = settings.summary.prompt.template ?? '';
+	runtimePromptDefaultTemplate = settings.summary.prompt.default_template ?? '';
+	runtimeTriggerMode = settings.summary.storage.trigger ?? 'on_session_save';
+	runtimeStorageBackend = settings.summary.storage.backend ?? 'hidden_ref';
+	runtimeVectorEnabled = settings.vector_search.enabled ?? false;
+	runtimeVectorProvider = settings.vector_search.provider ?? 'ollama';
+	runtimeVectorModel = settings.vector_search.model ?? 'bge-m3';
+	runtimeVectorEndpoint = settings.vector_search.endpoint ?? 'http://127.0.0.1:11434';
+	runtimeVectorGranularity = settings.vector_search.granularity ?? 'event_line_chunk';
+	runtimeVectorChunkSizeLines = settings.vector_search.chunk_size_lines ?? 12;
+	runtimeVectorChunkOverlapLines = settings.vector_search.chunk_overlap_lines ?? 3;
+	runtimeVectorTopKChunks = settings.vector_search.top_k_chunks ?? 30;
+	runtimeVectorTopKSessions = settings.vector_search.top_k_sessions ?? 20;
 }
 
 async function loadRuntimeSettings() {
@@ -154,6 +253,8 @@ async function loadRuntimeSettings() {
 		const settings = await getRuntimeSettings();
 		runtimeSettings = settings;
 		applyRuntimeSettingsToDraft(settings);
+		await refreshVectorPreflight();
+		await refreshVectorIndexStatus();
 	} catch (err) {
 		runtimeSettings = null;
 		if (err instanceof ApiError && err.status === 501) {
@@ -166,19 +267,51 @@ async function loadRuntimeSettings() {
 	}
 }
 
-function parseTemplateSlots(text: string): Record<string, string> {
-	const out: Record<string, string> = {};
-	for (const line of text.split('\n')) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		const idx = trimmed.indexOf('=');
-		if (idx <= 0) continue;
-		const key = trimmed.slice(0, idx).trim();
-		const value = trimmed.slice(idx + 1).trim();
-		if (!key) continue;
-		out[key] = value;
+function buildRuntimeSummaryPayload() {
+	return {
+		provider: {
+			id: runtimeProvider,
+			endpoint: runtimeEndpoint,
+			model: runtimeModel,
+		},
+		prompt: {
+			template: runtimePromptTemplate,
+		},
+		response: {
+			style: runtimeResponseStyle,
+			shape: runtimeOutputShape,
+		},
+		storage: {
+			trigger: runtimeTriggerMode,
+			backend: runtimeStorageBackend,
+		},
+		source_mode: runtimeSourceMode,
+	};
+}
+
+function buildRuntimeVectorPayload() {
+	return {
+		enabled: runtimeVectorEnabled,
+		provider: runtimeVectorProvider,
+		model: runtimeVectorModel,
+		endpoint: runtimeVectorEndpoint,
+		granularity: runtimeVectorGranularity,
+		chunk_size_lines: runtimeVectorChunkSizeLines,
+		chunk_overlap_lines: runtimeVectorChunkOverlapLines,
+		top_k_chunks: runtimeVectorTopKChunks,
+		top_k_sessions: runtimeVectorTopKSessions,
+	};
+}
+
+function handleRuntimeProviderChange() {
+	runtimeProviderTransport = currentRuntimeProviderTransport();
+	if (runtimeProviderTransport !== 'http') {
+		runtimeEndpoint = '';
 	}
-	return out;
+}
+
+function handleResetPromptTemplate() {
+	runtimePromptTemplate = runtimePromptDefaultTemplate;
 }
 
 async function handleSaveRuntimeSettings() {
@@ -188,18 +321,8 @@ async function handleSaveRuntimeSettings() {
 	try {
 		const updated = await updateRuntimeSettings({
 			session_default_view: runtimeSessionDefaultView,
-			summary: {
-				provider: runtimeProvider,
-				endpoint: runtimeEndpoint,
-				model: runtimeModel,
-				source_mode: runtimeSourceMode,
-				response_style: runtimeResponseStyle,
-				output_shape: runtimeOutputShape,
-				output_instruction: runtimeOutputInstruction,
-				trigger_mode: runtimeTriggerMode,
-				persist_mode: runtimePersistMode,
-				template_slots: parseTemplateSlots(runtimeTemplateSlotsText),
-			},
+			summary: buildRuntimeSummaryPayload(),
+			vector_search: buildRuntimeVectorPayload(),
 		});
 		runtimeSettings = updated;
 		applyRuntimeSettingsToDraft(updated);
@@ -221,12 +344,13 @@ async function handleDetectRuntimeProvider() {
 			runtimeDetectMessage = 'No local provider detected.';
 			return;
 		}
+		runtimeProvider = detected.provider;
+		runtimeProviderTransport =
+			detected.transport ?? providerTransportForId(detected.provider ?? 'disabled');
+		if (detected.model != null) runtimeModel = detected.model;
+		if (detected.endpoint != null) runtimeEndpoint = detected.endpoint;
 		const updated = await updateRuntimeSettings({
-			summary: {
-				provider: detected.provider,
-				model: detected.model ?? '',
-				endpoint: detected.endpoint ?? '',
-			},
+			summary: buildRuntimeSummaryPayload(),
 		});
 		runtimeSettings = updated;
 		applyRuntimeSettingsToDraft(updated);
@@ -235,6 +359,71 @@ async function handleDetectRuntimeProvider() {
 		runtimeError = normalizeError(err, 'Failed to detect/apply local provider');
 	} finally {
 		runtimeDetecting = false;
+	}
+}
+
+async function refreshVectorPreflight() {
+	try {
+		runtimeVectorPreflight = await vectorPreflight();
+		if (runtimeVectorPreflight.model_installed && runtimeVectorEnabled) {
+			runtimeDetectMessage = 'Vector model is ready.';
+		}
+	} catch (err) {
+		runtimeVectorPreflight = null;
+		runtimeError = normalizeError(err, 'Failed to fetch vector model status');
+	}
+}
+
+async function refreshVectorIndexStatus() {
+	try {
+		runtimeVectorIndex = await vectorIndexStatus();
+	} catch (err) {
+		runtimeVectorIndex = null;
+		runtimeError = normalizeError(err, 'Failed to fetch vector index status');
+	}
+}
+
+async function handleVectorInstallModel() {
+	runtimeVectorInstalling = true;
+	runtimeError = null;
+	try {
+		await vectorInstallModel(runtimeVectorModel);
+		for (let attempt = 0; attempt < 120; attempt += 1) {
+			await delay(1000);
+			await refreshVectorPreflight();
+			if (
+				runtimeVectorPreflight &&
+				runtimeVectorPreflight.install_state !== 'installing'
+			) {
+				break;
+			}
+		}
+	} catch (err) {
+		runtimeError = normalizeError(err, 'Failed to install vector model');
+	} finally {
+		runtimeVectorInstalling = false;
+	}
+}
+
+async function handleVectorReindex() {
+	runtimeVectorReindexing = true;
+	runtimeError = null;
+	try {
+		await vectorIndexRebuild();
+		for (let attempt = 0; attempt < 600; attempt += 1) {
+			await delay(500);
+			await refreshVectorIndexStatus();
+			if (
+				runtimeVectorIndex &&
+				runtimeVectorIndex.state !== 'running'
+			) {
+				break;
+			}
+		}
+	} catch (err) {
+		runtimeError = normalizeError(err, 'Failed to start vector index rebuild');
+	} finally {
+		runtimeVectorReindexing = false;
 	}
 }
 
@@ -300,6 +489,12 @@ async function handleDeleteCredential(id: string) {
 }
 
 $effect(() => {
+	if (runtimeVectorEnabled && runtimeVectorPreflight && !runtimeVectorPreflight.model_installed) {
+		runtimeVectorEnabled = false;
+	}
+});
+
+$effect(() => {
 	loadSettings();
 	loadRuntimeSettings();
 });
@@ -316,11 +511,11 @@ $effect(() => {
 		<p class="mt-1 text-sm text-text-secondary">Personal profile and API access controls.</p>
 	</header>
 
-	{#if loading}
-		<div class="border border-border bg-bg-secondary px-4 py-8 text-center text-sm text-text-muted">Loading...</div>
-	{:else if authRequired}
-		<section
-			data-testid="settings-require-auth"
+		{#if loading}
+			<div class="border border-border bg-bg-secondary px-4 py-8 text-center text-sm text-text-muted">Loading...</div>
+		{:else if authApiEnabled && authRequired}
+			<section
+				data-testid="settings-require-auth"
 			class="border border-border bg-bg-secondary px-4 py-6 text-sm text-text-secondary"
 		>
 			<p class="text-text-primary">Sign in is required to view personal settings.</p>
@@ -334,7 +529,7 @@ $effect(() => {
 				</button>
 			</div>
 		</section>
-	{:else}
+	{:else if authApiEnabled}
 		<section class="border border-border bg-bg-secondary p-4">
 			<h2 class="text-sm font-semibold text-text-primary">Profile</h2>
 			{#if settings}
@@ -516,7 +711,7 @@ $effect(() => {
 			<div>
 				<h2 class="text-sm font-semibold text-text-primary">Runtime Summary (Desktop)</h2>
 				<p class="mt-1 text-xs text-text-secondary">
-					Global default view, local summary provider, and output format controls.
+					Provider, prompt, response, and storage settings for desktop local runtime.
 				</p>
 			</div>
 			<div class="flex items-center gap-2">
@@ -546,76 +741,266 @@ $effect(() => {
 				Runtime settings are not available in this environment (desktop IPC required).
 			</p>
 		{:else}
-			<div class="mt-4 grid gap-2 sm:grid-cols-2">
-				<label class="text-xs text-text-secondary">
+			<div class="mt-4 space-y-4">
+				<label class="block text-xs text-text-secondary">
 					<span class="mb-1 block">Default Session View</span>
 					<select bind:value={runtimeSessionDefaultView} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 						<option value="full">full</option>
 						<option value="compressed">compressed</option>
 					</select>
 				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Summary Provider</span>
-					<select bind:value={runtimeProvider} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="disabled">disabled</option>
-						<option value="ollama">ollama</option>
-						<option value="codex_exec">codex_exec</option>
-						<option value="claude_cli">claude_cli</option>
-					</select>
-				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Provider Endpoint</span>
-					<input bind:value={runtimeEndpoint} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary" />
-				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Provider Model</span>
-					<input bind:value={runtimeModel} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary" />
-				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Source Mode</span>
-					<select bind:value={runtimeSourceMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="session_only">session_only</option>
-						<option value="session_or_git_changes">session_or_git_changes</option>
-					</select>
-				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Response Style</span>
-					<select bind:value={runtimeResponseStyle} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="compact">compact</option>
-						<option value="standard">standard</option>
-						<option value="detailed">detailed</option>
-					</select>
-				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Output Shape</span>
-					<select bind:value={runtimeOutputShape} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="layered">layered</option>
-						<option value="file_list">file_list</option>
-						<option value="security_first">security_first</option>
-					</select>
-				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Trigger Mode</span>
-					<select bind:value={runtimeTriggerMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="manual">manual</option>
-						<option value="on_session_save">on_session_save</option>
-					</select>
-				</label>
-				<label class="text-xs text-text-secondary">
-					<span class="mb-1 block">Persist Mode</span>
-					<select bind:value={runtimePersistMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="none">none</option>
-						<option value="local_db">local_db</option>
-					</select>
-				</label>
-				<label class="text-xs text-text-secondary sm:col-span-2">
-					<span class="mb-1 block">Output Instruction</span>
-					<textarea bind:value={runtimeOutputInstruction} rows="3" class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"></textarea>
-				</label>
-				<label class="text-xs text-text-secondary sm:col-span-2">
-					<span class="mb-1 block">Template Slots (`key=value` per line)</span>
-					<textarea bind:value={runtimeTemplateSlotsText} rows="4" class="w-full border border-border bg-bg-primary px-2 py-2 font-mono text-xs text-text-primary"></textarea>
-				</label>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-provider">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Provider</h3>
+					<label class="block text-xs text-text-secondary">
+						<span class="mb-1 block">Summary Provider</span>
+						<select
+							bind:value={runtimeProvider}
+							onchange={handleRuntimeProviderChange}
+							data-testid="runtime-provider-select"
+							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+						>
+							<option value="disabled">disabled</option>
+							<option value="ollama">ollama</option>
+							<option value="codex_exec">codex_exec</option>
+							<option value="claude_cli">claude_cli</option>
+						</select>
+					</label>
+					<p class="text-[11px] text-text-muted" data-testid="runtime-provider-transport">
+						transport: {currentRuntimeProviderTransport()}
+					</p>
+					{#if currentRuntimeProviderTransport() === 'http'}
+						<label class="block text-xs text-text-secondary">
+							<span class="mb-1 block">Endpoint</span>
+							<input
+								bind:value={runtimeEndpoint}
+								data-testid="runtime-provider-endpoint"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="block text-xs text-text-secondary">
+							<span class="mb-1 block">Model</span>
+							<input
+								bind:value={runtimeModel}
+								data-testid="runtime-provider-model"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+					{:else if currentRuntimeProviderTransport() === 'cli'}
+						<label class="block text-xs text-text-secondary">
+							<span class="mb-1 block">Model (optional)</span>
+							<input
+								bind:value={runtimeModel}
+								data-testid="runtime-provider-model"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<p class="text-[11px] text-text-muted" data-testid="runtime-provider-cli-status">
+							{runtimeDetectMessage ?? 'Run Detect Provider to verify CLI availability.'}
+						</p>
+					{/if}
+				</section>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-prompt">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Prompt</h3>
+					<label class="block text-xs text-text-secondary">
+						<span class="mb-1 block">Prompt Template</span>
+						<textarea
+							bind:value={runtimePromptTemplate}
+							data-testid="runtime-prompt-template"
+							rows="6"
+							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+						></textarea>
+					</label>
+					<div class="flex justify-end">
+						<button
+							type="button"
+							onclick={handleResetPromptTemplate}
+							data-testid="runtime-prompt-reset-default"
+							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+						>
+							Reset to default
+						</button>
+					</div>
+					<label class="block text-xs text-text-secondary">
+						<span class="mb-1 block">Default Template (read-only)</span>
+						<textarea
+							readonly
+							value={runtimePromptDefaultTemplate}
+							rows="5"
+							class="w-full border border-border/70 bg-bg-primary/60 px-2 py-2 text-xs text-text-muted"
+						></textarea>
+					</label>
+				</section>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-response">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Response</h3>
+					<div class="grid gap-2 sm:grid-cols-2">
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Response Style</span>
+							<select bind:value={runtimeResponseStyle} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+								<option value="compact">compact</option>
+								<option value="standard">standard</option>
+								<option value="detailed">detailed</option>
+							</select>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Output Shape</span>
+							<select bind:value={runtimeOutputShape} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+								<option value="layered">layered</option>
+								<option value="file_list">file_list</option>
+								<option value="security_first">security_first</option>
+							</select>
+						</label>
+					</div>
+					<p class="text-[11px] text-text-muted">
+						Desktop source mode is locked to <code>session_only</code> ({runtimeSourceMode}).
+					</p>
+					<div class="border border-border/70 bg-bg-primary p-2" data-testid="settings-response-preview">
+						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">Response Preview</p>
+						<pre class="overflow-x-auto text-xs text-text-secondary">{responsePreview(runtimeResponseStyle, runtimeOutputShape)}</pre>
+					</div>
+				</section>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-vector">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Vector Search</h3>
+					<div class="grid gap-2 sm:grid-cols-2">
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Model</span>
+							<input
+								bind:value={runtimeVectorModel}
+								data-testid="runtime-vector-model"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Endpoint</span>
+							<input
+								bind:value={runtimeVectorEndpoint}
+								data-testid="runtime-vector-endpoint"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Chunk Size (lines)</span>
+							<input
+								type="number"
+								min="1"
+								bind:value={runtimeVectorChunkSizeLines}
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Chunk Overlap (lines)</span>
+							<input
+								type="number"
+								min="0"
+								bind:value={runtimeVectorChunkOverlapLines}
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Top K Chunks</span>
+							<input
+								type="number"
+								min="1"
+								bind:value={runtimeVectorTopKChunks}
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Top K Sessions</span>
+							<input
+								type="number"
+								min="1"
+								bind:value={runtimeVectorTopKSessions}
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+					</div>
+
+					<label class="flex items-center gap-2 text-xs text-text-secondary">
+						<input
+							type="checkbox"
+							bind:checked={runtimeVectorEnabled}
+							disabled={!runtimeVectorPreflight?.model_installed}
+							data-testid="runtime-vector-enable"
+						/>
+						<span>Enable semantic vector search</span>
+					</label>
+
+					<div class="flex flex-wrap items-center gap-2">
+						<button
+							type="button"
+							data-testid="runtime-vector-install"
+							onclick={handleVectorInstallModel}
+							disabled={runtimeVectorInstalling || runtimeSaving || runtimeLoading}
+							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+						>
+							{runtimeVectorInstalling ? 'Installing...' : 'Install model'}
+						</button>
+						<button
+							type="button"
+							data-testid="runtime-vector-reindex"
+							onclick={handleVectorReindex}
+							disabled={runtimeVectorReindexing || runtimeSaving || runtimeLoading}
+							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+						>
+							{runtimeVectorReindexing ? 'Reindexing...' : 'Rebuild index'}
+						</button>
+					</div>
+
+					<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-vector-status">
+						<p>provider: {runtimeVectorProvider} | granularity: {runtimeVectorGranularity}</p>
+						{#if runtimeVectorPreflight}
+							<p>
+								model: {runtimeVectorPreflight.model} | reachable: {runtimeVectorPreflight.ollama_reachable ? 'yes' : 'no'} | installed:
+								{runtimeVectorPreflight.model_installed ? 'yes' : 'no'} | install_state: {runtimeVectorPreflight.install_state}
+								({runtimeVectorPreflight.progress_pct}%)
+							</p>
+							{#if runtimeVectorPreflight.message}
+								<p class="mt-1">{runtimeVectorPreflight.message}</p>
+							{/if}
+						{:else}
+							<p>vector model status unavailable.</p>
+						{/if}
+						{#if runtimeVectorIndex}
+							<p class="mt-1">
+								index_state: {runtimeVectorIndex.state} | processed: {runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
+							</p>
+							{#if runtimeVectorIndex.message}
+								<p class="mt-1">{runtimeVectorIndex.message}</p>
+							{/if}
+						{/if}
+					</div>
+				</section>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-storage">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Storage</h3>
+					<div class="grid gap-2 sm:grid-cols-2">
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Trigger</span>
+							<select bind:value={runtimeTriggerMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+								<option value="manual">manual</option>
+								<option value="on_session_save">on_session_save</option>
+							</select>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Backend</span>
+							<select bind:value={runtimeStorageBackend} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+								<option value="hidden_ref">hidden_ref</option>
+								<option value="local_db">local_db</option>
+								<option value="none">none</option>
+							</select>
+						</label>
+					</div>
+					{#if runtimeStorageBackend === 'hidden_ref'}
+						<p class="text-[11px] text-text-muted" data-testid="runtime-storage-hidden-ref-notice">
+							<code>hidden_ref</code> stores summary artifacts in git-native refs. Search/filter metadata is still indexed in local SQLite
+							(<code>OPENSESSION_LOCAL_DB_PATH</code> or default <code>~/.local/share/opensession/local.db</code>) for fast queries.
+						</p>
+					{/if}
+				</section>
 			</div>
 		{/if}
 		{#if runtimeError}

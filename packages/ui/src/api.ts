@@ -1,5 +1,6 @@
 import {
 	createDesktopSessionReadAdapter,
+	createUnavailableDesktopSessionReadAdapter,
 	createWebSessionReadAdapter,
 	type DesktopInvoke,
 	type SessionListParams,
@@ -12,6 +13,10 @@ import type {
 	DesktopHandoffBuildResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopVectorIndexStatusResponse,
+	DesktopVectorInstallStatusResponse,
+	DesktopVectorPreflightResponse,
+	DesktopVectorSearchResponse,
 	DesktopSessionSummaryResponse,
 	DesktopSummaryProviderDetectResponse,
 	ParsePreviewErrorResponse,
@@ -62,6 +67,10 @@ function hasDesktopApiOverride(): boolean {
 	return Boolean(stored);
 }
 
+function isDesktopLocalRuntime(): boolean {
+	return isTauriRuntime() && !hasDesktopApiOverride();
+}
+
 function getBaseUrl(): string {
 	if (typeof window !== 'undefined') {
 		const runtimeOverride = window.__OPENSESSION_API_URL__?.trim();
@@ -74,8 +83,7 @@ function getBaseUrl(): string {
 		if (isHttpLikeOrigin(origin)) return origin;
 
 		if (isTauriRuntime()) {
-			// Desktop bridge handles supported endpoints; keep local server fallback for unsupported paths.
-			return 'http://127.0.0.1:3000';
+			return '';
 		}
 
 		if (origin === 'null' || !origin) return '';
@@ -142,14 +150,33 @@ async function getAuthHeader(): Promise<string | null> {
 
 function getSessionReadAdapter() {
 	const invoke = getDesktopInvoke();
-	if (invoke && !hasDesktopApiOverride()) {
-		return createDesktopSessionReadAdapter(invoke);
+	if (isDesktopLocalRuntime()) {
+		if (invoke) return createDesktopSessionReadAdapter(invoke);
+		return createUnavailableDesktopSessionReadAdapter();
 	}
 	return createWebSessionReadAdapter({
 		baseUrl: getBaseUrl(),
 		fetchImpl: fetch,
 		getAuthHeader,
 	});
+}
+
+function desktopHttpApiUnavailable(path: string): ApiError {
+	return new ApiError(
+		501,
+		JSON.stringify({
+			code: 'desktop_http_api_unavailable',
+			message:
+				'HTTP API is unavailable in desktop local runtime. Set OPENSESSION_API_URL to call a remote server.',
+			details: { path },
+		}),
+	);
+}
+
+function assertDesktopHttpApiAvailable(path: string): void {
+	if (isDesktopLocalRuntime()) {
+		throw desktopHttpApiUnavailable(path);
+	}
 }
 
 function getSessionReadCore() {
@@ -220,6 +247,7 @@ export class PreviewApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+	assertDesktopHttpApiAvailable(path);
 	const url = `${getBaseUrl()}${path}`;
 	const method = (options.method ?? 'GET').toUpperCase();
 	const needsCsrf = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
@@ -355,6 +383,52 @@ export async function detectSummaryProvider(): Promise<DesktopSummaryProviderDet
 	}
 }
 
+export async function vectorPreflight(): Promise<DesktopVectorPreflightResponse> {
+	try {
+		return await getSessionReadCore().vectorPreflight();
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function vectorInstallModel(
+	model: string,
+): Promise<DesktopVectorInstallStatusResponse> {
+	try {
+		return await getSessionReadCore().vectorInstallModel(model);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function vectorIndexRebuild(): Promise<DesktopVectorIndexStatusResponse> {
+	try {
+		return await getSessionReadCore().vectorIndexRebuild();
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function vectorIndexStatus(): Promise<DesktopVectorIndexStatusResponse> {
+	try {
+		return await getSessionReadCore().vectorIndexStatus();
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function searchSessionsVector(
+	query: string,
+	cursor?: string | null,
+	limit?: number,
+): Promise<DesktopVectorSearchResponse> {
+	try {
+		return await getSessionReadCore().searchSessionsVector(query, cursor, limit);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
 export async function getLocalReviewBundle(reviewId: string): Promise<LocalReviewBundle> {
 	return request<LocalReviewBundle>(`/api/review/local/${encodeURIComponent(reviewId)}`);
 }
@@ -404,6 +478,7 @@ export async function authRegister(
 	password: string,
 	nickname: string,
 ): Promise<AuthTokenResponse> {
+	assertDesktopHttpApiAvailable('/api/auth/register');
 	const url = `${getBaseUrl()}/api/auth/register`;
 	const res = await fetch(url, {
 		method: 'POST',
@@ -419,6 +494,7 @@ export async function authRegister(
 }
 
 export async function authLogin(email: string, password: string): Promise<AuthTokenResponse> {
+	assertDesktopHttpApiAvailable('/api/auth/login');
 	const url = `${getBaseUrl()}/api/auth/login`;
 	const res = await fetch(url, {
 		method: 'POST',
@@ -434,6 +510,7 @@ export async function authLogin(email: string, password: string): Promise<AuthTo
 }
 
 async function tryRefreshToken(): Promise<boolean> {
+	if (isDesktopLocalRuntime()) return false;
 	try {
 		const url = `${getBaseUrl()}/api/auth/refresh`;
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -495,6 +572,7 @@ export async function isParsePreviewApiAvailable(): Promise<boolean> {
 }
 
 async function postParsePreview(req: ParsePreviewRequest): Promise<ParsePreviewResponse> {
+	assertDesktopHttpApiAvailable('/api/parse/preview');
 	const url = `${getBaseUrl()}/api/parse/preview`;
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	const auth = await getAuthHeader();
@@ -599,6 +677,7 @@ export function getParsePreviewError(error: unknown): ParsePreviewErrorResponse 
 }
 
 export function getOAuthUrl(provider: string): string {
+	if (isDesktopLocalRuntime()) return '#';
 	return `${getBaseUrl()}/api/auth/oauth/${encodeURIComponent(provider)}`;
 }
 

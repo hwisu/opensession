@@ -200,7 +200,7 @@ fn run_build(args: HandoffBuildArgs) -> Result<()> {
         summary_meta: Some(HandoffSummaryMeta {
             session_default_view: enum_label(&runtime.daemon.session_default_view),
             summary_source_mode: enum_label(&runtime.summary.source_mode),
-            summary_provider: enum_label(&runtime.summary.provider),
+            summary_provider: enum_label(&runtime.summary.provider.id),
         }),
         validation_reports: reports
             .iter()

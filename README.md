@@ -103,9 +103,38 @@ npm install
 npm run dev
 ```
 
-This starts both `opensession-server` and the Tauri desktop window.
+This starts the Tauri desktop window with the local desktop runtime.
+It does not require `opensession-server`.
 
 Desktop release is manual via GitHub Actions `Release` workflow; it now publishes crates and uploads macOS desktop artifacts on the same version tag.
+
+## Desktop Runtime Summary Settings (v3)
+
+Desktop local runtime uses typed runtime settings:
+
+- `summary.provider.id|endpoint|model`
+- `summary.prompt.template`
+- `summary.response.style|shape`
+- `summary.storage.trigger|backend`
+- `summary.source_mode`
+- `vector_search.enabled|provider|model|endpoint|granularity|chunk_size_lines|chunk_overlap_lines|top_k_chunks|top_k_sessions`
+
+Desktop policy:
+
+- Account/auth UI is hidden when runtime capabilities report `auth_enabled=false`.
+- Source mode is locked to `session_only` in desktop local runtime.
+- `session_or_git_changes` remains for non-desktop paths (for example CI/CLI runtime).
+- Default storage backend is `hidden_ref` (Git-native summary ledger).
+- Even with `hidden_ref`, searchable list metadata and vector-index metadata remain indexed in local SQLite (`local.db`) for fast filter/search.
+- Response preview in settings is deterministic local rendering (no LLM/network call).
+
+Desktop search options:
+
+- Keyword search: regular query text
+- Semantic vector search uses event/line chunk indexing (not session-level single-string embedding).
+- Vector search is disabled by default until the embedding model is explicitly installed from Settings.
+- Default embedding model is `bge-m3` on local Ollama (`http://127.0.0.1:11434`).
+- Settings expose install/indexing status (`NotInstalled/Installing/Ready/Failed`, `Idle/Running/Complete/Failed`) and manual `Rebuild index`.
 
 ## Quick Start
 

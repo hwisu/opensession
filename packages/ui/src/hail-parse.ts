@@ -32,7 +32,9 @@ function normalizeContext(context: Session['context']): Session['context'] {
 		? context.related_session_ids.filter((id): id is string => typeof id === 'string')
 		: [];
 	const attributes =
-		context.attributes != null && typeof context.attributes === 'object' && !Array.isArray(context.attributes)
+		context.attributes != null &&
+		typeof context.attributes === 'object' &&
+		!Array.isArray(context.attributes)
 			? context.attributes
 			: {};
 
@@ -60,7 +62,10 @@ function withDefaultStats(events: Session['events']): Session['stats'] {
 	};
 }
 
-function normalizeStats(events: Session['events'], stats: Session['stats'] | null | undefined): Session['stats'] {
+function normalizeStats(
+	events: Session['events'],
+	stats: Session['stats'] | null | undefined,
+): Session['stats'] {
 	const defaults = withDefaultStats(events);
 	if (!stats) return defaults;
 	return {

@@ -7,6 +7,10 @@ import type {
 	DesktopHandoffBuildResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopVectorIndexStatusResponse,
+	DesktopVectorInstallStatusResponse,
+	DesktopVectorPreflightResponse,
+	DesktopVectorSearchResponse,
 	DesktopSessionSummaryResponse,
 	DesktopSessionListQuery,
 	DesktopSummaryProviderDetectResponse,
@@ -23,11 +27,12 @@ export type SessionListParams = {
 	per_page?: number;
 	sort?: string;
 	time_range?: string;
+	force_refresh?: boolean;
 };
 
 export type DesktopInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
-export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v1';
+export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v3';
 
 type ErrorDetails = Record<string, unknown> | null;
 
@@ -55,6 +60,15 @@ export interface SessionReadAdapter {
 		request: DesktopRuntimeSettingsUpdateRequest,
 	): Promise<DesktopRuntimeSettingsResponse>;
 	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
+	vectorPreflight(): Promise<DesktopVectorPreflightResponse>;
+	vectorInstallModel(model: string): Promise<DesktopVectorInstallStatusResponse>;
+	vectorIndexRebuild(): Promise<DesktopVectorIndexStatusResponse>;
+	vectorIndexStatus(): Promise<DesktopVectorIndexStatusResponse>;
+	searchSessionsVector(
+		query: string,
+		cursor?: string | null,
+		limit?: number,
+	): Promise<DesktopVectorSearchResponse>;
 	getCapabilities(): Promise<CapabilitiesResponse>;
 	getAuthProviders(): Promise<AuthProvidersResponse>;
 	getContractVersion(): Promise<string>;
@@ -101,6 +115,18 @@ function serializeErrorBody(payload: {
 		message: payload.message,
 		details: payload.details ?? null,
 	});
+}
+
+function desktopBridgeUnavailableError(): SessionAdapterError {
+	return new SessionAdapterError(
+		'desktop_bridge_unavailable',
+		501,
+		serializeErrorBody({
+			code: 'desktop_bridge_unavailable',
+			message:
+				'Desktop IPC bridge is unavailable. Update or restart the desktop app, or set an explicit API URL override.',
+		}),
+	);
 }
 
 function normalizeSessionAdapterErrorPayload(
@@ -153,7 +179,7 @@ export function createWebSessionReadAdapter(args: {
 }): SessionReadAdapter {
 	const { baseUrl, fetchImpl, getAuthHeader } = args;
 
-	async function requestJson<T>(path: string): Promise<T> {
+	async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
 		const headers: Record<string, string> = {};
 		const auth = await getAuthHeader();
 		if (auth) headers.Authorization = auth;
@@ -161,6 +187,7 @@ export function createWebSessionReadAdapter(args: {
 			method: 'GET',
 			headers,
 			credentials: 'include',
+			...init,
 		});
 		if (!res.ok) {
 			const body = await res.text();
@@ -187,7 +214,11 @@ export function createWebSessionReadAdapter(args: {
 
 	return {
 		listSessions(params) {
-			return requestJson<SessionListResponse>(`/api/sessions${buildQuery(params)}`);
+			const safeParams = { ...(params ?? {}) };
+			delete safeParams.force_refresh;
+			return requestJson<SessionListResponse>(`/api/sessions${buildQuery(safeParams)}`, {
+				cache: params?.force_refresh ? 'no-store' : undefined,
+			});
 		},
 		async listRepos() {
 			const response = await requestJson<SessionRepoListResponse>('/api/sessions/repos');
@@ -256,6 +287,56 @@ export function createWebSessionReadAdapter(args: {
 				serializeErrorBody({
 					code: 'desktop_runtime_settings_unsupported',
 					message: 'Provider detection is available only in desktop runtime.',
+				}),
+			);
+		},
+		async vectorPreflight() {
+			throw new SessionAdapterError(
+				'desktop_vector_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_vector_unsupported',
+					message: 'Vector search controls are available only in desktop runtime.',
+				}),
+			);
+		},
+		async vectorInstallModel() {
+			throw new SessionAdapterError(
+				'desktop_vector_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_vector_unsupported',
+					message: 'Vector model install is available only in desktop runtime.',
+				}),
+			);
+		},
+		async vectorIndexRebuild() {
+			throw new SessionAdapterError(
+				'desktop_vector_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_vector_unsupported',
+					message: 'Vector index rebuild is available only in desktop runtime.',
+				}),
+			);
+		},
+		async vectorIndexStatus() {
+			throw new SessionAdapterError(
+				'desktop_vector_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_vector_unsupported',
+					message: 'Vector index status is available only in desktop runtime.',
+				}),
+			);
+		},
+		async searchSessionsVector() {
+			throw new SessionAdapterError(
+				'desktop_vector_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_vector_unsupported',
+					message: 'Desktop vector search is available only in desktop runtime.',
 				}),
 			);
 		},
@@ -385,6 +466,33 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 				'desktop_detect_summary_provider',
 			);
 		},
+		async vectorPreflight() {
+			return invokeAfterContractCheck<DesktopVectorPreflightResponse>(
+				'desktop_vector_preflight',
+			);
+		},
+		async vectorInstallModel(model) {
+			return invokeAfterContractCheck<DesktopVectorInstallStatusResponse>(
+				'desktop_vector_install_model',
+				{ model },
+			);
+		},
+		async vectorIndexRebuild() {
+			return invokeAfterContractCheck<DesktopVectorIndexStatusResponse>(
+				'desktop_vector_index_rebuild',
+			);
+		},
+		async vectorIndexStatus() {
+			return invokeAfterContractCheck<DesktopVectorIndexStatusResponse>(
+				'desktop_vector_index_status',
+			);
+		},
+		async searchSessionsVector(query, cursor, limit) {
+			return invokeAfterContractCheck<DesktopVectorSearchResponse>(
+				'desktop_search_sessions_vector',
+				{ query, cursor, limit },
+			);
+		},
 		async getCapabilities() {
 			return invokeAfterContractCheck<CapabilitiesResponse>('desktop_get_capabilities');
 		},
@@ -393,6 +501,70 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 		},
 		async getContractVersion() {
 			return getDesktopContractVersion();
+		},
+	};
+}
+
+export function createUnavailableDesktopSessionReadAdapter(): SessionReadAdapter {
+	return {
+		async listSessions() {
+			throw desktopBridgeUnavailableError();
+		},
+		async listRepos() {
+			throw desktopBridgeUnavailableError();
+		},
+		async getSessionDetail() {
+			throw desktopBridgeUnavailableError();
+		},
+		async getSessionRaw() {
+			throw desktopBridgeUnavailableError();
+		},
+		async getSessionSummary() {
+			throw desktopBridgeUnavailableError();
+		},
+		async regenerateSessionSummary() {
+			throw desktopBridgeUnavailableError();
+		},
+		async buildHandoff() {
+			throw desktopBridgeUnavailableError();
+		},
+		async getRuntimeSettings() {
+			throw desktopBridgeUnavailableError();
+		},
+		async updateRuntimeSettings() {
+			throw desktopBridgeUnavailableError();
+		},
+		async detectSummaryProvider() {
+			throw desktopBridgeUnavailableError();
+		},
+		async vectorPreflight() {
+			throw desktopBridgeUnavailableError();
+		},
+		async vectorInstallModel() {
+			throw desktopBridgeUnavailableError();
+		},
+		async vectorIndexRebuild() {
+			throw desktopBridgeUnavailableError();
+		},
+		async vectorIndexStatus() {
+			throw desktopBridgeUnavailableError();
+		},
+		async searchSessionsVector() {
+			throw desktopBridgeUnavailableError();
+		},
+		async getCapabilities() {
+			return {
+				auth_enabled: false,
+				parse_preview_enabled: false,
+				register_targets: [],
+				share_modes: [],
+			};
+		},
+		async getAuthProviders() {
+			return { email_password: false, oauth: [] };
+		},
+		async getContractVersion() {
+			return DESKTOP_CONTRACT_VERSION;
 		},
 	};
 }

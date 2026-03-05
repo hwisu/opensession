@@ -1,7 +1,9 @@
 use std::path::Path;
+use std::process::Command;
 
 use gix::object::tree::EntryKind;
 use gix::ObjectId;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info};
 
@@ -32,6 +34,36 @@ pub struct StoredSessionRecord {
     pub commit_id: String,
     pub hail_path: String,
     pub meta_path: String,
+}
+
+/// Result of storing a semantic summary at an explicit ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSummaryRecord {
+    pub ref_name: String,
+    pub commit_id: String,
+    pub summary_path: String,
+    pub meta_path: String,
+}
+
+/// Session semantic summary payload persisted in hidden refs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionSummaryLedgerRecord {
+    pub session_id: String,
+    pub generated_at: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub source_kind: String,
+    pub generation_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_fingerprint: Option<String>,
+    pub summary: serde_json::Value,
+    #[serde(default)]
+    pub source_details: serde_json::Value,
+    #[serde(default)]
+    pub diff_tree: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl NativeGitStorage {
@@ -75,6 +107,15 @@ impl NativeGitStorage {
             "meta_path": meta_path,
             "stored_at": chrono::Utc::now().to_rfc3339(),
         })
+    }
+
+    fn summary_prefix(session_id: &str) -> String {
+        let prefix = if session_id.len() >= 2 {
+            &session_id[..2]
+        } else {
+            session_id
+        };
+        format!("v1/summaries/{prefix}/{session_id}")
     }
 }
 
@@ -204,6 +245,141 @@ impl NativeGitStorage {
         })
     }
 
+    /// Store a session semantic summary at an explicit ref.
+    ///
+    /// Paths:
+    /// - `v1/summaries/<prefix>/<session_id>.summary.json`
+    /// - `v1/summaries/<prefix>/<session_id>.summary.meta.json`
+    pub fn store_summary_at_ref(
+        &self,
+        repo_path: &Path,
+        ref_name: &str,
+        record: &SessionSummaryLedgerRecord,
+    ) -> Result<StoredSummaryRecord> {
+        let repo = ops::open_repo(repo_path)?;
+        let hash_kind = repo.object_hash();
+        let prefix = Self::summary_prefix(&record.session_id);
+        let summary_path = format!("{prefix}.summary.json");
+        let meta_path = format!("{prefix}.summary.meta.json");
+
+        let summary_bytes = serde_json::to_vec(&record.summary)?;
+        let summary_blob = repo.write_blob(&summary_bytes).map_err(gix_err)?.detach();
+
+        let meta_payload = json!({
+            "session_id": record.session_id,
+            "generated_at": record.generated_at,
+            "provider": record.provider,
+            "model": record.model,
+            "source_kind": record.source_kind,
+            "generation_kind": record.generation_kind,
+            "prompt_fingerprint": record.prompt_fingerprint,
+            "source_details": record.source_details,
+            "diff_tree": record.diff_tree,
+            "error": record.error,
+            "updated_at": chrono::Utc::now().to_rfc3339(),
+        });
+        let meta_bytes = serde_json::to_vec(&meta_payload)?;
+        let meta_blob = repo.write_blob(&meta_bytes).map_err(gix_err)?.detach();
+
+        let tip = ops::find_ref_tip(&repo, ref_name)?;
+        let base_tree_id = match &tip {
+            Some(commit_id) => ops::commit_tree_id(&repo, commit_id.detach())?,
+            None => ObjectId::empty_tree(hash_kind),
+        };
+        let mut editor = repo.edit_tree(base_tree_id).map_err(gix_err)?;
+        editor
+            .upsert(&summary_path, EntryKind::Blob, summary_blob)
+            .map_err(gix_err)?;
+        editor
+            .upsert(&meta_path, EntryKind::Blob, meta_blob)
+            .map_err(gix_err)?;
+        let new_tree_id = editor.write().map_err(gix_err)?.detach();
+        let parent = tip.map(|id| id.detach());
+        let message = format!("summary: {}", record.session_id);
+        let commit_id = ops::create_commit(&repo, ref_name, new_tree_id, parent, &message)?;
+
+        Ok(StoredSummaryRecord {
+            ref_name: ref_name.to_string(),
+            commit_id: commit_id.to_string(),
+            summary_path,
+            meta_path,
+        })
+    }
+
+    /// Load a session semantic summary from an explicit ref.
+    pub fn load_summary_at_ref(
+        &self,
+        repo_path: &Path,
+        ref_name: &str,
+        session_id: &str,
+    ) -> Result<Option<SessionSummaryLedgerRecord>> {
+        let prefix = Self::summary_prefix(session_id);
+        let summary_path = format!("{prefix}.summary.json");
+        let meta_path = format!("{prefix}.summary.meta.json");
+
+        let summary_raw = match read_path_from_ref(repo_path, ref_name, &summary_path)? {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        let meta_raw = match read_path_from_ref(repo_path, ref_name, &meta_path)? {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+
+        let summary_value: serde_json::Value = serde_json::from_slice(&summary_raw)?;
+        let meta_value: serde_json::Value = serde_json::from_slice(&meta_raw)?;
+
+        Ok(Some(SessionSummaryLedgerRecord {
+            session_id: meta_value
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(session_id)
+                .to_string(),
+            generated_at: meta_value
+                .get("generated_at")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            provider: meta_value
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            model: meta_value
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            source_kind: meta_value
+                .get("source_kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            generation_kind: meta_value
+                .get("generation_kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            prompt_fingerprint: meta_value
+                .get("prompt_fingerprint")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            summary: summary_value,
+            source_details: meta_value
+                .get("source_details")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(Default::default())),
+            diff_tree: meta_value
+                .get("diff_tree")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            error: meta_value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        }))
+    }
+
     /// Prune expired sessions from a specific ledger ref by age (days).
     pub fn prune_by_age_at_ref(
         &self,
@@ -303,12 +479,37 @@ impl NativeGitStorage {
     }
 }
 
+fn read_path_from_ref(repo_path: &Path, ref_name: &str, rel_path: &str) -> Result<Option<Vec<u8>>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("show")
+        .arg(format!("{ref_name}:{rel_path}"))
+        .output()?;
+    if output.status.success() {
+        return Ok(Some(output.stdout));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    if stderr.contains("does not exist")
+        || stderr.contains("not in")
+        || stderr.contains("unknown revision")
+        || stderr.contains("invalid object name")
+    {
+        return Ok(None);
+    }
+    Err(crate::error::GitStorageError::Other(format!(
+        "failed to read {rel_path} from {ref_name}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::GitStorageError;
     use crate::test_utils::{init_test_repo, run_git};
     use crate::{branch_ledger_ref, ops};
+    use serde_json::json;
 
     #[test]
     fn test_session_prefix() {
@@ -385,6 +586,61 @@ mod tests {
             serde_json::from_slice(&first_output.stdout).expect("valid index payload");
         assert_eq!(parsed["session_id"], "session-1");
         assert_eq!(parsed["hail_path"], "v1/se/session-1.hail.jsonl");
+    }
+
+    #[test]
+    fn test_store_and_load_summary_at_ref() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_test_repo(tmp.path());
+
+        let storage = NativeGitStorage;
+        let ref_name = "refs/opensession/summaries";
+        let record = SessionSummaryLedgerRecord {
+            session_id: "session-9".to_string(),
+            generated_at: "2026-03-05T00:00:00Z".to_string(),
+            provider: "codex_exec".to_string(),
+            model: Some("gpt-5".to_string()),
+            source_kind: "session_signals".to_string(),
+            generation_kind: "provider".to_string(),
+            prompt_fingerprint: Some("abc123".to_string()),
+            summary: json!({ "changes": "updated", "auth_security": "none detected", "layer_file_changes": [] }),
+            source_details: json!({ "repo_root": "/tmp/repo" }),
+            diff_tree: vec![json!({"layer":"application","files":[]})],
+            error: None,
+        };
+
+        let stored = storage
+            .store_summary_at_ref(tmp.path(), ref_name, &record)
+            .expect("store summary");
+        assert_eq!(
+            stored.summary_path,
+            "v1/summaries/se/session-9.summary.json"
+        );
+        assert_eq!(
+            stored.meta_path,
+            "v1/summaries/se/session-9.summary.meta.json"
+        );
+
+        let loaded = storage
+            .load_summary_at_ref(tmp.path(), ref_name, "session-9")
+            .expect("load summary")
+            .expect("summary should exist");
+        assert_eq!(loaded.session_id, "session-9");
+        assert_eq!(loaded.provider, "codex_exec");
+        assert_eq!(loaded.model.as_deref(), Some("gpt-5"));
+        assert_eq!(loaded.summary["changes"], "updated");
+    }
+
+    #[test]
+    fn test_load_summary_missing_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_test_repo(tmp.path());
+        let storage = NativeGitStorage;
+
+        let loaded = storage
+            .load_summary_at_ref(tmp.path(), "refs/opensession/summaries", "missing-session")
+            .expect("load summary");
+        assert!(loaded.is_none());
     }
 
     #[test]

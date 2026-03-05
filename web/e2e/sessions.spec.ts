@@ -23,6 +23,49 @@ test.describe('Sessions', () => {
 		await expect(page.getByText(fixture.title)).toBeVisible({ timeout: 10000 });
 	});
 
+	test('session list force refresh bypasses warm cache and fetches latest feed', async ({
+		page,
+	}) => {
+		const first = createSessionFixture({
+			title: `PW Refresh First ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		const second = createSessionFixture({
+			title: `PW Refresh Second ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		let listCalls = 0;
+		const sessionsListPattern = /\/api\/sessions(?:\?.*)?$/;
+		const sessionsReposPattern = /\/api\/sessions\/repos(?:\?.*)?$/;
+
+		await page.route(sessionsReposPattern, async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ repos: [] }),
+			});
+		});
+		await page.route(sessionsListPattern, async (route) => {
+			listCalls += 1;
+			const sessions = listCalls === 1 ? [first.summary] : [second.summary];
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					sessions,
+					total: sessions.length,
+					page: 1,
+					per_page: 20,
+				}),
+			});
+		});
+
+		await page.goto('/sessions');
+		await expect(page.getByText(first.title)).toBeVisible({ timeout: 10000 });
+		await page.getByTestId('session-force-refresh').click();
+		await expect(page.getByText(second.title)).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText(first.title)).toHaveCount(0);
+		expect(listCalls).toBeGreaterThanOrEqual(2);
+	});
+
 	test('session list repo selector filters by git_repo_name', async ({ page }) => {
 		const repoA = createSessionFixture({
 			title: `PW Repo A ${crypto.randomUUID().slice(0, 8)}`,
@@ -34,7 +77,16 @@ test.describe('Sessions', () => {
 		repoB.summary.git_repo_name = 'org/repo-b';
 
 		let requestedRepo: string | null = null;
-		await page.route('**/api/sessions**', async (route) => {
+		const sessionsListPattern = /\/api\/sessions(?:\?.*)?$/;
+		const sessionsReposPattern = /\/api\/sessions\/repos(?:\?.*)?$/;
+		await page.route(sessionsReposPattern, async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ repos: ['org/repo-a', 'org/repo-b'] }),
+			});
+		});
+		await page.route(sessionsListPattern, async (route) => {
 			const url = new URL(route.request().url());
 			requestedRepo = url.searchParams.get('git_repo_name');
 			const selected = requestedRepo;
@@ -80,7 +132,16 @@ test.describe('Sessions', () => {
 		repoB.summary.git_repo_name = 'org/repo-b';
 
 		let requestedRepo: string | null = null;
-		await page.route('**/api/sessions**', async (route) => {
+		const sessionsListPattern = /\/api\/sessions(?:\?.*)?$/;
+		const sessionsReposPattern = /\/api\/sessions\/repos(?:\?.*)?$/;
+		await page.route(sessionsReposPattern, async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ repos: ['org/repo-a', 'org/repo-b'] }),
+			});
+		});
+		await page.route(sessionsListPattern, async (route) => {
 			const url = new URL(route.request().url());
 			requestedRepo = url.searchParams.get('git_repo_name');
 			const sessions = requestedRepo === 'org/repo-a' ? [repoA.summary] : [repoA.summary, repoB.summary];
@@ -453,7 +514,7 @@ test.describe('Sessions', () => {
 							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
 							switch (cmd) {
 								case 'desktop_get_contract_version':
-									return { version: 'desktop-ipc-v1' };
+									return { version: 'desktop-ipc-v3' };
 								case 'desktop_get_capabilities':
 									return {
 										auth_enabled: false,
@@ -469,6 +530,8 @@ test.describe('Sessions', () => {
 									return {
 										artifact_uri: 'os://artifact/e2e-handoff',
 										pinned_alias: 'latest',
+										download_file_name: 'handoff-e2e-handoff.jsonl',
+										download_content: '{"source_session_id":"s1"}\n',
 									};
 								default:
 									throw new Error(`unexpected invoke command: ${cmd}`);
@@ -484,6 +547,7 @@ test.describe('Sessions', () => {
 		await page.getByTestId('session-handoff-build').click();
 		await expect(page.getByTestId('session-handoff-uri')).toHaveText('os://artifact/e2e-handoff');
 		await expect(page.getByTestId('session-handoff-feedback')).toContainText('pinned as latest');
+		await expect(page.getByTestId('session-handoff-download')).toBeVisible();
 		const invokeCalls = await page.evaluate(() => {
 			return (window as { __invokeCalls?: Array<{ cmd: string }> }).__invokeCalls ?? [];
 		});
@@ -660,13 +724,11 @@ test.describe('Sessions', () => {
 			title: `PW Light Theme ${crypto.randomUUID().slice(0, 8)}`,
 		});
 		await mockSessionApis(page, fixture);
-		await page.addInitScript(() => {
-			localStorage.setItem('theme', 'light');
-			document.documentElement.classList.add('light');
-		});
 		await page.goto(`/session/${fixture.id}`);
+		await page.getByRole('button', { name: 'Switch to light mode' }).click();
 
 		const hero = page.getByTestId('session-detail-hero');
+		await expect(hero).toBeVisible({ timeout: 10000 });
 		const heroBackground = await hero.evaluate((el) => getComputedStyle(el).backgroundImage);
 		expect(heroBackground).not.toContain('24, 33, 50');
 		expect(heroBackground).not.toContain('15, 20, 31');

@@ -7,7 +7,11 @@ import {
 	getSessionSemanticSummary,
 	regenerateSessionSemanticSummary,
 } from '../api';
-import { buildNativeFilterOptions, toggleAllBackedFilter, type SessionViewMode } from '../session-filters';
+import {
+	buildNativeFilterOptions,
+	toggleAllBackedFilter,
+	type SessionViewMode,
+} from '../session-filters';
 import type { DesktopSessionSummaryResponse, Session, SessionDetail } from '../types';
 import SessionRenderPage from './SessionRenderPage.svelte';
 

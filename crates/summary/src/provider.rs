@@ -25,7 +25,7 @@ struct SummaryNormalizationLimits {
 }
 
 fn summary_limits(settings: &SummarySettings) -> SummaryNormalizationLimits {
-    let (summary_chars, auth_security_chars, layer_summary_chars) = match settings.response_style {
+    let (summary_chars, auth_security_chars, layer_summary_chars) = match settings.response.style {
         SummaryResponseStyle::Compact => (280, 160, 120),
         SummaryResponseStyle::Standard => (
             DEFAULT_SUMMARY_CHAR_LIMIT,
@@ -34,7 +34,7 @@ fn summary_limits(settings: &SummarySettings) -> SummaryNormalizationLimits {
         ),
         SummaryResponseStyle::Detailed => (720, 420, 320),
     };
-    let (max_layer_items, max_files_per_layer) = match settings.output_shape {
+    let (max_layer_items, max_files_per_layer) = match settings.response.shape {
         SummaryOutputShape::Layered => (DEFAULT_MAX_LAYER_ITEMS, DEFAULT_MAX_FILES_PER_LAYER),
         SummaryOutputShape::FileList => (16, 20),
         SummaryOutputShape::SecurityFirst => (10, 12),
@@ -224,7 +224,7 @@ pub async fn generate_summary(
         return Err("local summary provider is not configured".to_string());
     }
 
-    match settings.provider {
+    match settings.provider.id {
         SummaryProvider::Disabled => Err("local summary provider is disabled".to_string()),
         SummaryProvider::Ollama => generate_with_ollama(settings, prompt).await,
         SummaryProvider::CodexExec => generate_with_codex_exec(settings, prompt).await,
@@ -236,13 +236,13 @@ async fn generate_with_ollama(
     settings: &SummarySettings,
     prompt: &str,
 ) -> Result<SemanticSummary, String> {
-    let endpoint = if settings.endpoint.trim().is_empty() {
+    let endpoint = if settings.provider.endpoint.trim().is_empty() {
         DEFAULT_OLLAMA_ENDPOINT
     } else {
-        settings.endpoint.trim()
+        settings.provider.endpoint.trim()
     };
     let url = format!("{}/api/generate", endpoint.trim_end_matches('/'));
-    let model = settings.model.trim();
+    let model = settings.provider.model.trim();
     if model.is_empty() {
         return Err("ollama model is empty".to_string());
     }
@@ -301,7 +301,7 @@ async fn generate_with_codex_exec(
         .arg("read-only")
         .arg("--output-last-message")
         .arg(output_path.to_string_lossy().to_string());
-    let model = settings.model.trim();
+    let model = settings.provider.model.trim();
     if !model.is_empty() {
         command.arg("--model").arg(model);
     }
@@ -321,7 +321,7 @@ async fn generate_with_claude_cli(
     settings: &SummarySettings,
     prompt: &str,
 ) -> Result<SemanticSummary, String> {
-    let model = settings.model.trim().to_string();
+    let model = settings.provider.model.trim().to_string();
     let timeout = Duration::from_secs(60);
 
     let mut command = Command::new("claude");
@@ -587,7 +587,7 @@ qwen2.5-coder:7b          2b0496514337    4.7 GB    1 day ago
     #[test]
     fn parse_semantic_summary_fallback_applies_compact_style_limits() {
         let mut settings = SummarySettings::default();
-        settings.response_style = SummaryResponseStyle::Compact;
+        settings.response.style = SummaryResponseStyle::Compact;
         let parsed = parse_semantic_summary_or_fallback(&"x".repeat(400), &settings);
         assert!(parsed.changes.chars().count() <= 280);
     }
@@ -595,7 +595,7 @@ qwen2.5-coder:7b          2b0496514337    4.7 GB    1 day ago
     #[test]
     fn parse_semantic_summary_fallback_applies_file_list_shape_limits() {
         let mut settings = SummarySettings::default();
-        settings.output_shape = SummaryOutputShape::FileList;
+        settings.response.shape = SummaryOutputShape::FileList;
         let payload = r#"{
   "changes":"summary",
   "auth_security":"none detected",

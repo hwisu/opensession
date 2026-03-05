@@ -23,6 +23,10 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
         "local_0002_session_summaries",
         include_str!("../../migrations/local_0002_session_summaries.sql"),
     ),
+    (
+        "local_0003_vector_index",
+        include_str!("../../migrations/local_0003_vector_index.sql"),
+    ),
 ];
 
 #[cfg(test)]
@@ -33,9 +37,10 @@ mod tests {
     fn schema_migration_set_is_minimal() {
         assert_eq!(MIGRATIONS.len(), 1);
         assert_eq!(MIGRATIONS[0].0, "0001_schema");
-        assert_eq!(LOCAL_MIGRATIONS.len(), 2);
+        assert_eq!(LOCAL_MIGRATIONS.len(), 3);
         assert_eq!(LOCAL_MIGRATIONS[0].0, "local_0001_schema");
         assert_eq!(LOCAL_MIGRATIONS[1].0, "local_0002_session_summaries");
+        assert_eq!(LOCAL_MIGRATIONS[2].0, "local_0003_vector_index");
     }
 
     #[test]

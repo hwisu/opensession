@@ -367,7 +367,7 @@ pub struct SessionListResponse {
 }
 
 /// Canonical desktop IPC contract version shared between Rust and TS clients.
-pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v1";
+pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v3";
 
 /// Query parameters for `GET /api/sessions` — pagination, filtering, sorting.
 #[derive(Debug, Deserialize)]
@@ -426,6 +426,10 @@ pub struct DesktopHandoffBuildResponse {
     pub artifact_uri: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_content: Option<String>,
 }
 
 /// Desktop bridge contract/version handshake response.
@@ -442,8 +446,9 @@ pub struct DesktopContractVersionResponse {
 #[cfg_attr(feature = "ts", ts(export))]
 pub struct DesktopRuntimeSettingsResponse {
     pub session_default_view: String,
-    #[cfg_attr(feature = "ts", ts(type = "any"))]
-    pub summary: serde_json::Value,
+    pub summary: DesktopRuntimeSummarySettings,
+    pub vector_search: DesktopRuntimeVectorSearchSettings,
+    pub ui_constraints: DesktopRuntimeSummaryUiConstraints,
 }
 
 /// Desktop runtime settings update request.
@@ -454,8 +459,9 @@ pub struct DesktopRuntimeSettingsUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_default_view: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "any"))]
-    pub summary: Option<serde_json::Value>,
+    pub summary: Option<DesktopRuntimeSummarySettingsUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_search: Option<DesktopRuntimeVectorSearchSettingsUpdate>,
 }
 
 /// Local summary provider detection result for desktop setup/settings.
@@ -465,11 +471,311 @@ pub struct DesktopRuntimeSettingsUpdateRequest {
 pub struct DesktopSummaryProviderDetectResponse {
     pub detected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub provider: Option<DesktopSummaryProviderId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<DesktopSummaryProviderTransport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryProviderId {
+    Disabled,
+    Ollama,
+    CodexExec,
+    ClaudeCli,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryProviderTransport {
+    None,
+    Cli,
+    Http,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummarySourceMode {
+    SessionOnly,
+    SessionOrGitChanges,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryResponseStyle {
+    Compact,
+    Standard,
+    Detailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryOutputShape {
+    Layered,
+    FileList,
+    SecurityFirst,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryTriggerMode {
+    Manual,
+    OnSessionSave,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryStorageBackend {
+    HiddenRef,
+    LocalDb,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryProviderSettings {
+    pub id: DesktopSummaryProviderId,
+    pub transport: DesktopSummaryProviderTransport,
+    pub endpoint: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryPromptSettings {
+    pub template: String,
+    pub default_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryResponseSettings {
+    pub style: DesktopSummaryResponseStyle,
+    pub shape: DesktopSummaryOutputShape,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryStorageSettings {
+    pub trigger: DesktopSummaryTriggerMode,
+    pub backend: DesktopSummaryStorageBackend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummarySettings {
+    pub provider: DesktopRuntimeSummaryProviderSettings,
+    pub prompt: DesktopRuntimeSummaryPromptSettings,
+    pub response: DesktopRuntimeSummaryResponseSettings,
+    pub storage: DesktopRuntimeSummaryStorageSettings,
+    pub source_mode: DesktopSummarySourceMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryProviderSettingsUpdate {
+    pub id: DesktopSummaryProviderId,
+    pub endpoint: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryPromptSettingsUpdate {
+    pub template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryResponseSettingsUpdate {
+    pub style: DesktopSummaryResponseStyle,
+    pub shape: DesktopSummaryOutputShape,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryStorageSettingsUpdate {
+    pub trigger: DesktopSummaryTriggerMode,
+    pub backend: DesktopSummaryStorageBackend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummarySettingsUpdate {
+    pub provider: DesktopRuntimeSummaryProviderSettingsUpdate,
+    pub prompt: DesktopRuntimeSummaryPromptSettingsUpdate,
+    pub response: DesktopRuntimeSummaryResponseSettingsUpdate,
+    pub storage: DesktopRuntimeSummaryStorageSettingsUpdate,
+    pub source_mode: DesktopSummarySourceMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryUiConstraints {
+    pub source_mode_locked: bool,
+    pub source_mode_locked_value: DesktopSummarySourceMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopVectorSearchProvider {
+    Ollama,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopVectorSearchGranularity {
+    EventLineChunk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopVectorInstallState {
+    NotInstalled,
+    Installing,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopVectorIndexState {
+    Idle,
+    Running,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeVectorSearchSettings {
+    pub enabled: bool,
+    pub provider: DesktopVectorSearchProvider,
+    pub model: String,
+    pub endpoint: String,
+    pub granularity: DesktopVectorSearchGranularity,
+    pub chunk_size_lines: u16,
+    pub chunk_overlap_lines: u16,
+    pub top_k_chunks: u16,
+    pub top_k_sessions: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeVectorSearchSettingsUpdate {
+    pub enabled: bool,
+    pub provider: DesktopVectorSearchProvider,
+    pub model: String,
+    pub endpoint: String,
+    pub granularity: DesktopVectorSearchGranularity,
+    pub chunk_size_lines: u16,
+    pub chunk_overlap_lines: u16,
+    pub top_k_chunks: u16,
+    pub top_k_sessions: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopVectorPreflightResponse {
+    pub provider: DesktopVectorSearchProvider,
+    pub endpoint: String,
+    pub model: String,
+    pub ollama_reachable: bool,
+    pub model_installed: bool,
+    pub install_state: DesktopVectorInstallState,
+    pub progress_pct: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopVectorInstallStatusResponse {
+    pub state: DesktopVectorInstallState,
+    pub model: String,
+    pub progress_pct: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopVectorIndexStatusResponse {
+    pub state: DesktopVectorIndexState,
+    pub processed_sessions: u32,
+    pub total_sessions: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopVectorSessionMatch {
+    pub session: SessionSummary,
+    pub score: f32,
+    pub chunk_id: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopVectorSearchResponse {
+    pub query: String,
+    #[serde(default)]
+    pub sessions: Vec<DesktopVectorSessionMatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub total_candidates: u32,
 }
 
 /// Session summary payload returned by desktop runtime.
@@ -1235,6 +1541,35 @@ mod tests {
             DesktopHandoffBuildRequest,
             DesktopHandoffBuildResponse,
             DesktopContractVersionResponse,
+            DesktopSummaryProviderId,
+            DesktopSummaryProviderTransport,
+            DesktopSummarySourceMode,
+            DesktopSummaryResponseStyle,
+            DesktopSummaryOutputShape,
+            DesktopSummaryTriggerMode,
+            DesktopSummaryStorageBackend,
+            DesktopRuntimeSummaryProviderSettings,
+            DesktopRuntimeSummaryPromptSettings,
+            DesktopRuntimeSummaryResponseSettings,
+            DesktopRuntimeSummaryStorageSettings,
+            DesktopRuntimeSummarySettings,
+            DesktopRuntimeSummaryProviderSettingsUpdate,
+            DesktopRuntimeSummaryPromptSettingsUpdate,
+            DesktopRuntimeSummaryResponseSettingsUpdate,
+            DesktopRuntimeSummaryStorageSettingsUpdate,
+            DesktopRuntimeSummarySettingsUpdate,
+            DesktopRuntimeSummaryUiConstraints,
+            DesktopVectorSearchProvider,
+            DesktopVectorSearchGranularity,
+            DesktopVectorInstallState,
+            DesktopVectorIndexState,
+            DesktopRuntimeVectorSearchSettings,
+            DesktopRuntimeVectorSearchSettingsUpdate,
+            DesktopVectorPreflightResponse,
+            DesktopVectorInstallStatusResponse,
+            DesktopVectorIndexStatusResponse,
+            DesktopVectorSessionMatch,
+            DesktopVectorSearchResponse,
             DesktopRuntimeSettingsResponse,
             DesktopRuntimeSettingsUpdateRequest,
             DesktopSummaryProviderDetectResponse,

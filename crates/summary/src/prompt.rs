@@ -7,6 +7,27 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 const MAX_PROMPT_CHARS: usize = 10_000;
+pub const DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2: &str = "Convert a real coding session into semantic compression.\n\
+Pipeline: session -> HAIL compact -> semantic summary.\n\
+Return JSON only (no markdown, no prose outside JSON):\n\
+{\n\
+  \"changes\": \"overall code change summary\",\n\
+  \"auth_security\": \"auth/security change summary or 'none detected'\",\n\
+  \"layer_file_changes\": [\n\
+    {\"layer\":\"presentation|application|domain|infrastructure|tests|docs|config\", \"summary\":\"layer change summary\", \"files\":[\"path\"]}\n\
+  ]\n\
+}\n\
+Rules:\n\
+- Use only facts from HAIL_COMPACT.\n\
+- Mention what was modified.\n\
+- If no auth/security-related change exists, set auth_security to \"none detected\".\n\
+- In layer_file_changes, include changed files grouped by architectural layer.\n\
+- Keep output compact and factual.\n\
+- Use the same language as the session signals when obvious.\n\
+{{SOURCE_RULE}}\n\
+{{STYLE_RULE}}\n\
+{{SHAPE_RULE}}\n\
+HAIL_COMPACT={{HAIL_COMPACT}}";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct HailCompactLayerRollup {
@@ -19,7 +40,18 @@ pub struct SummaryPromptConfig<'a> {
     pub response_style: SummaryResponseStyle,
     pub output_shape: SummaryOutputShape,
     pub source_mode: SummarySourceMode,
-    pub output_instruction: &'a str,
+    pub prompt_template: &'a str,
+}
+
+pub fn validate_summary_prompt_template(template: &str) -> Result<(), String> {
+    let trimmed = template.trim();
+    if trimmed.is_empty() {
+        return Err("template must not be empty".to_string());
+    }
+    if !trimmed.contains("{{HAIL_COMPACT}}") {
+        return Err("template must include {{HAIL_COMPACT}} placeholder".to_string());
+    }
+    Ok(())
 }
 
 pub fn collect_timeline_snippets(
@@ -356,37 +388,20 @@ pub fn build_summary_prompt(
             "- Input source mode: session_or_git_changes. If session signals are empty, use git change signals from HAIL_COMPACT."
         }
     };
-    let custom_instruction = compact_summary_snippet(config.output_instruction.trim(), 500);
-    let custom_rule = if custom_instruction.is_empty() {
-        String::new()
+    let prompt_template = if config.prompt_template.trim().is_empty() {
+        DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2
     } else {
-        format!("- User output instruction: {custom_instruction}\n")
+        config.prompt_template
     };
+    if validate_summary_prompt_template(prompt_template).is_err() {
+        return String::new();
+    }
 
-    let mut prompt = format!(
-        "Convert a real coding session into semantic compression.\n\
-Pipeline: session -> HAIL compact -> semantic summary.\n\
-Return JSON only (no markdown, no prose outside JSON):\n\
-{{\n\
-  \"changes\": \"overall code change summary\",\n\
-  \"auth_security\": \"auth/security change summary or 'none detected'\",\n\
-  \"layer_file_changes\": [\n\
-    {{\"layer\":\"presentation|application|domain|infrastructure|tests|docs|config\", \"summary\":\"layer change summary\", \"files\":[\"path\"]}}\n\
-  ]\n\
-}}\n\
-Rules:\n\
-- Use only facts from HAIL_COMPACT.\n\
-- Mention what was modified.\n\
-- If no auth/security-related change exists, set auth_security to \"none detected\".\n\
-- In layer_file_changes, include changed files grouped by architectural layer.\n\
-- Keep output compact and factual.\n\
-- Use the same language as the session signals when obvious.\n\
-{source_rule}\n\
-{style_rule}\n\
-{shape_rule}\n\
-{custom_rule}\n\
-HAIL_COMPACT={compact_json}"
-    );
+    let mut prompt = prompt_template
+        .replace("{{SOURCE_RULE}}", source_rule)
+        .replace("{{STYLE_RULE}}", style_rule)
+        .replace("{{SHAPE_RULE}}", shape_rule)
+        .replace("{{HAIL_COMPACT}}", &compact_json);
 
     if prompt.chars().count() > MAX_PROMPT_CHARS {
         prompt = prompt.chars().take(MAX_PROMPT_CHARS).collect();
@@ -449,7 +464,8 @@ fn collect_auth_security_signals(
 mod tests {
     use super::{
         build_summary_prompt, classify_arch_layer, collect_file_changes, collect_timeline_snippets,
-        contains_auth_security_keyword, count_diff_stats, SummaryPromptConfig,
+        contains_auth_security_keyword, count_diff_stats, validate_summary_prompt_template,
+        SummaryPromptConfig, DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2,
     };
     use crate::types::HailCompactFileChange;
     use chrono::Utc;
@@ -628,7 +644,7 @@ diff --git a/src/a.rs b/src/a.rs\n\
                 response_style: SummaryResponseStyle::Standard,
                 output_shape: SummaryOutputShape::Layered,
                 source_mode: SummarySourceMode::SessionOnly,
-                output_instruction: "",
+                prompt_template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2,
             },
         );
 
@@ -662,14 +678,13 @@ diff --git a/src/a.rs b/src/a.rs\n\
                 response_style: SummaryResponseStyle::Detailed,
                 output_shape: SummaryOutputShape::SecurityFirst,
                 source_mode: SummarySourceMode::SessionOrGitChanges,
-                output_instruction: "  focus on  risk and impact  ",
+                prompt_template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2,
             },
         );
 
         assert!(prompt.contains("- Response style: detailed."));
         assert!(prompt.contains("- Output shape: security_first."));
         assert!(prompt.contains("- Input source mode: session_or_git_changes."));
-        assert!(prompt.contains("User output instruction: focus on risk and impact"));
         assert!(prompt.contains("\"summary_source\":\"git_working_tree\""));
         assert!(prompt.contains("file:auth/login.rs"));
         assert!(prompt.contains("timeline:assistant: fixed oauth token validation"));
@@ -700,10 +715,16 @@ diff --git a/src/a.rs b/src/a.rs\n\
                 response_style: SummaryResponseStyle::Standard,
                 output_shape: SummaryOutputShape::Layered,
                 source_mode: SummarySourceMode::SessionOnly,
-                output_instruction: "",
+                prompt_template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2,
             },
         );
 
         assert_eq!(prompt.chars().count(), 10_000);
+    }
+
+    #[test]
+    fn validate_summary_prompt_template_requires_hail_placeholder() {
+        assert!(validate_summary_prompt_template("hello").is_err());
+        assert!(validate_summary_prompt_template("{{HAIL_COMPACT}}").is_ok());
     }
 }

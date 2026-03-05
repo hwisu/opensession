@@ -3,6 +3,10 @@ import type {
 	DesktopHandoffBuildResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopVectorIndexStatusResponse,
+	DesktopVectorInstallStatusResponse,
+	DesktopVectorPreflightResponse,
+	DesktopVectorSearchResponse,
 	DesktopSessionSummaryResponse,
 	DesktopSummaryProviderDetectResponse,
 	Session,
@@ -71,6 +75,15 @@ export interface SessionReadCore {
 		request: DesktopRuntimeSettingsUpdateRequest,
 	): Promise<DesktopRuntimeSettingsResponse>;
 	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
+	vectorPreflight(): Promise<DesktopVectorPreflightResponse>;
+	vectorInstallModel(model: string): Promise<DesktopVectorInstallStatusResponse>;
+	vectorIndexRebuild(): Promise<DesktopVectorIndexStatusResponse>;
+	vectorIndexStatus(): Promise<DesktopVectorIndexStatusResponse>;
+	searchSessionsVector(
+		query: string,
+		cursor?: string | null,
+		limit?: number,
+	): Promise<DesktopVectorSearchResponse>;
 	getContractVersion(): Promise<string>;
 }
 
@@ -105,7 +118,10 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 				throw new SessionReadCoreError(
 					'session_payload_parse_failed',
 					422,
-					JSON.stringify({ code: 'session_payload_parse_failed', message: `Failed to parse session payload: ${detail}` }),
+					JSON.stringify({
+						code: 'session_payload_parse_failed',
+						message: `Failed to parse session payload: ${detail}`,
+					}),
 				);
 			}
 		},
@@ -159,6 +175,45 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 		async detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse> {
 			try {
 				return await adapter.detectSummaryProvider();
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async vectorPreflight(): Promise<DesktopVectorPreflightResponse> {
+			try {
+				return await adapter.vectorPreflight();
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async vectorInstallModel(model: string): Promise<DesktopVectorInstallStatusResponse> {
+			try {
+				return await adapter.vectorInstallModel(model);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async vectorIndexRebuild(): Promise<DesktopVectorIndexStatusResponse> {
+			try {
+				return await adapter.vectorIndexRebuild();
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async vectorIndexStatus(): Promise<DesktopVectorIndexStatusResponse> {
+			try {
+				return await adapter.vectorIndexStatus();
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async searchSessionsVector(
+			query: string,
+			cursor?: string | null,
+			limit?: number,
+		): Promise<DesktopVectorSearchResponse> {
+			try {
+				return await adapter.searchSessionsVector(query, cursor, limit);
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

@@ -41,7 +41,7 @@ pub fn detect_local_summary_profile() -> Option<LocalSummaryProfile> {
 }
 
 pub fn apply_summary_profile(config: &mut DaemonConfig, profile: &LocalSummaryProfile) {
-    config.summary.provider = profile.provider.clone();
-    config.summary.endpoint = profile.endpoint.clone();
-    config.summary.model = profile.model.clone();
+    config.summary.provider.id = profile.provider.clone();
+    config.summary.provider.endpoint = profile.endpoint.clone();
+    config.summary.provider.model = profile.model.clone();
 }

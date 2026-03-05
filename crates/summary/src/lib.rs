@@ -3,6 +3,7 @@ pub mod prompt;
 pub mod provider;
 pub mod text;
 pub mod types;
+pub use prompt::{validate_summary_prompt_template, DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2};
 
 use crate::git::{GitSummaryContext, GitSummaryService, ShellGitCommandRunner};
 use crate::prompt::{
@@ -185,6 +186,25 @@ async fn summarize_from_signals(
     signals: SummarySignals,
     settings: &SummarySettings,
 ) -> Result<SemanticSummaryArtifact, String> {
+    let prompt_template = if settings.prompt.template.trim().is_empty() {
+        DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2
+    } else {
+        settings.prompt.template.as_str()
+    };
+    if let Err(error) = validate_summary_prompt_template(prompt_template) {
+        return Ok(SemanticSummaryArtifact {
+            summary: heuristic_summary(&signals.timeline_signals, &signals.file_changes),
+            source_kind: signals.source_kind,
+            generation_kind: SummaryGenerationKind::HeuristicFallback,
+            provider: settings.provider.id.clone(),
+            model: settings.provider.model.clone(),
+            prompt_fingerprint: String::new(),
+            diff_tree: build_diff_tree(&signals.file_changes, &signals.session.events),
+            source_details: signals.source_details,
+            error: Some(format!("invalid summary prompt template: {error}")),
+        });
+    }
+
     let prompt = build_summary_prompt(
         &signals.session,
         signals.source_label.clone(),
@@ -192,10 +212,10 @@ async fn summarize_from_signals(
         signals.file_changes.clone(),
         serde_json::json!(signals.source_details),
         SummaryPromptConfig {
-            response_style: settings.response_style.clone(),
-            output_shape: settings.output_shape.clone(),
+            response_style: settings.response.style.clone(),
+            output_shape: settings.response.shape.clone(),
             source_mode: settings.source_mode.clone(),
-            output_instruction: &build_output_instruction(settings),
+            prompt_template,
         },
     );
 
@@ -212,8 +232,8 @@ async fn summarize_from_signals(
             summary: heuristic_summary(&signals.timeline_signals, &signals.file_changes),
             source_kind: SummarySourceKind::Heuristic,
             generation_kind: SummaryGenerationKind::HeuristicFallback,
-            provider: settings.provider.clone(),
-            model: settings.model.clone(),
+            provider: settings.provider.id.clone(),
+            model: settings.provider.model.clone(),
             prompt_fingerprint,
             diff_tree,
             source_details: signals.source_details,
@@ -226,8 +246,8 @@ async fn summarize_from_signals(
             summary: heuristic_summary(&signals.timeline_signals, &signals.file_changes),
             source_kind: signals.source_kind,
             generation_kind: SummaryGenerationKind::HeuristicFallback,
-            provider: settings.provider.clone(),
-            model: settings.model.clone(),
+            provider: settings.provider.id.clone(),
+            model: settings.provider.model.clone(),
             prompt_fingerprint,
             diff_tree,
             source_details: signals.source_details,
@@ -240,8 +260,8 @@ async fn summarize_from_signals(
             summary,
             source_kind: signals.source_kind,
             generation_kind: SummaryGenerationKind::Provider,
-            provider: settings.provider.clone(),
-            model: settings.model.clone(),
+            provider: settings.provider.id.clone(),
+            model: settings.provider.model.clone(),
             prompt_fingerprint,
             diff_tree,
             source_details: signals.source_details,
@@ -251,8 +271,8 @@ async fn summarize_from_signals(
             summary: heuristic_summary(&signals.timeline_signals, &signals.file_changes),
             source_kind: signals.source_kind,
             generation_kind: SummaryGenerationKind::HeuristicFallback,
-            provider: settings.provider.clone(),
-            model: settings.model.clone(),
+            provider: settings.provider.id.clone(),
+            model: settings.provider.model.clone(),
             prompt_fingerprint,
             diff_tree,
             source_details: signals.source_details,
@@ -338,31 +358,6 @@ fn summary_signals_from_git(context: GitSummaryContext) -> Result<SummarySignals
         file_changes: context.file_changes,
         source_details,
     })
-}
-
-fn build_output_instruction(settings: &SummarySettings) -> String {
-    if settings.template_slots.is_empty() {
-        return settings.output_instruction.clone();
-    }
-    let mut slots = settings
-        .template_slots
-        .iter()
-        .map(|(key, value)| format!("{key}: {value}"))
-        .collect::<Vec<_>>();
-    slots.sort();
-
-    if settings.output_instruction.trim().is_empty() {
-        format!(
-            "Template slots (apply when forming fields): {}",
-            slots.join(" | ")
-        )
-    } else {
-        format!(
-            "{}\nTemplate slots (apply when forming fields): {}",
-            settings.output_instruction.trim(),
-            slots.join(" | ")
-        )
-    }
 }
 
 fn default_event_snippet(event: &Event, max_chars: usize) -> Option<String> {

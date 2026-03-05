@@ -166,18 +166,11 @@ test('native grouping remains bounded to keyboard slots', () => {
 });
 
 test('toggleAllBackedFilter keeps all-selection semantics consistent', () => {
-	assert.deepEqual(
-		Array.from(toggleAllBackedFilter(new Set(['all']), 'user')).sort(),
-		['user'],
-	);
-	assert.deepEqual(
-		Array.from(toggleAllBackedFilter(new Set(['user', 'agent']), 'user')).sort(),
-		['agent'],
-	);
-	assert.deepEqual(
-		Array.from(toggleAllBackedFilter(new Set(['user']), 'user')).sort(),
-		['all'],
-	);
+	assert.deepEqual(Array.from(toggleAllBackedFilter(new Set(['all']), 'user')).sort(), ['user']);
+	assert.deepEqual(Array.from(toggleAllBackedFilter(new Set(['user', 'agent']), 'user')).sort(), [
+		'agent',
+	]);
+	assert.deepEqual(Array.from(toggleAllBackedFilter(new Set(['user']), 'user')).sort(), ['all']);
 });
 
 test('branchpoint mode maps interactive source events to semantic question/answer', () => {

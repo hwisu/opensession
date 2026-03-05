@@ -5,7 +5,6 @@
 //! config merging, UI/IPC adapters) lives in each runtime crate.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// Canonical config file name used by daemon/desktop/cli.
 pub const CONFIG_FILE_NAME: &str = "opensession.toml";
@@ -27,6 +26,8 @@ pub struct DaemonConfig {
     pub git_storage: GitStorageSettings,
     #[serde(default)]
     pub summary: SummarySettings,
+    #[serde(default)]
+    pub vector_search: VectorSearchSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,54 +201,32 @@ impl Default for GitStorageSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SummarySettings {
     #[serde(default)]
-    pub provider: SummaryProvider,
-    #[serde(default = "default_summary_endpoint")]
-    pub endpoint: String,
+    pub provider: SummaryProviderSettings,
     #[serde(default)]
-    pub model: String,
+    pub prompt: SummaryPromptSettings,
+    #[serde(default)]
+    pub response: SummaryResponseSettings,
+    #[serde(default)]
+    pub storage: SummaryStorageSettings,
+    /// Kept for CLI/CI and non-desktop runtimes.
     #[serde(default)]
     pub source_mode: SummarySourceMode,
-    #[serde(default)]
-    pub response_style: SummaryResponseStyle,
-    #[serde(default)]
-    pub output_shape: SummaryOutputShape,
-    #[serde(default)]
-    pub output_instruction: String,
-    #[serde(default)]
-    pub trigger_mode: SummaryTriggerMode,
-    #[serde(default)]
-    pub persist_mode: SummaryPersistMode,
-    #[serde(default)]
-    pub template_slots: BTreeMap<String, String>,
-}
-
-impl Default for SummarySettings {
-    fn default() -> Self {
-        Self {
-            provider: SummaryProvider::default(),
-            endpoint: default_summary_endpoint(),
-            model: String::new(),
-            source_mode: SummarySourceMode::default(),
-            response_style: SummaryResponseStyle::default(),
-            output_shape: SummaryOutputShape::default(),
-            output_instruction: String::new(),
-            trigger_mode: SummaryTriggerMode::default(),
-            persist_mode: SummaryPersistMode::default(),
-            template_slots: BTreeMap::new(),
-        }
-    }
 }
 
 impl SummarySettings {
     pub fn is_configured(&self) -> bool {
-        match self.provider {
+        match self.provider.id {
             SummaryProvider::Disabled => false,
-            SummaryProvider::Ollama => !self.model.trim().is_empty(),
+            SummaryProvider::Ollama => !self.provider.model.trim().is_empty(),
             SummaryProvider::CodexExec | SummaryProvider::ClaudeCli => true,
         }
+    }
+
+    pub fn provider_transport(&self) -> SummaryProviderTransport {
+        self.provider.id.transport()
     }
 
     pub fn allows_git_changes_fallback(&self) -> bool {
@@ -255,12 +234,110 @@ impl SummarySettings {
     }
 
     pub fn should_generate_on_session_save(&self) -> bool {
-        matches!(self.trigger_mode, SummaryTriggerMode::OnSessionSave)
+        matches!(self.storage.trigger, SummaryTriggerMode::OnSessionSave)
     }
 
     pub fn persists_to_local_db(&self) -> bool {
-        matches!(self.persist_mode, SummaryPersistMode::LocalDb)
+        matches!(self.storage.backend, SummaryStorageBackend::LocalDb)
     }
+
+    pub fn persists_to_hidden_ref(&self) -> bool {
+        matches!(self.storage.backend, SummaryStorageBackend::HiddenRef)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryProviderSettings {
+    #[serde(default)]
+    pub id: SummaryProvider,
+    #[serde(default = "default_summary_endpoint")]
+    pub endpoint: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+impl Default for SummaryProviderSettings {
+    fn default() -> Self {
+        Self {
+            id: SummaryProvider::default(),
+            endpoint: default_summary_endpoint(),
+            model: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SummaryPromptSettings {
+    #[serde(default)]
+    pub template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SummaryResponseSettings {
+    #[serde(default)]
+    pub style: SummaryResponseStyle,
+    #[serde(default)]
+    pub shape: SummaryOutputShape,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SummaryStorageSettings {
+    #[serde(default)]
+    pub trigger: SummaryTriggerMode,
+    #[serde(default)]
+    pub backend: SummaryStorageBackend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorSearchSettings {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: VectorSearchProvider,
+    #[serde(default = "default_vector_model")]
+    pub model: String,
+    #[serde(default = "default_vector_endpoint")]
+    pub endpoint: String,
+    #[serde(default)]
+    pub granularity: VectorSearchGranularity,
+    #[serde(default = "default_vector_chunk_size_lines")]
+    pub chunk_size_lines: u16,
+    #[serde(default = "default_vector_chunk_overlap_lines")]
+    pub chunk_overlap_lines: u16,
+    #[serde(default = "default_vector_top_k_chunks")]
+    pub top_k_chunks: u16,
+    #[serde(default = "default_vector_top_k_sessions")]
+    pub top_k_sessions: u16,
+}
+
+impl Default for VectorSearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_false(),
+            provider: VectorSearchProvider::default(),
+            model: default_vector_model(),
+            endpoint: default_vector_endpoint(),
+            granularity: VectorSearchGranularity::default(),
+            chunk_size_lines: default_vector_chunk_size_lines(),
+            chunk_overlap_lines: default_vector_chunk_overlap_lines(),
+            top_k_chunks: default_vector_top_k_chunks(),
+            top_k_sessions: default_vector_top_k_sessions(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorSearchProvider {
+    #[default]
+    Ollama,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorSearchGranularity {
+    #[default]
+    EventLineChunk,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -271,6 +348,25 @@ pub enum SummaryProvider {
     Ollama,
     CodexExec,
     ClaudeCli,
+}
+
+impl SummaryProvider {
+    pub fn transport(&self) -> SummaryProviderTransport {
+        match self {
+            Self::Disabled => SummaryProviderTransport::None,
+            Self::Ollama => SummaryProviderTransport::Http,
+            Self::CodexExec | Self::ClaudeCli => SummaryProviderTransport::Cli,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryProviderTransport {
+    #[default]
+    None,
+    Cli,
+    Http,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -309,9 +405,10 @@ pub enum SummaryTriggerMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum SummaryPersistMode {
+pub enum SummaryStorageBackend {
     None,
     #[default]
+    HiddenRef,
     LocalDb,
 }
 
@@ -385,6 +482,24 @@ fn default_git_retention_interval_secs() -> u64 {
 }
 fn default_summary_endpoint() -> String {
     "http://127.0.0.1:11434".to_string()
+}
+fn default_vector_endpoint() -> String {
+    "http://127.0.0.1:11434".to_string()
+}
+fn default_vector_model() -> String {
+    "bge-m3".to_string()
+}
+fn default_vector_chunk_size_lines() -> u16 {
+    12
+}
+fn default_vector_chunk_overlap_lines() -> u16 {
+    3
+}
+fn default_vector_top_k_chunks() -> u16 {
+    30
+}
+fn default_vector_top_k_sessions() -> u16 {
+    20
 }
 fn default_server_url() -> String {
     "https://opensession.io".to_string()
@@ -496,8 +611,8 @@ interval_secs = 43200
     fn summary_provider_requires_canonical_values() {
         let parsed: Result<DaemonConfig, _> = toml::from_str(
             r#"
-[summary]
-provider = "openai"
+[summary.provider]
+id = "openai"
 "#,
         );
         assert!(
@@ -511,45 +626,45 @@ provider = "openai"
         let cfg: DaemonConfig = toml::from_str(
             r#"
 [summary]
-provider = "ollama"
+source_mode = "session_or_git_changes"
+
+[summary.provider]
+id = "ollama"
 endpoint = "http://localhost:11434"
 model = "llama3.2:3b"
-source_mode = "session_or_git_changes"
-response_style = "detailed"
-output_shape = "security_first"
-output_instruction = "Call out risky auth delta first."
-trigger_mode = "on_session_save"
-persist_mode = "local_db"
 
-[summary.template_slots]
-changes = "focus on modifications"
-auth_security = "security-first"
+[summary.prompt]
+template = "Use {{HAIL_COMPACT}} only"
+
+[summary.response]
+style = "detailed"
+shape = "security_first"
+
+[summary.storage]
+trigger = "on_session_save"
+backend = "local_db"
 "#,
         )
         .expect("parse summary settings");
 
-        assert_eq!(cfg.summary.provider, SummaryProvider::Ollama);
-        assert_eq!(cfg.summary.endpoint, "http://localhost:11434");
-        assert_eq!(cfg.summary.model, "llama3.2:3b");
+        assert_eq!(cfg.summary.provider.id, SummaryProvider::Ollama);
+        assert_eq!(cfg.summary.provider.endpoint, "http://localhost:11434");
+        assert_eq!(cfg.summary.provider.model, "llama3.2:3b");
         assert_eq!(
             cfg.summary.source_mode,
             SummarySourceMode::SessionOrGitChanges
         );
-        assert_eq!(cfg.summary.response_style, SummaryResponseStyle::Detailed);
-        assert_eq!(cfg.summary.output_shape, SummaryOutputShape::SecurityFirst);
+        assert_eq!(cfg.summary.prompt.template, "Use {{HAIL_COMPACT}} only");
+        assert_eq!(cfg.summary.response.style, SummaryResponseStyle::Detailed);
         assert_eq!(
-            cfg.summary.output_instruction,
-            "Call out risky auth delta first."
+            cfg.summary.response.shape,
+            SummaryOutputShape::SecurityFirst
         );
-        assert_eq!(cfg.summary.trigger_mode, SummaryTriggerMode::OnSessionSave);
-        assert_eq!(cfg.summary.persist_mode, SummaryPersistMode::LocalDb);
         assert_eq!(
-            cfg.summary
-                .template_slots
-                .get("changes")
-                .map(String::as_str),
-            Some("focus on modifications")
+            cfg.summary.storage.trigger,
+            SummaryTriggerMode::OnSessionSave
         );
+        assert_eq!(cfg.summary.storage.backend, SummaryStorageBackend::LocalDb);
         assert!(cfg.summary.is_configured());
     }
 
@@ -557,8 +672,8 @@ auth_security = "security-first"
     fn summary_response_style_requires_canonical_values() {
         let parsed: Result<DaemonConfig, _> = toml::from_str(
             r#"
-[summary]
-response_style = "verbose"
+[summary.response]
+style = "verbose"
 "#,
         );
         assert!(
@@ -585,8 +700,8 @@ source_mode = "git_only"
     fn summary_output_shape_requires_canonical_values() {
         let parsed: Result<DaemonConfig, _> = toml::from_str(
             r#"
-[summary]
-output_shape = "grouped"
+[summary.response]
+shape = "grouped"
 "#,
         );
         assert!(
@@ -599,8 +714,8 @@ output_shape = "grouped"
     fn summary_trigger_mode_requires_canonical_values() {
         let parsed: Result<DaemonConfig, _> = toml::from_str(
             r#"
-[summary]
-trigger_mode = "always"
+[summary.storage]
+trigger = "always"
 "#,
         );
         assert!(
@@ -610,16 +725,16 @@ trigger_mode = "always"
     }
 
     #[test]
-    fn summary_persist_mode_requires_canonical_values() {
+    fn summary_storage_backend_requires_canonical_values() {
         let parsed: Result<DaemonConfig, _> = toml::from_str(
             r#"
-[summary]
-persist_mode = "remote_db"
+[summary.storage]
+backend = "remote_db"
 "#,
         );
         assert!(
             parsed.is_err(),
-            "unsupported summary persist_mode must be rejected"
+            "unsupported summary storage.backend must be rejected"
         );
     }
 
@@ -627,40 +742,40 @@ persist_mode = "remote_db"
     fn summary_provider_accepts_cli_variants() {
         let codex_cfg: DaemonConfig = toml::from_str(
             r#"
-[summary]
-provider = "codex_exec"
+[summary.provider]
+id = "codex_exec"
 "#,
         )
         .expect("parse codex summary provider");
-        assert_eq!(codex_cfg.summary.provider, SummaryProvider::CodexExec);
+        assert_eq!(codex_cfg.summary.provider.id, SummaryProvider::CodexExec);
         assert!(codex_cfg.summary.is_configured());
 
         let claude_cfg: DaemonConfig = toml::from_str(
             r#"
-[summary]
-provider = "claude_cli"
+[summary.provider]
+id = "claude_cli"
 "#,
         )
         .expect("parse claude summary provider");
-        assert_eq!(claude_cfg.summary.provider, SummaryProvider::ClaudeCli);
+        assert_eq!(claude_cfg.summary.provider.id, SummaryProvider::ClaudeCli);
         assert!(claude_cfg.summary.is_configured());
     }
 
     #[test]
     fn summary_is_configured_requires_model_only_for_ollama() {
         let mut cfg = DaemonConfig::default();
-        cfg.summary.provider = SummaryProvider::Ollama;
-        cfg.summary.model.clear();
+        cfg.summary.provider.id = SummaryProvider::Ollama;
+        cfg.summary.provider.model.clear();
         assert!(!cfg.summary.is_configured());
 
-        cfg.summary.model = "llama3.2:3b".to_string();
+        cfg.summary.provider.model = "llama3.2:3b".to_string();
         assert!(cfg.summary.is_configured());
 
-        cfg.summary.provider = SummaryProvider::CodexExec;
-        cfg.summary.model.clear();
+        cfg.summary.provider.id = SummaryProvider::CodexExec;
+        cfg.summary.provider.model.clear();
         assert!(cfg.summary.is_configured());
 
-        cfg.summary.provider = SummaryProvider::ClaudeCli;
+        cfg.summary.provider.id = SummaryProvider::ClaudeCli;
         assert!(cfg.summary.is_configured());
     }
 
@@ -675,12 +790,117 @@ provider = "claude_cli"
     }
 
     #[test]
-    fn summary_default_trigger_and_persist_modes_are_automatic_local() {
+    fn summary_default_storage_uses_hidden_ref_backend() {
         let cfg = DaemonConfig::default();
-        assert_eq!(cfg.summary.trigger_mode, SummaryTriggerMode::OnSessionSave);
-        assert_eq!(cfg.summary.persist_mode, SummaryPersistMode::LocalDb);
+        assert_eq!(
+            cfg.summary.storage.trigger,
+            SummaryTriggerMode::OnSessionSave
+        );
+        assert_eq!(
+            cfg.summary.storage.backend,
+            SummaryStorageBackend::HiddenRef
+        );
         assert!(cfg.summary.should_generate_on_session_save());
-        assert!(cfg.summary.persists_to_local_db());
+        assert!(cfg.summary.persists_to_hidden_ref());
+    }
+
+    #[test]
+    fn summary_provider_transport_matches_provider_kind() {
+        let mut cfg = DaemonConfig::default();
+        cfg.summary.provider.id = SummaryProvider::Disabled;
+        assert_eq!(
+            cfg.summary.provider_transport(),
+            SummaryProviderTransport::None
+        );
+
+        cfg.summary.provider.id = SummaryProvider::Ollama;
+        assert_eq!(
+            cfg.summary.provider_transport(),
+            SummaryProviderTransport::Http
+        );
+
+        cfg.summary.provider.id = SummaryProvider::CodexExec;
+        assert_eq!(
+            cfg.summary.provider_transport(),
+            SummaryProviderTransport::Cli
+        );
+    }
+
+    #[test]
+    fn vector_search_defaults_are_stable() {
+        let cfg = DaemonConfig::default();
+        assert!(!cfg.vector_search.enabled);
+        assert_eq!(cfg.vector_search.provider, VectorSearchProvider::Ollama);
+        assert_eq!(cfg.vector_search.model, "bge-m3");
+        assert_eq!(cfg.vector_search.endpoint, "http://127.0.0.1:11434");
+        assert_eq!(
+            cfg.vector_search.granularity,
+            VectorSearchGranularity::EventLineChunk
+        );
+        assert_eq!(cfg.vector_search.chunk_size_lines, 12);
+        assert_eq!(cfg.vector_search.chunk_overlap_lines, 3);
+        assert_eq!(cfg.vector_search.top_k_chunks, 30);
+        assert_eq!(cfg.vector_search.top_k_sessions, 20);
+    }
+
+    #[test]
+    fn vector_search_settings_deserialize_from_toml() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[vector_search]
+enabled = true
+provider = "ollama"
+model = "bge-m3"
+endpoint = "http://localhost:11434"
+granularity = "event_line_chunk"
+chunk_size_lines = 16
+chunk_overlap_lines = 4
+top_k_chunks = 60
+top_k_sessions = 10
+"#,
+        )
+        .expect("parse vector search settings");
+
+        assert!(cfg.vector_search.enabled);
+        assert_eq!(cfg.vector_search.provider, VectorSearchProvider::Ollama);
+        assert_eq!(cfg.vector_search.model, "bge-m3");
+        assert_eq!(cfg.vector_search.endpoint, "http://localhost:11434");
+        assert_eq!(
+            cfg.vector_search.granularity,
+            VectorSearchGranularity::EventLineChunk
+        );
+        assert_eq!(cfg.vector_search.chunk_size_lines, 16);
+        assert_eq!(cfg.vector_search.chunk_overlap_lines, 4);
+        assert_eq!(cfg.vector_search.top_k_chunks, 60);
+        assert_eq!(cfg.vector_search.top_k_sessions, 10);
+    }
+
+    #[test]
+    fn vector_search_provider_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[vector_search]
+provider = "openai"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported vector provider must be rejected"
+        );
+    }
+
+    #[test]
+    fn vector_search_granularity_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[vector_search]
+granularity = "session_text"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported vector granularity must be rejected"
+        );
     }
 
     #[test]

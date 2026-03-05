@@ -32,6 +32,53 @@ test.describe('Landing (unauthenticated)', () => {
 		});
 		await page.goto('/');
 		await expect(page.locator('nav').getByText('Login')).toHaveCount(0);
+		await expect(page.locator('nav').getByText('Settings')).toBeVisible();
+	});
+
+	test('desktop runtime can open settings route without auth API', async ({ page }) => {
+		await page.addInitScript(() => {
+			(window as Window & { __TAURI_INTERNALS__?: Record<string, never> }).__TAURI_INTERNALS__ = {};
+		});
+		await page.goto('/settings');
+		await expect(page.locator('[data-testid="settings-page"]')).toBeVisible();
+		await expect(page.locator('[data-testid="settings-auth-disabled"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="runtime-summary-settings"]')).toBeVisible();
+	});
+
+	test('desktop runtime loads docs via local IPC without /docs HTTP dependency', async ({ page }) => {
+		await page.addInitScript(() => {
+			(window as Window & { __TAURI_INTERNALS__?: Record<string, never> }).__TAURI_INTERNALS__ = {};
+			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
+				core: {
+					invoke: async (cmd: string) => {
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v3' };
+						if (cmd === 'desktop_get_capabilities') {
+							return {
+								auth_enabled: false,
+								parse_preview_enabled: false,
+								register_targets: [],
+								share_modes: [],
+							};
+						}
+						if (cmd === 'desktop_get_auth_providers') {
+							return { email_password: false, oauth: [] };
+						}
+						if (cmd === 'desktop_get_docs_markdown') {
+							return ['# Documentation', '', '## Local Docs', '', 'Desktop docs from IPC.'].join('\n');
+						}
+						throw new Error(`unexpected command: ${cmd}`);
+					},
+				},
+			};
+		});
+		await page.route('**/docs?format=markdown', async (route) => {
+			await route.fulfill({ status: 500, body: 'should not be called in desktop docs mode' });
+		});
+		await page.goto('/docs');
+		await expect(page.getByRole('heading', { level: 2, name: 'Local Docs' })).toBeVisible({
+			timeout: 10000,
+		});
+		await expect(page.locator('main')).toContainText('Desktop docs from IPC.');
 	});
 
 	test('landing renders goal sections without capability matrix language', async ({ page }) => {
@@ -61,6 +108,13 @@ test.describe('Landing (unauthenticated)', () => {
 	});
 
 	test('landing beginner quick start opens getting-started docs anchor', async ({ page }) => {
+		await page.route('**/docs?format=markdown', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'text/markdown; charset=utf-8',
+				body: ['# Documentation', '', '## Getting Started', '', 'Begin here'].join('\n'),
+			});
+		});
 		await page.goto('/');
 		await page.getByRole('button', { name: 'Beginner Quick Start' }).click();
 		await expect(page).toHaveURL(/\/docs#getting-started$/);
@@ -68,18 +122,30 @@ test.describe('Landing (unauthenticated)', () => {
 	});
 
 	test('login page is accessible to guests', async ({ page }) => {
-		const resp = await page.request.get('/api/capabilities');
-		expect(resp.ok()).toBeTruthy();
-		const capabilities: { auth_enabled: boolean } = await resp.json();
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: true,
+					parse_preview_enabled: false,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
+				}),
+			});
+		});
+		await page.route('**/api/auth/providers', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ email_password: true, oauth: [] }),
+			});
+		});
 
 		await page.goto('/login');
 		await expect(page).toHaveURL(/\/login$/);
-		if (capabilities.auth_enabled) {
-			await expect(page.locator('#login-email')).toBeVisible();
-			await expect(page.locator('#login-nickname')).toBeVisible();
-		} else {
-			await expect(page.locator('[data-testid="auth-unavailable"]')).toBeVisible();
-		}
+		await expect(page.locator('#login-email')).toBeVisible();
+		await expect(page.locator('#login-nickname')).toBeVisible();
 	});
 
 	test('register path redirects to login', async ({ page }) => {

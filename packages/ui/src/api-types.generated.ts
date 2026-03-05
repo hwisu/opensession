@@ -65,15 +65,73 @@ export interface SessionRepoListResponse { repos: Array<string>, }
 
 export interface DesktopHandoffBuildRequest { session_id: string, pin_latest: boolean, }
 
-export interface DesktopHandoffBuildResponse { artifact_uri: string, pinned_alias?: string | null, }
+export interface DesktopHandoffBuildResponse { artifact_uri: string, pinned_alias?: string | null, download_file_name?: string | null, download_content?: string | null, }
 
 export interface DesktopContractVersionResponse { version: string, }
 
-export interface DesktopRuntimeSettingsResponse { session_default_view: string, summary: any, }
+export type DesktopSummaryProviderId = "disabled" | "ollama" | "codex_exec" | "claude_cli"
 
-export interface DesktopRuntimeSettingsUpdateRequest { session_default_view?: string | null, summary?: any, }
+export type DesktopSummaryProviderTransport = "none" | "cli" | "http"
 
-export interface DesktopSummaryProviderDetectResponse { detected: boolean, provider?: string | null, model?: string | null, endpoint?: string | null, }
+export type DesktopSummarySourceMode = "session_only" | "session_or_git_changes"
+
+export type DesktopSummaryResponseStyle = "compact" | "standard" | "detailed"
+
+export type DesktopSummaryOutputShape = "layered" | "file_list" | "security_first"
+
+export type DesktopSummaryTriggerMode = "manual" | "on_session_save"
+
+export type DesktopSummaryStorageBackend = "hidden_ref" | "local_db" | "none"
+
+export interface DesktopRuntimeSummaryProviderSettings { id: DesktopSummaryProviderId, transport: DesktopSummaryProviderTransport, endpoint: string, model: string, }
+
+export interface DesktopRuntimeSummaryPromptSettings { template: string, default_template: string, }
+
+export interface DesktopRuntimeSummaryResponseSettings { style: DesktopSummaryResponseStyle, shape: DesktopSummaryOutputShape, }
+
+export interface DesktopRuntimeSummaryStorageSettings { trigger: DesktopSummaryTriggerMode, backend: DesktopSummaryStorageBackend, }
+
+export interface DesktopRuntimeSummarySettings { provider: DesktopRuntimeSummaryProviderSettings, prompt: DesktopRuntimeSummaryPromptSettings, response: DesktopRuntimeSummaryResponseSettings, storage: DesktopRuntimeSummaryStorageSettings, source_mode: DesktopSummarySourceMode, }
+
+export interface DesktopRuntimeSummaryProviderSettingsUpdate { id: DesktopSummaryProviderId, endpoint: string, model: string, }
+
+export interface DesktopRuntimeSummaryPromptSettingsUpdate { template: string, }
+
+export interface DesktopRuntimeSummaryResponseSettingsUpdate { style: DesktopSummaryResponseStyle, shape: DesktopSummaryOutputShape, }
+
+export interface DesktopRuntimeSummaryStorageSettingsUpdate { trigger: DesktopSummaryTriggerMode, backend: DesktopSummaryStorageBackend, }
+
+export interface DesktopRuntimeSummarySettingsUpdate { provider: DesktopRuntimeSummaryProviderSettingsUpdate, prompt: DesktopRuntimeSummaryPromptSettingsUpdate, response: DesktopRuntimeSummaryResponseSettingsUpdate, storage: DesktopRuntimeSummaryStorageSettingsUpdate, source_mode: DesktopSummarySourceMode, }
+
+export interface DesktopRuntimeSummaryUiConstraints { source_mode_locked: boolean, source_mode_locked_value: DesktopSummarySourceMode, }
+
+export type DesktopVectorSearchProvider = "ollama"
+
+export type DesktopVectorSearchGranularity = "event_line_chunk"
+
+export type DesktopVectorInstallState = "not_installed" | "installing" | "ready" | "failed"
+
+export type DesktopVectorIndexState = "idle" | "running" | "complete" | "failed"
+
+export interface DesktopRuntimeVectorSearchSettings { enabled: boolean, provider: DesktopVectorSearchProvider, model: string, endpoint: string, granularity: DesktopVectorSearchGranularity, chunk_size_lines: number, chunk_overlap_lines: number, top_k_chunks: number, top_k_sessions: number, }
+
+export interface DesktopRuntimeVectorSearchSettingsUpdate { enabled: boolean, provider: DesktopVectorSearchProvider, model: string, endpoint: string, granularity: DesktopVectorSearchGranularity, chunk_size_lines: number, chunk_overlap_lines: number, top_k_chunks: number, top_k_sessions: number, }
+
+export interface DesktopVectorPreflightResponse { provider: DesktopVectorSearchProvider, endpoint: string, model: string, ollama_reachable: boolean, model_installed: boolean, install_state: DesktopVectorInstallState, progress_pct: number, message?: string | null, }
+
+export interface DesktopVectorInstallStatusResponse { state: DesktopVectorInstallState, model: string, progress_pct: number, message?: string | null, }
+
+export interface DesktopVectorIndexStatusResponse { state: DesktopVectorIndexState, processed_sessions: number, total_sessions: number, message?: string | null, started_at?: string | null, finished_at?: string | null, }
+
+export interface DesktopVectorSessionMatch { session: SessionSummary, score: number, chunk_id: string, start_line: number, end_line: number, snippet: string, }
+
+export interface DesktopVectorSearchResponse { query: string, sessions: Array<DesktopVectorSessionMatch>, next_cursor?: string | null, total_candidates: number, }
+
+export interface DesktopRuntimeSettingsResponse { session_default_view: string, summary: DesktopRuntimeSummarySettings, vector_search: DesktopRuntimeVectorSearchSettings, ui_constraints: DesktopRuntimeSummaryUiConstraints, }
+
+export interface DesktopRuntimeSettingsUpdateRequest { session_default_view?: string | null, summary?: DesktopRuntimeSummarySettingsUpdate | null, vector_search?: DesktopRuntimeVectorSearchSettingsUpdate | null, }
+
+export interface DesktopSummaryProviderDetectResponse { detected: boolean, provider?: DesktopSummaryProviderId | null, transport?: DesktopSummaryProviderTransport | null, model?: string | null, endpoint?: string | null, }
 
 export interface DesktopSessionSummaryResponse { session_id: string, summary?: any, source_details?: any, diff_tree: any[], source_kind?: string | null, generation_kind?: string | null, error?: string | null, }
 

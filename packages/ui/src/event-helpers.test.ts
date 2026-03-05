@@ -24,7 +24,10 @@ function textEvent(args: {
 test('isBoilerplateEvent treats single-dot exec output as status noise', () => {
 	const dotResult = textEvent({
 		id: 'e1',
-		type: { type: 'ToolResult', data: { name: 'exec_command', is_error: false, call_id: 'call-1' } },
+		type: {
+			type: 'ToolResult',
+			data: { name: 'exec_command', is_error: false, call_id: 'call-1' },
+		},
 		text: '.',
 	});
 
@@ -34,7 +37,10 @@ test('isBoilerplateEvent treats single-dot exec output as status noise', () => {
 test('isBoilerplateEvent does not hide empty exec results', () => {
 	const emptyResult = textEvent({
 		id: 'e1',
-		type: { type: 'ToolResult', data: { name: 'exec_command', is_error: false, call_id: 'call-1' } },
+		type: {
+			type: 'ToolResult',
+			data: { name: 'exec_command', is_error: false, call_id: 'call-1' },
+		},
 	});
 
 	assert.equal(isBoilerplateEvent(emptyResult), false);
@@ -63,12 +69,18 @@ test('prepareTimelineEvents keeps similarly-shaped tool results when call_id dif
 	const events: Event[] = [
 		textEvent({
 			id: 'r1',
-			type: { type: 'ToolResult', data: { name: 'exec_command', is_error: false, call_id: 'call-1' } },
+			type: {
+				type: 'ToolResult',
+				data: { name: 'exec_command', is_error: false, call_id: 'call-1' },
+			},
 			text: 'Chunk ID: abc123',
 		}),
 		textEvent({
 			id: 'r2',
-			type: { type: 'ToolResult', data: { name: 'exec_command', is_error: false, call_id: 'call-2' } },
+			type: {
+				type: 'ToolResult',
+				data: { name: 'exec_command', is_error: false, call_id: 'call-2' },
+			},
 			text: 'Chunk ID: abc123',
 		}),
 	];
@@ -132,7 +144,10 @@ test('pairToolCallResults matches semantic.call_id and ignores legacy attrs.call
 		},
 		textEvent({
 			id: 'result',
-			type: { type: 'ToolResult', data: { name: 'exec_command', is_error: false, call_id: 'cid-1' } },
+			type: {
+				type: 'ToolResult',
+				data: { name: 'exec_command', is_error: false, call_id: 'cid-1' },
+			},
 			text: 'ok',
 		}),
 	];

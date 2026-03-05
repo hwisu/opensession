@@ -93,7 +93,12 @@ function sanitizeRenderedHtml(rendered: string): string {
 	return clean.replace(
 		/<a([^>]*?)target="_blank"([^>]*?)rel="([^"]*)"([^>]*)>/gi,
 		(_, before: string, mid: string, relValue: string, after: string) => {
-			const relTokens = new Set(relValue.split(/\s+/).filter(Boolean).map((value) => value.toLowerCase()));
+			const relTokens = new Set(
+				relValue
+					.split(/\s+/)
+					.filter(Boolean)
+					.map((value) => value.toLowerCase()),
+			);
 			relTokens.add('noopener');
 			relTokens.add('noreferrer');
 			return `<a${before}target="_blank"${mid}rel="${Array.from(relTokens).join(' ')}"${after}>`;
@@ -132,7 +137,9 @@ const marked = new Marked({
 		},
 		blockquote(this: RendererThis, token: Tokens.Blockquote) {
 			const text =
-				token.tokens && this.parser?.parse ? this.parser.parse(token.tokens) : escapeHtml(token.text);
+				token.tokens && this.parser?.parse
+					? this.parser.parse(token.tokens)
+					: escapeHtml(token.text);
 			return `<blockquote class="md-blockquote">${text}</blockquote>`;
 		},
 		link(this: RendererThis, token: Tokens.Link) {

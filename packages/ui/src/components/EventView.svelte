@@ -185,7 +185,9 @@ function parseRequestUserInputCallPayload(payload: unknown): RequestUserInputCal
 
 	if (questions.length === 0) {
 		const fallbackQuestion =
-			asNonEmptyString(root.question) ?? asNonEmptyString(root.prompt) ?? asNonEmptyString(root.ask);
+			asNonEmptyString(root.question) ??
+			asNonEmptyString(root.prompt) ??
+			asNonEmptyString(root.ask);
 		if (!fallbackQuestion) return null;
 		return {
 			questions: [
@@ -202,7 +204,9 @@ function parseRequestUserInputCallPayload(payload: unknown): RequestUserInputCal
 	return { questions };
 }
 
-function parseRequestUserInputResultPayload(payload: unknown): RequestUserInputResultPayload | null {
+function parseRequestUserInputResultPayload(
+	payload: unknown,
+): RequestUserInputResultPayload | null {
 	const root = asObject(payload);
 	if (!root) return null;
 	const answerMap = asObject(root.answers);
@@ -357,19 +361,19 @@ const summaryLabel = $derived.by(() => {
 		}
 		case 'CodeSearch':
 			return t.data.query;
-			case 'FileSearch':
-				return t.data.pattern;
-			case 'ToolCall': {
-				if (isRequestUserInputTool && requestUserInputCallPayload) {
-					const first = requestUserInputCallPayload.questions[0];
-					const label = first?.header ?? first?.question ?? first?.id ?? 'request_user_input';
-					if (requestUserInputCallPayload.questions.length === 1) return label;
-					return `${label} +${requestUserInputCallPayload.questions.length - 1}`;
-				}
-				for (const block of event.content.blocks) {
-					if (block.type === 'Json' && block.data && typeof block.data === 'object') {
-						const d = block.data as Record<string, unknown>;
-						if (d.subject) return String(d.subject);
+		case 'FileSearch':
+			return t.data.pattern;
+		case 'ToolCall': {
+			if (isRequestUserInputTool && requestUserInputCallPayload) {
+				const first = requestUserInputCallPayload.questions[0];
+				const label = first?.header ?? first?.question ?? first?.id ?? 'request_user_input';
+				if (requestUserInputCallPayload.questions.length === 1) return label;
+				return `${label} +${requestUserInputCallPayload.questions.length - 1}`;
+			}
+			for (const block of event.content.blocks) {
+				if (block.type === 'Json' && block.data && typeof block.data === 'object') {
+					const d = block.data as Record<string, unknown>;
+					if (d.subject) return String(d.subject);
 					if (d.recipient) return `\u2192 ${String(d.recipient)}`;
 					if (d.taskId && d.status) return `#${d.taskId} \u2192 ${d.status}`;
 				}
@@ -378,18 +382,18 @@ const summaryLabel = $derived.by(() => {
 				}
 			}
 			return '';
+		}
+		case 'ToolResult': {
+			if (isRequestUserInputTool && requestUserInputResultPayload) {
+				if (requestUserInputResultPayload.answers.length === 0) return 'no answers';
+				const first = requestUserInputResultPayload.answers[0];
+				const preview = first.answers[0] ?? first.raw ?? '(no answer)';
+				if (requestUserInputResultPayload.answers.length === 1) return `${first.id}: ${preview}`;
+				return `${first.id}: ${preview} +${requestUserInputResultPayload.answers.length - 1}`;
 			}
-			case 'ToolResult': {
-				if (isRequestUserInputTool && requestUserInputResultPayload) {
-					if (requestUserInputResultPayload.answers.length === 0) return 'no answers';
-					const first = requestUserInputResultPayload.answers[0];
-					const preview = first.answers[0] ?? first.raw ?? '(no answer)';
-					if (requestUserInputResultPayload.answers.length === 1) return `${first.id}: ${preview}`;
-					return `${first.id}: ${preview} +${requestUserInputResultPayload.answers.length - 1}`;
-				}
-				const line = firstMeaningfulEventLine(event);
-				return line ? truncate(line) : 'output';
-			}
+			const line = firstMeaningfulEventLine(event);
+			return line ? truncate(line) : 'output';
+		}
 		case 'TaskStart':
 			return t.data.title ?? '';
 		case 'TaskEnd':

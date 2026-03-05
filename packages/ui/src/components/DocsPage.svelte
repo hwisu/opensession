@@ -28,6 +28,58 @@ let parsed = $state<ParsedDocs>({
 	chapters: [],
 });
 
+const FALLBACK_DOCS_MARKDOWN = `# Documentation
+
+## Getting Started
+
+Local docs are available in desktop runtime without a server.
+
+- Open \`/sessions\` to browse local sessions
+- Open \`/settings\` to configure runtime summary provider/prompt/response/storage
+- Use handoff build from session detail to create downloadable handoff artifacts
+
+## Storage
+
+- \`hidden_ref\` keeps summary artifacts in git-native refs.
+- Search and filter metadata is still indexed in local SQLite (\`local.db\`) for fast list queries.
+`;
+
+function isDesktopRuntime(): boolean {
+	if (typeof window === 'undefined') return false;
+	const maybeTauri = window as Window & { __TAURI_INTERNALS__?: unknown };
+	if ('__TAURI_INTERNALS__' in maybeTauri) return true;
+	return window.location.protocol === 'tauri:';
+}
+
+async function readDesktopDocsMarkdown(): Promise<string | null> {
+	if (!isDesktopRuntime()) return null;
+	const tauri = (window as unknown as { __TAURI__?: { core?: { invoke?: <T>(cmd: string) => Promise<T> } } })
+		.__TAURI__;
+	const invoke = tauri?.core?.invoke;
+	if (typeof invoke !== 'function') return null;
+	try {
+		const body = await invoke<string>('desktop_get_docs_markdown');
+		const normalized = body.trim();
+		return normalized.length > 0 ? normalized : null;
+	} catch {
+		return null;
+	}
+}
+
+async function fetchWebDocsMarkdown(): Promise<string> {
+	const res = await fetch('/docs?format=markdown', {
+		cache: 'no-store',
+		headers: {
+			Accept: 'text/markdown',
+			'Cache-Control': 'no-cache',
+		},
+	});
+	if (!res.ok) {
+		throw new Error(`Failed to load docs (${res.status})`);
+	}
+	return res.text();
+}
+
 function slugify(value: string): string {
 	const trimmed = value.trim().toLowerCase();
 	const slug = trimmed
@@ -101,22 +153,21 @@ function parseDocsMarkdown(markdown: string): ParsedDocs {
 
 onMount(() => {
 	let cancelled = false;
-	fetch('/docs?format=markdown', {
-		cache: 'no-store',
-		headers: {
-			Accept: 'text/markdown',
-			'Cache-Control': 'no-cache',
-		},
-	})
-			.then(async (res) => {
-				if (!res.ok) {
-					throw new Error(`Failed to load docs (${res.status})`);
-				}
-				const body = await res.text();
-				if (cancelled) return;
-				parsed = parseDocsMarkdown(body);
-				loading = false;
-			})
+	Promise.resolve()
+		.then(async () => {
+			const desktopBody = await readDesktopDocsMarkdown();
+			if (desktopBody) return desktopBody;
+			try {
+				return await fetchWebDocsMarkdown();
+			} catch {
+				return FALLBACK_DOCS_MARKDOWN;
+			}
+		})
+		.then((body) => {
+			if (cancelled) return;
+			parsed = parseDocsMarkdown(body);
+			loading = false;
+		})
 		.catch((e) => {
 			if (cancelled) return;
 			error = e instanceof Error ? e.message : 'Failed to load docs';

@@ -11,6 +11,7 @@ use opensession_core::session::{
 use opensession_core::Session;
 use opensession_git_native::{
     branch_ledger_ref, extract_git_context, resolve_ledger_branch, PruneStats,
+    SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
 };
 use opensession_local_db::LocalDb;
 use opensession_parsers::parse_with_default_parsers;
@@ -492,7 +493,7 @@ async fn maybe_generate_semantic_summary(
     if !settings.should_generate_on_session_save() {
         return Ok(());
     }
-    if !settings.persists_to_local_db() {
+    if settings.storage.backend == opensession_runtime_config::SummaryStorageBackend::None {
         return Ok(());
     }
     if !settings.is_configured() {
@@ -513,45 +514,80 @@ async fn maybe_generate_semantic_summary(
     let artifact = summarize_session(session, settings, git_request.as_ref())
         .await
         .map_err(anyhow::Error::msg)?;
-    let summary_json = serde_json::to_string(&artifact.summary)?;
-    let source_details_json = if artifact.source_details.is_empty() {
-        None
-    } else {
-        Some(serde_json::to_string(&artifact.source_details)?)
-    };
-    let diff_tree_json = if artifact.diff_tree.is_empty() {
-        None
-    } else {
-        Some(serde_json::to_string(&artifact.diff_tree)?)
-    };
-    let generated_at = chrono::Utc::now().to_rfc3339();
-    let provider = enum_label(&artifact.provider);
-    let source_kind = enum_label(&artifact.source_kind);
-    let generation_kind = enum_label(&artifact.generation_kind);
-    let model = if artifact.model.trim().is_empty() {
-        None
-    } else {
-        Some(artifact.model.clone())
-    };
-    let prompt_fingerprint = if artifact.prompt_fingerprint.trim().is_empty() {
-        None
-    } else {
-        Some(artifact.prompt_fingerprint)
-    };
 
-    db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
-        session_id: &session.session_id,
-        summary_json: &summary_json,
-        generated_at: &generated_at,
-        provider: &provider,
-        model: model.as_deref(),
-        source_kind: &source_kind,
-        generation_kind: &generation_kind,
-        prompt_fingerprint: prompt_fingerprint.as_deref(),
-        source_details_json: source_details_json.as_deref(),
-        diff_tree_json: diff_tree_json.as_deref(),
-        error: artifact.error.as_deref(),
-    })?;
+    match settings.storage.backend {
+        opensession_runtime_config::SummaryStorageBackend::LocalDb => {
+            let summary_json = serde_json::to_string(&artifact.summary)?;
+            let source_details_json = if artifact.source_details.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&artifact.source_details)?)
+            };
+            let diff_tree_json = if artifact.diff_tree.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&artifact.diff_tree)?)
+            };
+            let generated_at = chrono::Utc::now().to_rfc3339();
+            let provider = enum_label(&artifact.provider);
+            let source_kind = enum_label(&artifact.source_kind);
+            let generation_kind = enum_label(&artifact.generation_kind);
+            let model = if artifact.model.trim().is_empty() {
+                None
+            } else {
+                Some(artifact.model.clone())
+            };
+            let prompt_fingerprint = if artifact.prompt_fingerprint.trim().is_empty() {
+                None
+            } else {
+                Some(artifact.prompt_fingerprint)
+            };
+
+            db.upsert_session_semantic_summary(
+                &opensession_local_db::SessionSemanticSummaryUpsert {
+                    session_id: &session.session_id,
+                    summary_json: &summary_json,
+                    generated_at: &generated_at,
+                    provider: &provider,
+                    model: model.as_deref(),
+                    source_kind: &source_kind,
+                    generation_kind: &generation_kind,
+                    prompt_fingerprint: prompt_fingerprint.as_deref(),
+                    source_details_json: source_details_json.as_deref(),
+                    diff_tree_json: diff_tree_json.as_deref(),
+                    error: artifact.error.as_deref(),
+                },
+            )?;
+        }
+        opensession_runtime_config::SummaryStorageBackend::HiddenRef => {
+            let cwd = session_cwd(session)
+                .ok_or_else(|| anyhow::anyhow!("session working directory is missing"))?;
+            let repo_root = crate::config::find_repo_root(cwd)
+                .ok_or_else(|| anyhow::anyhow!("failed to resolve git repo root"))?;
+            let summary_value = serde_json::to_value(&artifact.summary)?;
+            let source_details = serde_json::to_value(&artifact.source_details)?;
+            let diff_tree_value = serde_json::to_value(&artifact.diff_tree)?;
+            let diff_tree = diff_tree_value.as_array().cloned().unwrap_or_default();
+            let record = SessionSummaryLedgerRecord {
+                session_id: session.session_id.clone(),
+                generated_at: chrono::Utc::now().to_rfc3339(),
+                provider: enum_label(&artifact.provider),
+                model: (!artifact.model.trim().is_empty()).then_some(artifact.model.clone()),
+                source_kind: enum_label(&artifact.source_kind),
+                generation_kind: enum_label(&artifact.generation_kind),
+                prompt_fingerprint: (!artifact.prompt_fingerprint.trim().is_empty())
+                    .then_some(artifact.prompt_fingerprint),
+                summary: summary_value,
+                source_details,
+                diff_tree,
+                error: artifact.error.clone(),
+            };
+            opensession_git_native::NativeGitStorage
+                .store_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &record)
+                .map_err(anyhow::Error::msg)?;
+        }
+        opensession_runtime_config::SummaryStorageBackend::None => {}
+    }
 
     Ok(())
 }
@@ -703,7 +739,7 @@ async fn upload_to_server(
 mod tests {
     use super::*;
     use opensession_core::{Agent, Content, Event, EventType, Session};
-    use opensession_runtime_config::{SummaryPersistMode, SummaryProvider, SummaryTriggerMode};
+    use opensession_runtime_config::{SummaryProvider, SummaryStorageBackend, SummaryTriggerMode};
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -995,9 +1031,9 @@ mod tests {
 
         let session = make_interaction_fixture_session("summary-auto");
         let mut config = DaemonConfig::default();
-        config.summary.provider = SummaryProvider::CodexExec;
-        config.summary.trigger_mode = SummaryTriggerMode::OnSessionSave;
-        config.summary.persist_mode = SummaryPersistMode::LocalDb;
+        config.summary.provider.id = SummaryProvider::CodexExec;
+        config.summary.storage.trigger = SummaryTriggerMode::OnSessionSave;
+        config.summary.storage.backend = SummaryStorageBackend::LocalDb;
 
         maybe_generate_semantic_summary(&session, &db, &config)
             .await
@@ -1020,9 +1056,9 @@ mod tests {
 
         let session = make_interaction_fixture_session("summary-manual");
         let mut config = DaemonConfig::default();
-        config.summary.provider = SummaryProvider::CodexExec;
-        config.summary.trigger_mode = SummaryTriggerMode::Manual;
-        config.summary.persist_mode = SummaryPersistMode::LocalDb;
+        config.summary.provider.id = SummaryProvider::CodexExec;
+        config.summary.storage.trigger = SummaryTriggerMode::Manual;
+        config.summary.storage.backend = SummaryStorageBackend::LocalDb;
 
         maybe_generate_semantic_summary(&session, &db, &config)
             .await
@@ -1035,16 +1071,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_auto_summary_skips_when_persist_mode_is_none() {
+    async fn test_auto_summary_skips_when_storage_backend_is_none() {
         let tmp = tempdir().expect("tempdir");
         let db_path = PathBuf::from(tmp.path()).join("local.db");
         let db = LocalDb::open_path(&db_path).expect("open local db");
 
         let session = make_interaction_fixture_session("summary-no-persist");
         let mut config = DaemonConfig::default();
-        config.summary.provider = SummaryProvider::CodexExec;
-        config.summary.trigger_mode = SummaryTriggerMode::OnSessionSave;
-        config.summary.persist_mode = SummaryPersistMode::None;
+        config.summary.provider.id = SummaryProvider::CodexExec;
+        config.summary.storage.trigger = SummaryTriggerMode::OnSessionSave;
+        config.summary.storage.backend = SummaryStorageBackend::None;
 
         maybe_generate_semantic_summary(&session, &db, &config)
             .await

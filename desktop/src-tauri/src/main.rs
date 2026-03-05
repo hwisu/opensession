@@ -4,34 +4,92 @@ use opensession_api::{
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
     CapabilitiesResponse, DesktopApiError, DesktopContractVersionResponse,
     DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopRuntimeSettingsResponse,
-    DesktopRuntimeSettingsUpdateRequest, DesktopSessionListQuery, DesktopSessionSummaryResponse,
-    DesktopSummaryProviderDetectResponse, LinkType, SessionDetail, SessionLink,
-    SessionListResponse, SessionRepoListResponse, SessionSummary, DESKTOP_IPC_CONTRACT_VERSION,
+    DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettings,
+    DesktopRuntimeSummaryProviderSettings, DesktopRuntimeSummaryResponseSettings,
+    DesktopRuntimeSummarySettings, DesktopRuntimeSummaryStorageSettings,
+    DesktopRuntimeSummaryUiConstraints, DesktopRuntimeVectorSearchSettings,
+    DesktopSessionListQuery, DesktopSessionSummaryResponse, DesktopSummaryOutputShape,
+    DesktopSummaryProviderDetectResponse, DesktopSummaryProviderId,
+    DesktopSummaryProviderTransport, DesktopSummaryResponseStyle, DesktopSummarySourceMode,
+    DesktopSummaryStorageBackend, DesktopSummaryTriggerMode, DesktopVectorIndexState,
+    DesktopVectorIndexStatusResponse, DesktopVectorInstallState,
+    DesktopVectorInstallStatusResponse, DesktopVectorPreflightResponse,
+    DesktopVectorSearchGranularity, DesktopVectorSearchProvider, DesktopVectorSearchResponse,
+    DesktopVectorSessionMatch, LinkType, SessionDetail, SessionLink, SessionListResponse,
+    SessionRepoListResponse, SessionSummary, DESKTOP_IPC_CONTRACT_VERSION,
 };
 use opensession_core::handoff::{validate_handoff_summaries, HandoffSummary};
 use opensession_core::object_store::{
     find_repo_root, global_store_root, sha256_hex, store_local_object,
 };
+use opensession_core::session::working_directory;
 use opensession_core::source_uri::SourceUri;
 use opensession_core::trace::Session as HailSession;
-use opensession_git_native::{extract_git_context, ops::find_repo_root as find_git_repo_root};
-use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow};
+use opensession_git_native::{
+    extract_git_context, ops::find_repo_root as find_git_repo_root, NativeGitStorage,
+    SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
+};
+use opensession_local_db::{
+    LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow, VectorChunkUpsert,
+    VectorIndexJobRow,
+};
 use opensession_parsers::ingest::preview_parse_bytes;
 use opensession_runtime_config::{
-    DaemonConfig, SessionDefaultView, SummaryPersistMode, SummaryProvider, SummaryResponseStyle,
-    SummarySourceMode, SummaryTriggerMode,
+    DaemonConfig, SessionDefaultView, SummaryOutputShape, SummaryProvider, SummaryResponseStyle,
+    SummarySourceMode, SummaryStorageBackend, SummaryTriggerMode, VectorSearchGranularity,
+    VectorSearchProvider,
 };
-use opensession_summary::{summarize_session, GitSummaryRequest};
+use opensession_summary::{summarize_session, validate_summary_prompt_template, GitSummaryRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 type DesktopApiResult<T> = Result<T, DesktopApiError>;
 
 const HANDOFF_RECORD_VERSION: &str = "v1";
 const HANDOFF_LATEST_PIN_ALIAS: &str = "latest";
+const VECTOR_EMBED_BATCH_SIZE: usize = 24;
+const VECTOR_FTS_CANDIDATE_LIMIT_MULTIPLIER: u32 = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    Keyword,
+    Vector,
+}
+
+#[derive(Debug, Clone)]
+struct VectorInstallRuntimeState {
+    state: DesktopVectorInstallState,
+    model: String,
+    progress_pct: u8,
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct VectorMatchScore {
+    session_id: String,
+    chunk_id: String,
+    start_line: u32,
+    end_line: u32,
+    snippet: String,
+    best_score: f32,
+    hit_count: u32,
+}
+
+static VECTOR_INSTALL_STATE: LazyLock<Mutex<VectorInstallRuntimeState>> = LazyLock::new(|| {
+    Mutex::new(VectorInstallRuntimeState {
+        state: DesktopVectorInstallState::NotInstalled,
+        model: "bge-m3".to_string(),
+        progress_pct: 0,
+        message: None,
+    })
+});
+static VECTOR_INDEX_REBUILD_RUNNING: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DesktopHandoffArtifactRecord {
@@ -113,6 +171,21 @@ fn normalize_non_empty(value: Option<String>) -> Option<String> {
         .and_then(|trimmed| (!trimmed.is_empty()).then_some(trimmed))
 }
 
+fn split_search_mode(raw: Option<String>) -> (Option<String>, SearchMode) {
+    let normalized = normalize_non_empty(raw);
+    let Some(value) = normalized else {
+        return (None, SearchMode::Keyword);
+    };
+    let lower = value.to_ascii_lowercase();
+    for prefix in ["vector:", "vec:"] {
+        if lower.starts_with(prefix) {
+            let query = value[prefix.len()..].trim().to_string();
+            return ((!query.is_empty()).then_some(query), SearchMode::Vector);
+        }
+    }
+    (Some(value), SearchMode::Keyword)
+}
+
 fn parse_positive_u32(raw: Option<String>, fallback: u32, max: u32) -> u32 {
     let parsed = raw
         .and_then(|value| value.parse::<u32>().ok())
@@ -138,13 +211,16 @@ fn map_time_range(time_range: Option<&str>) -> opensession_local_db::LocalTimeRa
     }
 }
 
-fn build_local_filter(query: DesktopSessionListQuery) -> (LocalSessionFilter, u32, u32) {
+fn build_local_filter_with_mode(
+    query: DesktopSessionListQuery,
+) -> (LocalSessionFilter, u32, u32, SearchMode) {
     let page = parse_positive_u32(query.page, 1, 10_000);
     let per_page = parse_positive_u32(query.per_page, 20, 200);
     let offset = (page.saturating_sub(1)).saturating_mul(per_page);
+    let (search_query, search_mode) = split_search_mode(query.search);
 
     let filter = LocalSessionFilter {
-        search: normalize_non_empty(query.search),
+        search: search_query,
         tool: normalize_non_empty(query.tool),
         git_repo_name: normalize_non_empty(query.git_repo_name),
         sort: map_sort_order(query.sort.as_deref()),
@@ -153,10 +229,23 @@ fn build_local_filter(query: DesktopSessionListQuery) -> (LocalSessionFilter, u3
         offset: Some(offset),
         ..Default::default()
     };
-    (filter, page, per_page)
+
+    (filter, page, per_page, search_mode)
 }
 
 fn session_summary_from_local_row(row: LocalSessionRow) -> SessionSummary {
+    session_summary_from_local_row_with_score(
+        row,
+        0,
+        opensession_core::scoring::DEFAULT_SCORE_PLUGIN,
+    )
+}
+
+fn session_summary_from_local_row_with_score(
+    row: LocalSessionRow,
+    session_score: i64,
+    score_plugin: &str,
+) -> SessionSummary {
     SessionSummary {
         id: row.id,
         user_id: row.user_id,
@@ -186,8 +275,8 @@ fn session_summary_from_local_row(row: LocalSessionRow) -> SessionSummary {
         files_read: row.files_read,
         has_errors: row.has_errors,
         max_active_agents: row.max_active_agents,
-        session_score: 0,
-        score_plugin: opensession_core::scoring::DEFAULT_SCORE_PLUGIN.to_string(),
+        session_score,
+        score_plugin: score_plugin.to_string(),
     }
 }
 
@@ -306,55 +395,1156 @@ fn save_runtime_config(config: &DaemonConfig) -> DesktopApiResult<()> {
     })
 }
 
-fn map_summary_provider_from_str(raw: &str) -> Option<SummaryProvider> {
-    match raw.trim() {
-        "disabled" => Some(SummaryProvider::Disabled),
-        "ollama" => Some(SummaryProvider::Ollama),
-        "codex_exec" => Some(SummaryProvider::CodexExec),
-        "claude_cli" => Some(SummaryProvider::ClaudeCli),
-        _ => None,
+fn vector_embed_endpoint(runtime: &DaemonConfig) -> String {
+    let configured = runtime.vector_search.endpoint.trim();
+    if !configured.is_empty() {
+        return configured.trim_end_matches('/').to_string();
+    }
+    "http://127.0.0.1:11434".to_string()
+}
+
+fn vector_embed_model(runtime: &DaemonConfig) -> String {
+    let configured = runtime.vector_search.model.trim();
+    if configured.is_empty() {
+        return "bge-m3".to_string();
+    }
+    configured.to_string()
+}
+
+fn parse_embedding_vector(value: &serde_json::Value) -> Option<Vec<f32>> {
+    let items = value.as_array()?;
+    let mut output = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(number) = item.as_f64() {
+            output.push(number as f32);
+            continue;
+        }
+        if let Some(number) = item.as_i64() {
+            output.push(number as f32);
+            continue;
+        }
+        if let Some(number) = item.as_u64() {
+            output.push(number as f32);
+            continue;
+        }
+        return None;
+    }
+    Some(output)
+}
+
+fn parse_embeddings_payload(payload: &serde_json::Value) -> Option<Vec<Vec<f32>>> {
+    if let Some(vectors) = payload.get("embeddings").and_then(|value| value.as_array()) {
+        let mut out = Vec::with_capacity(vectors.len());
+        for value in vectors {
+            out.push(parse_embedding_vector(value)?);
+        }
+        return Some(out);
+    }
+    payload
+        .get("embedding")
+        .and_then(parse_embedding_vector)
+        .map(|vector| vec![vector])
+}
+
+fn request_ollama_embeddings(
+    endpoint: &str,
+    model: &str,
+    inputs: &[String],
+) -> DesktopApiResult<Vec<Vec<f32>>> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.vector_search_client_failed",
+                500,
+                "failed to initialize vector search client",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+
+    let base = endpoint.trim_end_matches('/');
+    let batch_url = format!("{base}/api/embed");
+    match client
+        .post(&batch_url)
+        .json(&json!({ "model": model, "input": inputs }))
+        .send()
+    {
+        Ok(response) if response.status().is_success() => {
+            let payload: serde_json::Value = response.json().map_err(|error| {
+                desktop_error(
+                    "desktop.vector_search_parse_failed",
+                    502,
+                    "failed to parse embedding response",
+                    Some(json!({ "cause": error.to_string(), "endpoint": batch_url })),
+                )
+            })?;
+            if let Some(vectors) = parse_embeddings_payload(&payload) {
+                if vectors.len() == inputs.len() {
+                    return Ok(vectors);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let single_url = format!("{base}/api/embeddings");
+    let mut vectors = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let response = client
+            .post(&single_url)
+            .json(&json!({ "model": model, "prompt": input }))
+            .send()
+            .map_err(|error| {
+                desktop_error(
+                    "desktop.vector_search_unavailable",
+                    422,
+                    "vector search endpoint is unavailable",
+                    Some(json!({
+                        "cause": error.to_string(),
+                        "endpoint": single_url,
+                        "hint": "start local ollama and ensure embeddings endpoint is reachable"
+                    })),
+                )
+            })?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().unwrap_or_default();
+            return Err(desktop_error(
+                "desktop.vector_search_unavailable",
+                422,
+                "vector search endpoint returned an error",
+                Some(json!({
+                    "endpoint": single_url,
+                    "status": status,
+                    "body": body,
+                    "hint": "verify embedding model exists in local ollama"
+                })),
+            ));
+        }
+        let payload: serde_json::Value = response.json().map_err(|error| {
+            desktop_error(
+                "desktop.vector_search_parse_failed",
+                502,
+                "failed to parse embedding response",
+                Some(json!({ "cause": error.to_string(), "endpoint": single_url })),
+            )
+        })?;
+        let vector = parse_embeddings_payload(&payload)
+            .and_then(|mut list| list.pop())
+            .ok_or_else(|| {
+                desktop_error(
+                    "desktop.vector_search_parse_failed",
+                    502,
+                    "embedding response missing vector payload",
+                    Some(json!({ "endpoint": single_url })),
+                )
+            })?;
+        vectors.push(vector);
+    }
+
+    Ok(vectors)
+}
+
+fn request_ollama_embeddings_in_batches(
+    endpoint: &str,
+    model: &str,
+    inputs: &[String],
+) -> DesktopApiResult<Vec<Vec<f32>>> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::with_capacity(inputs.len());
+    for chunk in inputs.chunks(VECTOR_EMBED_BATCH_SIZE) {
+        let vectors = request_ollama_embeddings(endpoint, model, chunk)?;
+        out.extend(vectors);
+    }
+    Ok(out)
+}
+
+fn current_vector_install_state() -> VectorInstallRuntimeState {
+    VECTOR_INSTALL_STATE
+        .lock()
+        .expect("vector install state mutex poisoned")
+        .clone()
+}
+
+fn set_vector_install_state(update: VectorInstallRuntimeState) {
+    *VECTOR_INSTALL_STATE
+        .lock()
+        .expect("vector install state mutex poisoned") = update;
+}
+
+fn update_vector_install_progress(
+    state: DesktopVectorInstallState,
+    model: &str,
+    progress_pct: u8,
+    message: Option<String>,
+) {
+    set_vector_install_state(VectorInstallRuntimeState {
+        state,
+        model: model.to_string(),
+        progress_pct: progress_pct.min(100),
+        message,
+    });
+}
+
+fn parse_ollama_model_list(payload: &serde_json::Value, target_model: &str) -> bool {
+    let Some(models) = payload.get("models").and_then(|value| value.as_array()) else {
+        return false;
+    };
+    let target = target_model.trim();
+    if target.is_empty() {
+        return false;
+    }
+    models.iter().any(|item| {
+        item.get("name")
+            .and_then(|value| value.as_str())
+            .map(|name| name == target || name.starts_with(&format!("{target}:")))
+            .unwrap_or(false)
+    })
+}
+
+fn vector_preflight_for_runtime(runtime: &DaemonConfig) -> DesktopVectorPreflightResponse {
+    let endpoint = vector_embed_endpoint(runtime);
+    let model = vector_embed_model(runtime);
+    let mut response = DesktopVectorPreflightResponse {
+        provider: DesktopVectorSearchProvider::Ollama,
+        endpoint: endpoint.clone(),
+        model: model.clone(),
+        ollama_reachable: false,
+        model_installed: false,
+        install_state: DesktopVectorInstallState::NotInstalled,
+        progress_pct: 0,
+        message: None,
+    };
+
+    let install_state = current_vector_install_state();
+    response.install_state = install_state.state;
+    response.progress_pct = install_state.progress_pct;
+    response.message = install_state.message;
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            response.message = Some(format!("failed to initialize HTTP client: {error}"));
+            return response;
+        }
+    };
+
+    let tags_url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+    let tags_response = match client.get(tags_url).send() {
+        Ok(resp) => resp,
+        Err(error) => {
+            response.message = Some(format!(
+                "ollama is not reachable; start it with `ollama serve` ({error})"
+            ));
+            return response;
+        }
+    };
+    if !tags_response.status().is_success() {
+        response.message = Some(format!(
+            "ollama returned unexpected status {}",
+            tags_response.status()
+        ));
+        return response;
+    }
+
+    response.ollama_reachable = true;
+    let payload: serde_json::Value = match tags_response.json() {
+        Ok(payload) => payload,
+        Err(error) => {
+            response.message = Some(format!("failed to parse ollama model list: {error}"));
+            return response;
+        }
+    };
+    response.model_installed = parse_ollama_model_list(&payload, &model);
+    if response.model_installed {
+        response.install_state = DesktopVectorInstallState::Ready;
+        response.progress_pct = 100;
+        if response.message.is_none() {
+            response.message = Some("model is installed and ready".to_string());
+        }
+    } else if matches!(response.install_state, DesktopVectorInstallState::Ready) {
+        response.install_state = DesktopVectorInstallState::NotInstalled;
+        response.progress_pct = 0;
+    }
+    response
+}
+
+fn install_ollama_model_blocking(endpoint: &str, model: &str) -> DesktopApiResult<()> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.vector_install_client_failed",
+                500,
+                "failed to initialize vector install client",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+
+    let pull_url = format!("{}/api/pull", endpoint.trim_end_matches('/'));
+    let response = client
+        .post(&pull_url)
+        .json(&json!({ "model": model, "stream": true }))
+        .send()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.vector_install_unavailable",
+                422,
+                "failed to connect to ollama model pull endpoint",
+                Some(json!({
+                    "cause": error.to_string(),
+                    "endpoint": pull_url,
+                    "hint": "start local ollama with `ollama serve`"
+                })),
+            )
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let body = response.text().unwrap_or_default();
+        return Err(desktop_error(
+            "desktop.vector_install_failed",
+            422,
+            "ollama model pull failed",
+            Some(json!({ "endpoint": pull_url, "status": status, "body": body })),
+        ));
+    }
+
+    let mut reader = BufReader::new(response);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes = reader.read_line(&mut line).map_err(|error| {
+            desktop_error(
+                "desktop.vector_install_failed",
+                500,
+                "failed while reading model pull stream",
+                Some(json!({ "cause": error.to_string(), "endpoint": pull_url })),
+            )
+        })?;
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(error_text) = payload.get("error").and_then(|value| value.as_str()) {
+                return Err(desktop_error(
+                    "desktop.vector_install_failed",
+                    422,
+                    "ollama model pull failed",
+                    Some(json!({ "endpoint": pull_url, "error": error_text })),
+                ));
+            }
+            let status = payload
+                .get("status")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let completed = payload.get("completed").and_then(|value| value.as_u64());
+            let total = payload.get("total").and_then(|value| value.as_u64());
+            let progress_pct = match (completed, total) {
+                (Some(done), Some(total)) if total > 0 => ((done * 100) / total).min(100) as u8,
+                _ => 0,
+            };
+            if status.is_some() || progress_pct > 0 {
+                update_vector_install_progress(
+                    DesktopVectorInstallState::Installing,
+                    model,
+                    progress_pct,
+                    status,
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cosine_similarity(lhs: &[f32], rhs: &[f32]) -> f32 {
+    if lhs.is_empty() || rhs.is_empty() || lhs.len() != rhs.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut lhs_norm = 0.0f32;
+    let mut rhs_norm = 0.0f32;
+    for (l, r) in lhs.iter().zip(rhs.iter()) {
+        dot += l * r;
+        lhs_norm += l * l;
+        rhs_norm += r * r;
+    }
+    if lhs_norm <= f32::EPSILON || rhs_norm <= f32::EPSILON {
+        return 0.0;
+    }
+    dot / (lhs_norm.sqrt() * rhs_norm.sqrt())
+}
+
+fn parse_vector_cursor(cursor: Option<String>) -> usize {
+    cursor
+        .as_deref()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn truncate_snippet(raw: &str, max_chars: usize) -> String {
+    let trimmed = raw.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out = String::with_capacity(max_chars + 3);
+    for ch in trimmed.chars().take(max_chars) {
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
+}
+
+fn ensure_vector_enabled_and_ready(
+    runtime: &DaemonConfig,
+) -> DesktopApiResult<DesktopVectorPreflightResponse> {
+    if !runtime.vector_search.enabled {
+        return Err(desktop_error(
+            "desktop.vector_search_disabled",
+            422,
+            "semantic vector search is disabled in runtime settings",
+            Some(json!({ "hint": "enable vector_search in Settings and save runtime settings" })),
+        ));
+    }
+    let preflight = vector_preflight_for_runtime(runtime);
+    if !preflight.ollama_reachable {
+        return Err(desktop_error(
+            "desktop.vector_search_unavailable",
+            422,
+            "ollama endpoint is not reachable",
+            Some(json!({
+                "endpoint": preflight.endpoint,
+                "hint": "start local ollama with `ollama serve`"
+            })),
+        ));
+    }
+    if !preflight.model_installed {
+        return Err(desktop_error(
+            "desktop.vector_model_not_installed",
+            422,
+            "embedding model is not installed",
+            Some(json!({
+                "model": preflight.model,
+                "hint": "use Settings > Vector Search > Install model"
+            })),
+        ));
+    }
+    Ok(preflight)
+}
+
+fn score_vector_sessions(
+    query_vector: &[f32],
+    candidates: Vec<opensession_local_db::VectorChunkCandidateRow>,
+) -> Vec<VectorMatchScore> {
+    let mut by_session: HashMap<String, VectorMatchScore> = HashMap::new();
+    for candidate in candidates {
+        let score = cosine_similarity(query_vector, &candidate.embedding);
+        if !score.is_finite() {
+            continue;
+        }
+        let entry = by_session
+            .entry(candidate.session_id.clone())
+            .or_insert_with(|| VectorMatchScore {
+                session_id: candidate.session_id.clone(),
+                chunk_id: candidate.chunk_id.clone(),
+                start_line: candidate.start_line,
+                end_line: candidate.end_line,
+                snippet: truncate_snippet(&candidate.content, 260),
+                best_score: score,
+                hit_count: 0,
+            });
+        entry.hit_count = entry.hit_count.saturating_add(1);
+        if score > entry.best_score {
+            entry.best_score = score;
+            entry.chunk_id = candidate.chunk_id;
+            entry.start_line = candidate.start_line;
+            entry.end_line = candidate.end_line;
+            entry.snippet = truncate_snippet(&candidate.content, 260);
+        }
+    }
+    let mut ranked = by_session.into_values().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        let right_weighted = right.best_score + (right.hit_count as f32 * 0.01);
+        let left_weighted = left.best_score + (left.hit_count as f32 * 0.01);
+        right_weighted.total_cmp(&left_weighted)
+    });
+    ranked
+}
+
+fn session_matches_vector_filter(
+    summary: &SessionSummary,
+    filter: Option<&LocalSessionFilter>,
+) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+
+    if let Some(tool) = filter.tool.as_deref() {
+        if summary.tool != tool {
+            return false;
+        }
+    }
+    if let Some(repo) = filter.git_repo_name.as_deref() {
+        if summary.git_repo_name.as_deref() != Some(repo) {
+            return false;
+        }
+    }
+
+    if !matches!(filter.time_range, opensession_local_db::LocalTimeRange::All) {
+        let created_at = match chrono::DateTime::parse_from_rfc3339(&summary.created_at) {
+            Ok(parsed) => parsed.with_timezone(&chrono::Utc),
+            Err(_) => return false,
+        };
+        let now = chrono::Utc::now();
+        let min_allowed = match filter.time_range {
+            opensession_local_db::LocalTimeRange::Hours24 => now - chrono::Duration::hours(24),
+            opensession_local_db::LocalTimeRange::Days7 => now - chrono::Duration::days(7),
+            opensession_local_db::LocalTimeRange::Days30 => now - chrono::Duration::days(30),
+            opensession_local_db::LocalTimeRange::All => now - chrono::Duration::days(36500),
+        };
+        if created_at < min_allowed {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn search_sessions_vector_internal(
+    db: &LocalDb,
+    runtime: &DaemonConfig,
+    query_text: &str,
+    cursor: Option<String>,
+    limit: Option<u32>,
+    filter: Option<&LocalSessionFilter>,
+) -> DesktopApiResult<DesktopVectorSearchResponse> {
+    let normalized_query = query_text.trim();
+    if normalized_query.is_empty() {
+        return Err(desktop_error(
+            "desktop.vector_search_query_required",
+            422,
+            "vector search query is empty",
+            Some(json!({ "hint": "provide a non-empty query" })),
+        ));
+    }
+
+    let _preflight = ensure_vector_enabled_and_ready(runtime)?;
+    let endpoint = vector_embed_endpoint(runtime);
+    let model = vector_embed_model(runtime);
+    let query_embeddings =
+        request_ollama_embeddings(&endpoint, &model, &[normalized_query.to_string()])?;
+    let query_vector = query_embeddings.into_iter().next().unwrap_or_default();
+    if query_vector.is_empty() {
+        return Err(desktop_error(
+            "desktop.vector_search_parse_failed",
+            502,
+            "embedding response missing query vector",
+            Some(json!({ "model": model, "endpoint": endpoint })),
+        ));
+    }
+
+    let candidate_limit = (runtime.vector_search.top_k_chunks.max(1) as u32)
+        .saturating_mul(VECTOR_FTS_CANDIDATE_LIMIT_MULTIPLIER);
+    let mut candidates = db
+        .list_vector_chunk_candidates(normalized_query, &model, candidate_limit)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.vector_search_db_failed",
+                500,
+                "failed to load vector chunk candidates",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+    if candidates.is_empty() {
+        candidates = db
+            .list_recent_vector_chunks_for_model(&model, candidate_limit)
+            .map_err(|error| {
+                desktop_error(
+                    "desktop.vector_search_db_failed",
+                    500,
+                    "failed to load fallback vector chunk candidates",
+                    Some(json!({ "cause": error.to_string() })),
+                )
+            })?;
+    }
+
+    let mut ranked = score_vector_sessions(&query_vector, candidates);
+    let top_sessions = runtime.vector_search.top_k_sessions.max(1) as usize;
+    if ranked.len() > top_sessions {
+        ranked.truncate(top_sessions);
+    }
+    let offset = parse_vector_cursor(cursor);
+    let page_limit = limit.unwrap_or(20).clamp(1, 100) as usize;
+
+    let mut materialized = Vec::new();
+    for scored in ranked {
+        let Some(row) = db.get_session_by_id(&scored.session_id).map_err(|error| {
+            desktop_error(
+                "desktop.vector_search_db_failed",
+                500,
+                "failed to read session row for vector search result",
+                Some(json!({ "cause": error.to_string(), "session_id": scored.session_id })),
+            )
+        })?
+        else {
+            continue;
+        };
+        let normalized = (scored.best_score.clamp(-1.0, 1.0) * 10_000.0).round() as i64;
+        let summary =
+            session_summary_from_local_row_with_score(row, normalized, "vector_ollama_bge_m3_v2");
+        if !session_matches_vector_filter(&summary, filter) {
+            continue;
+        }
+        materialized.push(DesktopVectorSessionMatch {
+            session: summary,
+            score: scored.best_score,
+            chunk_id: scored.chunk_id,
+            start_line: scored.start_line,
+            end_line: scored.end_line,
+            snippet: scored.snippet,
+        });
+    }
+
+    let total_candidates = materialized.len() as u32;
+    let sessions = materialized
+        .into_iter()
+        .skip(offset)
+        .take(page_limit)
+        .collect::<Vec<_>>();
+
+    let next_offset = offset.saturating_add(sessions.len());
+    let next_cursor = (next_offset < total_candidates as usize).then_some(next_offset.to_string());
+
+    Ok(DesktopVectorSearchResponse {
+        query: normalized_query.to_string(),
+        sessions,
+        next_cursor,
+        total_candidates,
+    })
+}
+
+fn list_sessions_with_vector_rank(
+    db: &LocalDb,
+    base_filter: &LocalSessionFilter,
+    query_text: &str,
+    page: u32,
+    per_page: u32,
+) -> DesktopApiResult<SessionListResponse> {
+    let runtime = load_runtime_config()?;
+    let offset = (page.saturating_sub(1)).saturating_mul(per_page) as usize;
+    let response = search_sessions_vector_internal(
+        db,
+        &runtime,
+        query_text,
+        Some(offset.to_string()),
+        Some(per_page),
+        Some(base_filter),
+    )?;
+    Ok(SessionListResponse {
+        sessions: response
+            .sessions
+            .into_iter()
+            .map(|hit| hit.session)
+            .collect(),
+        total: response.total_candidates as i64,
+        page,
+        per_page,
+    })
+}
+
+fn push_non_empty_lines(raw: &str, lines: &mut Vec<String>) {
+    for line in raw.lines() {
+        let normalized = line.trim_end_matches('\r');
+        if normalized.trim().is_empty() {
+            continue;
+        }
+        lines.push(normalized.to_string());
     }
 }
 
-fn map_summary_source_mode_from_str(raw: &str) -> Option<SummarySourceMode> {
-    match raw.trim() {
-        "session_only" => Some(SummarySourceMode::SessionOnly),
-        "session_or_git_changes" => Some(SummarySourceMode::SessionOrGitChanges),
-        _ => None,
+fn extract_vector_lines(session: &HailSession) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(title) = session.context.title.as_deref() {
+        push_non_empty_lines(title, &mut lines);
+    }
+    if let Some(description) = session.context.description.as_deref() {
+        push_non_empty_lines(description, &mut lines);
+    }
+
+    for event in &session.events {
+        for block in &event.content.blocks {
+            match block {
+                opensession_core::trace::ContentBlock::Text { text } => {
+                    push_non_empty_lines(text, &mut lines);
+                }
+                opensession_core::trace::ContentBlock::Code { code, .. } => {
+                    push_non_empty_lines(code, &mut lines);
+                }
+                opensession_core::trace::ContentBlock::File { path, content } => {
+                    push_non_empty_lines(path, &mut lines);
+                    if let Some(content) = content.as_deref() {
+                        push_non_empty_lines(content, &mut lines);
+                    }
+                }
+                opensession_core::trace::ContentBlock::Json { data } => {
+                    if let Ok(serialized) = serde_json::to_string(data) {
+                        push_non_empty_lines(&serialized, &mut lines);
+                    }
+                }
+                opensession_core::trace::ContentBlock::Reference { uri, .. } => {
+                    push_non_empty_lines(uri, &mut lines);
+                }
+                opensession_core::trace::ContentBlock::Image { alt, .. } => {
+                    if let Some(alt) = alt.as_deref() {
+                        push_non_empty_lines(alt, &mut lines);
+                    }
+                }
+                opensession_core::trace::ContentBlock::Video { .. }
+                | opensession_core::trace::ContentBlock::Audio { .. } => {}
+                _ => {}
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(session.session_id.clone());
+    }
+    lines
+}
+
+fn build_vector_chunks_for_session(
+    session: &HailSession,
+    source_hash: &str,
+    runtime: &DaemonConfig,
+) -> Vec<VectorChunkUpsert> {
+    let lines = extract_vector_lines(session);
+    let chunk_size = runtime.vector_search.chunk_size_lines.max(1) as usize;
+    let overlap = runtime
+        .vector_search
+        .chunk_overlap_lines
+        .min(runtime.vector_search.chunk_size_lines.saturating_sub(1)) as usize;
+    let step = chunk_size.saturating_sub(overlap).max(1);
+
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let mut chunk_index = 0u32;
+    while start < lines.len() {
+        let end = (start + chunk_size).min(lines.len());
+        let content = lines[start..end].join("\n");
+        let content_hash = sha256_hex(content.as_bytes());
+        let chunk_key = format!(
+            "{}:{}:{}:{}:{}",
+            session.session_id,
+            source_hash,
+            chunk_index,
+            start + 1,
+            end
+        );
+        chunks.push(VectorChunkUpsert {
+            chunk_id: sha256_hex(chunk_key.as_bytes()),
+            session_id: session.session_id.clone(),
+            chunk_index,
+            start_line: (start + 1) as u32,
+            end_line: end as u32,
+            line_count: (end - start) as u32,
+            content,
+            content_hash,
+            embedding: Vec::new(),
+        });
+
+        if end == lines.len() {
+            break;
+        }
+        start = start.saturating_add(step);
+        chunk_index = chunk_index.saturating_add(1);
+    }
+    chunks
+}
+
+fn map_vector_index_state(raw: &str) -> DesktopVectorIndexState {
+    match raw {
+        "running" => DesktopVectorIndexState::Running,
+        "complete" => DesktopVectorIndexState::Complete,
+        "failed" => DesktopVectorIndexState::Failed,
+        _ => DesktopVectorIndexState::Idle,
     }
 }
 
-fn map_summary_response_style_from_str(raw: &str) -> Option<SummaryResponseStyle> {
-    match raw.trim() {
-        "compact" => Some(SummaryResponseStyle::Compact),
-        "standard" => Some(SummaryResponseStyle::Standard),
-        "detailed" => Some(SummaryResponseStyle::Detailed),
-        _ => None,
+fn desktop_vector_index_status_from_db(
+    db: &LocalDb,
+) -> DesktopApiResult<DesktopVectorIndexStatusResponse> {
+    let row = db.get_vector_index_job().map_err(|error| {
+        desktop_error(
+            "desktop.vector_index_status_failed",
+            500,
+            "failed to read vector indexing status",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+
+    let Some(row) = row else {
+        return Ok(DesktopVectorIndexStatusResponse {
+            state: DesktopVectorIndexState::Idle,
+            processed_sessions: 0,
+            total_sessions: 0,
+            message: None,
+            started_at: None,
+            finished_at: None,
+        });
+    };
+
+    Ok(DesktopVectorIndexStatusResponse {
+        state: map_vector_index_state(&row.status),
+        processed_sessions: row.processed_sessions,
+        total_sessions: row.total_sessions,
+        message: row.message,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+    })
+}
+
+fn set_vector_index_job_snapshot(db: &LocalDb, payload: VectorIndexJobRow) -> DesktopApiResult<()> {
+    db.set_vector_index_job(&payload).map_err(|error| {
+        desktop_error(
+            "desktop.vector_index_status_failed",
+            500,
+            "failed to persist vector indexing status",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })
+}
+
+fn rebuild_vector_index_blocking(db: &LocalDb, runtime: &DaemonConfig) -> DesktopApiResult<()> {
+    let mut filter = LocalSessionFilter::default();
+    filter.limit = None;
+    filter.offset = None;
+    let sessions = db.list_sessions(&filter).map_err(|error| {
+        desktop_error(
+            "desktop.vector_index_list_failed",
+            500,
+            "failed to list sessions for vector indexing",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let total_sessions = sessions.len() as u32;
+    let started_at = chrono::Utc::now().to_rfc3339();
+    set_vector_index_job_snapshot(
+        db,
+        VectorIndexJobRow {
+            status: "running".to_string(),
+            processed_sessions: 0,
+            total_sessions,
+            message: Some("indexing session chunks".to_string()),
+            started_at: Some(started_at.clone()),
+            finished_at: None,
+        },
+    )?;
+
+    let endpoint = vector_embed_endpoint(runtime);
+    let model = vector_embed_model(runtime);
+    for (idx, row) in sessions.iter().enumerate() {
+        let processed_sessions = idx as u32;
+        set_vector_index_job_snapshot(
+            db,
+            VectorIndexJobRow {
+                status: "running".to_string(),
+                processed_sessions,
+                total_sessions,
+                message: Some(format!("indexing {}", row.id)),
+                started_at: Some(started_at.clone()),
+                finished_at: None,
+            },
+        )?;
+
+        let normalized = match load_normalized_session_body(db, &row.id) {
+            Ok(body) => body,
+            Err(_) => {
+                continue;
+            }
+        };
+        let source_hash = sha256_hex(normalized.as_bytes());
+        let already_indexed = db
+            .vector_index_source_hash(&row.id)
+            .map_err(|error| {
+                desktop_error(
+                    "desktop.vector_index_status_failed",
+                    500,
+                    "failed to read vector source hash",
+                    Some(json!({ "cause": error.to_string(), "session_id": row.id })),
+                )
+            })?
+            .is_some_and(|hash| hash == source_hash);
+        if already_indexed {
+            continue;
+        }
+
+        let session = match HailSession::from_jsonl(&normalized) {
+            Ok(session) => session,
+            Err(_) => {
+                continue;
+            }
+        };
+        let mut chunks = build_vector_chunks_for_session(&session, &source_hash, runtime);
+        if chunks.is_empty() {
+            db.replace_session_vector_chunks(&row.id, &source_hash, &model, &[])
+                .map_err(|error| {
+                    desktop_error(
+                        "desktop.vector_index_write_failed",
+                        500,
+                        "failed to clear vector chunks for empty session",
+                        Some(json!({ "cause": error.to_string(), "session_id": row.id })),
+                    )
+                })?;
+            continue;
+        }
+
+        let inputs = chunks
+            .iter()
+            .map(|chunk| chunk.content.clone())
+            .collect::<Vec<_>>();
+        let embeddings = request_ollama_embeddings_in_batches(&endpoint, &model, &inputs)?;
+        if embeddings.len() != chunks.len() {
+            return Err(desktop_error(
+                "desktop.vector_index_embedding_mismatch",
+                502,
+                "embedding response count mismatch while indexing session",
+                Some(json!({
+                    "session_id": row.id,
+                    "requested": chunks.len(),
+                    "received": embeddings.len(),
+                    "model": model,
+                })),
+            ));
+        }
+
+        for (chunk, embedding) in chunks.iter_mut().zip(embeddings.into_iter()) {
+            chunk.embedding = embedding;
+        }
+        db.replace_session_vector_chunks(&row.id, &source_hash, &model, &chunks)
+            .map_err(|error| {
+                desktop_error(
+                    "desktop.vector_index_write_failed",
+                    500,
+                    "failed to persist vector chunks",
+                    Some(json!({ "cause": error.to_string(), "session_id": row.id })),
+                )
+            })?;
+    }
+
+    set_vector_index_job_snapshot(
+        db,
+        VectorIndexJobRow {
+            status: "complete".to_string(),
+            processed_sessions: total_sessions,
+            total_sessions,
+            message: Some("vector indexing complete".to_string()),
+            started_at: Some(started_at),
+            finished_at: Some(chrono::Utc::now().to_rfc3339()),
+        },
+    )?;
+    Ok(())
+}
+
+fn map_summary_provider_id_from_runtime(value: &SummaryProvider) -> DesktopSummaryProviderId {
+    match value {
+        SummaryProvider::Disabled => DesktopSummaryProviderId::Disabled,
+        SummaryProvider::Ollama => DesktopSummaryProviderId::Ollama,
+        SummaryProvider::CodexExec => DesktopSummaryProviderId::CodexExec,
+        SummaryProvider::ClaudeCli => DesktopSummaryProviderId::ClaudeCli,
     }
 }
 
-fn map_summary_output_shape_from_str(raw: &str) -> Option<opensession_runtime_config::SummaryOutputShape> {
-    match raw.trim() {
-        "layered" => Some(opensession_runtime_config::SummaryOutputShape::Layered),
-        "file_list" => Some(opensession_runtime_config::SummaryOutputShape::FileList),
-        "security_first" => Some(opensession_runtime_config::SummaryOutputShape::SecurityFirst),
-        _ => None,
+fn map_summary_provider_id_to_runtime(value: &DesktopSummaryProviderId) -> SummaryProvider {
+    match value {
+        DesktopSummaryProviderId::Disabled => SummaryProvider::Disabled,
+        DesktopSummaryProviderId::Ollama => SummaryProvider::Ollama,
+        DesktopSummaryProviderId::CodexExec => SummaryProvider::CodexExec,
+        DesktopSummaryProviderId::ClaudeCli => SummaryProvider::ClaudeCli,
     }
 }
 
-fn map_summary_trigger_mode_from_str(raw: &str) -> Option<SummaryTriggerMode> {
-    match raw.trim() {
-        "manual" => Some(SummaryTriggerMode::Manual),
-        "on_session_save" => Some(SummaryTriggerMode::OnSessionSave),
-        _ => None,
+fn map_summary_transport_from_runtime(
+    value: &opensession_runtime_config::SummaryProviderTransport,
+) -> DesktopSummaryProviderTransport {
+    match value {
+        opensession_runtime_config::SummaryProviderTransport::None => {
+            DesktopSummaryProviderTransport::None
+        }
+        opensession_runtime_config::SummaryProviderTransport::Cli => {
+            DesktopSummaryProviderTransport::Cli
+        }
+        opensession_runtime_config::SummaryProviderTransport::Http => {
+            DesktopSummaryProviderTransport::Http
+        }
     }
 }
 
-fn map_summary_persist_mode_from_str(raw: &str) -> Option<SummaryPersistMode> {
-    match raw.trim() {
-        "none" => Some(SummaryPersistMode::None),
-        "local_db" => Some(SummaryPersistMode::LocalDb),
-        _ => None,
+fn map_summary_source_mode_from_runtime(value: &SummarySourceMode) -> DesktopSummarySourceMode {
+    match value {
+        SummarySourceMode::SessionOnly => DesktopSummarySourceMode::SessionOnly,
+        SummarySourceMode::SessionOrGitChanges => DesktopSummarySourceMode::SessionOrGitChanges,
+    }
+}
+
+fn map_summary_source_mode_to_runtime(value: &DesktopSummarySourceMode) -> SummarySourceMode {
+    match value {
+        DesktopSummarySourceMode::SessionOnly => SummarySourceMode::SessionOnly,
+        DesktopSummarySourceMode::SessionOrGitChanges => SummarySourceMode::SessionOrGitChanges,
+    }
+}
+
+fn map_summary_response_style_from_runtime(
+    value: &SummaryResponseStyle,
+) -> DesktopSummaryResponseStyle {
+    match value {
+        SummaryResponseStyle::Compact => DesktopSummaryResponseStyle::Compact,
+        SummaryResponseStyle::Standard => DesktopSummaryResponseStyle::Standard,
+        SummaryResponseStyle::Detailed => DesktopSummaryResponseStyle::Detailed,
+    }
+}
+
+fn map_summary_response_style_to_runtime(
+    value: &DesktopSummaryResponseStyle,
+) -> SummaryResponseStyle {
+    match value {
+        DesktopSummaryResponseStyle::Compact => SummaryResponseStyle::Compact,
+        DesktopSummaryResponseStyle::Standard => SummaryResponseStyle::Standard,
+        DesktopSummaryResponseStyle::Detailed => SummaryResponseStyle::Detailed,
+    }
+}
+
+fn map_summary_output_shape_from_runtime(value: &SummaryOutputShape) -> DesktopSummaryOutputShape {
+    match value {
+        SummaryOutputShape::Layered => DesktopSummaryOutputShape::Layered,
+        SummaryOutputShape::FileList => DesktopSummaryOutputShape::FileList,
+        SummaryOutputShape::SecurityFirst => DesktopSummaryOutputShape::SecurityFirst,
+    }
+}
+
+fn map_summary_output_shape_to_runtime(value: &DesktopSummaryOutputShape) -> SummaryOutputShape {
+    match value {
+        DesktopSummaryOutputShape::Layered => SummaryOutputShape::Layered,
+        DesktopSummaryOutputShape::FileList => SummaryOutputShape::FileList,
+        DesktopSummaryOutputShape::SecurityFirst => SummaryOutputShape::SecurityFirst,
+    }
+}
+
+fn map_summary_trigger_mode_from_runtime(value: &SummaryTriggerMode) -> DesktopSummaryTriggerMode {
+    match value {
+        SummaryTriggerMode::Manual => DesktopSummaryTriggerMode::Manual,
+        SummaryTriggerMode::OnSessionSave => DesktopSummaryTriggerMode::OnSessionSave,
+    }
+}
+
+fn map_summary_trigger_mode_to_runtime(value: &DesktopSummaryTriggerMode) -> SummaryTriggerMode {
+    match value {
+        DesktopSummaryTriggerMode::Manual => SummaryTriggerMode::Manual,
+        DesktopSummaryTriggerMode::OnSessionSave => SummaryTriggerMode::OnSessionSave,
+    }
+}
+
+fn map_summary_storage_backend_from_runtime(
+    value: &SummaryStorageBackend,
+) -> DesktopSummaryStorageBackend {
+    match value {
+        SummaryStorageBackend::HiddenRef => DesktopSummaryStorageBackend::HiddenRef,
+        SummaryStorageBackend::LocalDb => DesktopSummaryStorageBackend::LocalDb,
+        SummaryStorageBackend::None => DesktopSummaryStorageBackend::None,
+    }
+}
+
+fn map_summary_storage_backend_to_runtime(
+    value: &DesktopSummaryStorageBackend,
+) -> SummaryStorageBackend {
+    match value {
+        DesktopSummaryStorageBackend::HiddenRef => SummaryStorageBackend::HiddenRef,
+        DesktopSummaryStorageBackend::LocalDb => SummaryStorageBackend::LocalDb,
+        DesktopSummaryStorageBackend::None => SummaryStorageBackend::None,
+    }
+}
+
+fn map_vector_provider_from_runtime(value: &VectorSearchProvider) -> DesktopVectorSearchProvider {
+    match value {
+        VectorSearchProvider::Ollama => DesktopVectorSearchProvider::Ollama,
+    }
+}
+
+fn map_vector_provider_to_runtime(value: &DesktopVectorSearchProvider) -> VectorSearchProvider {
+    match value {
+        DesktopVectorSearchProvider::Ollama => VectorSearchProvider::Ollama,
+    }
+}
+
+fn map_vector_granularity_from_runtime(
+    value: &VectorSearchGranularity,
+) -> DesktopVectorSearchGranularity {
+    match value {
+        VectorSearchGranularity::EventLineChunk => DesktopVectorSearchGranularity::EventLineChunk,
+    }
+}
+
+fn map_vector_granularity_to_runtime(
+    value: &DesktopVectorSearchGranularity,
+) -> VectorSearchGranularity {
+    match value {
+        DesktopVectorSearchGranularity::EventLineChunk => VectorSearchGranularity::EventLineChunk,
+    }
+}
+
+fn desktop_summary_settings_from_runtime(config: &DaemonConfig) -> DesktopRuntimeSummarySettings {
+    let source_mode = SummarySourceMode::SessionOnly;
+    DesktopRuntimeSummarySettings {
+        provider: DesktopRuntimeSummaryProviderSettings {
+            id: map_summary_provider_id_from_runtime(&config.summary.provider.id),
+            transport: map_summary_transport_from_runtime(&config.summary.provider_transport()),
+            endpoint: config.summary.provider.endpoint.clone(),
+            model: config.summary.provider.model.clone(),
+        },
+        prompt: DesktopRuntimeSummaryPromptSettings {
+            template: config.summary.prompt.template.clone(),
+            default_template: opensession_summary::DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2.to_string(),
+        },
+        response: DesktopRuntimeSummaryResponseSettings {
+            style: map_summary_response_style_from_runtime(&config.summary.response.style),
+            shape: map_summary_output_shape_from_runtime(&config.summary.response.shape),
+        },
+        storage: DesktopRuntimeSummaryStorageSettings {
+            trigger: map_summary_trigger_mode_from_runtime(&config.summary.storage.trigger),
+            backend: map_summary_storage_backend_from_runtime(&config.summary.storage.backend),
+        },
+        source_mode: map_summary_source_mode_from_runtime(&source_mode),
+    }
+}
+
+fn desktop_vector_settings_from_runtime(
+    config: &DaemonConfig,
+) -> DesktopRuntimeVectorSearchSettings {
+    DesktopRuntimeVectorSearchSettings {
+        enabled: config.vector_search.enabled,
+        provider: map_vector_provider_from_runtime(&config.vector_search.provider),
+        model: vector_embed_model(config),
+        endpoint: vector_embed_endpoint(config),
+        granularity: map_vector_granularity_from_runtime(&config.vector_search.granularity),
+        chunk_size_lines: config.vector_search.chunk_size_lines.max(1),
+        chunk_overlap_lines: config.vector_search.chunk_overlap_lines,
+        top_k_chunks: config.vector_search.top_k_chunks.max(1),
+        top_k_sessions: config.vector_search.top_k_sessions.max(1),
     }
 }
 
@@ -706,7 +1896,7 @@ fn build_handoff_artifact_record(
         summary_meta: Some(DesktopHandoffSummaryMeta {
             session_default_view: enum_label(&runtime.daemon.session_default_view),
             summary_source_mode: enum_label(&runtime.summary.source_mode),
-            summary_provider: enum_label(&runtime.summary.provider),
+            summary_provider: enum_label(&runtime.summary.provider.id),
         }),
         validation_reports,
     };
@@ -720,10 +1910,15 @@ fn build_handoff_artifact_record(
         sha256: artifact_hash,
     }
     .to_string();
+    let download_file_name = artifact_uri
+        .strip_prefix("os://artifact/")
+        .map(|hash| format!("handoff-{hash}.jsonl"));
 
     Ok(DesktopHandoffBuildResponse {
         artifact_uri,
         pinned_alias: pin_latest.then_some(HANDOFF_LATEST_PIN_ALIAS.to_string()),
+        download_file_name,
+        download_content: Some(record.canonical_jsonl),
     })
 }
 
@@ -748,16 +1943,13 @@ fn desktop_get_contract_version() -> DesktopContractVersionResponse {
 }
 
 #[tauri::command]
+fn desktop_get_docs_markdown() -> String {
+    include_str!("../../../docs.md").to_string()
+}
+
+#[tauri::command]
 fn desktop_get_runtime_settings() -> DesktopApiResult<DesktopRuntimeSettingsResponse> {
     let config = load_runtime_config()?;
-    let summary = serde_json::to_value(&config.summary).map_err(|error| {
-        desktop_error(
-            "desktop.runtime_settings_serialize_failed",
-            500,
-            "failed to serialize runtime summary settings",
-            Some(json!({ "cause": error.to_string() })),
-        )
-    })?;
     let session_default_view = match config.daemon.session_default_view {
         SessionDefaultView::Full => "full",
         SessionDefaultView::Compressed => "compressed",
@@ -766,7 +1958,12 @@ fn desktop_get_runtime_settings() -> DesktopApiResult<DesktopRuntimeSettingsResp
 
     Ok(DesktopRuntimeSettingsResponse {
         session_default_view,
-        summary,
+        summary: desktop_summary_settings_from_runtime(&config),
+        vector_search: desktop_vector_settings_from_runtime(&config),
+        ui_constraints: DesktopRuntimeSummaryUiConstraints {
+            source_mode_locked: true,
+            source_mode_locked_value: DesktopSummarySourceMode::SessionOnly,
+        },
     })
 }
 
@@ -789,105 +1986,102 @@ fn desktop_update_runtime_settings(
     }
 
     if let Some(summary) = request.summary {
-        let obj = summary.as_object().ok_or_else(|| {
-            desktop_error(
-                "desktop.runtime_settings_invalid_summary",
+        if !matches!(summary.source_mode, DesktopSummarySourceMode::SessionOnly) {
+            return Err(desktop_error(
+                "desktop.runtime_settings_source_mode_locked",
                 422,
-                "summary payload must be a JSON object",
-                None,
+                "desktop source_mode is locked to session_only",
+                Some(json!({ "source_mode": summary.source_mode })),
+            ));
+        }
+        validate_summary_prompt_template(summary.prompt.template.as_str()).map_err(|cause| {
+            desktop_error(
+                "desktop.runtime_settings_invalid_prompt_template",
+                422,
+                "invalid summary.prompt.template",
+                Some(json!({ "cause": cause })),
             )
         })?;
 
-        if let Some(provider) = obj.get("provider").and_then(serde_json::Value::as_str) {
-            config.summary.provider = map_summary_provider_from_str(provider).ok_or_else(|| {
-                desktop_error(
-                    "desktop.runtime_settings_invalid_provider",
+        config.summary.provider.id = map_summary_provider_id_to_runtime(&summary.provider.id);
+        config.summary.provider.endpoint = summary.provider.endpoint.trim().to_string();
+        config.summary.provider.model = summary.provider.model.trim().to_string();
+        config.summary.prompt.template = summary.prompt.template;
+        config.summary.response.style =
+            map_summary_response_style_to_runtime(&summary.response.style);
+        config.summary.response.shape =
+            map_summary_output_shape_to_runtime(&summary.response.shape);
+        config.summary.storage.trigger =
+            map_summary_trigger_mode_to_runtime(&summary.storage.trigger);
+        config.summary.storage.backend =
+            map_summary_storage_backend_to_runtime(&summary.storage.backend);
+        config.summary.source_mode = map_summary_source_mode_to_runtime(&summary.source_mode);
+    }
+
+    if let Some(vector_search) = request.vector_search {
+        if vector_search.chunk_size_lines == 0 {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_vector_chunk_size",
+                422,
+                "vector_search.chunk_size_lines must be greater than zero",
+                Some(json!({ "chunk_size_lines": vector_search.chunk_size_lines })),
+            ));
+        }
+        if vector_search.chunk_overlap_lines >= vector_search.chunk_size_lines {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_vector_overlap",
+                422,
+                "vector_search.chunk_overlap_lines must be smaller than chunk_size_lines",
+                Some(json!({
+                    "chunk_size_lines": vector_search.chunk_size_lines,
+                    "chunk_overlap_lines": vector_search.chunk_overlap_lines
+                })),
+            ));
+        }
+        if vector_search.top_k_chunks == 0 || vector_search.top_k_sessions == 0 {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_vector_limits",
+                422,
+                "vector_search.top_k_chunks and vector_search.top_k_sessions must be greater than zero",
+                Some(json!({
+                    "top_k_chunks": vector_search.top_k_chunks,
+                    "top_k_sessions": vector_search.top_k_sessions
+                })),
+            ));
+        }
+
+        config.vector_search.enabled = vector_search.enabled;
+        config.vector_search.provider = map_vector_provider_to_runtime(&vector_search.provider);
+        config.vector_search.model = vector_search.model.trim().to_string();
+        config.vector_search.endpoint = vector_search.endpoint.trim().to_string();
+        config.vector_search.granularity =
+            map_vector_granularity_to_runtime(&vector_search.granularity);
+        config.vector_search.chunk_size_lines = vector_search.chunk_size_lines.max(1);
+        config.vector_search.chunk_overlap_lines = vector_search.chunk_overlap_lines;
+        config.vector_search.top_k_chunks = vector_search.top_k_chunks.max(1);
+        config.vector_search.top_k_sessions = vector_search.top_k_sessions.max(1);
+
+        if config.vector_search.model.trim().is_empty() {
+            config.vector_search.model = "bge-m3".to_string();
+        }
+        if config.vector_search.endpoint.trim().is_empty() {
+            config.vector_search.endpoint = "http://127.0.0.1:11434".to_string();
+        }
+
+        if config.vector_search.enabled {
+            let preflight = vector_preflight_for_runtime(&config);
+            if !preflight.model_installed {
+                return Err(desktop_error(
+                    "desktop.vector_model_not_installed",
                     422,
-                    "invalid summary.provider",
-                    Some(json!({ "provider": provider })),
-                )
-            })?;
-        }
-        if let Some(endpoint) = obj.get("endpoint").and_then(serde_json::Value::as_str) {
-            config.summary.endpoint = endpoint.to_string();
-        }
-        if let Some(model) = obj.get("model").and_then(serde_json::Value::as_str) {
-            config.summary.model = model.to_string();
-        }
-        if let Some(source_mode) = obj.get("source_mode").and_then(serde_json::Value::as_str) {
-            config.summary.source_mode =
-                map_summary_source_mode_from_str(source_mode).ok_or_else(|| {
-                    desktop_error(
-                        "desktop.runtime_settings_invalid_source_mode",
-                        422,
-                        "invalid summary.source_mode",
-                        Some(json!({ "source_mode": source_mode })),
-                    )
-                })?;
-        }
-        if let Some(response_style) = obj
-            .get("response_style")
-            .and_then(serde_json::Value::as_str)
-        {
-            config.summary.response_style =
-                map_summary_response_style_from_str(response_style).ok_or_else(|| {
-                    desktop_error(
-                        "desktop.runtime_settings_invalid_response_style",
-                        422,
-                        "invalid summary.response_style",
-                        Some(json!({ "response_style": response_style })),
-                    )
-                })?;
-        }
-        if let Some(output_shape) = obj.get("output_shape").and_then(serde_json::Value::as_str) {
-            config.summary.output_shape =
-                map_summary_output_shape_from_str(output_shape).ok_or_else(|| {
-                    desktop_error(
-                        "desktop.runtime_settings_invalid_output_shape",
-                        422,
-                        "invalid summary.output_shape",
-                        Some(json!({ "output_shape": output_shape })),
-                    )
-                })?;
-        }
-        if let Some(output_instruction) = obj
-            .get("output_instruction")
-            .and_then(serde_json::Value::as_str)
-        {
-            config.summary.output_instruction = output_instruction.to_string();
-        }
-        if let Some(trigger_mode) = obj.get("trigger_mode").and_then(serde_json::Value::as_str) {
-            config.summary.trigger_mode =
-                map_summary_trigger_mode_from_str(trigger_mode).ok_or_else(|| {
-                    desktop_error(
-                        "desktop.runtime_settings_invalid_trigger_mode",
-                        422,
-                        "invalid summary.trigger_mode",
-                        Some(json!({ "trigger_mode": trigger_mode })),
-                    )
-                })?;
-        }
-        if let Some(persist_mode) = obj.get("persist_mode").and_then(serde_json::Value::as_str) {
-            config.summary.persist_mode =
-                map_summary_persist_mode_from_str(persist_mode).ok_or_else(|| {
-                    desktop_error(
-                        "desktop.runtime_settings_invalid_persist_mode",
-                        422,
-                        "invalid summary.persist_mode",
-                        Some(json!({ "persist_mode": persist_mode })),
-                    )
-                })?;
-        }
-        if let Some(template_slots) = obj
-            .get("template_slots")
-            .and_then(serde_json::Value::as_object)
-        {
-            config.summary.template_slots = template_slots
-                .iter()
-                .filter_map(|(key, value)| {
-                    value.as_str().map(|value| (key.to_string(), value.to_string()))
-                })
-                .collect();
+                    "cannot enable vector search because model is not installed",
+                    Some(json!({
+                        "model": preflight.model,
+                        "endpoint": preflight.endpoint,
+                        "hint": "install model from Settings > Vector Search first"
+                    })),
+                ));
+            }
         }
     }
 
@@ -898,12 +2092,12 @@ fn desktop_update_runtime_settings(
 #[tauri::command]
 fn desktop_detect_summary_provider() -> DesktopSummaryProviderDetectResponse {
     if let Some(profile) = opensession_summary::detect_summary_provider() {
-        let provider = serde_json::to_string(&profile.provider)
-            .ok()
-            .map(|raw| raw.trim_matches('"').to_string());
         return DesktopSummaryProviderDetectResponse {
             detected: true,
-            provider,
+            provider: Some(map_summary_provider_id_from_runtime(&profile.provider)),
+            transport: Some(map_summary_transport_from_runtime(
+                &profile.provider.transport(),
+            )),
             model: (!profile.model.trim().is_empty()).then_some(profile.model),
             endpoint: (!profile.endpoint.trim().is_empty()).then_some(profile.endpoint),
         };
@@ -912,9 +2106,143 @@ fn desktop_detect_summary_provider() -> DesktopSummaryProviderDetectResponse {
     DesktopSummaryProviderDetectResponse {
         detected: false,
         provider: None,
+        transport: None,
         model: None,
         endpoint: None,
     }
+}
+
+fn install_status_response_from_state(
+    state: VectorInstallRuntimeState,
+) -> DesktopVectorInstallStatusResponse {
+    DesktopVectorInstallStatusResponse {
+        state: state.state,
+        model: state.model,
+        progress_pct: state.progress_pct,
+        message: state.message,
+    }
+}
+
+#[tauri::command]
+fn desktop_vector_preflight() -> DesktopApiResult<DesktopVectorPreflightResponse> {
+    let runtime = load_runtime_config()?;
+    Ok(vector_preflight_for_runtime(&runtime))
+}
+
+#[tauri::command]
+fn desktop_vector_install_model(
+    model: String,
+) -> DesktopApiResult<DesktopVectorInstallStatusResponse> {
+    let runtime = load_runtime_config()?;
+    let endpoint = vector_embed_endpoint(&runtime);
+    let selected_model = model.trim().to_string().chars().collect::<String>();
+    let selected_model = if selected_model.trim().is_empty() {
+        vector_embed_model(&runtime)
+    } else {
+        selected_model
+    };
+
+    let current = current_vector_install_state();
+    if matches!(current.state, DesktopVectorInstallState::Installing)
+        && current.model == selected_model
+    {
+        return Ok(install_status_response_from_state(current));
+    }
+
+    update_vector_install_progress(
+        DesktopVectorInstallState::Installing,
+        &selected_model,
+        0,
+        Some("starting model download".to_string()),
+    );
+
+    let endpoint_for_thread = endpoint.clone();
+    let model_for_thread = selected_model.clone();
+    std::thread::spawn(move || {
+        match install_ollama_model_blocking(&endpoint_for_thread, &model_for_thread) {
+            Ok(()) => update_vector_install_progress(
+                DesktopVectorInstallState::Ready,
+                &model_for_thread,
+                100,
+                Some("model download complete".to_string()),
+            ),
+            Err(error) => update_vector_install_progress(
+                DesktopVectorInstallState::Failed,
+                &model_for_thread,
+                0,
+                Some(error.message),
+            ),
+        }
+    });
+
+    Ok(install_status_response_from_state(
+        current_vector_install_state(),
+    ))
+}
+
+#[tauri::command]
+fn desktop_vector_index_rebuild() -> DesktopApiResult<DesktopVectorIndexStatusResponse> {
+    let runtime = load_runtime_config()?;
+    ensure_vector_enabled_and_ready(&runtime)?;
+
+    {
+        let mut running = VECTOR_INDEX_REBUILD_RUNNING
+            .lock()
+            .expect("vector index rebuild mutex poisoned");
+        if *running {
+            let db = open_local_db()?;
+            return desktop_vector_index_status_from_db(&db);
+        }
+        *running = true;
+    }
+
+    std::thread::spawn(move || {
+        let result: DesktopApiResult<()> = (|| {
+            let db = open_local_db()?;
+            if let Err(error) = rebuild_vector_index_blocking(&db, &runtime) {
+                let _ = set_vector_index_job_snapshot(
+                    &db,
+                    VectorIndexJobRow {
+                        status: "failed".to_string(),
+                        processed_sessions: 0,
+                        total_sessions: 0,
+                        message: Some(error.message.clone()),
+                        started_at: Some(chrono::Utc::now().to_rfc3339()),
+                        finished_at: Some(chrono::Utc::now().to_rfc3339()),
+                    },
+                );
+                return Err(error);
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            eprintln!("vector index rebuild failed: {}", error.message);
+        }
+        if let Ok(mut running) = VECTOR_INDEX_REBUILD_RUNNING.lock() {
+            *running = false;
+        }
+    });
+
+    let db = open_local_db()?;
+    desktop_vector_index_status_from_db(&db)
+}
+
+#[tauri::command]
+fn desktop_vector_index_status() -> DesktopApiResult<DesktopVectorIndexStatusResponse> {
+    let db = open_local_db()?;
+    desktop_vector_index_status_from_db(&db)
+}
+
+#[tauri::command]
+fn desktop_search_sessions_vector(
+    query: String,
+    cursor: Option<String>,
+    limit: Option<u32>,
+) -> DesktopApiResult<DesktopVectorSearchResponse> {
+    let db = open_local_db()?;
+    let runtime = load_runtime_config()?;
+    search_sessions_vector_internal(&db, &runtime, &query, cursor, limit, None)
 }
 
 fn session_summary_response_from_row(
@@ -938,30 +2266,226 @@ fn session_summary_response_from_row(
     }
 }
 
-#[tauri::command]
-fn desktop_get_session_summary(id: String) -> DesktopApiResult<DesktopSessionSummaryResponse> {
-    let db = open_local_db()?;
-    let summary = db
-        .get_session_semantic_summary(&id)
-        .map_err(|error| {
-            desktop_error(
-                "desktop.session_summary_query_failed",
-                500,
-                "failed to load session summary",
-                Some(json!({ "cause": error.to_string(), "session_id": id })),
-            )
-        })?
-        .map(session_summary_response_from_row);
+fn session_summary_response_from_hidden_ref(
+    row: SessionSummaryLedgerRecord,
+) -> DesktopSessionSummaryResponse {
+    DesktopSessionSummaryResponse {
+        session_id: row.session_id,
+        summary: Some(row.summary),
+        source_details: match row.source_details {
+            serde_json::Value::Object(ref map) if map.is_empty() => None,
+            value => Some(value),
+        },
+        diff_tree: row.diff_tree,
+        source_kind: Some(row.source_kind),
+        generation_kind: Some(row.generation_kind),
+        error: row.error,
+    }
+}
 
-    Ok(summary.unwrap_or(DesktopSessionSummaryResponse {
-        session_id: id,
+fn empty_summary_response(session_id: String) -> DesktopSessionSummaryResponse {
+    DesktopSessionSummaryResponse {
+        session_id,
         summary: None,
         source_details: None,
         diff_tree: Vec::new(),
         source_kind: None,
         generation_kind: None,
         error: None,
-    }))
+    }
+}
+
+fn resolve_summary_repo_root(db: &LocalDb, session_id: &str) -> DesktopApiResult<Option<PathBuf>> {
+    let row = db.get_session_by_id(session_id).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_repo_resolve_failed",
+            500,
+            "failed to resolve session repository root",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    if let Some(row) = row {
+        if let Some(cwd) = row.working_directory.as_deref() {
+            if let Some(repo_root) = find_git_repo_root(Path::new(cwd)) {
+                return Ok(Some(repo_root));
+            }
+        }
+    }
+    let cwd = std::env::current_dir().ok();
+    Ok(cwd.and_then(|path| find_git_repo_root(&path)))
+}
+
+fn persist_summary_to_local_db(
+    db: &LocalDb,
+    session_id: &str,
+    artifact: &opensession_summary::SemanticSummaryArtifact,
+) -> DesktopApiResult<()> {
+    let summary_json = serde_json::to_string(&artifact.summary).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_serialize_failed",
+            500,
+            "failed to serialize generated summary",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let source_details_json = if artifact.source_details.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(&artifact.source_details).map_err(|error| {
+                desktop_error(
+                    "desktop.session_summary_serialize_failed",
+                    500,
+                    "failed to serialize source details",
+                    Some(json!({ "cause": error.to_string() })),
+                )
+            })?,
+        )
+    };
+    let diff_tree_json = if artifact.diff_tree.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&artifact.diff_tree).map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_serialize_failed",
+                500,
+                "failed to serialize diff tree",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?)
+    };
+    let provider = enum_label(&artifact.provider);
+    let source_kind = enum_label(&artifact.source_kind);
+    let generation_kind = enum_label(&artifact.generation_kind);
+    let model = (!artifact.model.trim().is_empty()).then_some(artifact.model.as_str());
+    let prompt_fingerprint = (!artifact.prompt_fingerprint.trim().is_empty())
+        .then_some(artifact.prompt_fingerprint.as_str());
+
+    db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
+        session_id,
+        summary_json: &summary_json,
+        generated_at: &chrono::Utc::now().to_rfc3339(),
+        provider: &provider,
+        model,
+        source_kind: &source_kind,
+        generation_kind: &generation_kind,
+        prompt_fingerprint,
+        source_details_json: source_details_json.as_deref(),
+        diff_tree_json: diff_tree_json.as_deref(),
+        error: artifact.error.as_deref(),
+    })
+    .map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_persist_failed",
+            500,
+            "failed to persist generated session summary",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    Ok(())
+}
+
+fn persist_summary_to_hidden_ref(
+    repo_root: &Path,
+    session_id: &str,
+    artifact: &opensession_summary::SemanticSummaryArtifact,
+) -> DesktopApiResult<()> {
+    let summary = serde_json::to_value(&artifact.summary).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_serialize_failed",
+            500,
+            "failed to serialize generated summary for hidden-ref storage",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let source_details = serde_json::to_value(&artifact.source_details).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_serialize_failed",
+            500,
+            "failed to serialize source details for hidden-ref storage",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let diff_tree_value = serde_json::to_value(&artifact.diff_tree).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_serialize_failed",
+            500,
+            "failed to serialize diff tree for hidden-ref storage",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    let diff_tree = diff_tree_value.as_array().cloned().unwrap_or_default();
+    let record = SessionSummaryLedgerRecord {
+        session_id: session_id.to_string(),
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        provider: enum_label(&artifact.provider),
+        model: (!artifact.model.trim().is_empty()).then_some(artifact.model.clone()),
+        source_kind: enum_label(&artifact.source_kind),
+        generation_kind: enum_label(&artifact.generation_kind),
+        prompt_fingerprint: (!artifact.prompt_fingerprint.trim().is_empty())
+            .then_some(artifact.prompt_fingerprint.clone()),
+        summary,
+        source_details,
+        diff_tree,
+        error: artifact.error.clone(),
+    };
+
+    NativeGitStorage
+        .store_summary_at_ref(repo_root, SUMMARY_LEDGER_REF, &record)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_persist_failed",
+                500,
+                "failed to persist generated summary to hidden_ref",
+                Some(
+                    json!({ "cause": error.to_string(), "session_id": session_id, "repo_root": repo_root }),
+                ),
+            )
+        })?;
+    Ok(())
+}
+
+#[tauri::command]
+fn desktop_get_session_summary(id: String) -> DesktopApiResult<DesktopSessionSummaryResponse> {
+    let db = open_local_db()?;
+    let runtime = load_runtime_config()?;
+
+    match runtime.summary.storage.backend {
+        SummaryStorageBackend::LocalDb => {
+            let summary = db
+                .get_session_semantic_summary(&id)
+                .map_err(|error| {
+                    desktop_error(
+                        "desktop.session_summary_query_failed",
+                        500,
+                        "failed to load session summary",
+                        Some(json!({ "cause": error.to_string(), "session_id": id })),
+                    )
+                })?
+                .map(session_summary_response_from_row);
+            Ok(summary.unwrap_or_else(|| empty_summary_response(id)))
+        }
+        SummaryStorageBackend::HiddenRef => {
+            let Some(repo_root) = resolve_summary_repo_root(&db, &id)? else {
+                return Ok(empty_summary_response(id));
+            };
+            let loaded = NativeGitStorage
+                .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &id)
+                .map_err(|error| {
+                    desktop_error(
+                        "desktop.session_summary_query_failed",
+                        500,
+                        "failed to load hidden_ref session summary",
+                        Some(
+                            json!({ "cause": error.to_string(), "session_id": id, "repo_root": repo_root }),
+                        ),
+                    )
+                })?
+                .map(session_summary_response_from_hidden_ref);
+            Ok(loaded.unwrap_or_else(|| empty_summary_response(id)))
+        }
+        SummaryStorageBackend::None => Ok(empty_summary_response(id)),
+    }
 }
 
 #[tauri::command]
@@ -980,7 +2504,7 @@ async fn desktop_regenerate_session_summary(
     })?;
     let runtime = load_runtime_config()?;
     let git_request = if runtime.summary.allows_git_changes_fallback() {
-        opensession_core::session::working_directory(&session)
+        working_directory(&session)
             .and_then(|cwd| find_git_repo_root(Path::new(cwd)).map(|repo_root| (cwd, repo_root)))
             .map(|(cwd, repo_root)| GitSummaryRequest {
                 repo_root,
@@ -1000,79 +2524,40 @@ async fn desktop_regenerate_session_summary(
             )
         })?;
 
-    if runtime.summary.persists_to_local_db() {
-        let summary_json = serde_json::to_string(&artifact.summary).map_err(|error| {
-            desktop_error(
-                "desktop.session_summary_serialize_failed",
-                500,
-                "failed to serialize generated summary",
-                Some(json!({ "cause": error.to_string() })),
-            )
-        })?;
-        let source_details_json = if artifact.source_details.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(&artifact.source_details).map_err(|error| {
-                desktop_error(
-                    "desktop.session_summary_serialize_failed",
-                    500,
-                    "failed to serialize source details",
-                    Some(json!({ "cause": error.to_string() })),
-                )
-            })?)
-        };
-        let diff_tree_json = if artifact.diff_tree.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(&artifact.diff_tree).map_err(|error| {
-                desktop_error(
-                    "desktop.session_summary_serialize_failed",
-                    500,
-                    "failed to serialize diff tree",
-                    Some(json!({ "cause": error.to_string() })),
-                )
-            })?)
-        };
-        let provider = serde_json::to_string(&artifact.provider)
-            .unwrap_or_else(|_| "\"unknown\"".to_string())
-            .trim_matches('"')
-            .to_string();
-        let source_kind = serde_json::to_string(&artifact.source_kind)
-            .unwrap_or_else(|_| "\"unknown\"".to_string())
-            .trim_matches('"')
-            .to_string();
-        let generation_kind = serde_json::to_string(&artifact.generation_kind)
-            .unwrap_or_else(|_| "\"unknown\"".to_string())
-            .trim_matches('"')
-            .to_string();
-        let model = (!artifact.model.trim().is_empty()).then_some(artifact.model.as_str());
-        let prompt_fingerprint = (!artifact.prompt_fingerprint.trim().is_empty())
-            .then_some(artifact.prompt_fingerprint.as_str());
-
-        db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
-            session_id: &id,
-            summary_json: &summary_json,
-            generated_at: &chrono::Utc::now().to_rfc3339(),
-            provider: &provider,
-            model,
-            source_kind: &source_kind,
-            generation_kind: &generation_kind,
-            prompt_fingerprint,
-            source_details_json: source_details_json.as_deref(),
-            diff_tree_json: diff_tree_json.as_deref(),
-            error: artifact.error.as_deref(),
-        })
-        .map_err(|error| {
-            desktop_error(
-                "desktop.session_summary_persist_failed",
-                500,
-                "failed to persist generated session summary",
-                Some(json!({ "cause": error.to_string(), "session_id": id })),
-            )
-        })?;
+    match runtime.summary.storage.backend {
+        SummaryStorageBackend::LocalDb => {
+            persist_summary_to_local_db(&db, &id, &artifact)?;
+            desktop_get_session_summary(id)
+        }
+        SummaryStorageBackend::HiddenRef => {
+            let Some(repo_root) = resolve_summary_repo_root(&db, &id)? else {
+                return Err(desktop_error(
+                    "desktop.session_summary_repo_required",
+                    422,
+                    "hidden_ref summary backend requires a git repository",
+                    Some(json!({ "session_id": id })),
+                ));
+            };
+            persist_summary_to_hidden_ref(&repo_root, &id, &artifact)?;
+            desktop_get_session_summary(id)
+        }
+        SummaryStorageBackend::None => Ok(DesktopSessionSummaryResponse {
+            session_id: id,
+            summary: serde_json::to_value(&artifact.summary).ok(),
+            source_details: if artifact.source_details.is_empty() {
+                None
+            } else {
+                serde_json::to_value(&artifact.source_details).ok()
+            },
+            diff_tree: serde_json::to_value(&artifact.diff_tree)
+                .ok()
+                .and_then(|value| value.as_array().cloned())
+                .unwrap_or_default(),
+            source_kind: Some(enum_label(&artifact.source_kind)),
+            generation_kind: Some(enum_label(&artifact.generation_kind)),
+            error: artifact.error.clone(),
+        }),
     }
-
-    desktop_get_session_summary(id)
 }
 
 #[tauri::command]
@@ -1080,7 +2565,13 @@ fn desktop_list_sessions(
     query: Option<DesktopSessionListQuery>,
 ) -> DesktopApiResult<SessionListResponse> {
     let db = open_local_db()?;
-    let (filter, page, per_page) = build_local_filter(query.unwrap_or_default());
+    let (filter, page, per_page, search_mode) =
+        build_local_filter_with_mode(query.unwrap_or_default());
+
+    if search_mode == SearchMode::Vector {
+        let vector_query = filter.search.clone().unwrap_or_default();
+        return list_sessions_with_vector_rank(&db, &filter, &vector_query, page, per_page);
+    }
 
     let total = db.count_sessions_filtered(&filter).map_err(|error| {
         desktop_error(
@@ -1234,9 +2725,15 @@ fn main() {
             desktop_get_capabilities,
             desktop_get_auth_providers,
             desktop_get_contract_version,
+            desktop_get_docs_markdown,
             desktop_get_runtime_settings,
             desktop_update_runtime_settings,
             desktop_detect_summary_provider,
+            desktop_vector_preflight,
+            desktop_vector_install_model,
+            desktop_vector_index_rebuild,
+            desktop_vector_index_status,
+            desktop_search_sessions_vector,
             desktop_list_sessions,
             desktop_list_repos,
             desktop_get_session_detail,
@@ -1253,19 +2750,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_path_for_hash, build_handoff_artifact_record, build_local_filter,
-        canonicalize_summaries, desktop_get_contract_version, desktop_get_runtime_settings,
-        desktop_get_session_detail, desktop_get_session_raw, desktop_list_sessions,
-        desktop_update_runtime_settings, map_link_type, normalize_launch_route,
-        normalize_session_body_to_hail_jsonl, session_summary_from_local_row, validate_pin_alias,
-        DesktopSessionListQuery,
+        artifact_path_for_hash, build_handoff_artifact_record, build_local_filter_with_mode,
+        build_vector_chunks_for_session, canonicalize_summaries, cosine_similarity,
+        desktop_get_contract_version, desktop_get_runtime_settings, desktop_get_session_detail,
+        desktop_get_session_raw, desktop_list_sessions, desktop_update_runtime_settings,
+        extract_vector_lines, map_link_type, normalize_launch_route,
+        normalize_session_body_to_hail_jsonl, session_summary_from_local_row, split_search_mode,
+        validate_pin_alias, DesktopSessionListQuery, SearchMode,
     };
-    use opensession_api::DesktopRuntimeSettingsUpdateRequest;
+    use opensession_api::{
+        DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettingsUpdate,
+        DesktopRuntimeSummaryProviderSettingsUpdate, DesktopRuntimeSummaryResponseSettingsUpdate,
+        DesktopRuntimeSummarySettingsUpdate, DesktopRuntimeSummaryStorageSettingsUpdate,
+        DesktopSummaryOutputShape, DesktopSummaryProviderId, DesktopSummaryResponseStyle,
+        DesktopSummarySourceMode, DesktopSummaryStorageBackend, DesktopSummaryTriggerMode,
+    };
     use opensession_core::handoff::HandoffSummary;
     use opensession_core::trace::{Agent, Content, Event, EventType, Session as HailSession};
-    use opensession_local_db::LocalDb;
     use opensession_local_db::git::GitContext;
-    use serde_json::json;
+    use opensession_local_db::LocalDb;
+    use opensession_runtime_config::DaemonConfig;
+    use opensession_summary::DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2;
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1372,30 +2877,109 @@ mod tests {
 
     #[test]
     fn list_filter_defaults_page_and_per_page() {
-        let (filter, page, per_page) = build_local_filter(DesktopSessionListQuery::default());
+        let (filter, page, per_page, mode) =
+            build_local_filter_with_mode(DesktopSessionListQuery::default());
         assert_eq!(page, 1);
         assert_eq!(per_page, 20);
+        assert_eq!(mode, SearchMode::Keyword);
         assert_eq!(filter.limit, Some(20));
         assert_eq!(filter.offset, Some(0));
     }
 
     #[test]
     fn list_filter_parses_sort_and_range_values() {
-        let (filter, page, per_page) = build_local_filter(DesktopSessionListQuery {
-            page: Some("2".to_string()),
-            per_page: Some("30".to_string()),
-            search: Some("fix".to_string()),
-            tool: Some("codex".to_string()),
-            git_repo_name: Some("org/repo".to_string()),
-            sort: Some("popular".to_string()),
-            time_range: Some("7d".to_string()),
-        });
+        let (filter, page, per_page, mode) =
+            build_local_filter_with_mode(DesktopSessionListQuery {
+                page: Some("2".to_string()),
+                per_page: Some("30".to_string()),
+                search: Some("fix".to_string()),
+                tool: Some("codex".to_string()),
+                git_repo_name: Some("org/repo".to_string()),
+                sort: Some("popular".to_string()),
+                time_range: Some("7d".to_string()),
+            });
         assert_eq!(page, 2);
         assert_eq!(per_page, 30);
+        assert_eq!(mode, SearchMode::Keyword);
         assert_eq!(filter.search.as_deref(), Some("fix"));
         assert_eq!(filter.tool.as_deref(), Some("codex"));
         assert_eq!(filter.git_repo_name.as_deref(), Some("org/repo"));
         assert_eq!(filter.offset, Some(30));
+    }
+
+    #[test]
+    fn split_search_mode_detects_vector_prefix() {
+        let (query, mode) = split_search_mode(Some("vector: auth regression".to_string()));
+        assert_eq!(query.as_deref(), Some("auth regression"));
+        assert_eq!(mode, SearchMode::Vector);
+
+        let (query, mode) = split_search_mode(Some("fix parser".to_string()));
+        assert_eq!(query.as_deref(), Some("fix parser"));
+        assert_eq!(mode, SearchMode::Keyword);
+    }
+
+    #[test]
+    fn list_filter_with_mode_keeps_vector_query_text() {
+        let (filter, page, per_page, mode) =
+            build_local_filter_with_mode(DesktopSessionListQuery {
+                search: Some("vec: paging bug".to_string()),
+                ..DesktopSessionListQuery::default()
+            });
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+        assert_eq!(mode, SearchMode::Vector);
+        assert_eq!(filter.search.as_deref(), Some("paging bug"));
+    }
+
+    #[test]
+    fn cosine_similarity_handles_basic_cases() {
+        let same = cosine_similarity(&[1.0, 0.0, 1.0], &[1.0, 0.0, 1.0]);
+        assert!((same - 1.0).abs() < 1e-6);
+
+        let orthogonal = cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]);
+        assert!(orthogonal.abs() < 1e-6);
+
+        let mismatch = cosine_similarity(&[1.0, 2.0], &[1.0]);
+        assert_eq!(mismatch, 0.0);
+    }
+
+    #[test]
+    fn extract_vector_lines_preserves_dot_line_tokens() {
+        let mut session = build_test_session("vector-lines");
+        session.events.push(Event {
+            event_id: "evt-dot".to_string(),
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content::text(".\nkeep-this-line"),
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        });
+        let lines = extract_vector_lines(&session);
+        assert!(lines.iter().any(|line| line == "."));
+        assert!(lines.iter().any(|line| line.contains("keep-this-line")));
+    }
+
+    #[test]
+    fn build_vector_chunks_applies_overlap_rules() {
+        let mut session = build_test_session("vector-chunks");
+        session.events.push(Event {
+            event_id: "evt-overlap".to_string(),
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content::text("l1\nl2\nl3"),
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        });
+        let mut runtime = DaemonConfig::default();
+        runtime.vector_search.chunk_size_lines = 2;
+        runtime.vector_search.chunk_overlap_lines = 1;
+        let chunks = build_vector_chunks_for_session(&session, "source-hash", &runtime);
+        assert!(chunks.len() >= 2);
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[0].end_line, 2);
+        assert_eq!(chunks[1].start_line, 2);
     }
 
     #[test]
@@ -1409,7 +2993,10 @@ mod tests {
     #[test]
     fn normalize_launch_route_rejects_invalid_values() {
         assert_eq!(normalize_launch_route(""), None);
-        assert_eq!(normalize_launch_route("https://opensession.io/sessions"), None);
+        assert_eq!(
+            normalize_launch_route("https://opensession.io/sessions"),
+            None
+        );
         assert_eq!(normalize_launch_route("//sessions"), None);
     }
 
@@ -1535,7 +3122,10 @@ mod tests {
 
         let listed = desktop_list_sessions(None).expect("list sessions");
         assert!(
-            listed.sessions.iter().any(|row| row.id == session.session_id),
+            listed
+                .sessions
+                .iter()
+                .any(|row| row.id == session.session_id),
             "session list must include inserted session",
         );
 
@@ -1561,11 +3151,26 @@ mod tests {
 
         let updated = desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
             session_default_view: Some("compressed".to_string()),
-            summary: Some(json!({
-                "provider": "disabled",
-                "response_style": "compact",
-                "output_instruction": "summarize briefly",
-            })),
+            summary: Some(DesktopRuntimeSummarySettingsUpdate {
+                provider: DesktopRuntimeSummaryProviderSettingsUpdate {
+                    id: DesktopSummaryProviderId::Disabled,
+                    endpoint: String::new(),
+                    model: String::new(),
+                },
+                prompt: DesktopRuntimeSummaryPromptSettingsUpdate {
+                    template: format!("{DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2}\n# customized"),
+                },
+                response: DesktopRuntimeSummaryResponseSettingsUpdate {
+                    style: DesktopSummaryResponseStyle::Compact,
+                    shape: DesktopSummaryOutputShape::Layered,
+                },
+                storage: DesktopRuntimeSummaryStorageSettingsUpdate {
+                    trigger: DesktopSummaryTriggerMode::OnSessionSave,
+                    backend: DesktopSummaryStorageBackend::HiddenRef,
+                },
+                source_mode: DesktopSummarySourceMode::SessionOnly,
+            }),
+            vector_search: None,
         })
         .expect("update runtime settings");
         assert_eq!(updated.session_default_view, "compressed");
@@ -1573,19 +3178,59 @@ mod tests {
         let loaded = desktop_get_runtime_settings().expect("load runtime settings");
         assert_eq!(loaded.session_default_view, "compressed");
         assert_eq!(
-            loaded
-                .summary
-                .get("provider")
-                .and_then(serde_json::Value::as_str),
-            Some("disabled")
+            loaded.summary.provider.id,
+            DesktopSummaryProviderId::Disabled
         );
         assert_eq!(
-            loaded
-                .summary
-                .get("output_instruction")
-                .and_then(serde_json::Value::as_str),
-            Some("summarize briefly")
+            loaded.summary.response.style,
+            DesktopSummaryResponseStyle::Compact
         );
+        assert_eq!(
+            loaded.summary.storage.backend,
+            DesktopSummaryStorageBackend::HiddenRef
+        );
+        assert_eq!(
+            loaded.summary.source_mode,
+            DesktopSummarySourceMode::SessionOnly
+        );
+        assert!(loaded.summary.prompt.template.contains("customized"));
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_runtime_settings_rejects_non_session_only_source_mode() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-runtime-source-lock");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+
+        let result = desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(DesktopRuntimeSummarySettingsUpdate {
+                provider: DesktopRuntimeSummaryProviderSettingsUpdate {
+                    id: DesktopSummaryProviderId::Disabled,
+                    endpoint: String::new(),
+                    model: String::new(),
+                },
+                prompt: DesktopRuntimeSummaryPromptSettingsUpdate {
+                    template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2.to_string(),
+                },
+                response: DesktopRuntimeSummaryResponseSettingsUpdate {
+                    style: DesktopSummaryResponseStyle::Standard,
+                    shape: DesktopSummaryOutputShape::Layered,
+                },
+                storage: DesktopRuntimeSummaryStorageSettingsUpdate {
+                    trigger: DesktopSummaryTriggerMode::OnSessionSave,
+                    backend: DesktopSummaryStorageBackend::HiddenRef,
+                },
+                source_mode: DesktopSummarySourceMode::SessionOrGitChanges,
+            }),
+            vector_search: None,
+        });
+
+        let error = result.expect_err("source mode lock should reject update");
+        assert_eq!(error.status, 422);
+        assert_eq!(error.code, "desktop.runtime_settings_source_mode_locked");
 
         let _ = std::fs::remove_dir_all(&temp_home);
     }
@@ -1620,6 +3265,15 @@ mod tests {
             .expect("artifact uri prefix");
         assert_eq!(hash.len(), 64);
         assert_eq!(response.pinned_alias.as_deref(), Some("latest"));
+        let expected_download_file_name = format!("handoff-{hash}.jsonl");
+        assert_eq!(
+            response.download_file_name.as_deref(),
+            Some(expected_download_file_name.as_str())
+        );
+        assert!(response
+            .download_content
+            .as_deref()
+            .is_some_and(|value| value.contains("\"source_session_id\":\"session-handoff-test\"")));
 
         let artifact_path = PathBuf::from(repo_root.join(".opensession").join("artifacts"))
             .join("sha256")

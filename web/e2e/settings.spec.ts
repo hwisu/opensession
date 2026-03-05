@@ -4,10 +4,281 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
 test.describe('Settings', () => {
 	test('settings page requires auth when no token exists', async ({ page }) => {
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: true,
+					parse_preview_enabled: true,
+					register_targets: ['local', 'git'],
+					share_modes: ['web', 'git', 'json'],
+				}),
+			});
+		});
 		await page.goto('/settings');
 		await expect(page.locator('[data-testid="settings-require-auth"]')).toBeVisible();
 		await expect(page.locator('[data-testid="settings-require-auth"]')).toContainText(
 			'Sign in is required',
+		);
+	});
+
+	test('desktop runtime without auth API hides account UI and skips auth endpoints', async ({
+		page,
+	}) => {
+		await page.addInitScript(() => {
+			(window as Window & { __TAURI_INTERNALS__?: Record<string, never> }).__TAURI_INTERNALS__ = {};
+		});
+
+		let authCalls = 0;
+		await page.route('**/api/capabilities', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					auth_enabled: false,
+					parse_preview_enabled: false,
+					register_targets: [],
+					share_modes: [],
+				}),
+			});
+		});
+		await page.route('**/api/auth/**', async (route) => {
+			authCalls += 1;
+			await route.fulfill({
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify({ code: 'unexpected_auth_call', message: 'should not be called' }),
+			});
+		});
+
+		await page.goto('/settings');
+		await expect(page.locator('[data-testid="settings-auth-disabled"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="settings-require-auth"]')).toHaveCount(0);
+		await expect.poll(() => authCalls).toBe(0);
+	});
+
+	test('desktop runtime settings renders provider rules, prompt reset, and deterministic preview', async ({
+		page,
+	}) => {
+		await page.addInitScript(() => {
+			type SummaryProviderId = 'disabled' | 'ollama' | 'codex_exec' | 'claude_cli';
+			const transportFor = (provider: SummaryProviderId): 'none' | 'http' | 'cli' => {
+				if (provider === 'ollama') return 'http';
+				if (provider === 'codex_exec' || provider === 'claude_cli') return 'cli';
+				return 'none';
+			};
+			const defaultTemplate =
+				'Convert a real coding session into semantic compression.\\nHAIL_COMPACT={{HAIL_COMPACT}}';
+			let runtimeState = {
+				session_default_view: 'full',
+				summary: {
+					provider: {
+						id: 'disabled' as SummaryProviderId,
+						transport: 'none' as 'none' | 'http' | 'cli',
+						endpoint: '',
+						model: '',
+					},
+					prompt: {
+						template: defaultTemplate,
+						default_template: defaultTemplate,
+					},
+					response: {
+						style: 'standard' as 'compact' | 'standard' | 'detailed',
+						shape: 'layered' as 'layered' | 'file_list' | 'security_first',
+					},
+					storage: {
+						trigger: 'on_session_save' as 'manual' | 'on_session_save',
+						backend: 'hidden_ref' as 'hidden_ref' | 'local_db' | 'none',
+					},
+					source_mode: 'session_only' as 'session_only' | 'session_or_git_changes',
+				},
+				vector_search: {
+					enabled: false,
+					provider: 'ollama' as 'ollama',
+					model: 'bge-m3',
+					endpoint: 'http://127.0.0.1:11434',
+					granularity: 'event_line_chunk' as 'event_line_chunk',
+					chunk_size_lines: 12,
+					chunk_overlap_lines: 3,
+					top_k_chunks: 30,
+					top_k_sessions: 20,
+				},
+				ui_constraints: {
+					source_mode_locked: true,
+					source_mode_locked_value: 'session_only' as 'session_only',
+				},
+			};
+
+			(
+				window as Window & {
+					__TAURI_INTERNALS__?: Record<string, never>;
+					__TAURI__?: { core?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } };
+				}
+			).__TAURI_INTERNALS__ = {};
+			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
+				core: {
+					invoke: async (cmd: string, args?: Record<string, unknown>) => {
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v3' };
+						if (cmd === 'desktop_get_capabilities') {
+							return {
+								auth_enabled: false,
+								parse_preview_enabled: false,
+								register_targets: [],
+								share_modes: [],
+							};
+						}
+						if (cmd === 'desktop_get_auth_providers') {
+							return { email_password: false, oauth: [] };
+						}
+						if (cmd === 'desktop_get_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_vector_preflight') {
+							return {
+								provider: 'ollama',
+								endpoint: runtimeState.vector_search.endpoint,
+								model: runtimeState.vector_search.model,
+								ollama_reachable: true,
+								model_installed: true,
+								install_state: 'ready',
+								progress_pct: 100,
+								message: 'ready',
+							};
+						}
+						if (cmd === 'desktop_vector_index_status' || cmd === 'desktop_vector_index_rebuild') {
+							return {
+								state: 'complete',
+								processed_sessions: 5,
+								total_sessions: 5,
+								message: 'vector indexing complete',
+								started_at: '2026-03-05T00:00:00Z',
+								finished_at: '2026-03-05T00:00:05Z',
+							};
+						}
+						if (cmd === 'desktop_vector_install_model') {
+							return {
+								state: 'installing',
+								model: (args?.model as string | undefined) ?? runtimeState.vector_search.model,
+								progress_pct: 0,
+								message: 'starting model download',
+							};
+						}
+						if (cmd === 'desktop_search_sessions_vector') {
+							return {
+								query: (args?.query as string | undefined) ?? '',
+								sessions: [],
+								next_cursor: null,
+								total_candidates: 0,
+							};
+						}
+						if (cmd === 'desktop_detect_summary_provider') {
+							return {
+								detected: true,
+								provider: 'codex_exec',
+								transport: 'cli',
+								model: '',
+								endpoint: '',
+							};
+						}
+						if (cmd === 'desktop_update_runtime_settings') {
+							const request = (args?.request ?? {}) as {
+								session_default_view?: string;
+								summary?: {
+									provider: { id: SummaryProviderId; endpoint: string; model: string };
+									prompt: { template: string };
+									response: { style: 'compact' | 'standard' | 'detailed'; shape: 'layered' | 'file_list' | 'security_first' };
+									storage: { trigger: 'manual' | 'on_session_save'; backend: 'hidden_ref' | 'local_db' | 'none' };
+									source_mode: 'session_only' | 'session_or_git_changes';
+								};
+								vector_search?: {
+									enabled: boolean;
+									provider: 'ollama';
+									model: string;
+									endpoint: string;
+									granularity: 'event_line_chunk';
+									chunk_size_lines: number;
+									chunk_overlap_lines: number;
+									top_k_chunks: number;
+									top_k_sessions: number;
+								};
+							};
+							if (request.summary && request.summary.source_mode !== 'session_only') {
+								throw {
+									code: 'desktop.runtime_settings_source_mode_locked',
+									status: 422,
+									message: 'desktop source_mode is locked to session_only',
+								};
+							}
+							runtimeState = {
+								...runtimeState,
+								session_default_view:
+									request.session_default_view ?? runtimeState.session_default_view,
+								summary: request.summary
+									? {
+											provider: {
+												id: request.summary.provider.id,
+												transport: transportFor(request.summary.provider.id),
+												endpoint: request.summary.provider.endpoint,
+												model: request.summary.provider.model,
+											},
+											prompt: {
+												template: request.summary.prompt.template,
+												default_template: runtimeState.summary.prompt.default_template,
+											},
+											response: request.summary.response,
+											storage: request.summary.storage,
+											source_mode: request.summary.source_mode,
+										}
+									: runtimeState.summary,
+								vector_search: request.vector_search
+									? {
+											enabled: request.vector_search.enabled,
+											provider: request.vector_search.provider,
+											model: request.vector_search.model,
+											endpoint: request.vector_search.endpoint,
+											granularity: request.vector_search.granularity,
+											chunk_size_lines: request.vector_search.chunk_size_lines,
+											chunk_overlap_lines: request.vector_search.chunk_overlap_lines,
+											top_k_chunks: request.vector_search.top_k_chunks,
+											top_k_sessions: request.vector_search.top_k_sessions,
+										}
+									: runtimeState.vector_search,
+							};
+							return runtimeState;
+						}
+						throw new Error(`unexpected command: ${cmd}`);
+					},
+				},
+			};
+		});
+
+		await page.goto('/settings');
+		await expect(page.locator('[data-testid="settings-runtime-provider"]')).toBeVisible();
+		await expect(page.locator('option[value="session_or_git_changes"]')).toHaveCount(0);
+
+		await page.locator('[data-testid="runtime-provider-select"]').selectOption('ollama');
+		await expect(page.locator('[data-testid="runtime-provider-endpoint"]')).toBeVisible();
+
+		await page.locator('[data-testid="runtime-provider-select"]').selectOption('codex_exec');
+		await expect(page.locator('[data-testid="runtime-provider-endpoint"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="runtime-provider-cli-status"]')).toBeVisible();
+
+		await page.locator('[data-testid="runtime-prompt-template"]').fill('custom {{HAIL_COMPACT}}');
+		await page.locator('[data-testid="runtime-prompt-reset-default"]').click();
+		await expect(page.locator('[data-testid="runtime-prompt-template"]')).toHaveValue(
+			/HAIL_COMPACT/,
+		);
+
+		const preview = page.locator('[data-testid="settings-response-preview"] pre');
+		await expect(preview).toContainText('Runtime settings and summary');
+		await page
+			.locator('[data-testid="settings-runtime-response"] select')
+			.first()
+			.selectOption('compact');
+		await expect(preview).toContainText('Updated session summary pipeline');
+
+		await expect(page.locator('[data-testid="settings-runtime-vector"]')).toBeVisible();
+		await expect(page.locator('[data-testid="runtime-vector-status"]')).toContainText(
+			'install_state: ready',
 		);
 	});
 

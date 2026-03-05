@@ -73,7 +73,10 @@ function increment(counts: Map<string, number>, key: string) {
 	counts.set(key, (counts.get(key) ?? 0) + 1);
 }
 
-function sortFilterOptions(counts: Map<string, number>, labelFor: (key: string) => string): FilterOption[] {
+function sortFilterOptions(
+	counts: Map<string, number>,
+	labelFor: (key: string) => string,
+): FilterOption[] {
 	return Array.from(counts.entries())
 		.sort((a, b) => {
 			if (b[1] !== a[1]) return b[1] - a[1];
@@ -271,7 +274,11 @@ export function filterEventsByBranchpointKeys(events: Event[], enabledKeys: Set<
 	});
 }
 
-export function toggleAllBackedFilter(current: Set<string>, key: string, allKey = 'all'): Set<string> {
+export function toggleAllBackedFilter(
+	current: Set<string>,
+	key: string,
+	allKey = 'all',
+): Set<string> {
 	if (key === allKey) {
 		return new Set([allKey]);
 	}

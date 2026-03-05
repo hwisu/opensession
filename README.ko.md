@@ -104,9 +104,38 @@ npm install
 npm run dev
 ```
 
-위 명령은 `opensession-server`와 Tauri 데스크톱 창을 함께 실행합니다.
+위 명령은 로컬 데스크톱 런타임으로 Tauri 데스크톱 창을 실행합니다.
+`opensession-server`는 필요하지 않습니다.
 
 데스크톱 릴리즈는 GitHub Actions `Release` 워크플로에서 수동 실행하며, 이제 crates 릴리즈와 macOS 데스크톱 아티팩트 업로드를 같은 버전 태그로 처리합니다.
+
+## 데스크톱 런타임 Summary 설정(v3)
+
+데스크톱 로컬 런타임은 typed runtime 설정 구조를 사용합니다.
+
+- `summary.provider.id|endpoint|model`
+- `summary.prompt.template`
+- `summary.response.style|shape`
+- `summary.storage.trigger|backend`
+- `summary.source_mode`
+- `vector_search.enabled|provider|model|endpoint|granularity|chunk_size_lines|chunk_overlap_lines|top_k_chunks|top_k_sessions`
+
+데스크톱 정책:
+
+- runtime capabilities에서 `auth_enabled=false`이면 account/auth UI를 숨깁니다.
+- 데스크톱 로컬 런타임의 source mode는 `session_only`로 잠금됩니다.
+- `session_or_git_changes`는 CI/CLI 같은 비-desktop 경로에서만 유지됩니다.
+- 기본 저장 backend는 `hidden_ref`(Git-native summary 원장)입니다.
+- `hidden_ref`를 쓰더라도 빠른 필터/검색을 위해 목록 메타데이터와 벡터 인덱스 메타데이터는 로컬 SQLite(`local.db`)에 계속 인덱싱됩니다.
+- settings의 response preview는 결정론적 로컬 샘플 렌더링이며 LLM/네트워크 호출을 하지 않습니다.
+
+데스크톱 검색 옵션:
+
+- 키워드 검색: 일반 검색어
+- 시맨틱 벡터 검색은 세션 단일 문자열이 아니라 이벤트/라인 청크 인덱싱으로 동작합니다.
+- 벡터 검색은 기본 비활성화이며 Settings에서 임베딩 모델 설치를 명시적으로 완료해야 활성화할 수 있습니다.
+- 기본 임베딩 모델은 로컬 Ollama의 `bge-m3` (`http://127.0.0.1:11434`)입니다.
+- Settings에서 모델 설치/인덱싱 상태(`NotInstalled/Installing/Ready/Failed`, `Idle/Running/Complete/Failed`)와 `Rebuild index`를 제공합니다.
 
 ## 빠른 시작
 

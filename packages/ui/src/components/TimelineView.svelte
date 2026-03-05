@@ -102,7 +102,12 @@ function eventGroup(event: Event): EventGroup {
 	const type = event.event_type.type;
 	if (type === 'UserMessage') return 'user';
 	if (type === 'SystemMessage') return 'system';
-	if (type === 'AgentMessage' || type === 'Thinking' || type === 'TaskStart' || type === 'TaskEnd') {
+	if (
+		type === 'AgentMessage' ||
+		type === 'Thinking' ||
+		type === 'TaskStart' ||
+		type === 'TaskEnd'
+	) {
 		return 'agent';
 	}
 	return 'tool';

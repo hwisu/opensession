@@ -28,8 +28,7 @@ const goalCards: GoalCard[] = [
 	{
 		id: 'review',
 		title: 'Review What Actually Happened',
-		summary:
-			'Use timeline view to check which tools ran, what changed, and where context shifted.',
+		summary: 'Use timeline view to check which tools ran, what changed, and where context shifted.',
 		proof: 'Decisions can be verified from events, not memory.',
 	},
 	{

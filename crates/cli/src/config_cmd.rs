@@ -5,8 +5,8 @@ use crate::user_guidance::{guided_error, guided_error_with_doc};
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use opensession_runtime_config::{
-    SessionDefaultView, SummaryOutputShape, SummaryPersistMode, SummaryProvider,
-    SummaryResponseStyle, SummarySourceMode, SummaryTriggerMode,
+    SessionDefaultView, SummaryOutputShape, SummaryProvider, SummaryResponseStyle,
+    SummarySourceMode, SummaryStorageBackend, SummaryTriggerMode,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -83,17 +83,11 @@ pub struct SummarySetArgs {
     #[arg(long, value_enum)]
     pub output_shape: Option<SummaryOutputShapeArg>,
     #[arg(long)]
-    pub output_instruction: Option<String>,
+    pub prompt_template: Option<String>,
     #[arg(long, value_enum)]
     pub trigger_mode: Option<SummaryTriggerModeArg>,
     #[arg(long, value_enum)]
-    pub persist_mode: Option<SummaryPersistModeArg>,
-    /// Add template slot (`key=value`). Repeat for multiple entries.
-    #[arg(long = "template-slot")]
-    pub template_slots: Vec<String>,
-    /// Clear existing template slot mappings before applying `--template-slot`.
-    #[arg(long)]
-    pub clear_template_slots: bool,
+    pub storage_backend: Option<SummaryStorageBackendArg>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -197,16 +191,18 @@ impl From<SummaryTriggerModeArg> for SummaryTriggerMode {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum SummaryPersistModeArg {
-    None,
+pub enum SummaryStorageBackendArg {
+    HiddenRef,
     LocalDb,
+    None,
 }
 
-impl From<SummaryPersistModeArg> for SummaryPersistMode {
-    fn from(value: SummaryPersistModeArg) -> Self {
+impl From<SummaryStorageBackendArg> for SummaryStorageBackend {
+    fn from(value: SummaryStorageBackendArg) -> Self {
         match value {
-            SummaryPersistModeArg::None => SummaryPersistMode::None,
-            SummaryPersistModeArg::LocalDb => SummaryPersistMode::LocalDb,
+            SummaryStorageBackendArg::HiddenRef => SummaryStorageBackend::HiddenRef,
+            SummaryStorageBackendArg::LocalDb => SummaryStorageBackend::LocalDb,
+            SummaryStorageBackendArg::None => SummaryStorageBackend::None,
         }
     }
 }
@@ -357,9 +353,9 @@ fn run_summary(action: SummaryConfigAction) -> Result<()> {
                     let path = save_runtime_config(&cfg)?;
                     println!("applied: {}", path.display());
                 } else {
-                    cfg.summary.provider = SummaryProvider::Disabled;
+                    cfg.summary.provider.id = SummaryProvider::Disabled;
                     let path = save_runtime_config(&cfg)?;
-                    println!("applied: {} (summary.provider=disabled)", path.display());
+                    println!("applied: {} (summary.provider.id=disabled)", path.display());
                 }
             }
             Ok(())
@@ -367,54 +363,31 @@ fn run_summary(action: SummaryConfigAction) -> Result<()> {
         SummaryConfigAction::Set(args) => {
             let mut cfg = load_runtime_config()?;
             if let Some(provider) = args.provider {
-                cfg.summary.provider = provider.into();
+                cfg.summary.provider.id = provider.into();
             }
             if let Some(endpoint) = args.endpoint {
-                cfg.summary.endpoint = endpoint;
+                cfg.summary.provider.endpoint = endpoint;
             }
             if let Some(model) = args.model {
-                cfg.summary.model = model;
+                cfg.summary.provider.model = model;
             }
             if let Some(source_mode) = args.source_mode {
                 cfg.summary.source_mode = source_mode.into();
             }
             if let Some(response_style) = args.response_style {
-                cfg.summary.response_style = response_style.into();
+                cfg.summary.response.style = response_style.into();
             }
             if let Some(output_shape) = args.output_shape {
-                cfg.summary.output_shape = output_shape.into();
+                cfg.summary.response.shape = output_shape.into();
             }
-            if let Some(output_instruction) = args.output_instruction {
-                cfg.summary.output_instruction = output_instruction;
+            if let Some(prompt_template) = args.prompt_template {
+                cfg.summary.prompt.template = prompt_template;
             }
             if let Some(trigger_mode) = args.trigger_mode {
-                cfg.summary.trigger_mode = trigger_mode.into();
+                cfg.summary.storage.trigger = trigger_mode.into();
             }
-            if let Some(persist_mode) = args.persist_mode {
-                cfg.summary.persist_mode = persist_mode.into();
-            }
-
-            if args.clear_template_slots {
-                cfg.summary.template_slots.clear();
-            }
-            for raw in args.template_slots {
-                let (key, value) = raw.split_once('=').ok_or_else(|| {
-                    guided_error(
-                        format!("invalid --template-slot `{raw}`"),
-                        ["expected format: --template-slot key=value"],
-                    )
-                })?;
-                let key = key.trim();
-                let value = value.trim();
-                if key.is_empty() {
-                    return Err(guided_error(
-                        format!("invalid --template-slot `{raw}`"),
-                        ["slot key must be non-empty"],
-                    ));
-                }
-                cfg.summary
-                    .template_slots
-                    .insert(key.to_string(), value.to_string());
+            if let Some(storage_backend) = args.storage_backend {
+                cfg.summary.storage.backend = storage_backend.into();
             }
 
             let path = save_runtime_config(&cfg)?;

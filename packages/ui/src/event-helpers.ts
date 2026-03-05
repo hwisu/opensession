@@ -202,7 +202,9 @@ function blockSignature(block: ContentBlock): string {
 
 function eventSignature(event: Event): string {
 	const typeData = 'data' in event.event_type ? stableStringify(event.event_type.data) : '';
-	const contentSignature = event.content.blocks.map((block) => blockSignature(block)).join('\u241e');
+	const contentSignature = event.content.blocks
+		.map((block) => blockSignature(block))
+		.join('\u241e');
 	const stableTaskId = event.event_type.type === 'Thinking' ? '' : (event.task_id ?? '');
 	return [
 		event.event_type.type,

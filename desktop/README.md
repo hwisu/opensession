@@ -28,8 +28,45 @@ Build flow:
 ## Notes
 
 - UI components are reused from `@opensession/ui` via the existing `web` app.
-- In desktop runtime, session/capability/auth reads use Tauri commands backed by local DB.
+- In desktop runtime, session/capability/auth reads use Tauri commands backed by local DB and git-native storage.
 - Optional: set `OPENSESSION_LOCAL_DB_PATH` to point to a custom sqlite file path.
+
+## Runtime Settings (Desktop Local)
+
+Desktop local runtime exposes runtime settings with a typed summary model:
+
+- `summary.provider.id|endpoint|model`
+- `summary.prompt.template`
+- `summary.response.style|shape`
+- `summary.storage.trigger|backend`
+- `summary.source_mode`
+
+Desktop local policy:
+
+- Account/auth section is hidden when `auth_enabled=false` (default desktop local behavior).
+- Source mode selector is hidden and internally locked to `session_only`.
+- Summary storage backend defaults to `hidden_ref`.
+- `hidden_ref` mode still writes searchable list metadata to local SQLite (`local.db`) so filters/search stay fast.
+- Response preview is deterministic fixture rendering (no LLM/network dry-run).
+
+Provider field visibility:
+
+- `ollama` (`http`): endpoint + model
+- `codex_exec`, `claude_cli` (`cli`): binary status + model
+- `disabled`: provider detail fields hidden
+
+Desktop local docs:
+
+- `/docs` can render from local IPC (`desktop_get_docs_markdown`) without requiring `opensession-server`.
+
+Desktop vector search (optional):
+
+- Vector ranking is event/line chunk based (not session-level one-string embedding).
+- `vector_search` settings are typed and saved via runtime settings payload.
+- Default model is `bge-m3` on local Ollama (`http://127.0.0.1:11434`).
+- Model install is explicit from Settings (`desktop_vector_install_model`) and progress is observable via preflight status.
+- Indexing is explicit (`desktop_vector_index_rebuild`) and status is queryable (`desktop_vector_index_status`).
+- Hidden refs remain summary ledger storage; vector/list metadata remains in local SQLite (`local.db`) for query performance.
 
 ## Release
 

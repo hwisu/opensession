@@ -77,9 +77,9 @@ function normalizeAtHandle(value: string | null | undefined): string | null {
 function navAccountHandle(currentUser: UserSettings | null): string {
 	if (!currentUser) return 'account';
 
-	const githubHandle = currentUser.oauth_providers
-		?.find((provider) => provider.provider.toLowerCase() === 'github')
-		?.provider_username;
+	const githubHandle = currentUser.oauth_providers?.find(
+		(provider) => provider.provider.toLowerCase() === 'github',
+	)?.provider_username;
 	const preferredGithub = normalizeAtHandle(githubHandle);
 	if (preferredGithub) return preferredGithub;
 
@@ -119,6 +119,9 @@ function getDesktopInvoke(): DesktopInvoke | null {
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/sessions', label: 'Sessions' }];
 	links.push({ href: '/docs', label: 'Docs' });
+	if (desktopRuntime || hasLocalAuth) {
+		links.push({ href: '/settings', label: 'Settings' });
+	}
 	return links;
 });
 
@@ -182,17 +185,18 @@ const shortcutHints = $derived.by(() => {
 	if (isSessionDetail) {
 		return ['Cmd/Ctrl+K palette', 'j/k scroll', '1-0 filters', '/ search', 'n/p match', 'Esc back'];
 	}
-		if (isSessionList) {
-			return [
-				'Cmd/Ctrl+K palette',
-				'j/k navigate',
-				'Enter open',
-				'/ search',
-				't tool',
-				'r range',
-				'g repo',
-			];
-		}
+	if (isSessionList) {
+		return [
+			'Cmd/Ctrl+K palette',
+			'j/k navigate',
+			'Enter open',
+			'/ search',
+			't tool',
+			'r range',
+			'Shift+R refresh',
+			'g repo',
+		];
+	}
 	return ['Cmd/Ctrl+K palette', 'Esc back'];
 });
 
@@ -298,7 +302,7 @@ const allPaletteCommands = $derived.by(() => {
 			),
 		);
 	}
-	if (hasLocalAuth) {
+	if (hasLocalAuth || desktopRuntime) {
 		commands.push(
 			createPaletteCommand(
 				'go-settings',
@@ -366,7 +370,8 @@ $effect(() => {
 });
 
 function isLinkActive(href: string): boolean {
-	if (href === '/sessions') return currentPath === '/sessions' || currentPath.startsWith('/session/');
+	if (href === '/sessions')
+		return currentPath === '/sessions' || currentPath.startsWith('/session/');
 	return currentPath === href;
 }
 

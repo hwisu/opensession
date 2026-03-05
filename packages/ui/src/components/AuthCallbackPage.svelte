@@ -9,23 +9,23 @@ const {
 	onError?: () => void;
 } = $props();
 
-	let status = $state<'loading' | 'error'>('loading');
+let status = $state<'loading' | 'error'>('loading');
 
-	$effect(() => {
-		handleAuthCallback()
-			.then((ok) => {
-				if (ok) {
-					onSuccess();
-					return;
-				}
-				status = 'error';
-				onError();
-			})
-			.catch(() => {
-				status = 'error';
-				onError();
-			});
-	});
+$effect(() => {
+	handleAuthCallback()
+		.then((ok) => {
+			if (ok) {
+				onSuccess();
+				return;
+			}
+			status = 'error';
+			onError();
+		})
+		.catch(() => {
+			status = 'error';
+			onError();
+		});
+});
 </script>
 
 <div class="flex items-center justify-center pt-24">

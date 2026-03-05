@@ -77,6 +77,33 @@ Hash policy:
 
 - SHA-256 of canonical HAIL JSONL bytes.
 
+## Desktop Runtime Summary Contract (v3)
+
+Desktop IPC/runtime settings use the typed summary contract:
+
+- `summary.provider.id|endpoint|model`
+- `summary.prompt.template`
+- `summary.response.style|shape`
+- `summary.storage.trigger|backend`
+- `summary.source_mode`
+- `vector_search.enabled|provider|model|endpoint|granularity|chunk_size_lines|chunk_overlap_lines|top_k_chunks|top_k_sessions`
+
+Desktop local constraints:
+
+- `auth_enabled=false` runtime hides account/auth UI by design.
+- `summary.source_mode` is locked to `session_only` in desktop local runtime.
+- `session_or_git_changes` is reserved for non-desktop runtime contexts (for example CI/CLI).
+- Default summary storage backend is `hidden_ref`.
+- Even with `hidden_ref`, list/search metadata and vector-index metadata are indexed in local SQLite (`OPENSESSION_LOCAL_DB_PATH` or default `~/.local/share/opensession/local.db`).
+- Runtime response preview UI is deterministic local sample rendering, not model output.
+
+Desktop local extras:
+
+- `/docs` can be resolved from desktop IPC (`desktop_get_docs_markdown`) when HTTP docs route is unavailable.
+- Vector search uses event/line chunk indexing and local Ollama embeddings (`bge-m3` default).
+- Vector search enablement is explicit: model install must complete first (`desktop_vector_preflight`, `desktop_vector_install_model`).
+- Indexing is explicit and observable (`desktop_vector_index_rebuild`, `desktop_vector_index_status`).
+
 ## Share via Git
 
 `register` is local-only. Remote sharing is explicit via `share`.

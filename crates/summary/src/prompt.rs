@@ -397,7 +397,20 @@ pub fn build_summary_prompt(
         return String::new();
     }
 
-    let mut prompt = prompt_template
+    // Keep custom templates flexible while still enforcing runtime response semantics.
+    // If rule placeholders are omitted, prepend them so shape/style/source always affect the prompt.
+    let mut normalized_template = prompt_template.to_string();
+    if !normalized_template.contains("{{SOURCE_RULE}}") {
+        normalized_template = format!("{{{{SOURCE_RULE}}}}\n{normalized_template}");
+    }
+    if !normalized_template.contains("{{STYLE_RULE}}") {
+        normalized_template = format!("{{{{STYLE_RULE}}}}\n{normalized_template}");
+    }
+    if !normalized_template.contains("{{SHAPE_RULE}}") {
+        normalized_template = format!("{{{{SHAPE_RULE}}}}\n{normalized_template}");
+    }
+
+    let mut prompt = normalized_template
         .replace("{{SOURCE_RULE}}", source_rule)
         .replace("{{STYLE_RULE}}", style_rule)
         .replace("{{SHAPE_RULE}}", shape_rule)
@@ -688,6 +701,40 @@ diff --git a/src/a.rs b/src/a.rs\n\
         assert!(prompt.contains("\"summary_source\":\"git_working_tree\""));
         assert!(prompt.contains("file:auth/login.rs"));
         assert!(prompt.contains("timeline:assistant: fixed oauth token validation"));
+    }
+
+    #[test]
+    fn build_summary_prompt_injects_rules_when_custom_template_omits_placeholders() {
+        let mut session = make_session("prompt-custom-template-rules");
+        session
+            .events
+            .push(make_event("e-user", EventType::UserMessage, "summarize"));
+        session.recompute_stats();
+
+        let prompt = build_summary_prompt(
+            &session,
+            "session_events".to_string(),
+            vec!["assistant: touched auth guard".to_string()],
+            vec![HailCompactFileChange {
+                path: "src/auth/guard.rs".to_string(),
+                layer: "application".to_string(),
+                operation: "edit".to_string(),
+                lines_added: 3,
+                lines_removed: 1,
+            }],
+            serde_json::Value::Null,
+            SummaryPromptConfig {
+                response_style: SummaryResponseStyle::Compact,
+                output_shape: SummaryOutputShape::FileList,
+                source_mode: SummarySourceMode::SessionOnly,
+                prompt_template: "Use this json only: {{HAIL_COMPACT}}",
+            },
+        );
+
+        assert!(prompt.contains("- Response style: compact."));
+        assert!(prompt.contains("- Output shape: file_list."));
+        assert!(prompt.contains("- Input source mode: session_only."));
+        assert!(prompt.contains("\"summary_source\":\"session_events\""));
     }
 
     #[test]

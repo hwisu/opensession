@@ -2,6 +2,7 @@
 import {
 	ApiError,
 	askSessionChanges,
+	changeReaderTextToSpeech,
 	getRuntimeSettings,
 	getSession,
 	getSessionDetail,
@@ -42,6 +43,14 @@ let changeReaderRuntimeError = $state<string | null>(null);
 let changeReaderReading = $state(false);
 let changeReaderNarrative = $state<string | null>(null);
 let changeReaderReadError = $state<string | null>(null);
+let changeReaderVoiceEnabled = $state(false);
+let changeReaderVoiceConfigured = $state(false);
+let changeReaderVoicePending = $state(false);
+let changeReaderVoicePlaying = $state(false);
+let changeReaderVoiceError = $state<string | null>(null);
+let changeReaderVoiceWarning = $state<string | null>(null);
+let changeReaderAudio: HTMLAudioElement | null = null;
+let changeReaderAudioUrl: string | null = null;
 let changeReaderQuestion = $state('');
 let changeReaderAsking = $state(false);
 let changeReaderAnswer = $state<string | null>(null);
@@ -167,6 +176,70 @@ async function handleAskChangeQuestion() {
 	}
 }
 
+function releaseChangeReaderAudio() {
+	if (changeReaderAudio) {
+		changeReaderAudio.pause();
+		changeReaderAudio = null;
+	}
+	if (changeReaderAudioUrl) {
+		URL.revokeObjectURL(changeReaderAudioUrl);
+		changeReaderAudioUrl = null;
+	}
+	changeReaderVoicePlaying = false;
+}
+
+function decodeBase64Audio(base64: string): Uint8Array {
+	const binary = atob(base64);
+	const bytes = new Uint8Array(binary.length);
+	for (let idx = 0; idx < binary.length; idx += 1) {
+		bytes[idx] = binary.charCodeAt(idx);
+	}
+	return bytes;
+}
+
+async function handlePlayChangeReaderVoice() {
+	const source = (changeReaderAnswer ?? changeReaderNarrative ?? '').trim();
+	if (!source) {
+		changeReaderVoiceError = '먼저 Read Changes 또는 Ask를 실행해 주세요.';
+		return;
+	}
+	changeReaderVoicePending = true;
+	changeReaderVoiceError = null;
+	changeReaderVoiceWarning = null;
+	try {
+		const payload = await changeReaderTextToSpeech(source, sessionId, changeReaderScope);
+		const bytes = decodeBase64Audio(payload.audio_base64);
+		const audioBuffer = new ArrayBuffer(bytes.byteLength);
+		new Uint8Array(audioBuffer).set(bytes);
+		const blob = new Blob([audioBuffer], { type: payload.mime_type || 'audio/mpeg' });
+		releaseChangeReaderAudio();
+		changeReaderAudioUrl = URL.createObjectURL(blob);
+		const audio = new Audio(changeReaderAudioUrl);
+		changeReaderAudio = audio;
+		audio.onended = () => {
+			changeReaderVoicePlaying = false;
+		};
+		audio.onerror = () => {
+			changeReaderVoicePlaying = false;
+			changeReaderVoiceError = '음성 재생에 실패했습니다.';
+		};
+		changeReaderVoicePlaying = true;
+		await audio.play();
+		if (payload.warning) {
+			changeReaderVoiceWarning = payload.warning;
+		}
+	} catch (e) {
+		changeReaderVoiceError = e instanceof Error ? e.message : 'Failed to synthesize voice';
+		changeReaderVoicePlaying = false;
+	} finally {
+		changeReaderVoicePending = false;
+	}
+}
+
+function handleStopChangeReaderVoice() {
+	releaseChangeReaderAudio();
+}
+
 $effect(() => {
 	loading = true;
 	error = null;
@@ -184,6 +257,13 @@ $effect(() => {
 	changeReaderAskError = null;
 	changeReaderWarning = null;
 	changeReaderCitations = [];
+	changeReaderVoiceEnabled = false;
+	changeReaderVoiceConfigured = false;
+	changeReaderVoicePending = false;
+	changeReaderVoicePlaying = false;
+	changeReaderVoiceError = null;
+	changeReaderVoiceWarning = null;
+	releaseChangeReaderAudio();
 	Promise.all([getSession(sessionId), getSessionDetail(sessionId)])
 		.then(([loadedSession, loadedDetail]) => {
 			session = loadedSession;
@@ -215,6 +295,8 @@ $effect(() => {
 			changeReaderEnabled = runtime.change_reader?.enabled ?? false;
 			changeReaderQaEnabled = runtime.change_reader?.qa_enabled ?? false;
 			changeReaderScope = runtime.change_reader?.scope ?? 'summary_only';
+			changeReaderVoiceEnabled = runtime.change_reader?.voice?.enabled ?? false;
+			changeReaderVoiceConfigured = runtime.change_reader?.voice?.api_key_configured ?? false;
 		})
 		.catch((e) => {
 			changeReaderSupported = false;
@@ -232,6 +314,12 @@ $effect(() => {
 	if (initializedForSessionId === session.session_id) return;
 	initializeFilters(session);
 	initializedForSessionId = session.session_id;
+});
+
+$effect(() => {
+	return () => {
+		releaseChangeReaderAudio();
+	};
 });
 </script>
 
@@ -252,7 +340,9 @@ $effect(() => {
 		<div class="flex flex-wrap items-center justify-between gap-3">
 			<div>
 				<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Semantic Summary</p>
-				{#if semanticSummary?.source_kind}
+				{#if semanticSummary?.generation_kind === 'heuristic_fallback'}
+					<p class="mt-1 text-xs text-warning">Heuristic fallback · 변경 신호가 제한되어 간략 요약을 표시합니다.</p>
+				{:else if semanticSummary?.source_kind}
 					<p class="mt-1 text-xs text-text-secondary">
 						source={semanticSummary.source_kind}
 						{#if semanticSummary.generation_kind}
@@ -301,7 +391,7 @@ $effect(() => {
 						{/each}
 					</div>
 				{:else}
-					<p class="mt-1 text-xs text-text-muted">No layer/file entries.</p>
+					<p class="mt-1 text-xs text-text-muted">변경 신호가 부족해 레이어/파일 요약을 만들지 못했습니다.</p>
 				{/if}
 			</div>
 			{#if semanticDiffTree.length}
@@ -345,7 +435,7 @@ $effect(() => {
 					</div>
 				</div>
 			{/if}
-			{#if semanticSummary?.error}
+			{#if semanticSummary?.error && semanticSummary.error !== 'no usable summary signals found'}
 				<p class="text-xs text-warning">generation note: {semanticSummary.error}</p>
 			{/if}
 		{:else}
@@ -357,8 +447,8 @@ $effect(() => {
 		<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="change-reader-card">
 			<div class="flex flex-wrap items-center justify-between gap-2">
 				<div>
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Change Reader</p>
-					<p class="mt-1 text-xs text-text-secondary">Read session changes and ask questions from local context.</p>
+					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Change Reader (Text + Voice)</p>
+					<p class="mt-1 text-xs text-text-secondary">Read session changes, ask questions, and play voice narration from local context.</p>
 				</div>
 				<label class="text-xs text-text-secondary">
 					<span class="mr-2">Scope</span>
@@ -379,9 +469,40 @@ $effect(() => {
 				>
 					{changeReaderReading ? 'Reading…' : 'Read Changes'}
 				</button>
+				{#if changeReaderVoiceEnabled && changeReaderVoiceConfigured}
+					<button
+						type="button"
+						onclick={handlePlayChangeReaderVoice}
+						disabled={changeReaderVoicePending}
+						data-testid="change-reader-play-voice"
+						class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+					>
+						{changeReaderVoicePending ? 'Synthesizing…' : changeReaderVoicePlaying ? 'Replay Voice' : 'Play Voice'}
+					</button>
+					<button
+						type="button"
+						onclick={handleStopChangeReaderVoice}
+						disabled={!changeReaderVoicePlaying}
+						data-testid="change-reader-stop-voice"
+						class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+					>
+						Stop Voice
+					</button>
+				{/if}
 			</div>
 			{#if changeReaderReadError}
 				<p class="text-xs text-error">{changeReaderReadError}</p>
+			{/if}
+			{#if !changeReaderVoiceEnabled}
+				<p class="text-xs text-text-muted">Voice is disabled in runtime settings.</p>
+			{:else if !changeReaderVoiceConfigured}
+				<p class="text-xs text-text-muted">Set Change Reader Voice API key in Settings to enable playback.</p>
+			{/if}
+			{#if changeReaderVoiceError}
+				<p class="text-xs text-error" data-testid="change-reader-voice-error">{changeReaderVoiceError}</p>
+			{/if}
+			{#if changeReaderVoiceWarning}
+				<p class="text-xs text-warning" data-testid="change-reader-voice-warning">{changeReaderVoiceWarning}</p>
 			{/if}
 			{#if changeReaderNarrative}
 				<pre class="overflow-x-auto whitespace-pre-wrap rounded border border-border/70 bg-bg-primary p-2 text-xs text-text-secondary" data-testid="change-reader-narrative">{changeReaderNarrative}</pre>

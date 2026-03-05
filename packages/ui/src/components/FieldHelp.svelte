@@ -10,28 +10,82 @@ const {
 	testId?: string;
 	inline?: boolean;
 } = $props();
+
+let open = $state(false);
+function tooltipId(): string {
+	return `field-help-${(testId ?? label)
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-|-$/g, '')}`;
+}
+
+function showHelp() {
+	open = true;
+}
+
+function hideHelp() {
+	open = false;
+}
 </script>
 
 {#if inline}
 	<span class="inline-flex items-center gap-1">
 		<span>{label}</span>
-		<span
-			class="inline-flex h-4 w-4 cursor-help items-center justify-center border border-border/70 text-[10px] leading-none text-text-muted"
-			title={help}
-			aria-label={`${label} help: ${help}`}
-			data-testid={testId}
-			>?</span
-		>
+		<span class="relative inline-flex">
+			<button
+				type="button"
+				class="inline-flex h-4 w-4 cursor-help items-center justify-center border border-border/70 bg-bg-primary text-[10px] leading-none text-text-muted transition-colors hover:text-text-primary"
+				onmouseenter={showHelp}
+				onmouseleave={hideHelp}
+				onfocus={showHelp}
+				onblur={hideHelp}
+				onkeydown={(event) => {
+					if (event.key === 'Escape') hideHelp();
+				}}
+				aria-label={`${label} help`}
+				aria-expanded={open}
+				aria-describedby={open ? tooltipId() : undefined}
+				data-testid={testId}
+				>?</button
+			>
+			{#if open}
+				<span
+					id={tooltipId()}
+					role="tooltip"
+					class="absolute left-1/2 top-full z-20 mt-1 w-56 -translate-x-1/2 rounded border border-border bg-bg-secondary px-2 py-1 text-[11px] leading-relaxed text-text-secondary shadow-xl"
+					>{help}</span
+				>
+			{/if}
+		</span>
 	</span>
 {:else}
 	<span class="mb-1 flex items-center gap-1">
 		<span>{label}</span>
-		<span
-			class="inline-flex h-4 w-4 cursor-help items-center justify-center border border-border/70 text-[10px] leading-none text-text-muted"
-			title={help}
-			aria-label={`${label} help: ${help}`}
-			data-testid={testId}
-			>?</span
-		>
+		<span class="relative inline-flex">
+			<button
+				type="button"
+				class="inline-flex h-4 w-4 cursor-help items-center justify-center border border-border/70 bg-bg-primary text-[10px] leading-none text-text-muted transition-colors hover:text-text-primary"
+				onmouseenter={showHelp}
+				onmouseleave={hideHelp}
+				onfocus={showHelp}
+				onblur={hideHelp}
+				onkeydown={(event) => {
+					if (event.key === 'Escape') hideHelp();
+				}}
+				aria-label={`${label} help`}
+				aria-expanded={open}
+				aria-describedby={open ? tooltipId() : undefined}
+				data-testid={testId}
+				>?</button
+			>
+			{#if open}
+				<span
+					id={tooltipId()}
+					role="tooltip"
+					class="absolute left-0 top-full z-20 mt-1 w-56 rounded border border-border bg-bg-secondary px-2 py-1 text-[11px] leading-relaxed text-text-secondary shadow-xl"
+					>{help}</span
+				>
+			{/if}
+		</span>
 	</span>
 {/if}

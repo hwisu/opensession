@@ -326,6 +326,8 @@ pub struct VectorSearchSettings {
     pub endpoint: String,
     #[serde(default)]
     pub granularity: VectorSearchGranularity,
+    #[serde(default)]
+    pub chunking_mode: VectorChunkingMode,
     #[serde(default = "default_vector_chunk_size_lines")]
     pub chunk_size_lines: u16,
     #[serde(default = "default_vector_chunk_overlap_lines")]
@@ -344,6 +346,7 @@ impl Default for VectorSearchSettings {
             model: default_vector_model(),
             endpoint: default_vector_endpoint(),
             granularity: VectorSearchGranularity::default(),
+            chunking_mode: VectorChunkingMode::default(),
             chunk_size_lines: default_vector_chunk_size_lines(),
             chunk_overlap_lines: default_vector_chunk_overlap_lines(),
             top_k_chunks: default_vector_top_k_chunks(),
@@ -362,6 +365,8 @@ pub struct ChangeReaderSettings {
     pub qa_enabled: bool,
     #[serde(default = "default_change_reader_max_context_chars")]
     pub max_context_chars: u32,
+    #[serde(default)]
+    pub voice: ChangeReaderVoiceSettings,
 }
 
 impl Default for ChangeReaderSettings {
@@ -371,6 +376,33 @@ impl Default for ChangeReaderSettings {
             scope: ChangeReaderScope::default(),
             qa_enabled: default_true(),
             max_context_chars: default_change_reader_max_context_chars(),
+            voice: ChangeReaderVoiceSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeReaderVoiceSettings {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: ChangeReaderVoiceProvider,
+    #[serde(default = "default_change_reader_voice_model")]
+    pub model: String,
+    #[serde(default = "default_change_reader_voice_name")]
+    pub voice: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+impl Default for ChangeReaderVoiceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_false(),
+            provider: ChangeReaderVoiceProvider::default(),
+            model: default_change_reader_voice_model(),
+            voice: default_change_reader_voice_name(),
+            api_key: String::new(),
         }
     }
 }
@@ -418,6 +450,21 @@ pub enum VectorSearchProvider {
 pub enum VectorSearchGranularity {
     #[default]
     EventLineChunk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorChunkingMode {
+    #[default]
+    Auto,
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeReaderVoiceProvider {
+    #[default]
+    Openai,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -599,6 +646,12 @@ fn default_vector_top_k_sessions() -> u16 {
 }
 fn default_change_reader_max_context_chars() -> u32 {
     12_000
+}
+fn default_change_reader_voice_model() -> String {
+    "gpt-4o-mini-tts".to_string()
+}
+fn default_change_reader_voice_name() -> String {
+    "alloy".to_string()
 }
 fn default_summary_batch_recent_days() -> u16 {
     30
@@ -998,6 +1051,7 @@ id = "claude_cli"
             cfg.vector_search.granularity,
             VectorSearchGranularity::EventLineChunk
         );
+        assert_eq!(cfg.vector_search.chunking_mode, VectorChunkingMode::Auto);
         assert_eq!(cfg.vector_search.chunk_size_lines, 12);
         assert_eq!(cfg.vector_search.chunk_overlap_lines, 3);
         assert_eq!(cfg.vector_search.top_k_chunks, 30);
@@ -1014,6 +1068,7 @@ provider = "ollama"
 model = "bge-m3"
 endpoint = "http://localhost:11434"
 granularity = "event_line_chunk"
+chunking_mode = "manual"
 chunk_size_lines = 16
 chunk_overlap_lines = 4
 top_k_chunks = 60
@@ -1030,6 +1085,7 @@ top_k_sessions = 10
             cfg.vector_search.granularity,
             VectorSearchGranularity::EventLineChunk
         );
+        assert_eq!(cfg.vector_search.chunking_mode, VectorChunkingMode::Manual);
         assert_eq!(cfg.vector_search.chunk_size_lines, 16);
         assert_eq!(cfg.vector_search.chunk_overlap_lines, 4);
         assert_eq!(cfg.vector_search.top_k_chunks, 60);
@@ -1065,12 +1121,34 @@ granularity = "session_text"
     }
 
     #[test]
+    fn vector_search_chunking_mode_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[vector_search]
+chunking_mode = "adaptive"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported vector chunking mode must be rejected"
+        );
+    }
+
+    #[test]
     fn change_reader_defaults_are_stable() {
         let cfg = DaemonConfig::default();
         assert!(!cfg.change_reader.enabled);
         assert_eq!(cfg.change_reader.scope, ChangeReaderScope::SummaryOnly);
         assert!(cfg.change_reader.qa_enabled);
         assert_eq!(cfg.change_reader.max_context_chars, 12_000);
+        assert!(!cfg.change_reader.voice.enabled);
+        assert_eq!(
+            cfg.change_reader.voice.provider,
+            ChangeReaderVoiceProvider::Openai
+        );
+        assert_eq!(cfg.change_reader.voice.model, "gpt-4o-mini-tts");
+        assert_eq!(cfg.change_reader.voice.voice, "alloy");
+        assert!(cfg.change_reader.voice.api_key.is_empty());
     }
 
     #[test]
@@ -1082,6 +1160,12 @@ enabled = true
 scope = "full_context"
 qa_enabled = false
 max_context_chars = 24000
+[change_reader.voice]
+enabled = true
+provider = "openai"
+model = "gpt-4o-mini-tts"
+voice = "nova"
+api_key = "sk-local"
 "#,
         )
         .expect("parse change reader settings");
@@ -1090,6 +1174,14 @@ max_context_chars = 24000
         assert_eq!(cfg.change_reader.scope, ChangeReaderScope::FullContext);
         assert!(!cfg.change_reader.qa_enabled);
         assert_eq!(cfg.change_reader.max_context_chars, 24_000);
+        assert!(cfg.change_reader.voice.enabled);
+        assert_eq!(
+            cfg.change_reader.voice.provider,
+            ChangeReaderVoiceProvider::Openai
+        );
+        assert_eq!(cfg.change_reader.voice.model, "gpt-4o-mini-tts");
+        assert_eq!(cfg.change_reader.voice.voice, "nova");
+        assert_eq!(cfg.change_reader.voice.api_key, "sk-local");
     }
 
     #[test]
@@ -1103,6 +1195,20 @@ scope = "full"
         assert!(
             parsed.is_err(),
             "unsupported change reader scope must be rejected"
+        );
+    }
+
+    #[test]
+    fn change_reader_voice_provider_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[change_reader.voice]
+provider = "azure"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported change reader voice provider must be rejected"
         );
     }
 

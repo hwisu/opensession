@@ -52,15 +52,13 @@ test.describe('Navigation', () => {
 		expect(await footer.locator('kbd').filter({ hasText: 'Cmd/Ctrl+K' }).count()).toBeGreaterThan(0);
 		await expect(footer.getByText('Cmd/Ctrl+K palette')).toBeVisible();
 		await expect(footer.getByText('/ search')).toBeVisible();
-			await expect(footer.locator('[data-testid="tor-footer-hint"]')).toBeVisible();
-			await expect(footer).toContainText('t');
-			await expect(footer).toContainText('tool');
-			await expect(footer).toContainText('r');
-			await expect(footer).toContainText('range');
-			await expect(footer).toContainText('g');
-			await expect(footer).toContainText('repo');
-			await expect(footer.getByText('opensession.io')).toBeVisible();
-		});
+		await expect(footer.locator('[data-testid="tor-footer-hint"]')).toHaveCount(0);
+		await expect(footer.getByText('t tool')).toBeVisible();
+		await expect(footer.getByText('r range')).toBeVisible();
+		await expect(footer.getByText('g repo')).toBeVisible();
+		await expect(footer.getByText('? help')).toBeVisible();
+		await expect(footer.getByText('opensession.io')).toBeVisible();
+	});
 
 	test('command palette opens and navigates to docs', async ({ page }) => {
 		await page.goto('/');

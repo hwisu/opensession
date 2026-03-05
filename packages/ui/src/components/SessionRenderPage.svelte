@@ -191,7 +191,7 @@ $effect(() => {
 
 function isSearchFocusShortcut(e: KeyboardEvent): boolean {
 	if (e.key.toLowerCase() === 'f' && (e.metaKey || e.ctrlKey)) return true;
-	return e.code === 'Slash' || e.key === '/' || e.key === '?';
+	return e.code === 'Slash' || e.key === '/';
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -555,7 +555,7 @@ $effect(() => {
 	>
 		<div class="session-hero-glow pointer-events-none absolute inset-x-0 top-0 h-16"></div>
 		<div class="relative">
-			<h1 class="truncate text-base font-semibold text-text-primary sm:text-lg">
+			<h1 class="break-words whitespace-normal select-text text-base font-semibold text-text-primary sm:text-lg">
 				{displayTitle}
 			</h1>
 

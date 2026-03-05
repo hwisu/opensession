@@ -367,7 +367,7 @@ pub struct SessionListResponse {
 }
 
 /// Canonical desktop IPC contract version shared between Rust and TS clients.
-pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v5";
+pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v6";
 
 /// Query parameters for `GET /api/sessions` — pagination, filtering, sorting.
 #[derive(Debug, Deserialize)]
@@ -399,6 +399,7 @@ pub struct DesktopSessionListQuery {
     pub git_repo_name: Option<String>,
     pub sort: Option<String>,
     pub time_range: Option<String>,
+    pub force_refresh: Option<bool>,
 }
 
 /// Repo list response used by server/worker/desktop adapters.
@@ -734,6 +735,15 @@ pub enum DesktopVectorSearchGranularity {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopVectorChunkingMode {
+    Auto,
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub enum DesktopVectorInstallState {
     NotInstalled,
     Installing,
@@ -761,6 +771,7 @@ pub struct DesktopRuntimeVectorSearchSettings {
     pub model: String,
     pub endpoint: String,
     pub granularity: DesktopVectorSearchGranularity,
+    pub chunking_mode: DesktopVectorChunkingMode,
     pub chunk_size_lines: u16,
     pub chunk_overlap_lines: u16,
     pub top_k_chunks: u16,
@@ -776,6 +787,7 @@ pub struct DesktopRuntimeVectorSearchSettingsUpdate {
     pub model: String,
     pub endpoint: String,
     pub granularity: DesktopVectorSearchGranularity,
+    pub chunking_mode: DesktopVectorChunkingMode,
     pub chunk_size_lines: u16,
     pub chunk_overlap_lines: u16,
     pub top_k_chunks: u16,
@@ -791,6 +803,37 @@ pub enum DesktopChangeReaderScope {
     FullContext,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopChangeReaderVoiceProvider {
+    Openai,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeChangeReaderVoiceSettings {
+    pub enabled: bool,
+    pub provider: DesktopChangeReaderVoiceProvider,
+    pub model: String,
+    pub voice: String,
+    pub api_key_configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeChangeReaderVoiceSettingsUpdate {
+    pub enabled: bool,
+    pub provider: DesktopChangeReaderVoiceProvider,
+    pub model: String,
+    pub voice: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
@@ -799,6 +842,7 @@ pub struct DesktopRuntimeChangeReaderSettings {
     pub scope: DesktopChangeReaderScope,
     pub qa_enabled: bool,
     pub max_context_chars: u32,
+    pub voice: DesktopRuntimeChangeReaderVoiceSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -809,6 +853,7 @@ pub struct DesktopRuntimeChangeReaderSettingsUpdate {
     pub scope: DesktopChangeReaderScope,
     pub qa_enabled: bool,
     pub max_context_chars: u32,
+    pub voice: DesktopRuntimeChangeReaderVoiceSettingsUpdate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -978,6 +1023,27 @@ pub struct DesktopChangeQuestionRequest {
     pub question: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<DesktopChangeReaderScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopChangeReaderTtsRequest {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<DesktopChangeReaderScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopChangeReaderTtsResponse {
+    pub mime_type: String,
+    pub audio_base64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1762,11 +1828,15 @@ mod tests {
             DesktopRuntimeSummaryUiConstraints,
             DesktopVectorSearchProvider,
             DesktopVectorSearchGranularity,
+            DesktopVectorChunkingMode,
             DesktopVectorInstallState,
             DesktopVectorIndexState,
             DesktopRuntimeVectorSearchSettings,
             DesktopRuntimeVectorSearchSettingsUpdate,
             DesktopChangeReaderScope,
+            DesktopChangeReaderVoiceProvider,
+            DesktopRuntimeChangeReaderVoiceSettings,
+            DesktopRuntimeChangeReaderVoiceSettingsUpdate,
             DesktopRuntimeChangeReaderSettings,
             DesktopRuntimeChangeReaderSettingsUpdate,
             DesktopRuntimeLifecycleSettings,
@@ -1785,6 +1855,8 @@ mod tests {
             DesktopChangeReadRequest,
             DesktopChangeReadResponse,
             DesktopChangeQuestionRequest,
+            DesktopChangeReaderTtsRequest,
+            DesktopChangeReaderTtsResponse,
             DesktopChangeQuestionResponse,
             DesktopApiError,
             SessionDetail,

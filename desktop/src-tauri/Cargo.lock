@@ -3201,6 +3201,7 @@ dependencies = [
 name = "opensession-desktop"
 version = "0.2.33"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "opensession-api",
  "opensession-core",

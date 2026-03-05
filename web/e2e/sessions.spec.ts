@@ -33,6 +33,10 @@ test.describe('Sessions', () => {
 			title: `PW Refresh Second ${crypto.randomUUID().slice(0, 8)}`,
 		});
 		let listCalls = 0;
+		let releaseSecondResponse: (() => void) | null = null;
+		const secondResponseGate = new Promise<void>((resolve) => {
+			releaseSecondResponse = resolve;
+		});
 		const sessionsListPattern = /\/api\/sessions(?:\?.*)?$/;
 		const sessionsReposPattern = /\/api\/sessions\/repos(?:\?.*)?$/;
 
@@ -45,6 +49,9 @@ test.describe('Sessions', () => {
 		});
 		await page.route(sessionsListPattern, async (route) => {
 			listCalls += 1;
+			if (listCalls > 1) {
+				await secondResponseGate;
+			}
 			const sessions = listCalls === 1 ? [first.summary] : [second.summary];
 			await route.fulfill({
 				status: 200,
@@ -61,8 +68,12 @@ test.describe('Sessions', () => {
 		await page.goto('/sessions');
 		await expect(page.getByText(first.title)).toBeVisible({ timeout: 10000 });
 		await page.getByTestId('session-force-refresh').click();
+		await expect(page.getByText(first.title)).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('floating-job-session-refresh')).toBeVisible({ timeout: 10000 });
+		releaseSecondResponse?.();
 		await expect(page.getByText(second.title)).toBeVisible({ timeout: 10000 });
 		await expect(page.getByText(first.title)).toHaveCount(0);
+		await expect(page.getByTestId('floating-job-session-refresh')).toHaveCount(0);
 		expect(listCalls).toBeGreaterThanOrEqual(2);
 	});
 
@@ -482,8 +493,9 @@ test.describe('Sessions', () => {
 	});
 
 	test('navigate to session detail', async ({ page }) => {
+		const longTitle = `PW Detail Title Copy ${'x'.repeat(72)} ${crypto.randomUUID().slice(0, 8)}`;
 		const fixture = createSessionFixture({
-			title: 'PW Detail Test',
+			title: longTitle,
 			events: [
 				{ type: 'UserMessage', text: 'Hello, write a test', task_id: crypto.randomUUID() },
 				{ type: 'AgentMessage', text: 'Sure, here is a test.', task_id: null },
@@ -491,6 +503,9 @@ test.describe('Sessions', () => {
 		});
 		await mockSessionApis(page, fixture);
 		await page.goto(`/session/${fixture.id}`);
+		const heading = page.getByTestId('session-detail-hero').getByRole('heading', { level: 1 });
+		await expect(heading).toHaveText(longTitle);
+		await expect(heading).not.toHaveClass(/truncate/);
 		await expect(page.getByText('Hello, write a test')).toBeVisible({ timeout: 10000 });
 		await expect(page.locator('[data-testid="session-flow-bar"]')).toBeVisible({ timeout: 10000 });
 	});
@@ -514,7 +529,7 @@ test.describe('Sessions', () => {
 							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
 							switch (cmd) {
 								case 'desktop_get_contract_version':
-									return { version: 'desktop-ipc-v5' };
+									return { version: 'desktop-ipc-v6' };
 								case 'desktop_get_capabilities':
 									return {
 										auth_enabled: false,
@@ -571,7 +586,7 @@ test.describe('Sessions', () => {
 							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
 							switch (cmd) {
 								case 'desktop_get_contract_version':
-									return { version: 'desktop-ipc-v5' };
+									return { version: 'desktop-ipc-v6' };
 								case 'desktop_get_capabilities':
 									return {
 										auth_enabled: false,

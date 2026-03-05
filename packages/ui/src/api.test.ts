@@ -6,6 +6,7 @@ import {
 	authLogin,
 	authRegister,
 	buildSessionHandoff,
+	changeReaderTextToSpeech,
 	getApiCapabilities,
 	getAuthProviders,
 	getOAuthUrl,
@@ -161,6 +162,7 @@ function installInvokeProbe(calls: InvokeCall[]) {
 			model: 'bge-m3',
 			endpoint: 'http://127.0.0.1:11434',
 			granularity: 'event_line_chunk',
+			chunking_mode: 'auto',
 			chunk_size_lines: 12,
 			chunk_overlap_lines: 3,
 			top_k_chunks: 30,
@@ -171,6 +173,13 @@ function installInvokeProbe(calls: InvokeCall[]) {
 			scope: 'summary_only',
 			qa_enabled: true,
 			max_context_chars: 12000,
+			voice: {
+				enabled: false,
+				provider: 'openai',
+				model: 'gpt-4o-mini-tts',
+				voice: 'alloy',
+				api_key_configured: false,
+			},
 		},
 		lifecycle: {
 			enabled: true,
@@ -197,7 +206,7 @@ function installInvokeProbe(calls: InvokeCall[]) {
 		calls.push({ cmd, args });
 		switch (cmd) {
 			case 'desktop_get_contract_version':
-				return { version: 'desktop-ipc-v5' };
+				return { version: 'desktop-ipc-v6' };
 			case 'desktop_list_sessions':
 				return { total: 3, page: 2, per_page: 30, sessions: [] };
 			case 'desktop_list_repos':
@@ -267,6 +276,7 @@ function installInvokeProbe(calls: InvokeCall[]) {
 						model: string;
 						endpoint: string;
 						granularity: string;
+						chunking_mode: 'auto' | 'manual';
 						chunk_size_lines: number;
 						chunk_overlap_lines: number;
 						top_k_chunks: number;
@@ -277,6 +287,13 @@ function installInvokeProbe(calls: InvokeCall[]) {
 						scope: 'summary_only' | 'full_context';
 						qa_enabled: boolean;
 						max_context_chars: number;
+						voice: {
+							enabled: boolean;
+							provider: 'openai';
+							model: string;
+							voice: string;
+							api_key?: string | null;
+						};
 					};
 					lifecycle?: {
 						enabled: boolean;
@@ -326,6 +343,7 @@ function installInvokeProbe(calls: InvokeCall[]) {
 								model: request.vector_search.model,
 								endpoint: request.vector_search.endpoint,
 								granularity: request.vector_search.granularity,
+								chunking_mode: request.vector_search.chunking_mode,
 								chunk_size_lines: request.vector_search.chunk_size_lines,
 								chunk_overlap_lines: request.vector_search.chunk_overlap_lines,
 								top_k_chunks: request.vector_search.top_k_chunks,
@@ -338,6 +356,16 @@ function installInvokeProbe(calls: InvokeCall[]) {
 								scope: request.change_reader.scope,
 								qa_enabled: request.change_reader.qa_enabled,
 								max_context_chars: request.change_reader.max_context_chars,
+								voice: {
+									enabled: request.change_reader.voice.enabled,
+									provider: request.change_reader.voice.provider,
+									model: request.change_reader.voice.model,
+									voice: request.change_reader.voice.voice,
+									api_key_configured:
+										typeof request.change_reader.voice.api_key === 'string'
+											? request.change_reader.voice.api_key.trim().length > 0
+											: runtimeSettings.change_reader.voice.api_key_configured,
+								},
 							}
 						: runtimeSettings.change_reader,
 					lifecycle: request.lifecycle
@@ -429,6 +457,12 @@ function installInvokeProbe(calls: InvokeCall[]) {
 					provider: 'codex_exec',
 					warning: null,
 				};
+			case 'desktop_change_reader_tts':
+				return {
+					mime_type: 'audio/mpeg',
+					audio_base64: 'QUJD',
+					warning: null,
+				};
 			case 'desktop_get_capabilities':
 				return {
 					auth_enabled: false,
@@ -503,6 +537,7 @@ test('desktop runtime uses invoke bridge for listSessions when available', async
 		search: 'fix',
 		tool: 'codex',
 		git_repo_name: 'org/repo',
+		force_refresh: true,
 	});
 
 	assert.equal(fetchCalls.length, 0);
@@ -516,6 +551,7 @@ test('desktop runtime uses invoke bridge for listSessions when available', async
 		git_repo_name: 'org/repo',
 		sort: null,
 		time_range: null,
+		force_refresh: true,
 	});
 	assert.equal(response.total, 3);
 });
@@ -802,10 +838,14 @@ test('desktop change reader controls use invoke bridge', async () => {
 	assert.equal(answer.session_id, 'session-123');
 	assert.equal(answer.scope, 'summary_only');
 	assert.match(answer.answer, /settings runtime payload/);
+	const voice = await changeReaderTextToSpeech('요약을 읽어줘', 'session-123', 'summary_only');
+	assert.equal(voice.mime_type, 'audio/mpeg');
+	assert.equal(voice.audio_base64, 'QUJD');
 
 	const calledCommands = invokeCalls.map((entry) => entry.cmd);
 	assert(calledCommands.includes('desktop_read_session_changes'));
 	assert(calledCommands.includes('desktop_ask_session_changes'));
+	assert(calledCommands.includes('desktop_change_reader_tts'));
 });
 
 test('web runtime handoff build returns unsupported error', async () => {

@@ -51,6 +51,8 @@ let paletteOpen = $state(false);
 let paletteQuery = $state('');
 let paletteSelectionIndex = $state(0);
 let paletteInput: HTMLInputElement | undefined = $state();
+let helpOpen = $state(false);
+let helpDialog: HTMLDivElement | undefined = $state();
 let accountMenuOpen = $state(false);
 let accountMenuRoot: HTMLDivElement | undefined = $state();
 let authEnabled = $state(false);
@@ -379,6 +381,15 @@ function isPaletteShortcut(e: KeyboardEvent): boolean {
 	return e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey);
 }
 
+function isHelpShortcut(e: KeyboardEvent): boolean {
+	return e.key === '?' || (e.key === '/' && e.shiftKey);
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+	if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true;
+	return target instanceof HTMLElement && target.isContentEditable;
+}
+
 async function openPalette() {
 	paletteOpen = true;
 	paletteQuery = '';
@@ -390,6 +401,38 @@ async function openPalette() {
 function closePalette() {
 	paletteOpen = false;
 	paletteQuery = '';
+}
+
+function openHelp() {
+	helpOpen = true;
+}
+
+function closeHelp() {
+	helpOpen = false;
+}
+
+function trapHelpFocus(e: KeyboardEvent) {
+	if (!helpDialog || e.key !== 'Tab') return;
+	const focusables = Array.from(
+		helpDialog.querySelectorAll<HTMLElement>(
+			'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])',
+		),
+	).filter((element) => !element.hasAttribute('disabled'));
+	if (focusables.length === 0) return;
+	const first = focusables[0];
+	const last = focusables[focusables.length - 1];
+	const active = document.activeElement;
+	if (e.shiftKey) {
+		if (active === first || !helpDialog.contains(active)) {
+			e.preventDefault();
+			last.focus();
+		}
+		return;
+	}
+	if (active === last) {
+		e.preventDefault();
+		first.focus();
+	}
 }
 
 function closeAccountMenu() {
@@ -456,6 +499,14 @@ function handleAccountMenuNavigate(path: string) {
 }
 
 function handleGlobalKey(e: KeyboardEvent) {
+	if (isHelpShortcut(e)) {
+		if (isEditableTarget(e.target)) return;
+		e.preventDefault();
+		if (helpOpen) closeHelp();
+		else openHelp();
+		return;
+	}
+
 	if (isPaletteShortcut(e)) {
 		e.preventDefault();
 		if (paletteOpen) {
@@ -463,6 +514,16 @@ function handleGlobalKey(e: KeyboardEvent) {
 		} else {
 			void openPalette();
 		}
+		return;
+	}
+
+	if (helpOpen) {
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			closeHelp();
+			return;
+		}
+		trapHelpFocus(e);
 		return;
 	}
 
@@ -607,16 +668,6 @@ function handleGlobalKey(e: KeyboardEvent) {
 				Cmd/Ctrl+K
 			</kbd>
 		</span>
-			{#if isSessionList}
-				<span data-testid="tor-footer-hint" class="inline-flex items-center gap-1 text-text-secondary">
-					<kbd class="font-mono text-[10px] font-semibold text-accent">t</kbd>
-					<span>tool</span>
-					<kbd class="font-mono text-[10px] font-semibold text-accent">r</kbd>
-					<span>range</span>
-					<kbd class="font-mono text-[10px] font-semibold text-accent">g</kbd>
-					<span>repo</span>
-				</span>
-			{/if}
 		{#each shortcutHints as hint}
 			{@const parsedHint = splitShortcutHint(hint)}
 			<span class="hidden sm:inline-flex items-center gap-1 text-text-secondary">
@@ -628,6 +679,10 @@ function handleGlobalKey(e: KeyboardEvent) {
 				{/if}
 			</span>
 		{/each}
+		<span class="hidden sm:inline-flex items-center gap-1 text-text-secondary">
+			<kbd class="font-mono text-[10px] font-semibold text-accent">?</kbd>
+			<span>help</span>
+		</span>
 		<span class="ml-auto">opensession.io</span>
 	</footer>
 </div>
@@ -683,6 +738,70 @@ function handleGlobalKey(e: KeyboardEvent) {
 			<div class="flex items-center justify-between border-t border-border px-3 py-1.5 text-[11px] text-text-muted">
 				<span>{visiblePaletteCommands.length} command{visiblePaletteCommands.length === 1 ? '' : 's'}</span>
 				<span>Up/Down navigate · Enter run · Esc close</span>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if helpOpen}
+	<div class="fixed inset-0 z-50 p-4">
+		<button
+			type="button"
+			class="absolute inset-0 bg-black/65"
+			aria-label="Close help modal"
+			onclick={closeHelp}
+		></button>
+		<div
+			role="dialog"
+			aria-modal="true"
+			aria-label="Keyboard Help"
+			tabindex="-1"
+			data-testid="keyboard-help-modal"
+			bind:this={helpDialog}
+			class="relative mx-auto mt-10 w-full max-w-3xl border border-border bg-bg-primary shadow-2xl"
+		>
+			<div class="flex items-center justify-between border-b border-border px-4 py-3">
+				<div>
+					<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">Quick Help</p>
+					<h2 class="text-sm font-semibold text-text-primary">Session Runtime Guide</h2>
+				</div>
+				<button
+					type="button"
+					onclick={closeHelp}
+					class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+				>
+					Close
+				</button>
+			</div>
+			<div class="grid gap-3 p-4 sm:grid-cols-3">
+				<section class="rounded border border-border/70 bg-bg-secondary/60 p-3">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Runtime Summary</h3>
+					<ul class="mt-2 space-y-1 text-xs text-text-secondary">
+						<li>Provider: summary model/transport selection</li>
+						<li>Output Shape: layered/file_list/security_first</li>
+						<li>Prompt Reset: restore default template instantly</li>
+					</ul>
+				</section>
+				<section class="rounded border border-border/70 bg-bg-secondary/60 p-3">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Vector</h3>
+					<ul class="mt-2 space-y-1 text-xs text-text-secondary">
+						<li>Auto chunking uses session size best-practice profile</li>
+						<li>Manual chunking unlocks chunk size/overlap fields</li>
+						<li>Fix unreachable provider: start `ollama serve`</li>
+					</ul>
+				</section>
+				<section class="rounded border border-border/70 bg-bg-secondary/60 p-3">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader</h3>
+					<ul class="mt-2 space-y-1 text-xs text-text-secondary">
+						<li>Text mode: read and ask from local context</li>
+						<li>Voice mode: OpenAI TTS playback for narrative/answer</li>
+						<li>Set API key in Runtime Summary {'>'} Change Reader</li>
+					</ul>
+				</section>
+			</div>
+			<div class="flex items-center justify-between border-t border-border px-4 py-2 text-[11px] text-text-muted">
+				<span>Shift+/ opens help · Esc closes dialog</span>
+				<span>Tab focus is trapped inside this dialog</span>
 			</div>
 		</div>
 	</div>

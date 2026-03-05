@@ -427,6 +427,17 @@ impl LocalDb {
         source_path: &str,
         git: &GitContext,
     ) -> Result<()> {
+        let is_empty_signal = session.stats.event_count == 0
+            && session.stats.message_count == 0
+            && session.stats.user_message_count == 0
+            && session.stats.task_count == 0;
+        if is_empty_signal {
+            // Some local tools create placeholder thread files before any real conversation.
+            // Do not index these rows; if one already exists, drop it.
+            self.delete_session(&session.session_id)?;
+            return Ok(());
+        }
+
         let title = session.context.title.as_deref();
         let description = session.context.description.as_deref();
         let tags = if session.context.tags.is_empty() {
@@ -1098,6 +1109,25 @@ impl LocalDb {
              ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(params![keep_days as i64], |row| row.get(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// List all known session ids for migration or maintenance workflows.
+    pub fn list_all_session_ids(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id FROM sessions ORDER BY id ASC")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// List all session ids that currently have cached semantic summaries.
+    pub fn list_session_semantic_summary_ids(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT session_id FROM session_semantic_summaries ORDER BY session_id ASC")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -2237,6 +2267,84 @@ mod tests {
     }
 
     #[test]
+    fn test_upsert_local_session_skips_empty_signal_rows() {
+        let db = test_db();
+        let session = Session::new(
+            "empty-signal-local".to_string(),
+            opensession_core::trace::Agent {
+                provider: "sourcegraph".to_string(),
+                model: "amp-model".to_string(),
+                tool: "amp".to_string(),
+                tool_version: None,
+            },
+        );
+
+        db.upsert_local_session(
+            &session,
+            "/Users/test/.local/share/amp/threads/T-empty-signal-local.json",
+            &crate::git::GitContext::default(),
+        )
+        .expect("upsert empty-signal session should not fail");
+
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert!(
+            rows.iter().all(|row| row.id != "empty-signal-local"),
+            "empty-signal local sessions must not be listed",
+        );
+    }
+
+    #[test]
+    fn test_upsert_local_session_empty_signal_deletes_existing_row() {
+        let db = test_db();
+        let mut populated = Session::new(
+            "empty-signal-replace".to_string(),
+            opensession_core::trace::Agent {
+                provider: "sourcegraph".to_string(),
+                model: "amp-model".to_string(),
+                tool: "amp".to_string(),
+                tool_version: None,
+            },
+        );
+        populated.stats.event_count = 2;
+        populated.stats.message_count = 1;
+        populated.stats.user_message_count = 1;
+
+        db.upsert_local_session(
+            &populated,
+            "/Users/test/.local/share/amp/threads/T-empty-signal-replace.json",
+            &crate::git::GitContext::default(),
+        )
+        .expect("seed populated row");
+        assert!(db
+            .get_session_by_id("empty-signal-replace")
+            .unwrap()
+            .is_some());
+
+        let empty = Session::new(
+            "empty-signal-replace".to_string(),
+            opensession_core::trace::Agent {
+                provider: "sourcegraph".to_string(),
+                model: "amp-model".to_string(),
+                tool: "amp".to_string(),
+                tool_version: None,
+            },
+        );
+        db.upsert_local_session(
+            &empty,
+            "/Users/test/.local/share/amp/threads/T-empty-signal-replace.json",
+            &crate::git::GitContext::default(),
+        )
+        .expect("upsert empty-signal replacement");
+
+        assert!(
+            db.get_session_by_id("empty-signal-replace")
+                .unwrap()
+                .is_none(),
+            "existing local row must be removed when source becomes empty-signal",
+        );
+    }
+
+    #[test]
     fn test_list_sessions_hides_codex_summary_worker_titles() {
         let db = test_db();
         let mut codex_summary_worker = Session::new(
@@ -3106,6 +3214,55 @@ mod tests {
             .get_session_semantic_summary("s2")
             .expect("query new summary")
             .is_some());
+    }
+
+    #[test]
+    fn test_list_all_session_ids_returns_sorted_ids() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        let ids = db.list_all_session_ids().expect("list all session ids");
+        assert_eq!(ids, vec!["s1", "s2", "s3", "s4", "s5"]);
+    }
+
+    #[test]
+    fn test_list_session_semantic_summary_ids_returns_sorted_ids() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        db.upsert_session_semantic_summary(&SessionSemanticSummaryUpsert {
+            session_id: "s4",
+            summary_json: r#"{"changes":"delta"}"#,
+            generated_at: "2026-03-04T10:00:00Z",
+            provider: "codex_exec",
+            model: Some("gpt-5"),
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: Some("fingerprint"),
+            source_details_json: Some(r#"{"source":"session"}"#),
+            diff_tree_json: Some(r#"[]"#),
+            error: None,
+        })
+        .expect("upsert summary s4");
+        db.upsert_session_semantic_summary(&SessionSemanticSummaryUpsert {
+            session_id: "s2",
+            summary_json: r#"{"changes":"delta"}"#,
+            generated_at: "2026-03-04T10:00:00Z",
+            provider: "codex_exec",
+            model: Some("gpt-5"),
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: Some("fingerprint"),
+            source_details_json: Some(r#"{"source":"session"}"#),
+            diff_tree_json: Some(r#"[]"#),
+            error: None,
+        })
+        .expect("upsert summary s2");
+
+        let ids = db
+            .list_session_semantic_summary_ids()
+            .expect("list semantic summary ids");
+        assert_eq!(ids, vec!["s2", "s4"]);
     }
 
     #[test]

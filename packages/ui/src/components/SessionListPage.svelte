@@ -3,8 +3,9 @@ import { onMount } from 'svelte';
 import { listSessionRepos, listSessions } from '../api';
 import type { SessionSummary, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
-import { stripTags } from '../utils';
+import { sessionTitleFallback, stripTags } from '../utils';
 import SessionCard from './SessionCard.svelte';
+import FloatingJobStatus from './FloatingJobStatus.svelte';
 
 const {
 	onNavigate,
@@ -15,6 +16,7 @@ const {
 let sessions = $state<SessionSummary[]>([]);
 let total = $state(0);
 let loading = $state(false);
+let forceRefreshing = $state(false);
 let error = $state<string | null>(null);
 let searchQuery = $state('');
 let toolFilter = $state('');
@@ -55,6 +57,16 @@ const sessionOrder = $derived.by(() => {
 		order.set(session.id, idx);
 	});
 	return order;
+});
+const floatingJobs = $derived.by(() => {
+	if (!forceRefreshing) return [];
+	return [
+		{
+			id: 'session-refresh',
+			label: 'Refreshing sessions',
+			detail: 'Background reindex is running. You can continue browsing.',
+		},
+	];
 });
 
 const rangeCycle: readonly TimeRange[] = ['all', '24h', '7d', '30d'];
@@ -127,6 +139,8 @@ async function fetchSessions(reset = false, opts: { force?: boolean } = {}) {
 	const forceRefresh = opts.force === true;
 	const requestId = ++fetchRequestId;
 	const targetPage = reset ? 1 : currentPage;
+	const preserveVisibleSessions = reset && forceRefresh && sessions.length > 0;
+	forceRefreshing = forceRefresh;
 
 	let usedWarmCache = false;
 	const fingerprint = currentListQueryFingerprint(targetPage);
@@ -135,9 +149,11 @@ async function fetchSessions(reset = false, opts: { force?: boolean } = {}) {
 	}
 	if (reset) {
 		currentPage = targetPage;
-		sessions = [];
-		selectedIndex = 0;
-		renderLimit = perPage;
+		if (!preserveVisibleSessions) {
+			sessions = [];
+			selectedIndex = 0;
+			renderLimit = perPage;
+		}
 	}
 	if (reset && !forceRefresh && isDefaultPublicFeedQuery(targetPage)) {
 		const cached = readListCache(fingerprint);
@@ -150,7 +166,7 @@ async function fetchSessions(reset = false, opts: { force?: boolean } = {}) {
 		}
 	}
 
-	loading = !usedWarmCache;
+	loading = !usedWarmCache && !preserveVisibleSessions;
 	error = null;
 	try {
 		const res = await listSessions({
@@ -186,6 +202,9 @@ async function fetchSessions(reset = false, opts: { force?: boolean } = {}) {
 	} finally {
 		if (requestId === fetchRequestId) {
 			loading = false;
+		}
+		if (forceRefresh) {
+			forceRefreshing = false;
 		}
 	}
 }
@@ -285,7 +304,7 @@ function cycleFilterValue<T extends string>(current: T, options: readonly T[]): 
 
 function isSearchFocusShortcut(e: KeyboardEvent): boolean {
 	if (e.key.toLowerCase() === 'f' && (e.metaKey || e.ctrlKey)) return true;
-	return e.code === 'Slash' || e.key === '/' || e.key === '?';
+	return e.code === 'Slash' || e.key === '/';
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -327,7 +346,7 @@ function selectedSessionTitleForCopy(): string {
 	if (title.length > 0) return title;
 	const description = stripTags(selected.description ?? '').trim();
 	if (description.length > 0) return description;
-	return 'Untitled Session';
+	return sessionTitleFallback(selected.id);
 }
 
 function setCopyFeedbackMessage(message: string | null) {
@@ -553,7 +572,7 @@ $effect(() => {
 			<input
 				id="session-search"
 				type="text"
-				placeholder="search... (vector: semantic query)"
+				placeholder="search..."
 				bind:this={searchInput}
 				bind:value={searchQuery}
 				onkeydown={handleSearchInputKeydown}
@@ -603,18 +622,6 @@ $effect(() => {
 			class="flex w-full flex-wrap items-center gap-1 text-[11px] text-text-muted"
 		>
 			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">t</kbd>
-				<span>tool</span>
-			</span>
-			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">r</kbd>
-				<span>range</span>
-			</span>
-			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
-				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">g</kbd>
-				<span>repo</span>
-			</span>
-			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
 				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">Cmd/Ctrl+C</kbd>
 				<span>copy title</span>
 			</span>
@@ -643,10 +650,10 @@ $effect(() => {
 				type="button"
 				data-testid="session-force-refresh"
 				onclick={forceRefreshSessions}
-				disabled={loading}
+				disabled={forceRefreshing}
 				class="rounded border border-border bg-bg-secondary px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:text-text-primary disabled:opacity-60"
 			>
-				{loading ? 'Refreshing...' : 'Force refresh'}
+				{forceRefreshing ? 'Refreshing...' : 'Force refresh'}
 			</button>
 		</div>
 	</div>
@@ -661,7 +668,6 @@ $effect(() => {
 		<div data-testid="session-layout-summary" class="border-b border-border px-3 py-1 text-xs text-text-muted">
 			Sessions ({total})
 			<span class="ml-2 text-text-secondary">[single chronological feed]</span>
-			<span class="ml-2 text-text-secondary">[vector:query for open-model search]</span>
 		</div>
 
 			{#if sessions.length === 0 && !loading}
@@ -680,7 +686,9 @@ $effect(() => {
 		</div>
 
 		{#if loading}
-			<div class="py-4 text-center text-xs text-text-muted">Loading...</div>
+			<div class="py-4 text-center text-xs text-text-muted">
+				{sessions.length === 0 ? 'Loading...' : 'Updating...'}
+			</div>
 		{/if}
 
 		{#if hasHiddenRendered && !loading}
@@ -706,3 +714,5 @@ $effect(() => {
 		{/if}
 	</div>
 </div>
+
+<FloatingJobStatus jobs={floatingJobs} />

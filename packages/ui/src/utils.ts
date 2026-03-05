@@ -14,6 +14,13 @@ export function stripTags(text: string): string {
 		.trim();
 }
 
+export function sessionTitleFallback(sessionId: string | null | undefined): string {
+	const normalized = sessionId?.trim() ?? '';
+	if (!normalized) return 'Session';
+	const short = normalized.length > 12 ? `${normalized.slice(0, 12)}...` : normalized;
+	return `Session ${short}`;
+}
+
 /** Extract a display title from a Session: context.title -> first user message -> fallback */
 export function getDisplayTitle(session: Session): string {
 	if (session.context.title) {
@@ -31,7 +38,7 @@ export function getDisplayTitle(session: Session): string {
 			}
 		}
 	}
-	return 'Untitled Session';
+	return sessionTitleFallback(session.session_id);
 }
 
 /** Compute file change statistics from events */

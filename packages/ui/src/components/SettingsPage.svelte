@@ -20,6 +20,7 @@ import {
 } from '../api';
 import type {
 	DesktopChangeReaderScope,
+	DesktopChangeReaderVoiceProvider,
 	DesktopRuntimeSettingsResponse,
 	DesktopSummaryBatchExecutionMode,
 	DesktopSummaryBatchScope,
@@ -33,6 +34,7 @@ import type {
 	DesktopSummaryStorageBackend,
 	DesktopSummaryTriggerMode,
 	DesktopVectorIndexStatusResponse,
+	DesktopVectorChunkingMode,
 	DesktopVectorPreflightResponse,
 	DesktopVectorSearchGranularity,
 	DesktopVectorSearchProvider,
@@ -40,6 +42,7 @@ import type {
 	UserSettings,
 } from '../types';
 import FieldHelp from './FieldHelp.svelte';
+import FloatingJobStatus from './FloatingJobStatus.svelte';
 
 const {
 	onNavigate = (path: string) => {
@@ -91,6 +94,7 @@ let runtimeVectorProvider = $state<DesktopVectorSearchProvider>('ollama');
 let runtimeVectorModel = $state('bge-m3');
 let runtimeVectorEndpoint = $state('http://127.0.0.1:11434');
 let runtimeVectorGranularity = $state<DesktopVectorSearchGranularity>('event_line_chunk');
+let runtimeVectorChunkingMode = $state<DesktopVectorChunkingMode>('auto');
 let runtimeVectorChunkSizeLines = $state(12);
 let runtimeVectorChunkOverlapLines = $state(3);
 let runtimeVectorTopKChunks = $state(30);
@@ -99,6 +103,12 @@ let runtimeChangeReaderEnabled = $state(false);
 let runtimeChangeReaderScope = $state<DesktopChangeReaderScope>('summary_only');
 let runtimeChangeReaderQaEnabled = $state(true);
 let runtimeChangeReaderMaxContextChars = $state(12000);
+let runtimeChangeReaderVoiceEnabled = $state(false);
+let runtimeChangeReaderVoiceProvider = $state<DesktopChangeReaderVoiceProvider>('openai');
+let runtimeChangeReaderVoiceModel = $state('gpt-4o-mini-tts');
+let runtimeChangeReaderVoiceName = $state('alloy');
+let runtimeChangeReaderVoiceApiKey = $state('');
+let runtimeChangeReaderVoiceApiKeyConfigured = $state(false);
 let runtimeLifecycleEnabled = $state(true);
 let runtimeSessionTtlDays = $state(30);
 let runtimeSummaryTtlDays = $state(30);
@@ -107,8 +117,41 @@ let runtimeVectorPreflight = $state<DesktopVectorPreflightResponse | null>(null)
 let runtimeVectorIndex = $state<DesktopVectorIndexStatusResponse | null>(null);
 let runtimeVectorInstalling = $state(false);
 let runtimeVectorReindexing = $state(false);
+let runtimeVectorError = $state<string | null>(null);
 let runtimeSummaryBatchStatus = $state<DesktopSummaryBatchStatusResponse | null>(null);
 let runtimeSummaryBatchRunning = $state(false);
+const floatingJobs = $derived.by(() => {
+	const jobs: Array<{ id: string; label: string; detail: string }> = [];
+	if (runtimeSaving) {
+		jobs.push({
+			id: 'runtime-save',
+			label: 'Saving runtime settings',
+			detail: 'Storage migration and runtime validation can take a while. Continue using the page.',
+		});
+	}
+	if (runtimeVectorInstalling) {
+		jobs.push({
+			id: 'vector-install',
+			label: 'Installing vector model',
+			detail: 'Model pull is running in background.',
+		});
+	}
+	if (runtimeVectorReindexing) {
+		jobs.push({
+			id: 'vector-reindex',
+			label: 'Rebuilding vector index',
+			detail: 'Session embeddings are being rebuilt in background.',
+		});
+	}
+	if (runtimeSummaryBatchRunning) {
+		jobs.push({
+			id: 'summary-batch',
+			label: 'Running summary batch',
+			detail: 'Generating summaries in background.',
+		});
+	}
+	return jobs;
+});
 
 function providerTransportForId(id: DesktopSummaryProviderId): DesktopSummaryProviderTransport {
 	if (id === 'ollama') return 'http';
@@ -133,10 +176,10 @@ function storageBackendSummary(backend: DesktopSummaryStorageBackend): string {
 
 function storageBackendDetails(backend: DesktopSummaryStorageBackend): string {
 	if (backend === 'hidden_ref') {
-		return 'Best when you want git-backed summary history. Search/filter metadata is still indexed in local SQLite for fast queries.';
+		return 'Best when you want git-backed summary history. On backend switch, existing summaries are migrated from local_db when possible. Search/filter metadata is still indexed in local SQLite for fast queries.';
 	}
 	if (backend === 'local_db') {
-		return 'Writes summary rows to local SQLite (session_semantic_summaries). Nothing is written to git refs.';
+		return 'Writes summary rows to local SQLite (session_semantic_summaries). On backend switch, existing hidden_ref summaries are migrated back when possible. Nothing is written to git refs.';
 	}
 	return 'Summary generation can still run on demand, but results are not stored and will be regenerated next time.';
 }
@@ -156,6 +199,8 @@ const runtimeHelp = {
 		'layered groups by layer, file_list focuses per-file changes, security_first prioritizes auth/security impact.',
 	vectorModel: 'Embedding model name used for vector indexing.',
 	vectorEndpoint: 'Endpoint for local embedding provider (typically Ollama).',
+	vectorChunkingMode:
+		'auto selects chunk size/overlap from session length best-practice rules. manual uses the fixed values below.',
 	vectorChunkSize: 'Number of lines per semantic chunk before embedding.',
 	vectorChunkOverlap: 'Overlapping lines preserved between adjacent chunks.',
 	vectorTopKChunks: 'Maximum chunk candidates retrieved per query.',
@@ -169,9 +214,15 @@ const runtimeHelp = {
 	changeReaderMaxContext: 'Upper bound of context text loaded for change reading.',
 	changeReaderQa:
 		'Allows follow-up Q&A over the selected change context when the reader is enabled.',
+	changeReaderVoiceEnable: 'Enable voice playback for change reader output using TTS.',
+	changeReaderVoiceProvider: 'Voice provider for TTS playback.',
+	changeReaderVoiceModel: 'TTS model used when generating speech audio.',
+	changeReaderVoiceName: 'Voice preset name used by the provider.',
+	changeReaderVoiceApiKey:
+		'Write-only API key for voice provider. Leave empty to keep the current stored key.',
 	storageTrigger: 'manual runs only when explicitly requested. on_session_save runs automatically on new saves.',
 	storageBackend:
-		'Where summary artifacts persist: hidden_ref (git), local_db (sqlite), none (ephemeral).',
+		'Where summary artifacts persist: hidden_ref (git), local_db (sqlite), none (ephemeral). Switching backends runs explicit summary migration.',
 	batchExecution:
 		'manual means run only when clicking Run now. on_app_start runs once automatically at desktop startup.',
 	batchScope:
@@ -242,6 +293,52 @@ function normalizeError(err: unknown, fallback: string): string {
 	if (err instanceof ApiError) return err.message || fallback;
 	if (err instanceof Error) return err.message || fallback;
 	return fallback;
+}
+
+function apiDetailString(
+	details: Record<string, unknown> | null | undefined,
+	key: string,
+): string | null {
+	const value = details?.[key];
+	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeVectorError(err: unknown, fallback: string): string {
+	if (err instanceof ApiError) {
+		const message = err.message || fallback;
+		const hint = apiDetailString(err.details, 'hint');
+		const endpoint = apiDetailString(err.details, 'endpoint');
+		const model = apiDetailString(err.details, 'model');
+		const lines = [message];
+		if (hint) lines.push(`Action: ${hint}`);
+		if (model) lines.push(`Model: ${model}`);
+		if (endpoint) lines.push(`Endpoint: ${endpoint}`);
+		return lines.join('\n');
+	}
+	return normalizeError(err, fallback);
+}
+
+function vectorStatusGuidance(): string[] {
+	if (!runtimeVectorPreflight) {
+		return ['Run vector preflight to inspect provider and model readiness.'];
+	}
+	const guidance: string[] = [];
+	if (!runtimeVectorPreflight.ollama_reachable) {
+		guidance.push('Install Ollama: https://ollama.com/download');
+		guidance.push('Start provider: run `ollama serve` and retry preflight.');
+	}
+	if (!runtimeVectorPreflight.model_installed) {
+		guidance.push(
+			`Install model: run \`ollama pull ${runtimeVectorPreflight.model}\` or click "Install model".`,
+		);
+	}
+	if (runtimeVectorIndex?.state === 'failed') {
+		guidance.push('Rebuild index: click "Rebuild index" after fixing provider/model issues.');
+	}
+	if (guidance.length === 0) {
+		guidance.push('Vector pipeline is ready.');
+	}
+	return guidance;
 }
 
 function delay(ms: number): Promise<void> {
@@ -331,6 +428,7 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimeVectorModel = settings.vector_search.model ?? 'bge-m3';
 	runtimeVectorEndpoint = settings.vector_search.endpoint ?? 'http://127.0.0.1:11434';
 	runtimeVectorGranularity = settings.vector_search.granularity ?? 'event_line_chunk';
+	runtimeVectorChunkingMode = settings.vector_search.chunking_mode ?? 'auto';
 	runtimeVectorChunkSizeLines = settings.vector_search.chunk_size_lines ?? 12;
 	runtimeVectorChunkOverlapLines = settings.vector_search.chunk_overlap_lines ?? 3;
 	runtimeVectorTopKChunks = settings.vector_search.top_k_chunks ?? 30;
@@ -339,6 +437,13 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimeChangeReaderScope = settings.change_reader?.scope ?? 'summary_only';
 	runtimeChangeReaderQaEnabled = settings.change_reader?.qa_enabled ?? true;
 	runtimeChangeReaderMaxContextChars = settings.change_reader?.max_context_chars ?? 12000;
+	runtimeChangeReaderVoiceEnabled = settings.change_reader?.voice?.enabled ?? false;
+	runtimeChangeReaderVoiceProvider = settings.change_reader?.voice?.provider ?? 'openai';
+	runtimeChangeReaderVoiceModel = settings.change_reader?.voice?.model ?? 'gpt-4o-mini-tts';
+	runtimeChangeReaderVoiceName = settings.change_reader?.voice?.voice ?? 'alloy';
+	runtimeChangeReaderVoiceApiKeyConfigured =
+		settings.change_reader?.voice?.api_key_configured ?? false;
+	runtimeChangeReaderVoiceApiKey = '';
 	runtimeLifecycleEnabled = settings.lifecycle?.enabled ?? true;
 	runtimeSessionTtlDays = settings.lifecycle?.session_ttl_days ?? 30;
 	runtimeSummaryTtlDays = settings.lifecycle?.summary_ttl_days ?? 30;
@@ -348,6 +453,7 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 async function loadRuntimeSettings() {
 	runtimeLoading = true;
 	runtimeError = null;
+	runtimeVectorError = null;
 	runtimeSupported = true;
 	try {
 		const settings = await getRuntimeSettings();
@@ -402,6 +508,7 @@ function buildRuntimeVectorPayload() {
 		model: runtimeVectorModel,
 		endpoint: runtimeVectorEndpoint,
 		granularity: runtimeVectorGranularity,
+		chunking_mode: runtimeVectorChunkingMode,
 		chunk_size_lines: runtimeVectorChunkSizeLines,
 		chunk_overlap_lines: runtimeVectorChunkOverlapLines,
 		top_k_chunks: runtimeVectorTopKChunks,
@@ -415,6 +522,13 @@ function buildRuntimeChangeReaderPayload() {
 		scope: runtimeChangeReaderScope,
 		qa_enabled: runtimeChangeReaderQaEnabled,
 		max_context_chars: runtimeChangeReaderMaxContextChars,
+		voice: {
+			enabled: runtimeChangeReaderVoiceEnabled,
+			provider: runtimeChangeReaderVoiceProvider,
+			model: runtimeChangeReaderVoiceModel,
+			voice: runtimeChangeReaderVoiceName,
+			api_key: runtimeChangeReaderVoiceApiKey.trim() || null,
+		},
 	};
 }
 
@@ -517,60 +631,95 @@ async function handleRunSummaryBatchNow() {
 	}
 }
 
-async function refreshVectorPreflight() {
+async function refreshVectorPreflight(): Promise<boolean> {
 	try {
 		runtimeVectorPreflight = await vectorPreflight();
+		runtimeVectorError = null;
 		if (runtimeVectorPreflight.model_installed && runtimeVectorEnabled) {
 			runtimeDetectMessage = 'Vector model is ready.';
 		}
+		return true;
 	} catch (err) {
 		runtimeVectorPreflight = null;
-		runtimeError = normalizeError(err, 'Failed to fetch vector model status');
+		runtimeVectorError = normalizeVectorError(err, 'Failed to fetch vector model status');
+		return false;
 	}
 }
 
-async function refreshVectorIndexStatus() {
+async function refreshVectorIndexStatus(): Promise<boolean> {
 	try {
 		runtimeVectorIndex = await vectorIndexStatus();
+		if (runtimeVectorIndex.state === 'failed' && runtimeVectorIndex.message) {
+			runtimeVectorError = runtimeVectorIndex.message;
+		}
+		return true;
 	} catch (err) {
 		runtimeVectorIndex = null;
-		runtimeError = normalizeError(err, 'Failed to fetch vector index status');
+		runtimeVectorError = normalizeVectorError(err, 'Failed to fetch vector index status');
+		return false;
 	}
 }
 
 async function handleVectorInstallModel() {
 	runtimeVectorInstalling = true;
-	runtimeError = null;
+	runtimeVectorError = null;
 	try {
-		await vectorInstallModel(runtimeVectorModel);
+		const status = await vectorInstallModel(runtimeVectorModel);
+		if (status.state === 'failed') {
+			runtimeVectorError = status.message ?? 'Model installation failed.';
+			return;
+		}
 		for (let attempt = 0; attempt < 120; attempt += 1) {
 			await delay(1000);
-			await refreshVectorPreflight();
+			const ok = await refreshVectorPreflight();
+			if (!ok) break;
 			if (runtimeVectorPreflight && runtimeVectorPreflight.install_state !== 'installing') {
 				break;
 			}
 		}
+		if (runtimeVectorPreflight?.install_state === 'failed') {
+			runtimeVectorError = runtimeVectorPreflight.message ?? 'Model installation failed.';
+		}
 	} catch (err) {
-		runtimeError = normalizeError(err, 'Failed to install vector model');
+		runtimeVectorError = normalizeVectorError(err, 'Failed to install vector model');
 	} finally {
 		runtimeVectorInstalling = false;
 	}
 }
 
 async function handleVectorReindex() {
+	const preflightOk = await refreshVectorPreflight();
+	if (!preflightOk || !runtimeVectorPreflight) return;
+	if (!runtimeVectorPreflight.ollama_reachable) {
+		runtimeVectorError =
+			runtimeVectorPreflight.message ??
+			'Ollama is not reachable. Start it with `ollama serve`.';
+		return;
+	}
+	if (!runtimeVectorPreflight.model_installed) {
+		runtimeVectorError =
+			runtimeVectorPreflight.message ??
+			`Model ${runtimeVectorPreflight.model} is not installed. Install model first.`;
+		return;
+	}
+
 	runtimeVectorReindexing = true;
-	runtimeError = null;
+	runtimeVectorError = null;
 	try {
 		await vectorIndexRebuild();
 		for (let attempt = 0; attempt < 600; attempt += 1) {
 			await delay(500);
-			await refreshVectorIndexStatus();
+			const ok = await refreshVectorIndexStatus();
+			if (!ok) break;
 			if (runtimeVectorIndex && runtimeVectorIndex.state !== 'running') {
 				break;
 			}
 		}
+		if (runtimeVectorIndex?.state === 'failed') {
+			runtimeVectorError = runtimeVectorIndex.message ?? 'Vector index rebuild failed.';
+		}
 	} catch (err) {
-		runtimeError = normalizeError(err, 'Failed to start vector index rebuild');
+		runtimeVectorError = normalizeVectorError(err, 'Failed to start vector index rebuild');
 	} finally {
 		runtimeVectorReindexing = false;
 	}
@@ -1074,6 +1223,21 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
+								label="Chunking Mode"
+								help={runtimeHelp.vectorChunkingMode}
+								testId="runtime-help-vector-chunking-mode"
+							/>
+							<select
+								bind:value={runtimeVectorChunkingMode}
+								data-testid="runtime-vector-chunking-mode"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							>
+								<option value="auto">auto</option>
+								<option value="manual">manual</option>
+							</select>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<FieldHelp
 								label="Chunk Size (lines)"
 								help={runtimeHelp.vectorChunkSize}
 								testId="runtime-help-vector-chunk-size"
@@ -1082,7 +1246,9 @@ $effect(() => {
 								type="number"
 								min="1"
 								bind:value={runtimeVectorChunkSizeLines}
-								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+								disabled={runtimeVectorChunkingMode === 'auto'}
+								data-testid="runtime-vector-chunk-size"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary disabled:opacity-60"
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
@@ -1095,7 +1261,9 @@ $effect(() => {
 								type="number"
 								min="0"
 								bind:value={runtimeVectorChunkOverlapLines}
-								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+								disabled={runtimeVectorChunkingMode === 'auto'}
+								data-testid="runtime-vector-chunk-overlap"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary disabled:opacity-60"
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
@@ -1155,40 +1323,56 @@ $effect(() => {
 							type="button"
 							data-testid="runtime-vector-reindex"
 							onclick={handleVectorReindex}
-							disabled={runtimeVectorReindexing || runtimeSaving || runtimeLoading}
+							disabled={runtimeVectorReindexing || runtimeSaving || runtimeLoading || !runtimeVectorPreflight?.ollama_reachable || !runtimeVectorPreflight?.model_installed}
 							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 						>
 							{runtimeVectorReindexing ? 'Reindexing...' : 'Rebuild index'}
 						</button>
 					</div>
 
-					<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-vector-status">
-						<p>provider: {runtimeVectorProvider} | granularity: {runtimeVectorGranularity}</p>
+					<div class="rounded border border-border/60 bg-bg-primary px-3 py-3 text-sm text-text-muted" data-testid="runtime-vector-status">
+						<p class="font-medium text-text-primary">
+							Provider {runtimeVectorProvider} · granularity {runtimeVectorGranularity} · chunking {runtimeVectorChunkingMode}
+						</p>
 						{#if runtimeVectorPreflight}
-							<p>
-								model: {runtimeVectorPreflight.model} | reachable: {runtimeVectorPreflight.ollama_reachable ? 'yes' : 'no'} | installed:
-								{runtimeVectorPreflight.model_installed ? 'yes' : 'no'} | install_state: {runtimeVectorPreflight.install_state}
+							<p class="mt-1">
+								Model {runtimeVectorPreflight.model} · reachable {runtimeVectorPreflight.ollama_reachable ? 'yes' : 'no'} · installed{' '}
+								{runtimeVectorPreflight.model_installed ? 'yes' : 'no'} · install {runtimeVectorPreflight.install_state}
 								({runtimeVectorPreflight.progress_pct}%)
 							</p>
 							{#if runtimeVectorPreflight.message}
 								<p class="mt-1">{runtimeVectorPreflight.message}</p>
 							{/if}
 						{:else}
-							<p>vector model status unavailable.</p>
+							<p class="mt-1">Vector model status unavailable.</p>
 						{/if}
 						{#if runtimeVectorIndex}
 							<p class="mt-1">
-								index_state: {runtimeVectorIndex.state} | processed: {runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
+								Index {runtimeVectorIndex.state} · processed {runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
 							</p>
 							{#if runtimeVectorIndex.message}
 								<p class="mt-1">{runtimeVectorIndex.message}</p>
 							{/if}
 						{/if}
+						<div class="mt-2 space-y-1 rounded border border-border/50 bg-bg-secondary/50 px-2 py-2 text-[11px] text-text-secondary">
+							<p class="font-semibold uppercase tracking-[0.08em] text-text-muted">Actions</p>
+							{#each vectorStatusGuidance() as line}
+								<p>{line}</p>
+							{/each}
+						</div>
+						{#if runtimeVectorError}
+							<p
+								class="mt-2 whitespace-pre-line rounded border border-error/50 bg-error/10 px-2 py-2 text-sm text-error"
+								data-testid="runtime-vector-error"
+							>
+								{runtimeVectorError}
+							</p>
+						{/if}
 					</div>
 				</section>
 
 				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-change-reader">
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader (Text + Voice)</h3>
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input
 							type="checkbox"
@@ -1242,6 +1426,78 @@ $effect(() => {
 							testId="runtime-help-change-reader-qa"
 						/>
 					</label>
+					<div class="space-y-2 rounded border border-border/60 bg-bg-primary px-2 py-2">
+						<label class="flex items-center gap-2 text-xs text-text-secondary">
+							<input
+								type="checkbox"
+								bind:checked={runtimeChangeReaderVoiceEnabled}
+								data-testid="runtime-change-reader-voice-enable"
+							/>
+							<FieldHelp
+								inline
+								label="Enable Voice TTS"
+								help={runtimeHelp.changeReaderVoiceEnable}
+								testId="runtime-help-change-reader-voice-enable"
+							/>
+						</label>
+						<div class="grid gap-2 sm:grid-cols-3">
+							<label class="text-xs text-text-secondary">
+								<FieldHelp
+									label="Voice Provider"
+									help={runtimeHelp.changeReaderVoiceProvider}
+									testId="runtime-help-change-reader-voice-provider"
+								/>
+								<select
+									bind:value={runtimeChangeReaderVoiceProvider}
+									data-testid="runtime-change-reader-voice-provider"
+									class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+								>
+									<option value="openai">openai</option>
+								</select>
+							</label>
+							<label class="text-xs text-text-secondary">
+								<FieldHelp
+									label="Voice Model"
+									help={runtimeHelp.changeReaderVoiceModel}
+									testId="runtime-help-change-reader-voice-model"
+								/>
+								<input
+									bind:value={runtimeChangeReaderVoiceModel}
+									data-testid="runtime-change-reader-voice-model"
+									class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+								/>
+							</label>
+							<label class="text-xs text-text-secondary">
+								<FieldHelp
+									label="Voice Name"
+									help={runtimeHelp.changeReaderVoiceName}
+									testId="runtime-help-change-reader-voice-name"
+								/>
+								<input
+									bind:value={runtimeChangeReaderVoiceName}
+									data-testid="runtime-change-reader-voice-name"
+									class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+								/>
+							</label>
+						</div>
+						<label class="text-xs text-text-secondary">
+							<FieldHelp
+								label="Voice API Key (write-only)"
+								help={runtimeHelp.changeReaderVoiceApiKey}
+								testId="runtime-help-change-reader-voice-api-key"
+							/>
+							<input
+								type="password"
+								placeholder={runtimeChangeReaderVoiceApiKeyConfigured ? 'Configured (enter new key to rotate)' : 'Enter API key'}
+								bind:value={runtimeChangeReaderVoiceApiKey}
+								data-testid="runtime-change-reader-voice-api-key"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<p class="text-[11px] text-text-muted" data-testid="runtime-change-reader-voice-key-status">
+							api_key_configured: {runtimeChangeReaderVoiceApiKeyConfigured ? 'yes' : 'no'}
+						</p>
+					</div>
 					<p class="text-[11px] text-text-muted">
 						Uses the configured summary provider when available, then falls back to local heuristic context extraction.
 					</p>
@@ -1288,7 +1544,7 @@ $effect(() => {
 							data-testid="runtime-summary-batch-run"
 							onclick={handleRunSummaryBatchNow}
 							disabled={runtimeSummaryBatchRunning || runtimeSaving || runtimeLoading}
-							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+							class="inline-flex h-9 items-center border border-border px-3 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 						>
 							{runtimeSummaryBatchRunning ? 'Running...' : 'Run now'}
 						</button>
@@ -1300,7 +1556,7 @@ $effect(() => {
 								help={runtimeHelp.batchExecution}
 								testId="runtime-help-batch-execution-mode"
 							/>
-							<select bind:value={runtimeBatchExecutionMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+							<select bind:value={runtimeBatchExecutionMode} class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary">
 								<option value="manual">manual</option>
 								<option value="on_app_start">on_app_start</option>
 							</select>
@@ -1311,7 +1567,7 @@ $effect(() => {
 								help={runtimeHelp.batchScope}
 								testId="runtime-help-batch-scope"
 							/>
-							<select bind:value={runtimeBatchScope} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+							<select bind:value={runtimeBatchScope} class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary">
 								<option value="recent_days">recent_days</option>
 								<option value="all">all</option>
 							</select>
@@ -1328,7 +1584,7 @@ $effect(() => {
 								bind:value={runtimeBatchRecentDays}
 								disabled={runtimeBatchScope === 'all'}
 								data-testid="runtime-summary-batch-recent-days"
-								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary disabled:opacity-60"
+								class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary disabled:opacity-60"
 							/>
 						</label>
 					</div>
@@ -1440,3 +1696,5 @@ $effect(() => {
 		{/if}
 	</section>
 </div>
+
+<FloatingJobStatus jobs={floatingJobs} />

@@ -8,6 +8,7 @@ import type {
 	DesktopChangeQuestionResponse,
 	DesktopChangeReaderScope,
 	DesktopChangeReadResponse,
+	DesktopChangeReaderTtsResponse,
 	DesktopHandoffBuildResponse,
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
@@ -85,6 +86,11 @@ export interface SessionReadCore {
 		question: string,
 		scope?: DesktopChangeReaderScope | null,
 	): Promise<DesktopChangeQuestionResponse>;
+	changeReaderTts(
+		text: string,
+		sessionId?: string | null,
+		scope?: DesktopChangeReaderScope | null,
+	): Promise<DesktopChangeReaderTtsResponse>;
 	getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse>;
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
@@ -200,6 +206,17 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 		): Promise<DesktopChangeQuestionResponse> {
 			try {
 				return await adapter.askSessionChanges(sessionId, question, scope);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async changeReaderTts(
+			text: string,
+			sessionId?: string | null,
+			scope?: DesktopChangeReaderScope | null,
+		): Promise<DesktopChangeReaderTtsResponse> {
+			try {
+				return await adapter.changeReaderTts(text, sessionId, scope);
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

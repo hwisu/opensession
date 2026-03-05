@@ -13,6 +13,7 @@ import type {
 	DesktopChangeQuestionResponse,
 	DesktopChangeReaderScope,
 	DesktopChangeReadResponse,
+	DesktopChangeReaderTtsResponse,
 	DesktopHandoffBuildResponse,
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
@@ -391,6 +392,18 @@ export async function askSessionChanges(
 ): Promise<DesktopChangeQuestionResponse> {
 	try {
 		return await getSessionReadCore().askSessionChanges(sessionId, question, scope);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function changeReaderTextToSpeech(
+	text: string,
+	sessionId?: string | null,
+	scope?: DesktopChangeReaderScope | null,
+): Promise<DesktopChangeReaderTtsResponse> {
+	try {
+		return await getSessionReadCore().changeReaderTts(text, sessionId, scope);
 	} catch (error) {
 		throw normalizeSessionAdapterError(error);
 	}

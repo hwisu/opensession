@@ -5,6 +5,7 @@ import type {
 	DesktopChangeQuestionResponse,
 	DesktopChangeReaderScope,
 	DesktopChangeReadResponse,
+	DesktopChangeReaderTtsResponse,
 	DesktopContractVersionResponse,
 	DesktopHandoffBuildRequest,
 	DesktopHandoffBuildResponse,
@@ -38,7 +39,7 @@ export type SessionListParams = {
 
 export type DesktopInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
-export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v5';
+export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v6';
 
 type ErrorDetails = Record<string, unknown> | null;
 
@@ -71,6 +72,11 @@ export interface SessionReadAdapter {
 		question: string,
 		scope?: DesktopChangeReaderScope | null,
 	): Promise<DesktopChangeQuestionResponse>;
+	changeReaderTts(
+		text: string,
+		sessionId?: string | null,
+		scope?: DesktopChangeReaderScope | null,
+	): Promise<DesktopChangeReaderTtsResponse>;
 	getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse>;
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
@@ -111,6 +117,7 @@ function toSessionListQuery(params?: SessionListParams): DesktopSessionListQuery
 		git_repo_name: params?.git_repo_name ?? null,
 		sort: params?.sort ?? null,
 		time_range: params?.time_range ?? null,
+		force_refresh: params?.force_refresh ?? null,
 	};
 }
 
@@ -305,6 +312,16 @@ export function createWebSessionReadAdapter(args: {
 				serializeErrorBody({
 					code: 'desktop_change_reader_unsupported',
 					message: 'Change reader Q&A is available only in desktop runtime.',
+				}),
+			);
+		},
+		async changeReaderTts() {
+			throw new SessionAdapterError(
+				'desktop_change_reader_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_change_reader_unsupported',
+					message: 'Change reader voice is available only in desktop runtime.',
 				}),
 			);
 		},
@@ -547,6 +564,18 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 				},
 			);
 		},
+		async changeReaderTts(text, sessionId, scope) {
+			return invokeAfterContractCheck<DesktopChangeReaderTtsResponse>(
+				'desktop_change_reader_tts',
+				{
+					request: {
+						text,
+						session_id: sessionId ?? null,
+						scope: scope ?? null,
+					},
+				},
+			);
+		},
 		async getRuntimeSettings() {
 			return invokeAfterContractCheck<DesktopRuntimeSettingsResponse>(
 				'desktop_get_runtime_settings',
@@ -640,6 +669,9 @@ export function createUnavailableDesktopSessionReadAdapter(): SessionReadAdapter
 			throw desktopBridgeUnavailableError();
 		},
 		async askSessionChanges() {
+			throw desktopBridgeUnavailableError();
+		},
+		async changeReaderTts() {
 			throw desktopBridgeUnavailableError();
 		},
 		async getRuntimeSettings() {

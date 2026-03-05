@@ -104,6 +104,7 @@ test.describe('Settings', () => {
 					model: 'bge-m3',
 					endpoint: 'http://127.0.0.1:11434',
 					granularity: 'event_line_chunk' as 'event_line_chunk',
+					chunking_mode: 'auto' as 'auto' | 'manual',
 					chunk_size_lines: 12,
 					chunk_overlap_lines: 3,
 					top_k_chunks: 30,
@@ -114,6 +115,13 @@ test.describe('Settings', () => {
 				scope: 'summary_only' as 'summary_only' | 'full_context',
 				qa_enabled: true,
 				max_context_chars: 12000,
+				voice: {
+					enabled: false,
+					provider: 'openai' as 'openai',
+					model: 'gpt-4o-mini-tts',
+					voice: 'alloy',
+					api_key_configured: false,
+				},
 			},
 			lifecycle: {
 				enabled: true,
@@ -145,7 +153,7 @@ test.describe('Settings', () => {
 			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
 				core: {
 					invoke: async (cmd: string, args?: Record<string, unknown>) => {
-						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v5' };
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v6' };
 						if (cmd === 'desktop_get_capabilities') {
 							return {
 								auth_enabled: false,
@@ -222,6 +230,7 @@ test.describe('Settings', () => {
 									model: string;
 									endpoint: string;
 									granularity: 'event_line_chunk';
+									chunking_mode: 'auto' | 'manual';
 									chunk_size_lines: number;
 									chunk_overlap_lines: number;
 									top_k_chunks: number;
@@ -232,6 +241,13 @@ test.describe('Settings', () => {
 									scope: 'summary_only' | 'full_context';
 									qa_enabled: boolean;
 									max_context_chars: number;
+									voice: {
+										enabled: boolean;
+										provider: 'openai';
+										model: string;
+										voice: string;
+										api_key?: string | null;
+									};
 								};
 								lifecycle?: {
 									enabled: boolean;
@@ -276,6 +292,7 @@ test.describe('Settings', () => {
 											model: request.vector_search.model,
 											endpoint: request.vector_search.endpoint,
 											granularity: request.vector_search.granularity,
+											chunking_mode: request.vector_search.chunking_mode,
 											chunk_size_lines: request.vector_search.chunk_size_lines,
 											chunk_overlap_lines: request.vector_search.chunk_overlap_lines,
 											top_k_chunks: request.vector_search.top_k_chunks,
@@ -288,6 +305,16 @@ test.describe('Settings', () => {
 											scope: request.change_reader.scope,
 											qa_enabled: request.change_reader.qa_enabled,
 											max_context_chars: request.change_reader.max_context_chars,
+											voice: {
+												enabled: request.change_reader.voice.enabled,
+												provider: request.change_reader.voice.provider,
+												model: request.change_reader.voice.model,
+												voice: request.change_reader.voice.voice,
+												api_key_configured:
+													typeof request.change_reader.voice.api_key === 'string'
+														? request.change_reader.voice.api_key.trim().length > 0
+														: runtimeState.change_reader.voice.api_key_configured,
+											},
 										}
 									: runtimeState.change_reader,
 								lifecycle: request.lifecycle
@@ -367,24 +394,40 @@ test.describe('Settings', () => {
 
 		await expect(page.locator('[data-testid="settings-runtime-vector"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-vector-status"]')).toContainText(
-			'install_state: ready',
+			'install ready (100%)',
 		);
+		await expect(page.locator('[data-testid="runtime-vector-status"]')).toContainText(
+			'Vector pipeline is ready.',
+		);
+		await expect(page.locator('[data-testid="runtime-vector-chunking-mode"]')).toHaveValue('auto');
+		await expect(page.locator('[data-testid="runtime-vector-chunk-size"]')).toBeDisabled();
+		await page.locator('[data-testid="runtime-vector-chunking-mode"]').selectOption('manual');
+		await expect(page.locator('[data-testid="runtime-vector-chunk-size"]')).toBeEnabled();
 		const runtimeHelpHints = page.locator('[data-testid^="runtime-help-"]');
 		expect(await runtimeHelpHints.count()).toBeGreaterThanOrEqual(20);
-		await expect(page.locator('[data-testid="runtime-help-storage-backend"]')).toHaveAttribute(
-			'title',
-			/Where summary artifacts persist/i,
-		);
+		await page.locator('[data-testid="runtime-help-storage-backend"]').hover();
+		await expect(page.getByRole('tooltip')).toContainText('Where summary artifacts persist');
 		await expect(page.locator('[data-testid="settings-runtime-change-reader"]')).toBeVisible();
-		await expect(
-			page.locator('[data-testid="runtime-help-change-reader-enable"]'),
-		).toHaveAttribute('title', /notebook-style change reading/i);
+		await page.locator('[data-testid="runtime-help-change-reader-enable"]').hover();
+		await expect(page.getByRole('tooltip')).toContainText('notebook-style change reading');
 		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
 		await page
 			.locator('[data-testid="settings-runtime-change-reader"] select')
 			.first()
 			.selectOption('full_context');
 		await page.locator('[data-testid="runtime-change-reader-max-context"]').fill('18000');
+		await page.locator('[data-testid="runtime-change-reader-voice-enable"]').check();
+		await expect(page.locator('[data-testid="runtime-change-reader-voice-provider"]')).toHaveValue(
+			'openai',
+		);
+		await page.locator('[data-testid="runtime-change-reader-voice-model"]').fill('gpt-4o-mini-tts');
+		await page.locator('[data-testid="runtime-change-reader-voice-name"]').fill('alloy');
+		await page.locator('[data-testid="runtime-change-reader-voice-api-key"]').fill(
+			'test-openai-key',
+		);
+		await expect(
+			page.locator('[data-testid="runtime-change-reader-voice-key-status"]'),
+		).toContainText('api_key_configured: no');
 
 		await expect(page.locator('[data-testid="settings-runtime-storage"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
@@ -422,6 +465,23 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="settings-runtime-lifecycle"]')).toContainText(
 			'Enable periodic lifecycle cleanup',
 		);
+		await expect(
+			page.locator('[data-testid="runtime-change-reader-voice-key-status"]'),
+		).toContainText('api_key_configured: yes');
+		await page.evaluate(() => {
+			const active = document.activeElement as HTMLElement | null;
+			active?.blur?.();
+			(document.body ?? window).dispatchEvent(
+				new KeyboardEvent('keydown', {
+					key: '?',
+					shiftKey: true,
+					bubbles: true,
+				}),
+			);
+		});
+		await expect(page.locator('[data-testid="keyboard-help-modal"]')).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(page.locator('[data-testid="keyboard-help-modal"]')).toHaveCount(0);
 	});
 
 	test('can issue personal api key from settings page', async ({ page }) => {
@@ -593,6 +653,196 @@ test.describe('Settings', () => {
 		await page.locator('[data-testid="git-credential-delete-cred-1"]').click();
 		await expect(page.locator('[data-testid="git-credential-settings"]')).not.toContainText(
 			'GitLab Internal',
+		);
+	});
+
+	test('vector status shows actionable errors when ollama is unavailable', async ({ page }) => {
+		await page.addInitScript(() => {
+			type SummaryProviderId = 'disabled' | 'ollama' | 'codex_exec' | 'claude_cli';
+			const runtimeState = {
+				session_default_view: 'full' as 'full' | 'compressed',
+				summary: {
+					provider: {
+						id: 'disabled' as SummaryProviderId,
+						transport: 'none' as 'none' | 'http' | 'cli',
+						endpoint: '',
+						model: '',
+					},
+					prompt: {
+						template:
+							'Convert a real coding session into semantic compression.\\nHAIL_COMPACT={{HAIL_COMPACT}}',
+						default_template:
+							'Convert a real coding session into semantic compression.\\nHAIL_COMPACT={{HAIL_COMPACT}}',
+					},
+					response: {
+						style: 'standard' as 'compact' | 'standard' | 'detailed',
+						shape: 'layered' as 'layered' | 'file_list' | 'security_first',
+					},
+					storage: {
+						trigger: 'on_session_save' as 'manual' | 'on_session_save',
+						backend: 'hidden_ref' as 'hidden_ref' | 'local_db' | 'none',
+					},
+					source_mode: 'session_only' as 'session_only' | 'session_or_git_changes',
+					batch: {
+						execution_mode: 'on_app_start' as 'manual' | 'on_app_start',
+						scope: 'recent_days' as 'recent_days' | 'all',
+						recent_days: 30,
+					},
+				},
+				vector_search: {
+					enabled: true,
+					provider: 'ollama' as 'ollama',
+					model: 'bge-m3',
+					endpoint: 'http://127.0.0.1:11434',
+					granularity: 'event_line_chunk' as 'event_line_chunk',
+					chunking_mode: 'auto' as 'auto' | 'manual',
+					chunk_size_lines: 12,
+					chunk_overlap_lines: 3,
+					top_k_chunks: 30,
+					top_k_sessions: 20,
+				},
+				change_reader: {
+					enabled: false,
+					scope: 'summary_only' as 'summary_only' | 'full_context',
+					qa_enabled: true,
+					max_context_chars: 12000,
+					voice: {
+						enabled: false,
+						provider: 'openai' as 'openai',
+						model: 'gpt-4o-mini-tts',
+						voice: 'alloy',
+						api_key_configured: false,
+					},
+				},
+				lifecycle: {
+					enabled: true,
+					session_ttl_days: 30,
+					summary_ttl_days: 30,
+					cleanup_interval_secs: 3600,
+				},
+				ui_constraints: {
+					source_mode_locked: true,
+					source_mode_locked_value: 'session_only' as 'session_only',
+				},
+			};
+
+			(
+				window as Window & {
+					__TAURI_INTERNALS__?: Record<string, never>;
+					__TAURI__?: { core?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } };
+				}
+			).__TAURI_INTERNALS__ = {};
+			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
+				core: {
+					invoke: async (cmd: string, args?: Record<string, unknown>) => {
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v6' };
+						if (cmd === 'desktop_get_capabilities') {
+							return {
+								auth_enabled: false,
+								parse_preview_enabled: false,
+								register_targets: [],
+								share_modes: [],
+							};
+						}
+						if (cmd === 'desktop_get_auth_providers') {
+							return { email_password: false, oauth: [] };
+						}
+						if (cmd === 'desktop_get_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_summary_batch_status') {
+							return {
+								state: 'idle',
+								processed_sessions: 0,
+								total_sessions: 0,
+								failed_sessions: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
+						if (cmd === 'desktop_vector_preflight') {
+							return {
+								provider: 'ollama',
+								endpoint: runtimeState.vector_search.endpoint,
+								model: runtimeState.vector_search.model,
+								ollama_reachable: false,
+								model_installed: false,
+								install_state: 'failed',
+								progress_pct: 0,
+								message:
+									'ollama CLI is not installed. Install from https://ollama.com/download, then run `ollama serve`.',
+							};
+						}
+						if (cmd === 'desktop_vector_index_status') {
+							return {
+								state: 'idle',
+								processed_sessions: 0,
+								total_sessions: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
+						if (cmd === 'desktop_vector_install_model') {
+							const model =
+								(args?.model as string | undefined) ?? runtimeState.vector_search.model;
+							throw {
+								code: 'desktop.vector_install_unavailable',
+								status: 422,
+								message: 'ollama CLI is not installed',
+								details: {
+									model,
+									endpoint: runtimeState.vector_search.endpoint,
+									hint: 'install Ollama from https://ollama.com/download and run `ollama serve`',
+								},
+							};
+						}
+						if (cmd === 'desktop_update_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_detect_summary_provider') {
+							return {
+								detected: false,
+								provider: null,
+								transport: null,
+								model: null,
+								endpoint: null,
+							};
+						}
+						if (cmd === 'desktop_summary_batch_run') {
+							return {
+								state: 'idle',
+								processed_sessions: 0,
+								total_sessions: 0,
+								failed_sessions: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
+						if (cmd === 'desktop_vector_index_rebuild') {
+							return {
+								state: 'idle',
+								processed_sessions: 0,
+								total_sessions: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
+						throw new Error(`unexpected command: ${cmd}`);
+					},
+				},
+			};
+		});
+
+		await page.goto('/settings');
+		const vectorStatus = page.locator('[data-testid="runtime-vector-status"]');
+		await expect(vectorStatus).toBeVisible();
+		await expect(vectorStatus).toContainText('ollama CLI is not installed');
+		await expect(vectorStatus).toContainText('Install Ollama: https://ollama.com/download');
+		await expect(page.locator('[data-testid="runtime-vector-reindex"]')).toBeDisabled();
+
+		await page.locator('[data-testid="runtime-vector-install"]').click();
+		await expect(page.locator('[data-testid="runtime-vector-error"]')).toContainText(
+			'Action: install Ollama from https://ollama.com/download and run `ollama serve`',
 		);
 	});
 });

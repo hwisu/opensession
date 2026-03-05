@@ -59,7 +59,7 @@ sort: SortOrder | null,
  */
 time_range: TimeRange | null, }
 
-export interface DesktopSessionListQuery { page: string | null, per_page: string | null, search: string | null, tool: string | null, git_repo_name: string | null, sort: string | null, time_range: string | null, }
+export interface DesktopSessionListQuery { page: string | null, per_page: string | null, search: string | null, tool: string | null, git_repo_name: string | null, sort: string | null, time_range: string | null, force_refresh: boolean | null, }
 
 export interface SessionRepoListResponse { repos: Array<string>, }
 
@@ -121,19 +121,27 @@ export type DesktopVectorSearchProvider = "ollama"
 
 export type DesktopVectorSearchGranularity = "event_line_chunk"
 
+export type DesktopVectorChunkingMode = "auto" | "manual"
+
 export type DesktopVectorInstallState = "not_installed" | "installing" | "ready" | "failed"
 
 export type DesktopVectorIndexState = "idle" | "running" | "complete" | "failed"
 
-export interface DesktopRuntimeVectorSearchSettings { enabled: boolean, provider: DesktopVectorSearchProvider, model: string, endpoint: string, granularity: DesktopVectorSearchGranularity, chunk_size_lines: number, chunk_overlap_lines: number, top_k_chunks: number, top_k_sessions: number, }
+export interface DesktopRuntimeVectorSearchSettings { enabled: boolean, provider: DesktopVectorSearchProvider, model: string, endpoint: string, granularity: DesktopVectorSearchGranularity, chunking_mode: DesktopVectorChunkingMode, chunk_size_lines: number, chunk_overlap_lines: number, top_k_chunks: number, top_k_sessions: number, }
 
-export interface DesktopRuntimeVectorSearchSettingsUpdate { enabled: boolean, provider: DesktopVectorSearchProvider, model: string, endpoint: string, granularity: DesktopVectorSearchGranularity, chunk_size_lines: number, chunk_overlap_lines: number, top_k_chunks: number, top_k_sessions: number, }
+export interface DesktopRuntimeVectorSearchSettingsUpdate { enabled: boolean, provider: DesktopVectorSearchProvider, model: string, endpoint: string, granularity: DesktopVectorSearchGranularity, chunking_mode: DesktopVectorChunkingMode, chunk_size_lines: number, chunk_overlap_lines: number, top_k_chunks: number, top_k_sessions: number, }
 
 export type DesktopChangeReaderScope = "summary_only" | "full_context"
 
-export interface DesktopRuntimeChangeReaderSettings { enabled: boolean, scope: DesktopChangeReaderScope, qa_enabled: boolean, max_context_chars: number, }
+export type DesktopChangeReaderVoiceProvider = "openai"
 
-export interface DesktopRuntimeChangeReaderSettingsUpdate { enabled: boolean, scope: DesktopChangeReaderScope, qa_enabled: boolean, max_context_chars: number, }
+export interface DesktopRuntimeChangeReaderVoiceSettings { enabled: boolean, provider: DesktopChangeReaderVoiceProvider, model: string, voice: string, api_key_configured: boolean, }
+
+export interface DesktopRuntimeChangeReaderVoiceSettingsUpdate { enabled: boolean, provider: DesktopChangeReaderVoiceProvider, model: string, voice: string, api_key?: string | null, }
+
+export interface DesktopRuntimeChangeReaderSettings { enabled: boolean, scope: DesktopChangeReaderScope, qa_enabled: boolean, max_context_chars: number, voice: DesktopRuntimeChangeReaderVoiceSettings, }
+
+export interface DesktopRuntimeChangeReaderSettingsUpdate { enabled: boolean, scope: DesktopChangeReaderScope, qa_enabled: boolean, max_context_chars: number, voice: DesktopRuntimeChangeReaderVoiceSettingsUpdate, }
 
 export interface DesktopRuntimeLifecycleSettings { enabled: boolean, session_ttl_days: number, summary_ttl_days: number, cleanup_interval_secs: number, }
 
@@ -166,6 +174,10 @@ export interface DesktopChangeReadRequest { session_id: string, scope?: DesktopC
 export interface DesktopChangeReadResponse { session_id: string, scope: DesktopChangeReaderScope, narrative: string, citations: Array<string>, provider?: DesktopSummaryProviderId | null, warning?: string | null, }
 
 export interface DesktopChangeQuestionRequest { session_id: string, question: string, scope?: DesktopChangeReaderScope | null, }
+
+export interface DesktopChangeReaderTtsRequest { text: string, session_id?: string | null, scope?: DesktopChangeReaderScope | null, }
+
+export interface DesktopChangeReaderTtsResponse { mime_type: string, audio_base64: string, warning?: string | null, }
 
 export interface DesktopChangeQuestionResponse { session_id: string, question: string, scope: DesktopChangeReaderScope, answer: string, citations: Array<string>, provider?: DesktopSummaryProviderId | null, warning?: string | null, }
 

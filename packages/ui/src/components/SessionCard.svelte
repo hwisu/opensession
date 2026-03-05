@@ -3,7 +3,7 @@ import { truncate } from '../event-helpers';
 import { getSessionActorLabel, getSessionModelLabel } from '../session-presentation';
 import type { SessionSummary } from '../types';
 import { formatDuration, formatTimestamp, getToolConfig } from '../types';
-import { stripTags } from '../utils';
+import { sessionTitleFallback, stripTags } from '../utils';
 
 const {
 	session,
@@ -21,7 +21,7 @@ const cleanTitle = $derived(session.title ? stripTags(session.title) : '');
 const cleanDesc = $derived(session.description ? stripTags(session.description) : '');
 
 const displayTitle = $derived(
-	cleanTitle ? cleanTitle : cleanDesc ? truncate(cleanDesc) : 'Untitled Session',
+	cleanTitle ? cleanTitle : cleanDesc ? truncate(cleanDesc) : sessionTitleFallback(session.id),
 );
 const actorLabel = $derived(getSessionActorLabel(session));
 const modelLabel = $derived(getSessionModelLabel(session));

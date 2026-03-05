@@ -4,10 +4,12 @@ use opensession_api::{
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
     CapabilitiesResponse, DesktopApiError, DesktopContractVersionResponse,
     DesktopChangeQuestionRequest, DesktopChangeQuestionResponse, DesktopChangeReadRequest,
-    DesktopChangeReadResponse, DesktopChangeReaderScope,
+    DesktopChangeReadResponse, DesktopChangeReaderScope, DesktopChangeReaderTtsRequest,
+    DesktopChangeReaderTtsResponse, DesktopChangeReaderVoiceProvider,
     DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopQuickShareRequest,
     DesktopQuickShareResponse, DesktopRuntimeSettingsResponse,
-    DesktopRuntimeChangeReaderSettings, DesktopRuntimeLifecycleSettings,
+    DesktopRuntimeChangeReaderSettings, DesktopRuntimeChangeReaderVoiceSettings,
+    DesktopRuntimeLifecycleSettings,
     DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryBatchSettings,
     DesktopRuntimeSummaryPromptSettings,
     DesktopRuntimeSummaryProviderSettings, DesktopRuntimeSummaryResponseSettings,
@@ -21,6 +23,7 @@ use opensession_api::{
     DesktopSummaryStorageBackend, DesktopSummaryTriggerMode, DesktopVectorIndexState,
     DesktopVectorIndexStatusResponse, DesktopVectorInstallState,
     DesktopVectorInstallStatusResponse, DesktopVectorPreflightResponse,
+    DesktopVectorChunkingMode,
     DesktopVectorSearchGranularity, DesktopVectorSearchProvider, DesktopVectorSearchResponse,
     DesktopVectorSessionMatch, LinkType, SessionDetail, SessionLink, SessionListResponse,
     SessionRepoListResponse, SessionSummary, DESKTOP_IPC_CONTRACT_VERSION,
@@ -29,7 +32,7 @@ use opensession_core::handoff::{validate_handoff_summaries, HandoffSummary};
 use opensession_core::object_store::{
     find_repo_root, global_store_root, sha256_hex, store_local_object,
 };
-use opensession_core::session::working_directory;
+use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_core::source_uri::SourceUri;
 use opensession_core::trace::{ContentBlock, EventType, Session as HailSession};
 use opensession_git_native::{
@@ -40,14 +43,17 @@ use opensession_local_db::{
     LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow, VectorChunkUpsert,
     SummaryBatchJobRow, VectorIndexJobRow,
 };
-use opensession_parsers::ingest::preview_parse_bytes;
+use opensession_parsers::{
+    discover::discover_for_tool, ingest::preview_parse_bytes, parse_with_default_parsers,
+};
 use opensession_runtime_config::{
-    ChangeReaderScope, DaemonConfig, LifecycleSettings, SessionDefaultView, SummaryBatchExecutionMode as RuntimeSummaryBatchExecutionMode,
+    ChangeReaderScope, ChangeReaderVoiceProvider, DaemonConfig, LifecycleSettings,
+    SessionDefaultView, SummaryBatchExecutionMode as RuntimeSummaryBatchExecutionMode,
     SummaryBatchScope as RuntimeSummaryBatchScope, SummaryOutputShape, SummaryProvider,
     SummaryResponseStyle, SummarySourceMode, SummaryStorageBackend, SummaryTriggerMode,
-    VectorSearchGranularity,
-    VectorSearchProvider,
+    VectorChunkingMode, VectorSearchGranularity, VectorSearchProvider,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use opensession_summary::{
     provider::generate_text, summarize_session, validate_summary_prompt_template, GitSummaryRequest,
 };
@@ -69,6 +75,7 @@ const VECTOR_EMBED_BATCH_SIZE: usize = 24;
 const VECTOR_FTS_CANDIDATE_LIMIT_MULTIPLIER: u32 = 8;
 const CHANGE_READER_MAX_EVENTS: usize = 180;
 const CHANGE_READER_MAX_LINE_CHARS: usize = 220;
+const FORCE_REFRESH_MAX_DISCOVERY_PATHS: usize = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchMode {
@@ -238,6 +245,7 @@ fn build_local_filter_with_mode(
         search: search_query,
         tool: normalize_non_empty(query.tool),
         git_repo_name: normalize_non_empty(query.git_repo_name),
+        exclude_low_signal: true,
         sort: map_sort_order(query.sort.as_deref()),
         time_range: map_time_range(query.time_range.as_deref()),
         limit: Some(per_page),
@@ -246,6 +254,94 @@ fn build_local_filter_with_mode(
     };
 
     (filter, page, per_page, search_mode)
+}
+
+fn force_refresh_discovery_tools() -> &'static [&'static str] {
+    // Cursor workspace DBs are high-volume and often metadata-only. Exclude them from the
+    // synchronous force-refresh path so recent sessions show up immediately.
+    &["codex", "claude-code", "opencode", "cline", "amp", "gemini"]
+}
+
+fn force_refresh_discovered_paths() -> Vec<PathBuf> {
+    let mut unique_paths = BTreeSet::new();
+    for tool in force_refresh_discovery_tools() {
+        for path in discover_for_tool(tool) {
+            if path.exists() {
+                unique_paths.insert(path);
+            }
+        }
+    }
+
+    let mut paths: Vec<PathBuf> = unique_paths.into_iter().collect();
+    paths.sort_by(|left, right| {
+        let left_modified = fs::metadata(left).and_then(|meta| meta.modified()).ok();
+        let right_modified = fs::metadata(right).and_then(|meta| meta.modified()).ok();
+        right_modified
+            .cmp(&left_modified)
+            .then_with(|| left.cmp(right))
+    });
+    paths.truncate(FORCE_REFRESH_MAX_DISCOVERY_PATHS);
+    paths
+}
+
+fn refresh_local_session_index(db: &LocalDb) {
+    let mut parse_errors = 0usize;
+    let mut upsert_errors = 0usize;
+    let mut upserted = 0usize;
+
+    for path in force_refresh_discovered_paths() {
+        let parsed = match parse_with_default_parsers(&path) {
+            Ok(session) => session,
+            Err(error) => {
+                parse_errors = parse_errors.saturating_add(1);
+                if parse_errors <= 5 {
+                    eprintln!("failed to parse discovered session {}: {error}", path.display());
+                }
+                continue;
+            }
+        };
+        let Some(session) = parsed else {
+            continue;
+        };
+        if is_auxiliary_session(&session) {
+            continue;
+        }
+
+        let git = working_directory(&session)
+            .map(extract_git_context)
+            .unwrap_or_default();
+        let local_git = opensession_local_db::git::GitContext {
+            remote: git.remote.clone(),
+            branch: git.branch.clone(),
+            commit: git.commit.clone(),
+            repo_name: git.repo_name.clone(),
+        };
+        let path_str = path.to_string_lossy().to_string();
+
+        if let Err(error) = db.upsert_local_session(&session, &path_str, &local_git) {
+            upsert_errors = upsert_errors.saturating_add(1);
+            if upsert_errors <= 5 {
+                eprintln!("failed to upsert discovered session {}: {error}", path.display());
+            }
+            continue;
+        }
+
+        upserted = upserted.saturating_add(1);
+    }
+
+    if parse_errors > 5 {
+        eprintln!(
+            "force refresh parse errors suppressed: {} additional failures",
+            parse_errors - 5
+        );
+    }
+    if upsert_errors > 5 {
+        eprintln!(
+            "force refresh upsert errors suppressed: {} additional failures",
+            upsert_errors - 5
+        );
+    }
+    eprintln!("force refresh reindex complete: upserted={upserted}");
 }
 
 fn session_summary_from_local_row(row: LocalSessionRow) -> SessionSummary {
@@ -624,6 +720,26 @@ fn parse_ollama_model_list(payload: &serde_json::Value, target_model: &str) -> b
     })
 }
 
+fn ollama_cli_available() -> bool {
+    Command::new("ollama")
+        .arg("--version")
+        .output()
+        .map(|output| {
+            output.status.success() || !output.stdout.is_empty() || !output.stderr.is_empty()
+        })
+        .unwrap_or(false)
+}
+
+fn ollama_unreachable_message(endpoint: &str, error: &reqwest::Error) -> String {
+    if ollama_cli_available() {
+        format!(
+            "ollama is installed but not reachable at {endpoint}; start it with `ollama serve` ({error})"
+        )
+    } else {
+        "ollama CLI is not installed. Install from https://ollama.com/download, then run `ollama serve`.".to_string()
+    }
+}
+
 fn vector_preflight_for_runtime(runtime: &DaemonConfig) -> DesktopVectorPreflightResponse {
     let endpoint = vector_embed_endpoint(runtime);
     let model = vector_embed_model(runtime);
@@ -658,15 +774,13 @@ fn vector_preflight_for_runtime(runtime: &DaemonConfig) -> DesktopVectorPrefligh
     let tags_response = match client.get(tags_url).send() {
         Ok(resp) => resp,
         Err(error) => {
-            response.message = Some(format!(
-                "ollama is not reachable; start it with `ollama serve` ({error})"
-            ));
+            response.message = Some(ollama_unreachable_message(&endpoint, &error));
             return response;
         }
     };
     if !tags_response.status().is_success() {
         response.message = Some(format!(
-            "ollama returned unexpected status {}",
+            "ollama endpoint {endpoint} returned status {}; verify `ollama serve` and endpoint configuration",
             tags_response.status()
         ));
         return response;
@@ -690,6 +804,10 @@ fn vector_preflight_for_runtime(runtime: &DaemonConfig) -> DesktopVectorPrefligh
     } else if matches!(response.install_state, DesktopVectorInstallState::Ready) {
         response.install_state = DesktopVectorInstallState::NotInstalled;
         response.progress_pct = 0;
+    } else if response.message.is_none() {
+        response.message = Some(format!(
+            "model `{model}` is not installed. Run `ollama pull {model}` or use Install model."
+        ));
     }
     response
 }
@@ -713,14 +831,26 @@ fn install_ollama_model_blocking(endpoint: &str, model: &str) -> DesktopApiResul
         .json(&json!({ "model": model, "stream": true }))
         .send()
         .map_err(|error| {
+            let (message, hint) = if ollama_cli_available() {
+                (
+                    "failed to connect to ollama model pull endpoint",
+                    "start local ollama with `ollama serve`".to_string(),
+                )
+            } else {
+                (
+                    "ollama CLI is not installed",
+                    "install Ollama from https://ollama.com/download and run `ollama serve`"
+                        .to_string(),
+                )
+            };
             desktop_error(
                 "desktop.vector_install_unavailable",
                 422,
-                "failed to connect to ollama model pull endpoint",
+                message,
                 Some(json!({
                     "cause": error.to_string(),
                     "endpoint": pull_url,
-                    "hint": "start local ollama with `ollama serve`"
+                    "hint": hint
                 })),
             )
         })?;
@@ -829,7 +959,15 @@ fn truncate_snippet(raw: &str, max_chars: usize) -> String {
 fn ensure_vector_enabled_and_ready(
     runtime: &DaemonConfig,
 ) -> DesktopApiResult<DesktopVectorPreflightResponse> {
-    if !runtime.vector_search.enabled {
+    ensure_vector_provider_ready(runtime, true)
+}
+
+fn validate_vector_preflight_ready(
+    preflight: &DesktopVectorPreflightResponse,
+    runtime_enabled: bool,
+    require_enabled: bool,
+) -> DesktopApiResult<()> {
+    if require_enabled && !runtime_enabled {
         return Err(desktop_error(
             "desktop.vector_search_disabled",
             422,
@@ -837,7 +975,6 @@ fn ensure_vector_enabled_and_ready(
             Some(json!({ "hint": "enable vector_search in Settings and save runtime settings" })),
         ));
     }
-    let preflight = vector_preflight_for_runtime(runtime);
     if !preflight.ollama_reachable {
         return Err(desktop_error(
             "desktop.vector_search_unavailable",
@@ -860,6 +997,15 @@ fn ensure_vector_enabled_and_ready(
             })),
         ));
     }
+    Ok(())
+}
+
+fn ensure_vector_provider_ready(
+    runtime: &DaemonConfig,
+    require_enabled: bool,
+) -> DesktopApiResult<DesktopVectorPreflightResponse> {
+    let preflight = vector_preflight_for_runtime(runtime);
+    validate_vector_preflight_ready(&preflight, runtime.vector_search.enabled, require_enabled)?;
     Ok(preflight)
 }
 
@@ -1143,17 +1289,37 @@ fn extract_vector_lines(session: &HailSession) -> Vec<String> {
     lines
 }
 
+fn resolve_vector_chunking_profile(line_count: usize, runtime: &DaemonConfig) -> (usize, usize) {
+    if matches!(runtime.vector_search.chunking_mode, VectorChunkingMode::Manual) {
+        let chunk_size = runtime.vector_search.chunk_size_lines.max(1) as usize;
+        let overlap = runtime
+            .vector_search
+            .chunk_overlap_lines
+            .min(runtime.vector_search.chunk_size_lines.saturating_sub(1))
+            as usize;
+        return (chunk_size, overlap);
+    }
+
+    if line_count <= 40 {
+        (8, 2)
+    } else if line_count <= 120 {
+        (12, 3)
+    } else if line_count <= 300 {
+        (18, 4)
+    } else if line_count <= 800 {
+        (24, 6)
+    } else {
+        (32, 8)
+    }
+}
+
 fn build_vector_chunks_for_session(
     session: &HailSession,
     source_hash: &str,
     runtime: &DaemonConfig,
 ) -> Vec<VectorChunkUpsert> {
     let lines = extract_vector_lines(session);
-    let chunk_size = runtime.vector_search.chunk_size_lines.max(1) as usize;
-    let overlap = runtime
-        .vector_search
-        .chunk_overlap_lines
-        .min(runtime.vector_search.chunk_size_lines.saturating_sub(1)) as usize;
+    let (chunk_size, overlap) = resolve_vector_chunking_profile(lines.len(), runtime);
     let step = chunk_size.saturating_sub(overlap).max(1);
 
     let mut chunks = Vec::new();
@@ -1649,6 +1815,20 @@ fn map_vector_granularity_to_runtime(
     }
 }
 
+fn map_vector_chunking_mode_from_runtime(value: &VectorChunkingMode) -> DesktopVectorChunkingMode {
+    match value {
+        VectorChunkingMode::Auto => DesktopVectorChunkingMode::Auto,
+        VectorChunkingMode::Manual => DesktopVectorChunkingMode::Manual,
+    }
+}
+
+fn map_vector_chunking_mode_to_runtime(value: &DesktopVectorChunkingMode) -> VectorChunkingMode {
+    match value {
+        DesktopVectorChunkingMode::Auto => VectorChunkingMode::Auto,
+        DesktopVectorChunkingMode::Manual => VectorChunkingMode::Manual,
+    }
+}
+
 fn map_change_reader_scope_from_runtime(value: &ChangeReaderScope) -> DesktopChangeReaderScope {
     match value {
         ChangeReaderScope::SummaryOnly => DesktopChangeReaderScope::SummaryOnly,
@@ -1660,6 +1840,22 @@ fn map_change_reader_scope_to_runtime(value: &DesktopChangeReaderScope) -> Chang
     match value {
         DesktopChangeReaderScope::SummaryOnly => ChangeReaderScope::SummaryOnly,
         DesktopChangeReaderScope::FullContext => ChangeReaderScope::FullContext,
+    }
+}
+
+fn map_change_reader_voice_provider_from_runtime(
+    value: &ChangeReaderVoiceProvider,
+) -> DesktopChangeReaderVoiceProvider {
+    match value {
+        ChangeReaderVoiceProvider::Openai => DesktopChangeReaderVoiceProvider::Openai,
+    }
+}
+
+fn map_change_reader_voice_provider_to_runtime(
+    value: &DesktopChangeReaderVoiceProvider,
+) -> ChangeReaderVoiceProvider {
+    match value {
+        DesktopChangeReaderVoiceProvider::Openai => ChangeReaderVoiceProvider::Openai,
     }
 }
 
@@ -1713,6 +1909,7 @@ fn desktop_vector_settings_from_runtime(
         model: vector_embed_model(config),
         endpoint: vector_embed_endpoint(config),
         granularity: map_vector_granularity_from_runtime(&config.vector_search.granularity),
+        chunking_mode: map_vector_chunking_mode_from_runtime(&config.vector_search.chunking_mode),
         chunk_size_lines: config.vector_search.chunk_size_lines.max(1),
         chunk_overlap_lines: config.vector_search.chunk_overlap_lines,
         top_k_chunks: config.vector_search.top_k_chunks.max(1),
@@ -1728,6 +1925,15 @@ fn desktop_change_reader_settings_from_runtime(
         scope: map_change_reader_scope_from_runtime(&config.change_reader.scope),
         qa_enabled: config.change_reader.qa_enabled,
         max_context_chars: config.change_reader.max_context_chars.max(1),
+        voice: DesktopRuntimeChangeReaderVoiceSettings {
+            enabled: config.change_reader.voice.enabled,
+            provider: map_change_reader_voice_provider_from_runtime(
+                &config.change_reader.voice.provider,
+            ),
+            model: config.change_reader.voice.model.clone(),
+            voice: config.change_reader.voice.voice.clone(),
+            api_key_configured: !config.change_reader.voice.api_key.trim().is_empty(),
+        },
     }
 }
 
@@ -1760,6 +1966,13 @@ fn normalize_session_body_to_hail_jsonl(
 
     if let Ok(session) = serde_json::from_str::<HailSession>(body) {
         return session_to_hail_jsonl(session);
+    }
+
+    if let Some(path_text) = source_path {
+        let path = Path::new(path_text);
+        if let Ok(Some(session)) = parse_with_default_parsers(path) {
+            return session_to_hail_jsonl(session);
+        }
     }
 
     let filename = source_path
@@ -2193,6 +2406,8 @@ fn desktop_update_runtime_settings(
     request: DesktopRuntimeSettingsUpdateRequest,
 ) -> DesktopApiResult<DesktopRuntimeSettingsResponse> {
     let mut config = load_runtime_config()?;
+    let current_summary_backend = config.summary.storage.backend.clone();
+    let mut requested_summary_backend: Option<SummaryStorageBackend> = None;
 
     if let Some(session_default_view) = request.session_default_view.as_deref() {
         let mapped = map_session_default_view_from_str(session_default_view).ok_or_else(|| {
@@ -2234,8 +2449,9 @@ fn desktop_update_runtime_settings(
             map_summary_output_shape_to_runtime(&summary.response.shape);
         config.summary.storage.trigger =
             map_summary_trigger_mode_to_runtime(&summary.storage.trigger);
-        config.summary.storage.backend =
-            map_summary_storage_backend_to_runtime(&summary.storage.backend);
+        let mapped_backend = map_summary_storage_backend_to_runtime(&summary.storage.backend);
+        config.summary.storage.backend = mapped_backend.clone();
+        requested_summary_backend = Some(mapped_backend);
         config.summary.source_mode = map_summary_source_mode_to_runtime(&summary.source_mode);
         if summary.batch.recent_days == 0 {
             return Err(desktop_error(
@@ -2289,6 +2505,8 @@ fn desktop_update_runtime_settings(
         config.vector_search.endpoint = vector_search.endpoint.trim().to_string();
         config.vector_search.granularity =
             map_vector_granularity_to_runtime(&vector_search.granularity);
+        config.vector_search.chunking_mode =
+            map_vector_chunking_mode_to_runtime(&vector_search.chunking_mode);
         config.vector_search.chunk_size_lines = vector_search.chunk_size_lines.max(1);
         config.vector_search.chunk_overlap_lines = vector_search.chunk_overlap_lines;
         config.vector_search.top_k_chunks = vector_search.top_k_chunks.max(1);
@@ -2331,6 +2549,20 @@ fn desktop_update_runtime_settings(
         config.change_reader.scope = map_change_reader_scope_to_runtime(&change_reader.scope);
         config.change_reader.qa_enabled = change_reader.qa_enabled;
         config.change_reader.max_context_chars = change_reader.max_context_chars.max(1);
+        config.change_reader.voice.enabled = change_reader.voice.enabled;
+        config.change_reader.voice.provider =
+            map_change_reader_voice_provider_to_runtime(&change_reader.voice.provider);
+        config.change_reader.voice.model = change_reader.voice.model.trim().to_string();
+        config.change_reader.voice.voice = change_reader.voice.voice.trim().to_string();
+        if let Some(api_key) = change_reader.voice.api_key {
+            config.change_reader.voice.api_key = api_key.trim().to_string();
+        }
+        if config.change_reader.voice.model.trim().is_empty() {
+            config.change_reader.voice.model = "gpt-4o-mini-tts".to_string();
+        }
+        if config.change_reader.voice.voice.trim().is_empty() {
+            config.change_reader.voice.voice = "alloy".to_string();
+        }
     }
 
     if let Some(lifecycle) = request.lifecycle {
@@ -2365,6 +2597,27 @@ fn desktop_update_runtime_settings(
             summary_ttl_days: lifecycle.summary_ttl_days.max(1),
             cleanup_interval_secs: lifecycle.cleanup_interval_secs.max(60),
         };
+    }
+
+    if let Some(target_summary_backend) = requested_summary_backend {
+        if target_summary_backend != current_summary_backend {
+            let db = open_local_db()?;
+            let stats = migrate_summary_storage_backend(
+                &db,
+                &current_summary_backend,
+                &target_summary_backend,
+            )?;
+            if stats.migrated_summaries > 0 {
+                eprintln!(
+                    "summary storage migration complete: {} -> {} (migrated {} of {} summaries across {} sessions)",
+                    enum_label(&current_summary_backend),
+                    enum_label(&target_summary_backend),
+                    stats.migrated_summaries,
+                    stats.found_summaries,
+                    stats.scanned_sessions,
+                );
+            }
+        }
     }
 
     save_runtime_config(&config)?;
@@ -2465,7 +2718,7 @@ fn desktop_vector_install_model(
 #[tauri::command]
 fn desktop_vector_index_rebuild() -> DesktopApiResult<DesktopVectorIndexStatusResponse> {
     let runtime = load_runtime_config()?;
-    ensure_vector_enabled_and_ready(&runtime)?;
+    ensure_vector_provider_ready(&runtime, false)?;
 
     {
         let mut running = VECTOR_INDEX_REBUILD_RUNNING
@@ -2565,6 +2818,28 @@ fn session_summary_response_from_hidden_ref(
     }
 }
 
+#[derive(Debug, Clone)]
+struct SummaryStorageRecord {
+    generated_at: String,
+    provider: String,
+    model: Option<String>,
+    source_kind: String,
+    generation_kind: String,
+    prompt_fingerprint: Option<String>,
+    summary: serde_json::Value,
+    source_details: serde_json::Value,
+    diff_tree: Vec<serde_json::Value>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SummaryStorageMigrationStats {
+    scanned_sessions: u32,
+    found_summaries: u32,
+    migrated_summaries: u32,
+    failed_summaries: u32,
+}
+
 fn empty_summary_response(session_id: String) -> DesktopSessionSummaryResponse {
     DesktopSessionSummaryResponse {
         session_id,
@@ -2638,6 +2913,357 @@ fn resolve_summary_repo_root(db: &LocalDb, session_id: &str) -> DesktopApiResult
     }
     let cwd = std::env::current_dir().ok();
     Ok(cwd.and_then(|path| find_git_repo_root(&path)))
+}
+
+fn resolve_summary_repo_root_for_migration(
+    db: &LocalDb,
+    session_id: &str,
+) -> DesktopApiResult<Option<PathBuf>> {
+    let row = db.get_session_by_id(session_id).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_repo_resolve_failed",
+            500,
+            "failed to resolve session repository root",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    if let Some(row) = row {
+        if let Some(cwd) = row.working_directory.as_deref() {
+            if let Some(repo_root) = find_git_repo_root(Path::new(cwd)) {
+                return Ok(Some(repo_root));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn load_summary_storage_record_from_local_db(
+    db: &LocalDb,
+    session_id: &str,
+) -> DesktopApiResult<Option<SummaryStorageRecord>> {
+    let row = db.get_session_semantic_summary(session_id).map_err(|error| {
+        desktop_error(
+            "desktop.session_summary_query_failed",
+            500,
+            "failed to load session summary from local_db",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let summary = serde_json::from_str::<serde_json::Value>(&row.summary_json).map_err(|error| {
+        desktop_error(
+            "desktop.runtime_settings_storage_migration_decode_failed",
+            500,
+            "failed to decode local_db summary_json during storage migration",
+            Some(
+                json!({ "cause": error.to_string(), "session_id": session_id, "backend": "local_db" }),
+            ),
+        )
+    })?;
+    let source_details = match row.source_details_json.as_deref() {
+        Some(raw) => serde_json::from_str::<serde_json::Value>(raw).map_err(|error| {
+            desktop_error(
+                "desktop.runtime_settings_storage_migration_decode_failed",
+                500,
+                "failed to decode local_db source_details_json during storage migration",
+                Some(
+                    json!({ "cause": error.to_string(), "session_id": session_id, "backend": "local_db" }),
+                ),
+            )
+        })?,
+        None => serde_json::Value::Object(Default::default()),
+    };
+    let diff_tree = match row.diff_tree_json.as_deref() {
+        Some(raw) => serde_json::from_str::<Vec<serde_json::Value>>(raw).map_err(|error| {
+            desktop_error(
+                "desktop.runtime_settings_storage_migration_decode_failed",
+                500,
+                "failed to decode local_db diff_tree_json during storage migration",
+                Some(
+                    json!({ "cause": error.to_string(), "session_id": session_id, "backend": "local_db" }),
+                ),
+            )
+        })?,
+        None => Vec::new(),
+    };
+
+    Ok(Some(SummaryStorageRecord {
+        generated_at: row.generated_at,
+        provider: row.provider,
+        model: row.model,
+        source_kind: row.source_kind,
+        generation_kind: row.generation_kind,
+        prompt_fingerprint: row.prompt_fingerprint,
+        summary,
+        source_details,
+        diff_tree,
+        error: row.error,
+    }))
+}
+
+fn load_summary_storage_record_from_hidden_ref(
+    db: &LocalDb,
+    session_id: &str,
+) -> DesktopApiResult<Option<SummaryStorageRecord>> {
+    let Some(repo_root) = resolve_summary_repo_root_for_migration(db, session_id)? else {
+        return Ok(None);
+    };
+    let loaded = NativeGitStorage
+        .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, session_id)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_query_failed",
+                500,
+                "failed to load hidden_ref session summary for storage migration",
+                Some(
+                    json!({ "cause": error.to_string(), "session_id": session_id, "repo_root": repo_root }),
+                ),
+            )
+        })?;
+    let Some(row) = loaded else {
+        return Ok(None);
+    };
+    Ok(Some(SummaryStorageRecord {
+        generated_at: row.generated_at,
+        provider: row.provider,
+        model: row.model,
+        source_kind: row.source_kind,
+        generation_kind: row.generation_kind,
+        prompt_fingerprint: row.prompt_fingerprint,
+        summary: row.summary,
+        source_details: row.source_details,
+        diff_tree: row.diff_tree,
+        error: row.error,
+    }))
+}
+
+fn load_summary_storage_record(
+    db: &LocalDb,
+    backend: &SummaryStorageBackend,
+    session_id: &str,
+) -> DesktopApiResult<Option<SummaryStorageRecord>> {
+    match backend {
+        SummaryStorageBackend::LocalDb => load_summary_storage_record_from_local_db(db, session_id),
+        SummaryStorageBackend::HiddenRef => {
+            load_summary_storage_record_from_hidden_ref(db, session_id)
+        }
+        SummaryStorageBackend::None => Ok(None),
+    }
+}
+
+fn persist_summary_storage_record_to_local_db(
+    db: &LocalDb,
+    session_id: &str,
+    record: &SummaryStorageRecord,
+) -> DesktopApiResult<()> {
+    let summary_json = serde_json::to_string(&record.summary).map_err(|error| {
+        desktop_error(
+            "desktop.runtime_settings_storage_migration_encode_failed",
+            500,
+            "failed to encode summary_json for local_db storage migration",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    let source_details_json = match &record.source_details {
+        serde_json::Value::Null => None,
+        serde_json::Value::Object(map) if map.is_empty() => None,
+        value => Some(serde_json::to_string(value).map_err(|error| {
+            desktop_error(
+                "desktop.runtime_settings_storage_migration_encode_failed",
+                500,
+                "failed to encode source_details_json for local_db storage migration",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?),
+    };
+    let diff_tree_json = if record.diff_tree.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&record.diff_tree).map_err(|error| {
+            desktop_error(
+                "desktop.runtime_settings_storage_migration_encode_failed",
+                500,
+                "failed to encode diff_tree_json for local_db storage migration",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?)
+    };
+
+    db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
+        session_id,
+        summary_json: &summary_json,
+        generated_at: &record.generated_at,
+        provider: &record.provider,
+        model: record.model.as_deref(),
+        source_kind: &record.source_kind,
+        generation_kind: &record.generation_kind,
+        prompt_fingerprint: record.prompt_fingerprint.as_deref(),
+        source_details_json: source_details_json.as_deref(),
+        diff_tree_json: diff_tree_json.as_deref(),
+        error: record.error.as_deref(),
+    })
+    .map_err(|error| {
+        desktop_error(
+            "desktop.runtime_settings_storage_migration_persist_failed",
+            500,
+            "failed to persist migrated summary to local_db",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    Ok(())
+}
+
+fn persist_summary_storage_record_to_hidden_ref(
+    db: &LocalDb,
+    session_id: &str,
+    record: &SummaryStorageRecord,
+) -> DesktopApiResult<()> {
+    let Some(repo_root) = resolve_summary_repo_root_for_migration(db, session_id)? else {
+        return Err(desktop_error(
+            "desktop.runtime_settings_storage_migration_repo_required",
+            422,
+            "cannot migrate summary to hidden_ref without a git repository for the session",
+            Some(json!({ "session_id": session_id })),
+        ));
+    };
+    let payload = SessionSummaryLedgerRecord {
+        session_id: session_id.to_string(),
+        generated_at: record.generated_at.clone(),
+        provider: record.provider.clone(),
+        model: record.model.clone(),
+        source_kind: record.source_kind.clone(),
+        generation_kind: record.generation_kind.clone(),
+        prompt_fingerprint: record.prompt_fingerprint.clone(),
+        summary: record.summary.clone(),
+        source_details: record.source_details.clone(),
+        diff_tree: record.diff_tree.clone(),
+        error: record.error.clone(),
+    };
+    NativeGitStorage
+        .store_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &payload)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.runtime_settings_storage_migration_persist_failed",
+                500,
+                "failed to persist migrated summary to hidden_ref",
+                Some(
+                    json!({ "cause": error.to_string(), "session_id": session_id, "repo_root": repo_root }),
+                ),
+            )
+        })?;
+    Ok(())
+}
+
+fn persist_summary_storage_record(
+    db: &LocalDb,
+    backend: &SummaryStorageBackend,
+    session_id: &str,
+    record: &SummaryStorageRecord,
+) -> DesktopApiResult<()> {
+    match backend {
+        SummaryStorageBackend::LocalDb => {
+            persist_summary_storage_record_to_local_db(db, session_id, record)
+        }
+        SummaryStorageBackend::HiddenRef => {
+            persist_summary_storage_record_to_hidden_ref(db, session_id, record)
+        }
+        SummaryStorageBackend::None => Ok(()),
+    }
+}
+
+fn summary_storage_migration_session_ids(
+    db: &LocalDb,
+    from_backend: &SummaryStorageBackend,
+) -> DesktopApiResult<Vec<String>> {
+    match from_backend {
+        SummaryStorageBackend::LocalDb => {
+            db.list_session_semantic_summary_ids().map_err(|error| {
+                desktop_error(
+                    "desktop.runtime_settings_storage_migration_source_query_failed",
+                    500,
+                    "failed to list local_db summary session ids for migration",
+                    Some(json!({ "cause": error.to_string(), "backend": "local_db" })),
+                )
+            })
+        }
+        SummaryStorageBackend::HiddenRef => db.list_all_session_ids().map_err(|error| {
+            desktop_error(
+                "desktop.runtime_settings_storage_migration_source_query_failed",
+                500,
+                "failed to list sessions for hidden_ref migration",
+                Some(json!({ "cause": error.to_string(), "backend": "hidden_ref" })),
+            )
+        }),
+        SummaryStorageBackend::None => Ok(Vec::new()),
+    }
+}
+
+fn migrate_summary_storage_backend(
+    db: &LocalDb,
+    from_backend: &SummaryStorageBackend,
+    to_backend: &SummaryStorageBackend,
+) -> DesktopApiResult<SummaryStorageMigrationStats> {
+    if from_backend == to_backend
+        || matches!(from_backend, SummaryStorageBackend::None)
+        || matches!(to_backend, SummaryStorageBackend::None)
+    {
+        return Ok(SummaryStorageMigrationStats::default());
+    }
+
+    let session_ids = summary_storage_migration_session_ids(db, from_backend)?;
+    let mut stats = SummaryStorageMigrationStats {
+        scanned_sessions: session_ids.len() as u32,
+        ..SummaryStorageMigrationStats::default()
+    };
+    let mut failure_messages: Vec<String> = Vec::new();
+
+    for session_id in session_ids {
+        let Some(record) = load_summary_storage_record(db, from_backend, &session_id)? else {
+            continue;
+        };
+        stats.found_summaries = stats.found_summaries.saturating_add(1);
+
+        if let Err(error) = persist_summary_storage_record(db, to_backend, &session_id, &record) {
+            stats.failed_summaries = stats.failed_summaries.saturating_add(1);
+            failure_messages.push(format!("{}: {}", session_id, error.message));
+            continue;
+        }
+        stats.migrated_summaries = stats.migrated_summaries.saturating_add(1);
+    }
+
+    if stats.failed_summaries > 0 {
+        let mut details = json!({
+            "from_backend": enum_label(from_backend),
+            "to_backend": enum_label(to_backend),
+            "scanned_sessions": stats.scanned_sessions,
+            "found_summaries": stats.found_summaries,
+            "migrated_summaries": stats.migrated_summaries,
+            "failed_summaries": stats.failed_summaries,
+        });
+        if let Some(object) = details.as_object_mut() {
+            object.insert(
+                "failures".to_string(),
+                serde_json::Value::Array(
+                    failure_messages
+                        .into_iter()
+                        .take(10)
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        return Err(desktop_error(
+            "desktop.runtime_settings_storage_migration_failed",
+            422,
+            "failed to migrate existing summaries to the selected storage backend",
+            Some(details),
+        ));
+    }
+
+    Ok(stats)
 }
 
 fn persist_summary_to_local_db(
@@ -3534,6 +4160,95 @@ fn merge_warnings(primary: Option<String>, secondary: Option<String>) -> Option<
     }
 }
 
+fn request_openai_tts_audio(
+    api_key: &str,
+    model: &str,
+    voice: &str,
+    text: &str,
+) -> DesktopApiResult<Vec<u8>> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.change_reader_tts_client_failed",
+                500,
+                "failed to initialize TTS client",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+
+    let response = client
+        .post("https://api.openai.com/v1/audio/speech")
+        .bearer_auth(api_key)
+        .json(&json!({
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "format": "mp3"
+        }))
+        .send()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.change_reader_tts_request_failed",
+                502,
+                "failed to call OpenAI TTS API",
+                Some(json!({
+                    "cause": error.to_string(),
+                    "hint": "check network connectivity and OpenAI API access"
+                })),
+            )
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+        {
+            return Err(desktop_error(
+                "desktop.change_reader_tts_auth_failed",
+                status.as_u16(),
+                "OpenAI TTS authentication failed",
+                Some(json!({
+                    "hint": "verify Settings > Runtime Summary > Change Reader > Voice API key",
+                    "response": trim_chars(&body, 300),
+                })),
+            ));
+        }
+        return Err(desktop_error(
+            "desktop.change_reader_tts_provider_error",
+            status.as_u16(),
+            "OpenAI TTS API returned an error",
+            Some(json!({
+                "hint": "check configured model/voice and API quota",
+                "response": trim_chars(&body, 300),
+            })),
+        ));
+    }
+
+    let payload = response.bytes().map_err(|error| {
+        desktop_error(
+            "desktop.change_reader_tts_decode_failed",
+            500,
+            "failed to decode TTS audio payload",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+
+    if payload.is_empty() {
+        return Err(desktop_error(
+            "desktop.change_reader_tts_empty_audio",
+            502,
+            "OpenAI TTS returned empty audio",
+            Some(json!({
+                "hint": "try a shorter input text or verify provider status"
+            })),
+        ));
+    }
+
+    Ok(payload.to_vec())
+}
+
 #[tauri::command]
 async fn desktop_read_session_changes(
     request: DesktopChangeReadRequest,
@@ -3663,12 +4378,96 @@ async fn desktop_ask_session_changes(
 }
 
 #[tauri::command]
+fn desktop_change_reader_tts(
+    request: DesktopChangeReaderTtsRequest,
+) -> DesktopApiResult<DesktopChangeReaderTtsResponse> {
+    let mut text = request.text.trim().to_string();
+    if text.is_empty() {
+        return Err(desktop_error(
+            "desktop.change_reader_tts_text_required",
+            400,
+            "text is required for TTS",
+            None,
+        ));
+    }
+
+    let runtime = load_runtime_config()?;
+    if !runtime.change_reader.enabled {
+        return Err(desktop_error(
+            "desktop.change_reader_disabled",
+            422,
+            "change reader is disabled in runtime settings",
+            Some(json!({ "hint": "Enable Change Reader in Settings > Runtime Summary" })),
+        ));
+    }
+    if !runtime.change_reader.voice.enabled {
+        return Err(desktop_error(
+            "desktop.change_reader_tts_disabled",
+            422,
+            "change reader voice is disabled in runtime settings",
+            Some(json!({ "hint": "Enable voice in Settings > Runtime Summary > Change Reader" })),
+        ));
+    }
+
+    let api_key = runtime.change_reader.voice.api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err(desktop_error(
+            "desktop.change_reader_tts_api_key_missing",
+            422,
+            "change reader voice API key is not configured",
+            Some(json!({ "hint": "Set OpenAI API key in Settings > Runtime Summary > Change Reader" })),
+        ));
+    }
+
+    let model = if runtime.change_reader.voice.model.trim().is_empty() {
+        "gpt-4o-mini-tts".to_string()
+    } else {
+        runtime.change_reader.voice.model.trim().to_string()
+    };
+    let voice = if runtime.change_reader.voice.voice.trim().is_empty() {
+        "alloy".to_string()
+    } else {
+        runtime.change_reader.voice.voice.trim().to_string()
+    };
+    if !matches!(
+        runtime.change_reader.voice.provider,
+        ChangeReaderVoiceProvider::Openai
+    ) {
+        return Err(desktop_error(
+            "desktop.change_reader_tts_provider_unsupported",
+            422,
+            "unsupported change reader voice provider",
+            Some(json!({
+                "hint": "Select openai provider in Settings > Runtime Summary > Change Reader"
+            })),
+        ));
+    }
+
+    let mut warning = None;
+    if text.chars().count() > 4_000 {
+        text = text.chars().take(4_000).collect();
+        warning = Some("Input text was truncated to 4000 chars before TTS.".to_string());
+    }
+
+    let audio = request_openai_tts_audio(&api_key, &model, &voice, &text)?;
+    Ok(DesktopChangeReaderTtsResponse {
+        mime_type: "audio/mpeg".to_string(),
+        audio_base64: BASE64_STANDARD.encode(audio),
+        warning,
+    })
+}
+
+#[tauri::command]
 fn desktop_list_sessions(
     query: Option<DesktopSessionListQuery>,
 ) -> DesktopApiResult<SessionListResponse> {
     let db = open_local_db()?;
+    let query = query.unwrap_or_default();
+    if query.force_refresh.unwrap_or(false) {
+        refresh_local_session_index(&db);
+    }
     let (filter, page, per_page, search_mode) =
-        build_local_filter_with_mode(query.unwrap_or_default());
+        build_local_filter_with_mode(query);
 
     if search_mode == SearchMode::Vector {
         let vector_query = filter.search.clone().unwrap_or_default();
@@ -3974,6 +4773,7 @@ fn main() {
             desktop_regenerate_session_summary,
             desktop_read_session_changes,
             desktop_ask_session_changes,
+            desktop_change_reader_tts,
             desktop_take_launch_route,
             desktop_build_handoff,
             desktop_share_session_quick
@@ -3987,18 +4787,24 @@ mod tests {
     use super::{
         artifact_path_for_hash, build_handoff_artifact_record, build_local_filter_with_mode,
         build_vector_chunks_for_session, canonicalize_summaries, cosine_similarity,
-        desktop_ask_session_changes, desktop_get_contract_version, desktop_get_runtime_settings,
+        desktop_ask_session_changes, desktop_change_reader_tts, desktop_get_contract_version,
+        desktop_get_runtime_settings,
         desktop_get_session_detail, desktop_get_session_raw, desktop_list_sessions,
         desktop_read_session_changes, desktop_share_session_quick, desktop_update_runtime_settings,
         desktop_summary_batch_run, desktop_summary_batch_status,
         extract_vector_lines, map_link_type, normalize_launch_route,
+        force_refresh_discovery_tools,
         normalize_session_body_to_hail_jsonl, session_summary_from_local_row, split_search_mode,
-        parse_cli_quick_share_response, validate_pin_alias, DesktopSessionListQuery, SearchMode,
+        parse_cli_quick_share_response, validate_pin_alias, validate_vector_preflight_ready,
+        DesktopSessionListQuery, SearchMode,
     };
     use opensession_api::{
         DesktopChangeQuestionRequest, DesktopChangeReadRequest, DesktopChangeReaderScope,
+        DesktopChangeReaderTtsRequest,
         DesktopQuickShareRequest,
         DesktopRuntimeChangeReaderSettingsUpdate,
+        DesktopRuntimeChangeReaderVoiceSettingsUpdate,
+        DesktopChangeReaderVoiceProvider,
         DesktopRuntimeLifecycleSettingsUpdate,
         DesktopRuntimeSummaryBatchSettingsUpdate,
         DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettingsUpdate,
@@ -4007,14 +4813,19 @@ mod tests {
         DesktopSummaryBatchExecutionMode, DesktopSummaryBatchScope, DesktopSummaryBatchState,
         DesktopSummaryOutputShape, DesktopSummaryProviderId, DesktopSummaryResponseStyle,
         DesktopSummarySourceMode, DesktopSummaryStorageBackend, DesktopSummaryTriggerMode,
+        DesktopVectorInstallState, DesktopVectorPreflightResponse,
+        DesktopVectorSearchProvider,
     };
     use opensession_core::handoff::HandoffSummary;
     use opensession_core::trace::{Agent, Content, Event, EventType, Session as HailSession};
+    use opensession_git_native::{NativeGitStorage, SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF};
     use opensession_local_db::git::GitContext;
     use opensession_local_db::LocalDb;
     use opensession_runtime_config::DaemonConfig;
     use opensession_summary::DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2;
+    use serde_json::json;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -4056,6 +4867,20 @@ mod tests {
         path
     }
 
+    fn init_test_git_repo(path: &Path) {
+        let output = Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .arg(path)
+            .output()
+            .expect("run git init");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn build_test_session(session_id: &str) -> HailSession {
         let mut session = HailSession::new(
             session_id.to_string(),
@@ -4077,6 +4902,35 @@ mod tests {
         });
         session.recompute_stats();
         session
+    }
+
+    fn summary_settings_update_with_backend(
+        backend: DesktopSummaryStorageBackend,
+    ) -> DesktopRuntimeSummarySettingsUpdate {
+        DesktopRuntimeSummarySettingsUpdate {
+            provider: DesktopRuntimeSummaryProviderSettingsUpdate {
+                id: DesktopSummaryProviderId::Disabled,
+                endpoint: String::new(),
+                model: String::new(),
+            },
+            prompt: DesktopRuntimeSummaryPromptSettingsUpdate {
+                template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2.to_string(),
+            },
+            response: DesktopRuntimeSummaryResponseSettingsUpdate {
+                style: DesktopSummaryResponseStyle::Standard,
+                shape: DesktopSummaryOutputShape::Layered,
+            },
+            storage: DesktopRuntimeSummaryStorageSettingsUpdate {
+                trigger: DesktopSummaryTriggerMode::OnSessionSave,
+                backend,
+            },
+            source_mode: DesktopSummarySourceMode::SessionOnly,
+            batch: DesktopRuntimeSummaryBatchSettingsUpdate {
+                execution_mode: DesktopSummaryBatchExecutionMode::Manual,
+                scope: DesktopSummaryBatchScope::All,
+                recent_days: 30,
+            },
+        }
     }
 
     fn sample_row() -> opensession_local_db::LocalSessionRow {
@@ -4127,6 +4981,7 @@ mod tests {
         assert_eq!(mode, SearchMode::Keyword);
         assert_eq!(filter.limit, Some(20));
         assert_eq!(filter.offset, Some(0));
+        assert!(filter.exclude_low_signal);
     }
 
     #[test]
@@ -4140,6 +4995,7 @@ mod tests {
                 git_repo_name: Some("org/repo".to_string()),
                 sort: Some("popular".to_string()),
                 time_range: Some("7d".to_string()),
+                force_refresh: None,
             });
         assert_eq!(page, 2);
         assert_eq!(per_page, 30);
@@ -4172,6 +5028,153 @@ mod tests {
         assert_eq!(per_page, 20);
         assert_eq!(mode, SearchMode::Vector);
         assert_eq!(filter.search.as_deref(), Some("paging bug"));
+    }
+
+    #[test]
+    fn desktop_list_sessions_hides_low_signal_metadata_only_rows() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_root = unique_temp_dir("opensession-desktop-low-signal-filter");
+        let db_path = temp_root.join("local.db");
+        let source_path = temp_root
+            .join(".claude")
+            .join("projects")
+            .join("fixture")
+            .join("metadata-only.jsonl");
+        let _db_env = EnvVarGuard::set("OPENSESSION_LOCAL_DB_PATH", db_path.as_os_str());
+
+        std::fs::create_dir_all(
+            source_path
+                .parent()
+                .expect("metadata-only source parent must exist"),
+        )
+        .expect("create metadata-only source dir");
+        std::fs::write(&source_path, r#"{"type":"file-history-snapshot","files":[]}"#)
+            .expect("write metadata-only source fixture");
+
+        let session = HailSession::new(
+            "metadata-only-session".to_string(),
+            Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-3-5-sonnet".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        let db = LocalDb::open_path(&db_path).expect("open isolated local db");
+        db.upsert_local_session(
+            &session,
+            source_path
+                .to_str()
+                .expect("metadata-only source path must be valid utf-8"),
+            &GitContext::default(),
+        )
+        .expect("upsert metadata-only local session");
+
+        let listed = desktop_list_sessions(None).expect("list sessions");
+        assert!(
+            !listed
+                .sessions
+                .iter()
+                .any(|row| row.id == "metadata-only-session"),
+            "metadata-only sessions must be excluded from the default desktop session list",
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn desktop_list_sessions_force_refresh_reindexes_discovered_sessions() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-force-refresh-home");
+        let temp_db = unique_temp_dir("opensession-desktop-force-refresh-db");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+        let _codex_home_env = EnvVarGuard::set("CODEX_HOME", temp_home.join(".codex").as_os_str());
+        let _db_env = EnvVarGuard::set(
+            "OPENSESSION_LOCAL_DB_PATH",
+            temp_db.join("local.db").as_os_str(),
+        );
+
+        let session_jsonl = [
+            r#"{"timestamp":"2026-03-05T00:00:00.097Z","type":"session_meta","payload":{"id":"force-refresh-session","timestamp":"2026-03-05T00:00:00.075Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.94.0"}}"#,
+            r#"{"timestamp":"2026-03-05T00:00:00.119Z","type":"event_msg","payload":{"type":"user_message","message":"force refresh regression fixture"}}"#,
+            r#"{"timestamp":"2026-03-05T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
+        ]
+        .join("\n");
+        let discovered_path = temp_home
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("05")
+            .join("rollout-force-refresh-session.jsonl");
+        std::fs::create_dir_all(
+            discovered_path
+                .parent()
+                .expect("session discovery parent must exist"),
+        )
+        .expect("create session discovery dir");
+        std::fs::write(&discovered_path, session_jsonl).expect("write discovered session");
+
+        let before = desktop_list_sessions(None).expect("list sessions before force refresh");
+        assert!(
+            !before
+                .sessions
+                .iter()
+                .any(|row| row.id == "force-refresh-session"),
+            "session should not exist in DB before force refresh reindex"
+        );
+
+        let after = desktop_list_sessions(Some(DesktopSessionListQuery {
+            force_refresh: Some(true),
+            ..DesktopSessionListQuery::default()
+        }))
+        .expect("list sessions after force refresh");
+        assert!(
+            after
+                .sessions
+                .iter()
+                .any(|row| row.id == "force-refresh-session"),
+            "force refresh should reindex discovered session"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+        let _ = std::fs::remove_dir_all(&temp_db);
+    }
+
+    #[test]
+    fn force_refresh_discovery_tools_skip_cursor_for_fast_path() {
+        let tools = force_refresh_discovery_tools();
+        assert!(tools.contains(&"codex"));
+        assert!(!tools.contains(&"cursor"));
+    }
+
+    fn ready_vector_preflight_fixture() -> DesktopVectorPreflightResponse {
+        DesktopVectorPreflightResponse {
+            provider: DesktopVectorSearchProvider::Ollama,
+            endpoint: "http://127.0.0.1:11434".to_string(),
+            model: "bge-m3".to_string(),
+            ollama_reachable: true,
+            model_installed: true,
+            install_state: DesktopVectorInstallState::Ready,
+            progress_pct: 100,
+            message: Some("model is installed and ready".to_string()),
+        }
+    }
+
+    #[test]
+    fn validate_vector_preflight_allows_rebuild_when_vector_disabled() {
+        let preflight = ready_vector_preflight_fixture();
+        let result = validate_vector_preflight_ready(&preflight, false, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_vector_preflight_requires_enabled_for_search_path() {
+        let preflight = ready_vector_preflight_fixture();
+        let err = validate_vector_preflight_ready(&preflight, false, true)
+            .expect_err("search path should require vector enabled");
+        assert_eq!(err.code, "desktop.vector_search_disabled");
+        assert_eq!(err.status, 422);
     }
 
     #[test]
@@ -4216,6 +5219,7 @@ mod tests {
             attributes: std::collections::HashMap::new(),
         });
         let mut runtime = DaemonConfig::default();
+        runtime.vector_search.chunking_mode = opensession_runtime_config::VectorChunkingMode::Manual;
         runtime.vector_search.chunk_size_lines = 2;
         runtime.vector_search.chunk_overlap_lines = 1;
         let chunks = build_vector_chunks_for_session(&session, "source-hash", &runtime);
@@ -4223,6 +5227,24 @@ mod tests {
         assert_eq!(chunks[0].start_line, 1);
         assert_eq!(chunks[0].end_line, 2);
         assert_eq!(chunks[1].start_line, 2);
+    }
+
+    #[test]
+    fn build_vector_chunks_auto_tunes_for_small_session() {
+        let mut session = build_test_session("vector-chunks-auto");
+        session.events.push(Event {
+            event_id: "evt-auto".to_string(),
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::AgentMessage,
+            task_id: None,
+            content: Content::text("a\nb\nc\nd\ne\nf"),
+            duration_ms: None,
+            attributes: std::collections::HashMap::new(),
+        });
+        let runtime = DaemonConfig::default();
+        let chunks = build_vector_chunks_for_session(&session, "source-hash", &runtime);
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[0].end_line, 7);
     }
 
     #[test]
@@ -4287,6 +5309,40 @@ mod tests {
         assert_eq!(parsed.session_id, "claude-1");
         assert_eq!(parsed.agent.tool, "claude-code");
         assert!(!parsed.events.is_empty());
+    }
+
+    #[test]
+    fn normalize_session_body_prefers_source_path_parser_over_extension_fallback() {
+        let temp_root = unique_temp_dir("opensession-desktop-normalize-source-path");
+        let source_path = temp_root
+            .join(".claude")
+            .join("projects")
+            .join("fixture")
+            .join("f0639ede-3aac-4f67-a979-b175ea5f9557.jsonl");
+        std::fs::create_dir_all(
+            source_path
+                .parent()
+                .expect("claude fixture parent directory must exist"),
+        )
+        .expect("create claude fixture directory");
+
+        let snapshot_only = r#"{"type":"file-history-snapshot","files":[]}"#;
+        std::fs::write(&source_path, snapshot_only).expect("write claude snapshot fixture");
+
+        let normalized = normalize_session_body_to_hail_jsonl(
+            snapshot_only,
+            Some(
+                source_path
+                    .to_str()
+                    .expect("fixture source path must be valid utf-8"),
+            ),
+        )
+        .expect("source-path parser should normalize claude snapshot fixture");
+        let parsed = HailSession::from_jsonl(&normalized).expect("must be valid hail");
+        assert_eq!(parsed.agent.tool, "claude-code");
+        assert_eq!(parsed.session_id, "f0639ede-3aac-4f67-a979-b175ea5f9557");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
@@ -4457,6 +5513,13 @@ mod tests {
                 scope: DesktopChangeReaderScope::FullContext,
                 qa_enabled: true,
                 max_context_chars: 18_000,
+                voice: DesktopRuntimeChangeReaderVoiceSettingsUpdate {
+                    enabled: true,
+                    provider: DesktopChangeReaderVoiceProvider::Openai,
+                    model: "gpt-4o-mini-tts".to_string(),
+                    voice: "alloy".to_string(),
+                    api_key: Some("sk-test-key".to_string()),
+                },
             }),
             lifecycle: Some(DesktopRuntimeLifecycleSettingsUpdate {
                 enabled: true,
@@ -4497,12 +5560,197 @@ mod tests {
         assert_eq!(loaded.change_reader.scope, DesktopChangeReaderScope::FullContext);
         assert!(loaded.change_reader.qa_enabled);
         assert_eq!(loaded.change_reader.max_context_chars, 18_000);
+        assert!(loaded.change_reader.voice.enabled);
+        assert_eq!(
+            loaded.change_reader.voice.provider,
+            DesktopChangeReaderVoiceProvider::Openai
+        );
+        assert_eq!(loaded.change_reader.voice.model, "gpt-4o-mini-tts");
+        assert_eq!(loaded.change_reader.voice.voice, "alloy");
+        assert!(loaded.change_reader.voice.api_key_configured);
         assert!(loaded.lifecycle.enabled);
         assert_eq!(loaded.lifecycle.session_ttl_days, 45);
         assert_eq!(loaded.lifecycle.summary_ttl_days, 60);
         assert_eq!(loaded.lifecycle.cleanup_interval_secs, 120);
 
         let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_runtime_settings_migrates_summary_storage_local_db_to_hidden_ref() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-runtime-migrate-home");
+        let temp_db = unique_temp_dir("opensession-desktop-runtime-migrate-db");
+        let repo_root = unique_temp_dir("opensession-desktop-runtime-migrate-repo");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+        let _db_env = EnvVarGuard::set(
+            "OPENSESSION_LOCAL_DB_PATH",
+            temp_db.join("local.db").as_os_str(),
+        );
+        init_test_git_repo(&repo_root);
+
+        let db = LocalDb::open_path(&temp_db.join("local.db")).expect("open local db");
+        let mut session = build_test_session("storage-migrate-local-to-hidden");
+        session
+            .context
+            .attributes
+            .insert("cwd".to_string(), json!(repo_root.to_string_lossy().to_string()));
+        let source_path = repo_root.join("storage-migrate-local-to-hidden.hail.jsonl");
+        std::fs::write(
+            &source_path,
+            session.to_jsonl().expect("serialize session jsonl"),
+        )
+        .expect("write session source");
+        db.upsert_local_session(
+            &session,
+            source_path
+                .to_str()
+                .expect("session source path must be valid utf-8"),
+            &GitContext::default(),
+        )
+        .expect("upsert local session");
+        db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
+            session_id: "storage-migrate-local-to-hidden",
+            summary_json: r#"{"changes":"migrated","auth_security":"none detected","layer_file_changes":[]}"#,
+            generated_at: "2026-03-05T10:00:00Z",
+            provider: "codex_exec",
+            model: Some("gpt-5"),
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: Some("migrate-fingerprint"),
+            source_details_json: Some(r#"{"source":"session"}"#),
+            diff_tree_json: Some(r#"[]"#),
+            error: None,
+        })
+        .expect("insert local summary");
+
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(summary_settings_update_with_backend(
+                DesktopSummaryStorageBackend::LocalDb,
+            )),
+            vector_search: None,
+            change_reader: None,
+            lifecycle: None,
+        })
+        .expect("set summary backend to local_db");
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(summary_settings_update_with_backend(
+                DesktopSummaryStorageBackend::HiddenRef,
+            )),
+            vector_search: None,
+            change_reader: None,
+            lifecycle: None,
+        })
+        .expect("switch summary backend to hidden_ref");
+
+        let migrated = NativeGitStorage
+            .load_summary_at_ref(
+                &repo_root,
+                SUMMARY_LEDGER_REF,
+                "storage-migrate-local-to-hidden",
+            )
+            .expect("load migrated hidden_ref summary")
+            .expect("migrated hidden_ref summary should exist");
+        assert_eq!(migrated.provider, "codex_exec");
+        assert_eq!(migrated.summary["changes"], "migrated");
+        assert_eq!(migrated.model.as_deref(), Some("gpt-5"));
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+        let _ = std::fs::remove_dir_all(&temp_db);
+        let _ = std::fs::remove_dir_all(&repo_root);
+    }
+
+    #[test]
+    fn desktop_runtime_settings_migrates_summary_storage_hidden_ref_to_local_db() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-runtime-migrate-hidden-home");
+        let temp_db = unique_temp_dir("opensession-desktop-runtime-migrate-hidden-db");
+        let repo_root = unique_temp_dir("opensession-desktop-runtime-migrate-hidden-repo");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+        let _db_env = EnvVarGuard::set(
+            "OPENSESSION_LOCAL_DB_PATH",
+            temp_db.join("local.db").as_os_str(),
+        );
+        init_test_git_repo(&repo_root);
+
+        let db = LocalDb::open_path(&temp_db.join("local.db")).expect("open local db");
+        let mut session = build_test_session("storage-migrate-hidden-to-local");
+        session
+            .context
+            .attributes
+            .insert("cwd".to_string(), json!(repo_root.to_string_lossy().to_string()));
+        let source_path = repo_root.join("storage-migrate-hidden-to-local.hail.jsonl");
+        std::fs::write(
+            &source_path,
+            session.to_jsonl().expect("serialize session jsonl"),
+        )
+        .expect("write session source");
+        db.upsert_local_session(
+            &session,
+            source_path
+                .to_str()
+                .expect("session source path must be valid utf-8"),
+            &GitContext::default(),
+        )
+        .expect("upsert local session");
+
+        let hidden_record = SessionSummaryLedgerRecord {
+            session_id: "storage-migrate-hidden-to-local".to_string(),
+            generated_at: "2026-03-05T11:00:00Z".to_string(),
+            provider: "codex_exec".to_string(),
+            model: Some("gpt-5".to_string()),
+            source_kind: "session_signals".to_string(),
+            generation_kind: "provider".to_string(),
+            prompt_fingerprint: Some("hidden-fingerprint".to_string()),
+            summary: json!({
+                "changes": "from-hidden",
+                "auth_security": "none detected",
+                "layer_file_changes": []
+            }),
+            source_details: json!({ "source": "hidden_ref" }),
+            diff_tree: Vec::new(),
+            error: None,
+        };
+        NativeGitStorage
+            .store_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &hidden_record)
+            .expect("store hidden_ref summary");
+
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(summary_settings_update_with_backend(
+                DesktopSummaryStorageBackend::HiddenRef,
+            )),
+            vector_search: None,
+            change_reader: None,
+            lifecycle: None,
+        })
+        .expect("set summary backend to hidden_ref");
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(summary_settings_update_with_backend(
+                DesktopSummaryStorageBackend::LocalDb,
+            )),
+            vector_search: None,
+            change_reader: None,
+            lifecycle: None,
+        })
+        .expect("switch summary backend to local_db");
+
+        let migrated = db
+            .get_session_semantic_summary("storage-migrate-hidden-to-local")
+            .expect("read migrated local summary")
+            .expect("migrated local summary should exist");
+        assert_eq!(migrated.provider, "codex_exec");
+        let migrated_summary: serde_json::Value =
+            serde_json::from_str(&migrated.summary_json).expect("parse migrated summary");
+        assert_eq!(migrated_summary["changes"], "from-hidden");
+        assert_eq!(migrated.model.as_deref(), Some("gpt-5"));
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+        let _ = std::fs::remove_dir_all(&temp_db);
+        let _ = std::fs::remove_dir_all(&repo_root);
     }
 
     #[test]
@@ -4814,6 +6062,13 @@ mod tests {
                 scope: DesktopChangeReaderScope::SummaryOnly,
                 qa_enabled: false,
                 max_context_chars: 12_000,
+                voice: DesktopRuntimeChangeReaderVoiceSettingsUpdate {
+                    enabled: false,
+                    provider: DesktopChangeReaderVoiceProvider::Openai,
+                    model: "gpt-4o-mini-tts".to_string(),
+                    voice: "alloy".to_string(),
+                    api_key: None,
+                },
             }),
             lifecycle: None,
         })
@@ -4829,6 +6084,45 @@ mod tests {
         let error = result.expect_err("qa disabled should fail");
         assert_eq!(error.status, 422);
         assert_eq!(error.code, "desktop.change_reader_qa_disabled");
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_change_reader_tts_requires_voice_enable() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-change-reader-tts-disabled");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: None,
+            vector_search: None,
+            change_reader: Some(DesktopRuntimeChangeReaderSettingsUpdate {
+                enabled: true,
+                scope: DesktopChangeReaderScope::SummaryOnly,
+                qa_enabled: true,
+                max_context_chars: 12_000,
+                voice: DesktopRuntimeChangeReaderVoiceSettingsUpdate {
+                    enabled: false,
+                    provider: DesktopChangeReaderVoiceProvider::Openai,
+                    model: "gpt-4o-mini-tts".to_string(),
+                    voice: "alloy".to_string(),
+                    api_key: None,
+                },
+            }),
+            lifecycle: None,
+        })
+        .expect("enable change reader with voice disabled");
+
+        let result = desktop_change_reader_tts(DesktopChangeReaderTtsRequest {
+            text: "변경 내용을 읽어줘".to_string(),
+            session_id: None,
+            scope: None,
+        });
+        let error = result.expect_err("voice disabled should fail");
+        assert_eq!(error.status, 422);
+        assert_eq!(error.code, "desktop.change_reader_tts_disabled");
 
         let _ = std::fs::remove_dir_all(&temp_home);
     }

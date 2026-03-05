@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "99c97bfb477a8d1fe6d6fcde7db4bc85d229cd1b"
+    ],
+    "head": "99c97bfb477a8d1fe6d6fcde7db4bc85d229cd1b",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "claude-opus-4-6",
+  "schema_version": 2,
+  "session_id": "f9f38ea1-5099-45cb-a1f9-9d5865fb8e9b",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 846,
+    "event_count": 354,
+    "files_changed": 4,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 58,
+    "task_count": 1,
+    "tool_call_count": 77,
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "user_message_count": 4
+  },
+  "title": "[Request interrupted by user for tool use]",
+  "tool": "claude-code"
+}

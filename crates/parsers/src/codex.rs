@@ -175,6 +175,14 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
         // structure as legacy flat entries (message, reasoning, function_call, etc.)
         if top_type == "response_item" {
             if let Some(payload) = obj.get("payload") {
+                if payload.get("type").and_then(|v| v.as_str()) == Some("message")
+                    && payload.get("role").and_then(|v| v.as_str()) == Some("user")
+                    && looks_like_summary_batch_prompt(&extract_message_text_blocks(
+                        payload.get("content"),
+                    ))
+                {
+                    is_auxiliary_session = true;
+                }
                 // In Desktop format, response_item/message/role=user includes
                 // system-injected content (AGENTS.md, env context). The real user
                 // message comes from event_msg/user_message, so skip first_user_text
@@ -208,6 +216,9 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
                     "user_message" => {
                         if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
                             let text = msg.trim().to_string();
+                            if looks_like_summary_batch_prompt(&text) {
+                                is_auxiliary_session = true;
+                            }
                             if text.is_empty() || looks_like_injected_codex_user_text(&text) {
                                 continue;
                             }
@@ -606,6 +617,12 @@ fn parse_codex_jsonl(path: &Path) -> Result<Session> {
             "originator".to_string(),
             serde_json::Value::String(orig.clone()),
         );
+    }
+    if first_user_text
+        .as_deref()
+        .is_some_and(looks_like_summary_batch_prompt)
+    {
+        is_auxiliary_session = true;
     }
     let mut related_session_ids = Vec::new();
     if is_auxiliary_session {
@@ -1853,6 +1870,10 @@ fn looks_like_injected_codex_user_text(text: &str) -> bool {
         return false;
     }
 
+    if looks_like_summary_batch_prompt(trimmed) {
+        return true;
+    }
+
     let lower = trimmed.to_ascii_lowercase();
 
     if lower.contains("apply_patch was requested via exec_command")
@@ -1873,6 +1894,17 @@ fn looks_like_injected_codex_user_text(text: &str) -> bool {
         || lower.contains("subagent_notification>")
         || lower.contains("<turn_aborted>")
         || lower.contains("</turn_aborted>")
+}
+
+fn looks_like_summary_batch_prompt(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("convert a real coding session into semantic compression.")
+        && lower.contains("pipeline: session -> hail compact -> semantic summary")
+        && lower.contains("hail_compact=")
 }
 
 fn codex_desktop_parent_session_id(payload: &serde_json::Value) -> Option<String> {
@@ -2699,6 +2731,37 @@ provider = "anthropic"
                 .get(ATTR_SESSION_ROLE)
                 .and_then(|value| value.as_str()),
             Some("auxiliary")
+        );
+        assert!(opensession_core::session::is_auxiliary_session(&session));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_summary_batch_prompt_marks_session_auxiliary() {
+        let lines = [
+            r#"{"timestamp":"2026-03-05T02:06:54.719Z","type":"session_meta","payload":{"id":"desktop-summary-worker","timestamp":"2026-03-05T02:06:54.649Z","cwd":"/tmp","originator":"Codex Desktop","cli_version":"0.104.0","source":"exec"}}"#,
+            r#"{"timestamp":"2026-03-05T02:06:54.721Z","type":"event_msg","payload":{"type":"user_message","message":"Convert a real coding session into semantic compression.\nPipeline: session -> HAIL compact -> semantic summary.\nHAIL_COMPACT={\"session\":{\"id\":\"s1\"}}"}}"#,
+            r#"{"timestamp":"2026-03-05T02:07:01.792Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"changes\":\"none\"}"}],"phase":"final_answer"}}"#,
+        ];
+
+        let dir = std::env::temp_dir().join("codex_desktop_summary_worker_auxiliary_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rollout-test.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let session = parse_codex_jsonl(&path).unwrap();
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get(ATTR_SESSION_ROLE)
+                .and_then(|value| value.as_str()),
+            Some("auxiliary")
+        );
+        assert!(
+            session.context.title.is_none(),
+            "summary worker prompt should be excluded from visible title"
         );
         assert!(opensession_core::session::is_auxiliary_session(&session));
 

@@ -611,6 +611,23 @@ fn store_locally(
     };
 
     db.upsert_local_session(&local_session, &path_str, &local_git)?;
+    // Keep original source bytes so summary/vector rebuild can survive source-file cleanup.
+    match std::fs::read(path) {
+        Ok(body) => {
+            if let Err(error) = db.cache_body(&session.session_id, &body) {
+                warn!(
+                    "Failed to cache source body for session {}: {}",
+                    session.session_id, error
+                );
+            }
+        }
+        Err(error) => {
+            warn!(
+                "Failed to read source file for session {} while caching body: {}",
+                session.session_id, error
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1343,6 +1360,27 @@ mod tests {
             .expect("query compressed")
             .expect("compressed session exists");
         assert_eq!(stored_compressed.event_count, 1);
+    }
+
+    #[test]
+    fn test_store_locally_caches_source_body() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = PathBuf::from(tmp.path()).join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+        let session = make_interaction_fixture_session("store-cache");
+        let source_path = PathBuf::from(tmp.path()).join("store-cache.jsonl");
+        let source_body = b"{\"source\":\"fixture\"}\n".to_vec();
+        std::fs::write(&source_path, &source_body).expect("write source fixture");
+
+        let mut config = DaemonConfig::default();
+        config.daemon.session_default_view = SessionDefaultView::Full;
+        store_locally(&session, &source_path, &db, &config).expect("store cached session");
+
+        let cached = db
+            .get_cached_body("store-cache")
+            .expect("query body cache")
+            .expect("cache row should exist");
+        assert_eq!(cached, source_body);
     }
 
     #[tokio::test]

@@ -1300,6 +1300,13 @@ fn set_summary_batch_job_snapshot(db: &LocalDb, payload: SummaryBatchJobRow) -> 
     })
 }
 
+fn is_summary_batch_skippable_error(error: &DesktopApiError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "desktop.session_source_unavailable" | "desktop.session_body_not_found"
+    )
+}
+
 fn summary_batch_session_ids_for_scope(
     db: &LocalDb,
     scope: &RuntimeSummaryBatchScope,
@@ -1772,16 +1779,15 @@ fn normalize_session_body_to_hail_jsonl(
     session_to_hail_jsonl(preview.session)
 }
 
-fn read_and_normalize_source_session(source_path: &str) -> DesktopApiResult<String> {
-    let body = std::fs::read_to_string(source_path).map_err(|error| {
+fn read_source_session_text(source_path: &str) -> DesktopApiResult<String> {
+    std::fs::read_to_string(source_path).map_err(|error| {
         desktop_error(
             "desktop.session_source_unavailable",
             404,
             format!("session source file is unavailable ({source_path})"),
             Some(json!({ "cause": error.to_string(), "source_path": source_path })),
         )
-    })?;
-    normalize_session_body_to_hail_jsonl(&body, Some(source_path))
+    })
 }
 
 fn load_normalized_session_body(db: &LocalDb, session_id: &str) -> DesktopApiResult<String> {
@@ -1821,7 +1827,14 @@ fn load_normalized_session_body(db: &LocalDb, session_id: &str) -> DesktopApiRes
     }
 
     if let Some(source_path) = source_path {
-        return read_and_normalize_source_session(&source_path);
+        let source_body = read_source_session_text(&source_path)?;
+        let normalized = normalize_session_body_to_hail_jsonl(&source_body, Some(&source_path))?;
+        if let Err(error) = db.cache_body(session_id, source_body.as_bytes()) {
+            eprintln!(
+                "failed to cache normalized session source for {session_id}: {error}"
+            );
+        }
+        return Ok(normalized);
     }
 
     Err(desktop_error(
@@ -2904,6 +2917,7 @@ fn run_summary_batch_for_runtime(
 
             let mut processed_sessions = 0u32;
             let mut failed_sessions = 0u32;
+            let mut skipped_sessions = 0u32;
             for session_id in session_ids {
                 set_summary_batch_job_snapshot(
                     &db,
@@ -2924,8 +2938,13 @@ fn run_summary_batch_for_runtime(
                 if let Err(error) =
                     generated.and_then(|artifact| persist_summary_for_runtime(&db, &runtime, &session_id, &artifact))
                 {
-                    failed_sessions = failed_sessions.saturating_add(1);
-                    eprintln!("summary batch: failed to process {session_id}: {}", error.message);
+                    if is_summary_batch_skippable_error(&error) {
+                        skipped_sessions = skipped_sessions.saturating_add(1);
+                        eprintln!("summary batch: skipped {session_id}: {}", error.message);
+                    } else {
+                        failed_sessions = failed_sessions.saturating_add(1);
+                        eprintln!("summary batch: failed to process {session_id}: {}", error.message);
+                    }
                 }
 
                 processed_sessions = processed_sessions.saturating_add(1);
@@ -2951,9 +2970,19 @@ fn run_summary_batch_for_runtime(
                 "complete"
             };
             let message = if failed_sessions > 0 {
-                format!("summary batch finished with {failed_sessions} failures")
+                if skipped_sessions > 0 {
+                    format!(
+                        "summary batch finished with {failed_sessions} failures ({skipped_sessions} skipped missing sources)"
+                    )
+                } else {
+                    format!("summary batch finished with {failed_sessions} failures")
+                }
             } else {
-                "summary batch complete".to_string()
+                if skipped_sessions > 0 {
+                    format!("summary batch complete ({skipped_sessions} skipped missing sources)")
+                } else {
+                    "summary batch complete".to_string()
+                }
             };
             set_summary_batch_job_snapshot(
                 &db,
@@ -4658,6 +4687,94 @@ mod tests {
         assert_eq!(final_state.total_sessions, 0);
         assert_eq!(final_state.processed_sessions, 0);
         assert_eq!(final_state.failed_sessions, 0);
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+        let _ = std::fs::remove_dir_all(&temp_db);
+    }
+
+    #[test]
+    fn desktop_summary_batch_skips_sessions_with_missing_source_files() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-summary-batch-skip-home");
+        let temp_db = unique_temp_dir("opensession-desktop-summary-batch-skip-db");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+        let _db_env = EnvVarGuard::set(
+            "OPENSESSION_LOCAL_DB_PATH",
+            temp_db.join("local.db").as_os_str(),
+        );
+
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(DesktopRuntimeSummarySettingsUpdate {
+                provider: DesktopRuntimeSummaryProviderSettingsUpdate {
+                    id: DesktopSummaryProviderId::Disabled,
+                    endpoint: String::new(),
+                    model: String::new(),
+                },
+                prompt: DesktopRuntimeSummaryPromptSettingsUpdate {
+                    template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2.to_string(),
+                },
+                response: DesktopRuntimeSummaryResponseSettingsUpdate {
+                    style: DesktopSummaryResponseStyle::Standard,
+                    shape: DesktopSummaryOutputShape::Layered,
+                },
+                storage: DesktopRuntimeSummaryStorageSettingsUpdate {
+                    trigger: DesktopSummaryTriggerMode::Manual,
+                    backend: DesktopSummaryStorageBackend::None,
+                },
+                source_mode: DesktopSummarySourceMode::SessionOnly,
+                batch: DesktopRuntimeSummaryBatchSettingsUpdate {
+                    execution_mode: DesktopSummaryBatchExecutionMode::Manual,
+                    scope: DesktopSummaryBatchScope::All,
+                    recent_days: 30,
+                },
+            }),
+            vector_search: None,
+            change_reader: None,
+            lifecycle: None,
+        })
+        .expect("set summary batch config");
+
+        let db = LocalDb::open_path(&temp_db.join("local.db")).expect("open local db");
+        let session = build_test_session("missing-source-session");
+        let missing_source = temp_db.join("missing-source-session.jsonl");
+        db.upsert_local_session(
+            &session,
+            missing_source
+                .to_str()
+                .expect("missing source path must be valid utf-8"),
+            &GitContext::default(),
+        )
+        .expect("upsert local session with missing source path");
+
+        let started = desktop_summary_batch_run().expect("start summary batch");
+        assert!(
+            matches!(
+                started.state,
+                DesktopSummaryBatchState::Running | DesktopSummaryBatchState::Complete
+            ),
+            "initial state should be running or complete"
+        );
+
+        let mut final_state = started;
+        for _ in 0..40 {
+            final_state = desktop_summary_batch_status().expect("read batch status");
+            if !matches!(final_state.state, DesktopSummaryBatchState::Running) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        assert_eq!(final_state.state, DesktopSummaryBatchState::Complete);
+        assert_eq!(final_state.total_sessions, 1);
+        assert_eq!(final_state.processed_sessions, 1);
+        assert_eq!(final_state.failed_sessions, 0);
+        assert!(
+            final_state
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("skipped missing sources"))
+        );
 
         let _ = std::fs::remove_dir_all(&temp_home);
         let _ = std::fs::remove_dir_all(&temp_db);

@@ -5,6 +5,9 @@ import type {
 	DesktopContractVersionResponse,
 	DesktopHandoffBuildRequest,
 	DesktopHandoffBuildResponse,
+	DesktopChangeQuestionResponse,
+	DesktopChangeReadResponse,
+	DesktopChangeReaderScope,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
 	DesktopVectorIndexStatusResponse,
@@ -32,7 +35,7 @@ export type SessionListParams = {
 
 export type DesktopInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
-export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v3';
+export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v4';
 
 type ErrorDetails = Record<string, unknown> | null;
 
@@ -55,6 +58,15 @@ export interface SessionReadAdapter {
 	getSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	regenerateSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
+	readSessionChanges(
+		sessionId: string,
+		scope?: DesktopChangeReaderScope | null,
+	): Promise<DesktopChangeReadResponse>;
+	askSessionChanges(
+		sessionId: string,
+		question: string,
+		scope?: DesktopChangeReaderScope | null,
+	): Promise<DesktopChangeQuestionResponse>;
 	getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse>;
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
@@ -260,6 +272,26 @@ export function createWebSessionReadAdapter(args: {
 				}),
 			);
 		},
+		async readSessionChanges() {
+			throw new SessionAdapterError(
+				'desktop_change_reader_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_change_reader_unsupported',
+					message: 'Change reader is available only in desktop runtime.',
+				}),
+			);
+		},
+		async askSessionChanges() {
+			throw new SessionAdapterError(
+				'desktop_change_reader_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_change_reader_unsupported',
+					message: 'Change reader Q&A is available only in desktop runtime.',
+				}),
+			);
+		},
 		async getRuntimeSettings() {
 			throw new SessionAdapterError(
 				'desktop_runtime_settings_unsupported',
@@ -450,6 +482,29 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 				request,
 			});
 		},
+		async readSessionChanges(sessionId, scope) {
+			return invokeAfterContractCheck<DesktopChangeReadResponse>(
+				'desktop_read_session_changes',
+				{
+					request: {
+						session_id: sessionId,
+						scope: scope ?? null,
+					},
+				},
+			);
+		},
+		async askSessionChanges(sessionId, question, scope) {
+			return invokeAfterContractCheck<DesktopChangeQuestionResponse>(
+				'desktop_ask_session_changes',
+				{
+					request: {
+						session_id: sessionId,
+						question,
+						scope: scope ?? null,
+					},
+				},
+			);
+		},
 		async getRuntimeSettings() {
 			return invokeAfterContractCheck<DesktopRuntimeSettingsResponse>(
 				'desktop_get_runtime_settings',
@@ -526,6 +581,12 @@ export function createUnavailableDesktopSessionReadAdapter(): SessionReadAdapter
 			throw desktopBridgeUnavailableError();
 		},
 		async buildHandoff() {
+			throw desktopBridgeUnavailableError();
+		},
+		async readSessionChanges() {
+			throw desktopBridgeUnavailableError();
+		},
+		async askSessionChanges() {
 			throw desktopBridgeUnavailableError();
 		},
 		async getRuntimeSettings() {

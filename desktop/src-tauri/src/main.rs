@@ -3,8 +3,11 @@
 use opensession_api::{
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
     CapabilitiesResponse, DesktopApiError, DesktopContractVersionResponse,
+    DesktopChangeQuestionRequest, DesktopChangeQuestionResponse, DesktopChangeReadRequest,
+    DesktopChangeReadResponse, DesktopChangeReaderScope,
     DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopRuntimeSettingsResponse,
-    DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettings,
+    DesktopRuntimeChangeReaderSettings, DesktopRuntimeSettingsUpdateRequest,
+    DesktopRuntimeSummaryPromptSettings,
     DesktopRuntimeSummaryProviderSettings, DesktopRuntimeSummaryResponseSettings,
     DesktopRuntimeSummarySettings, DesktopRuntimeSummaryStorageSettings,
     DesktopRuntimeSummaryUiConstraints, DesktopRuntimeVectorSearchSettings,
@@ -24,7 +27,7 @@ use opensession_core::object_store::{
 };
 use opensession_core::session::working_directory;
 use opensession_core::source_uri::SourceUri;
-use opensession_core::trace::Session as HailSession;
+use opensession_core::trace::{ContentBlock, EventType, Session as HailSession};
 use opensession_git_native::{
     extract_git_context, ops::find_repo_root as find_git_repo_root, NativeGitStorage,
     SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
@@ -35,11 +38,14 @@ use opensession_local_db::{
 };
 use opensession_parsers::ingest::preview_parse_bytes;
 use opensession_runtime_config::{
-    DaemonConfig, SessionDefaultView, SummaryOutputShape, SummaryProvider, SummaryResponseStyle,
-    SummarySourceMode, SummaryStorageBackend, SummaryTriggerMode, VectorSearchGranularity,
+    ChangeReaderScope, DaemonConfig, SessionDefaultView, SummaryOutputShape, SummaryProvider,
+    SummaryResponseStyle, SummarySourceMode, SummaryStorageBackend, SummaryTriggerMode,
+    VectorSearchGranularity,
     VectorSearchProvider,
 };
-use opensession_summary::{summarize_session, validate_summary_prompt_template, GitSummaryRequest};
+use opensession_summary::{
+    provider::generate_text, summarize_session, validate_summary_prompt_template, GitSummaryRequest,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
@@ -55,6 +61,8 @@ const HANDOFF_RECORD_VERSION: &str = "v1";
 const HANDOFF_LATEST_PIN_ALIAS: &str = "latest";
 const VECTOR_EMBED_BATCH_SIZE: usize = 24;
 const VECTOR_FTS_CANDIDATE_LIMIT_MULTIPLIER: u32 = 8;
+const CHANGE_READER_MAX_EVENTS: usize = 180;
+const CHANGE_READER_MAX_LINE_CHARS: usize = 220;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchMode {
@@ -1507,6 +1515,20 @@ fn map_vector_granularity_to_runtime(
     }
 }
 
+fn map_change_reader_scope_from_runtime(value: &ChangeReaderScope) -> DesktopChangeReaderScope {
+    match value {
+        ChangeReaderScope::SummaryOnly => DesktopChangeReaderScope::SummaryOnly,
+        ChangeReaderScope::FullContext => DesktopChangeReaderScope::FullContext,
+    }
+}
+
+fn map_change_reader_scope_to_runtime(value: &DesktopChangeReaderScope) -> ChangeReaderScope {
+    match value {
+        DesktopChangeReaderScope::SummaryOnly => ChangeReaderScope::SummaryOnly,
+        DesktopChangeReaderScope::FullContext => ChangeReaderScope::FullContext,
+    }
+}
+
 fn desktop_summary_settings_from_runtime(config: &DaemonConfig) -> DesktopRuntimeSummarySettings {
     let source_mode = SummarySourceMode::SessionOnly;
     DesktopRuntimeSummarySettings {
@@ -1545,6 +1567,17 @@ fn desktop_vector_settings_from_runtime(
         chunk_overlap_lines: config.vector_search.chunk_overlap_lines,
         top_k_chunks: config.vector_search.top_k_chunks.max(1),
         top_k_sessions: config.vector_search.top_k_sessions.max(1),
+    }
+}
+
+fn desktop_change_reader_settings_from_runtime(
+    config: &DaemonConfig,
+) -> DesktopRuntimeChangeReaderSettings {
+    DesktopRuntimeChangeReaderSettings {
+        enabled: config.change_reader.enabled,
+        scope: map_change_reader_scope_from_runtime(&config.change_reader.scope),
+        qa_enabled: config.change_reader.qa_enabled,
+        max_context_chars: config.change_reader.max_context_chars.max(1),
     }
 }
 
@@ -1960,6 +1993,7 @@ fn desktop_get_runtime_settings() -> DesktopApiResult<DesktopRuntimeSettingsResp
         session_default_view,
         summary: desktop_summary_settings_from_runtime(&config),
         vector_search: desktop_vector_settings_from_runtime(&config),
+        change_reader: desktop_change_reader_settings_from_runtime(&config),
         ui_constraints: DesktopRuntimeSummaryUiConstraints {
             source_mode_locked: true,
             source_mode_locked_value: DesktopSummarySourceMode::SessionOnly,
@@ -2083,6 +2117,21 @@ fn desktop_update_runtime_settings(
                 ));
             }
         }
+    }
+
+    if let Some(change_reader) = request.change_reader {
+        if change_reader.max_context_chars == 0 {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_change_reader_context",
+                422,
+                "change_reader.max_context_chars must be greater than zero",
+                Some(json!({ "max_context_chars": change_reader.max_context_chars })),
+            ));
+        }
+        config.change_reader.enabled = change_reader.enabled;
+        config.change_reader.scope = map_change_reader_scope_to_runtime(&change_reader.scope);
+        config.change_reader.qa_enabled = change_reader.qa_enabled;
+        config.change_reader.max_context_chars = change_reader.max_context_chars.max(1);
     }
 
     save_runtime_config(&config)?;
@@ -2295,6 +2344,49 @@ fn empty_summary_response(session_id: String) -> DesktopSessionSummaryResponse {
     }
 }
 
+fn load_session_summary_for_runtime(
+    db: &LocalDb,
+    runtime: &DaemonConfig,
+    session_id: &str,
+) -> DesktopApiResult<DesktopSessionSummaryResponse> {
+    match runtime.summary.storage.backend {
+        SummaryStorageBackend::LocalDb => {
+            let summary = db
+                .get_session_semantic_summary(session_id)
+                .map_err(|error| {
+                    desktop_error(
+                        "desktop.session_summary_query_failed",
+                        500,
+                        "failed to load session summary",
+                        Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+                    )
+                })?
+                .map(session_summary_response_from_row);
+            Ok(summary.unwrap_or_else(|| empty_summary_response(session_id.to_string())))
+        }
+        SummaryStorageBackend::HiddenRef => {
+            let Some(repo_root) = resolve_summary_repo_root(db, session_id)? else {
+                return Ok(empty_summary_response(session_id.to_string()));
+            };
+            let loaded = NativeGitStorage
+                .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, session_id)
+                .map_err(|error| {
+                    desktop_error(
+                        "desktop.session_summary_query_failed",
+                        500,
+                        "failed to load hidden_ref session summary",
+                        Some(
+                            json!({ "cause": error.to_string(), "session_id": session_id, "repo_root": repo_root }),
+                        ),
+                    )
+                })?
+                .map(session_summary_response_from_hidden_ref);
+            Ok(loaded.unwrap_or_else(|| empty_summary_response(session_id.to_string())))
+        }
+        SummaryStorageBackend::None => Ok(empty_summary_response(session_id.to_string())),
+    }
+}
+
 fn resolve_summary_repo_root(db: &LocalDb, session_id: &str) -> DesktopApiResult<Option<PathBuf>> {
     let row = db.get_session_by_id(session_id).map_err(|error| {
         desktop_error(
@@ -2449,43 +2541,7 @@ fn persist_summary_to_hidden_ref(
 fn desktop_get_session_summary(id: String) -> DesktopApiResult<DesktopSessionSummaryResponse> {
     let db = open_local_db()?;
     let runtime = load_runtime_config()?;
-
-    match runtime.summary.storage.backend {
-        SummaryStorageBackend::LocalDb => {
-            let summary = db
-                .get_session_semantic_summary(&id)
-                .map_err(|error| {
-                    desktop_error(
-                        "desktop.session_summary_query_failed",
-                        500,
-                        "failed to load session summary",
-                        Some(json!({ "cause": error.to_string(), "session_id": id })),
-                    )
-                })?
-                .map(session_summary_response_from_row);
-            Ok(summary.unwrap_or_else(|| empty_summary_response(id)))
-        }
-        SummaryStorageBackend::HiddenRef => {
-            let Some(repo_root) = resolve_summary_repo_root(&db, &id)? else {
-                return Ok(empty_summary_response(id));
-            };
-            let loaded = NativeGitStorage
-                .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &id)
-                .map_err(|error| {
-                    desktop_error(
-                        "desktop.session_summary_query_failed",
-                        500,
-                        "failed to load hidden_ref session summary",
-                        Some(
-                            json!({ "cause": error.to_string(), "session_id": id, "repo_root": repo_root }),
-                        ),
-                    )
-                })?
-                .map(session_summary_response_from_hidden_ref);
-            Ok(loaded.unwrap_or_else(|| empty_summary_response(id)))
-        }
-        SummaryStorageBackend::None => Ok(empty_summary_response(id)),
-    }
+    load_session_summary_for_runtime(&db, &runtime, &id)
 }
 
 #[tauri::command]
@@ -2558,6 +2614,601 @@ async fn desktop_regenerate_session_summary(
             error: artifact.error.clone(),
         }),
     }
+}
+
+#[derive(Debug, Clone)]
+struct ChangeReaderContextPayload {
+    session_id: String,
+    scope: DesktopChangeReaderScope,
+    context: String,
+    citations: Vec<String>,
+    provider: Option<DesktopSummaryProviderId>,
+    warning: Option<String>,
+}
+
+fn compact_ws(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn trim_chars(raw: &str, max_chars: usize) -> String {
+    let normalized = compact_ws(raw);
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    let mut out = String::new();
+    for ch in normalized.chars().take(max_chars.saturating_sub(1)) {
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+fn json_value_compact(value: &serde_json::Value, max_chars: usize) -> String {
+    let raw = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
+    trim_chars(&raw, max_chars)
+}
+
+fn event_type_label(event_type: &EventType) -> &'static str {
+    match event_type {
+        EventType::UserMessage => "user",
+        EventType::AgentMessage => "agent",
+        EventType::SystemMessage => "system",
+        EventType::Thinking => "thinking",
+        EventType::ToolCall { .. } => "tool_call",
+        EventType::ToolResult { .. } => "tool_result",
+        EventType::FileRead { .. } => "file_read",
+        EventType::CodeSearch { .. } => "code_search",
+        EventType::FileSearch { .. } => "file_search",
+        EventType::FileEdit { .. } => "file_edit",
+        EventType::FileCreate { .. } => "file_create",
+        EventType::FileDelete { .. } => "file_delete",
+        EventType::ShellCommand { .. } => "shell",
+        EventType::ImageGenerate { .. } => "image_generate",
+        EventType::VideoGenerate { .. } => "video_generate",
+        EventType::AudioGenerate { .. } => "audio_generate",
+        EventType::WebSearch { .. } => "web_search",
+        EventType::WebFetch { .. } => "web_fetch",
+        EventType::TaskStart { .. } => "task_start",
+        EventType::TaskEnd { .. } => "task_end",
+        EventType::Custom { .. } => "custom",
+        _ => "event",
+    }
+}
+
+fn event_type_payload(event_type: &EventType) -> Option<String> {
+    match event_type {
+        EventType::ToolCall { name } => Some(format!("tool={name}")),
+        EventType::ToolResult {
+            name,
+            is_error,
+            call_id,
+        } => Some(format!(
+            "tool={} result={}{}",
+            name,
+            if *is_error { "error" } else { "ok" },
+            call_id
+                .as_deref()
+                .map(|id| format!(" call_id={id}"))
+                .unwrap_or_default()
+        )),
+        EventType::FileRead { path }
+        | EventType::FileEdit { path, .. }
+        | EventType::FileCreate { path }
+        | EventType::FileDelete { path } => Some(format!("path={path}")),
+        EventType::CodeSearch { query } | EventType::WebSearch { query } => {
+            Some(format!("query={}", trim_chars(query, 90)))
+        }
+        EventType::FileSearch { pattern } => Some(format!("pattern={}", trim_chars(pattern, 90))),
+        EventType::ShellCommand { command, exit_code } => Some(format!(
+            "cmd={}{}",
+            trim_chars(command, 120),
+            exit_code
+                .map(|code| format!(" exit_code={code}"))
+                .unwrap_or_default()
+        )),
+        EventType::ImageGenerate { prompt }
+        | EventType::VideoGenerate { prompt }
+        | EventType::AudioGenerate { prompt } => Some(format!("prompt={}", trim_chars(prompt, 90))),
+        EventType::WebFetch { url } => Some(format!("url={url}")),
+        EventType::TaskStart { title } => title
+            .as_deref()
+            .map(|raw| format!("title={}", trim_chars(raw, 90))),
+        EventType::TaskEnd { summary } => summary
+            .as_deref()
+            .map(|raw| format!("summary={}", trim_chars(raw, 90))),
+        EventType::Custom { kind } => Some(format!("kind={kind}")),
+        _ => None,
+    }
+}
+
+fn event_content_excerpt(event: &opensession_core::trace::Event) -> Option<String> {
+    let mut parts = Vec::<String>::new();
+    for block in &event.content.blocks {
+        let rendered = match block {
+            ContentBlock::Text { text } => trim_chars(text, CHANGE_READER_MAX_LINE_CHARS),
+            ContentBlock::Code { code, .. } => {
+                let first_line = code.lines().next().unwrap_or_default();
+                format!("code: {}", trim_chars(first_line, 120))
+            }
+            ContentBlock::Image { alt, url, .. } => {
+                let label = alt.as_deref().unwrap_or("image");
+                format!("{label}: {url}")
+            }
+            ContentBlock::Video { url, .. } => format!("video: {url}"),
+            ContentBlock::Audio { url, .. } => format!("audio: {url}"),
+            ContentBlock::File { path, content } => {
+                let head = content
+                    .as_deref()
+                    .map(|raw| trim_chars(raw, 80))
+                    .unwrap_or_else(|| "content omitted".to_string());
+                format!("file {path}: {head}")
+            }
+            ContentBlock::Json { data } => format!("json: {}", json_value_compact(data, 120)),
+            ContentBlock::Reference { uri, .. } => format!("ref: {uri}"),
+            _ => String::new(),
+        };
+        if rendered.trim().is_empty() {
+            continue;
+        }
+        parts.push(rendered);
+        if parts.len() >= 2 {
+            break;
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" | "))
+    }
+}
+
+fn summary_lines_for_reader(summary: &DesktopSessionSummaryResponse) -> Vec<String> {
+    let mut lines = Vec::<String>::new();
+    if let Some(summary_obj) = summary.summary.as_ref().and_then(|value| value.as_object()) {
+        if let Some(changes) = summary_obj.get("changes").and_then(|value| value.as_str()) {
+            if !changes.trim().is_empty() {
+                lines.push(format!("changes: {}", trim_chars(changes, 280)));
+            }
+        }
+        if let Some(auth_security) = summary_obj.get("auth_security").and_then(|value| value.as_str())
+        {
+            if !auth_security.trim().is_empty() {
+                lines.push(format!(
+                    "auth_security: {}",
+                    trim_chars(auth_security, 200)
+                ));
+            }
+        }
+        if let Some(layer_items) = summary_obj
+            .get("layer_file_changes")
+            .and_then(|value| value.as_array())
+        {
+            for item in layer_items.iter().take(12) {
+                let layer = item
+                    .get("layer")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("(layer)");
+                let detail = item
+                    .get("summary")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                let files = item
+                    .get("files")
+                    .and_then(|value| value.as_array())
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .filter_map(|entry| entry.as_str())
+                            .take(5)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "layer {}: {}{}",
+                    trim_chars(layer, 60),
+                    trim_chars(detail, 120),
+                    if files.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (files: {files})")
+                    }
+                ));
+            }
+        }
+    } else if let Some(value) = &summary.summary {
+        lines.push(format!(
+            "semantic_summary_json: {}",
+            json_value_compact(value, 260)
+        ));
+    }
+
+    for layer in summary.diff_tree.iter().take(8) {
+        let Some(layer_obj) = layer.as_object() else {
+            continue;
+        };
+        let layer_name = layer_obj
+            .get("layer")
+            .and_then(|value| value.as_str())
+            .unwrap_or("(layer)");
+        let file_count = layer_obj
+            .get("file_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default();
+        let added = layer_obj
+            .get("lines_added")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default();
+        let removed = layer_obj
+            .get("lines_removed")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default();
+        lines.push(format!(
+            "diff_layer {}: files={} +{} -{}",
+            trim_chars(layer_name, 60),
+            file_count,
+            added,
+            removed
+        ));
+    }
+
+    if let Some(source_kind) = summary.source_kind.as_deref() {
+        lines.push(format!("source_kind: {source_kind}"));
+    }
+    if let Some(generation_kind) = summary.generation_kind.as_deref() {
+        lines.push(format!("generation_kind: {generation_kind}"));
+    }
+    if let Some(error) = summary.error.as_deref() {
+        lines.push(format!("generation_error: {}", trim_chars(error, 160)));
+    }
+    lines
+}
+
+fn timeline_lines_for_reader(session: &HailSession) -> Vec<String> {
+    session
+        .events
+        .iter()
+        .take(CHANGE_READER_MAX_EVENTS)
+        .map(|event| {
+            let label = event_type_label(&event.event_type);
+            let payload = event_type_payload(&event.event_type).unwrap_or_default();
+            let content = event_content_excerpt(event).unwrap_or_default();
+            let mut merged = format!("{} {}", event.timestamp.to_rfc3339(), label);
+            if !payload.is_empty() {
+                merged.push(' ');
+                merged.push_str(&payload);
+            }
+            if !content.is_empty() {
+                merged.push_str(" => ");
+                merged.push_str(&content);
+            }
+            trim_chars(&merged, CHANGE_READER_MAX_LINE_CHARS)
+        })
+        .collect()
+}
+
+fn trim_context_to_limit(raw: String, max_chars: usize) -> String {
+    if raw.chars().count() <= max_chars {
+        return raw;
+    }
+    let mut out = String::new();
+    for ch in raw.chars().take(max_chars.saturating_sub(24)) {
+        out.push(ch);
+    }
+    out.push_str("\n\n[context truncated]");
+    out
+}
+
+fn provider_for_change_reader(runtime: &DaemonConfig) -> Option<DesktopSummaryProviderId> {
+    match runtime.summary.provider.id {
+        SummaryProvider::Disabled => None,
+        _ => Some(map_summary_provider_id_from_runtime(&runtime.summary.provider.id)),
+    }
+}
+
+fn build_change_reader_context(
+    db: &LocalDb,
+    runtime: &DaemonConfig,
+    session_id: &str,
+    scope_override: Option<DesktopChangeReaderScope>,
+) -> DesktopApiResult<ChangeReaderContextPayload> {
+    let scope = scope_override
+        .unwrap_or_else(|| map_change_reader_scope_from_runtime(&runtime.change_reader.scope));
+    let normalized_session = load_normalized_session_body(db, session_id)?;
+    let session = HailSession::from_jsonl(&normalized_session).map_err(|error| {
+        desktop_error(
+            "desktop.change_reader_parse_failed",
+            422,
+            "failed to parse session payload for change reader",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+    let summary = load_session_summary_for_runtime(db, runtime, session_id)?;
+    let summary_lines = summary_lines_for_reader(&summary);
+    let timeline_lines = timeline_lines_for_reader(&session);
+    let mut citations = Vec::<String>::new();
+    let mut chunks = vec![
+        format!("session_id: {}", session.session_id),
+        format!(
+            "agent: tool={} provider={} model={}",
+            session.agent.tool, session.agent.provider, session.agent.model
+        ),
+    ];
+    if let Some(title) = session.context.title.as_deref() {
+        if !title.trim().is_empty() {
+            chunks.push(format!("title: {}", trim_chars(title, 120)));
+        }
+    }
+    if let Some(description) = session.context.description.as_deref() {
+        if !description.trim().is_empty() {
+            chunks.push(format!("description: {}", trim_chars(description, 180)));
+        }
+    }
+
+    let mut warning = None;
+    if !summary_lines.is_empty() {
+        citations.push("session.semantic_summary".to_string());
+        chunks.push("[semantic_summary]".to_string());
+        chunks.extend(summary_lines.into_iter().map(|line| format!("- {line}")));
+    } else {
+        warning = Some(
+            "semantic summary is not available; using timeline-derived context".to_string(),
+        );
+    }
+
+    if matches!(scope, DesktopChangeReaderScope::FullContext)
+        || (matches!(scope, DesktopChangeReaderScope::SummaryOnly) && citations.is_empty())
+    {
+        citations.push("session.timeline".to_string());
+        chunks.push("[timeline_excerpt]".to_string());
+        chunks.extend(timeline_lines.into_iter().map(|line| format!("- {line}")));
+    }
+
+    let max_context_chars = runtime.change_reader.max_context_chars.max(1) as usize;
+    let context = trim_context_to_limit(chunks.join("\n"), max_context_chars);
+    Ok(ChangeReaderContextPayload {
+        session_id: session_id.to_string(),
+        scope,
+        context,
+        citations,
+        provider: provider_for_change_reader(runtime),
+        warning,
+    })
+}
+
+fn build_read_prompt(context: &str, scope: &DesktopChangeReaderScope) -> String {
+    let scope_label = match scope {
+        DesktopChangeReaderScope::SummaryOnly => "summary_only",
+        DesktopChangeReaderScope::FullContext => "full_context",
+    };
+    format!(
+        "You are OpenSession Change Reader.\n\
+Use only the provided context and do not fabricate facts.\n\
+Write a concise, human-readable Korean briefing about what changed.\n\
+Include: 핵심 변경, 영향도/리스크, 확인할 테스트 1~2개.\n\
+Scope={scope_label}\n\
+\n\
+Context:\n{context}\n"
+    )
+}
+
+fn build_question_prompt(question: &str, context: &str, scope: &DesktopChangeReaderScope) -> String {
+    let scope_label = match scope {
+        DesktopChangeReaderScope::SummaryOnly => "summary_only",
+        DesktopChangeReaderScope::FullContext => "full_context",
+    };
+    format!(
+        "You are OpenSession Change Q&A assistant.\n\
+Answer only from the given context. If evidence is insufficient, say clearly what is missing.\n\
+Respond in Korean and keep it concise.\n\
+Scope={scope_label}\n\
+Question: {question}\n\
+\n\
+Context:\n{context}\n"
+    )
+}
+
+fn fallback_change_narrative(context: &ChangeReaderContextPayload) -> String {
+    let lines = context
+        .context
+        .lines()
+        .filter(|line| line.starts_with("- "))
+        .take(8)
+        .map(|line| line.trim_start_matches("- ").to_string())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return "변경을 설명할 수 있는 컨텍스트가 충분하지 않습니다.".to_string();
+    }
+    format!(
+        "로컬 변경 브리핑(휴리스틱)\n{}",
+        lines
+            .into_iter()
+            .map(|line| format!("- {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn tokenize_question(question: &str) -> Vec<String> {
+    question
+        .split(|ch: char| ch.is_whitespace() || ",.;:!?/()[]{}".contains(ch))
+        .map(|token| token.trim().to_lowercase())
+        .filter(|token| token.chars().count() >= 2)
+        .take(10)
+        .collect()
+}
+
+fn fallback_change_answer(question: &str, context: &ChangeReaderContextPayload) -> String {
+    let tokens = tokenize_question(question);
+    let mut matches = Vec::<String>::new();
+    if !tokens.is_empty() {
+        for line in context.context.lines() {
+            let lowered = line.to_lowercase();
+            if tokens.iter().any(|token| lowered.contains(token)) {
+                matches.push(trim_chars(line, 180));
+            }
+            if matches.len() >= 5 {
+                break;
+            }
+        }
+    }
+    if matches.is_empty() {
+        return "질문에 바로 대응되는 근거를 현재 컨텍스트에서 찾지 못했습니다. full_context로 전환하거나 세션 요약을 재생성해 주세요."
+            .to_string();
+    }
+    format!(
+        "질문 답변(로컬 휴리스틱)\n{}\n\n근거:\n{}",
+        trim_chars(
+            &matches
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "근거를 찾지 못했습니다.".to_string()),
+            220
+        ),
+        matches
+            .into_iter()
+            .take(4)
+            .map(|line| format!("- {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn merge_warnings(primary: Option<String>, secondary: Option<String>) -> Option<String> {
+    match (primary, secondary) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+#[tauri::command]
+async fn desktop_read_session_changes(
+    request: DesktopChangeReadRequest,
+) -> DesktopApiResult<DesktopChangeReadResponse> {
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err(desktop_error(
+            "desktop.change_reader_invalid_request",
+            400,
+            "session_id is required",
+            None,
+        ));
+    }
+    let runtime = load_runtime_config()?;
+    if !runtime.change_reader.enabled {
+        return Err(desktop_error(
+            "desktop.change_reader_disabled",
+            422,
+            "change reader is disabled in runtime settings",
+            Some(json!({ "hint": "Enable Change Reader in Settings > Runtime Summary" })),
+        ));
+    }
+    let db = open_local_db()?;
+    let context = build_change_reader_context(&db, &runtime, &session_id, request.scope)?;
+    let prompt = build_read_prompt(&context.context, &context.scope);
+
+    let (narrative, provider_warning) = if runtime.summary.is_configured() {
+        match generate_text(&runtime.summary, &prompt).await {
+            Ok(text) if !text.trim().is_empty() => (trim_chars(&text, 4000), None),
+            Ok(_) => (
+                fallback_change_narrative(&context),
+                Some("provider returned empty response".to_string()),
+            ),
+            Err(error) => (
+                fallback_change_narrative(&context),
+                Some(format!("provider generation failed: {error}")),
+            ),
+        }
+    } else {
+        (
+            fallback_change_narrative(&context),
+            Some("summary provider is not configured; used local fallback".to_string()),
+        )
+    };
+
+    Ok(DesktopChangeReadResponse {
+        session_id: context.session_id,
+        scope: context.scope,
+        narrative,
+        citations: context.citations,
+        provider: context.provider,
+        warning: merge_warnings(context.warning, provider_warning),
+    })
+}
+
+#[tauri::command]
+async fn desktop_ask_session_changes(
+    request: DesktopChangeQuestionRequest,
+) -> DesktopApiResult<DesktopChangeQuestionResponse> {
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err(desktop_error(
+            "desktop.change_reader_invalid_request",
+            400,
+            "session_id is required",
+            None,
+        ));
+    }
+    let question = request.question.trim().to_string();
+    if question.is_empty() {
+        return Err(desktop_error(
+            "desktop.change_reader_question_required",
+            400,
+            "question is required",
+            None,
+        ));
+    }
+    let runtime = load_runtime_config()?;
+    if !runtime.change_reader.enabled {
+        return Err(desktop_error(
+            "desktop.change_reader_disabled",
+            422,
+            "change reader is disabled in runtime settings",
+            Some(json!({ "hint": "Enable Change Reader in Settings > Runtime Summary" })),
+        ));
+    }
+    if !runtime.change_reader.qa_enabled {
+        return Err(desktop_error(
+            "desktop.change_reader_qa_disabled",
+            422,
+            "change reader Q&A is disabled in runtime settings",
+            Some(json!({ "hint": "Enable Q&A in Settings > Runtime Summary > Change Reader" })),
+        ));
+    }
+
+    let db = open_local_db()?;
+    let context = build_change_reader_context(&db, &runtime, &session_id, request.scope)?;
+    let prompt = build_question_prompt(&question, &context.context, &context.scope);
+    let (answer, provider_warning) = if runtime.summary.is_configured() {
+        match generate_text(&runtime.summary, &prompt).await {
+            Ok(text) if !text.trim().is_empty() => (trim_chars(&text, 4000), None),
+            Ok(_) => (
+                fallback_change_answer(&question, &context),
+                Some("provider returned empty response".to_string()),
+            ),
+            Err(error) => (
+                fallback_change_answer(&question, &context),
+                Some(format!("provider generation failed: {error}")),
+            ),
+        }
+    } else {
+        (
+            fallback_change_answer(&question, &context),
+            Some("summary provider is not configured; used local fallback".to_string()),
+        )
+    };
+
+    Ok(DesktopChangeQuestionResponse {
+        session_id: context.session_id,
+        question,
+        scope: context.scope,
+        answer,
+        citations: context.citations,
+        provider: context.provider,
+        warning: merge_warnings(context.warning, provider_warning),
+    })
 }
 
 #[tauri::command]
@@ -2740,6 +3391,8 @@ fn main() {
             desktop_get_session_raw,
             desktop_get_session_summary,
             desktop_regenerate_session_summary,
+            desktop_read_session_changes,
+            desktop_ask_session_changes,
             desktop_take_launch_route,
             desktop_build_handoff
         ])
@@ -2752,13 +3405,16 @@ mod tests {
     use super::{
         artifact_path_for_hash, build_handoff_artifact_record, build_local_filter_with_mode,
         build_vector_chunks_for_session, canonicalize_summaries, cosine_similarity,
-        desktop_get_contract_version, desktop_get_runtime_settings, desktop_get_session_detail,
-        desktop_get_session_raw, desktop_list_sessions, desktop_update_runtime_settings,
-        extract_vector_lines, map_link_type, normalize_launch_route,
+        desktop_ask_session_changes, desktop_get_contract_version, desktop_get_runtime_settings,
+        desktop_get_session_detail, desktop_get_session_raw, desktop_list_sessions,
+        desktop_read_session_changes, desktop_update_runtime_settings, extract_vector_lines,
+        map_link_type, normalize_launch_route,
         normalize_session_body_to_hail_jsonl, session_summary_from_local_row, split_search_mode,
         validate_pin_alias, DesktopSessionListQuery, SearchMode,
     };
     use opensession_api::{
+        DesktopChangeQuestionRequest, DesktopChangeReadRequest, DesktopChangeReaderScope,
+        DesktopRuntimeChangeReaderSettingsUpdate,
         DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettingsUpdate,
         DesktopRuntimeSummaryProviderSettingsUpdate, DesktopRuntimeSummaryResponseSettingsUpdate,
         DesktopRuntimeSummarySettingsUpdate, DesktopRuntimeSummaryStorageSettingsUpdate,
@@ -3171,6 +3827,12 @@ mod tests {
                 source_mode: DesktopSummarySourceMode::SessionOnly,
             }),
             vector_search: None,
+            change_reader: Some(DesktopRuntimeChangeReaderSettingsUpdate {
+                enabled: true,
+                scope: DesktopChangeReaderScope::FullContext,
+                qa_enabled: true,
+                max_context_chars: 18_000,
+            }),
         })
         .expect("update runtime settings");
         assert_eq!(updated.session_default_view, "compressed");
@@ -3194,6 +3856,10 @@ mod tests {
             DesktopSummarySourceMode::SessionOnly
         );
         assert!(loaded.summary.prompt.template.contains("customized"));
+        assert!(loaded.change_reader.enabled);
+        assert_eq!(loaded.change_reader.scope, DesktopChangeReaderScope::FullContext);
+        assert!(loaded.change_reader.qa_enabled);
+        assert_eq!(loaded.change_reader.max_context_chars, 18_000);
 
         let _ = std::fs::remove_dir_all(&temp_home);
     }
@@ -3226,11 +3892,64 @@ mod tests {
                 source_mode: DesktopSummarySourceMode::SessionOrGitChanges,
             }),
             vector_search: None,
+            change_reader: None,
         });
 
         let error = result.expect_err("source mode lock should reject update");
         assert_eq!(error.status, 422);
         assert_eq!(error.code, "desktop.runtime_settings_source_mode_locked");
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_change_reader_requires_enabled_setting() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-change-reader-disabled");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+
+        let result = tauri::async_runtime::block_on(
+            desktop_read_session_changes(DesktopChangeReadRequest {
+                session_id: "session-1".to_string(),
+                scope: None,
+            }),
+        );
+        let error = result.expect_err("disabled change reader should fail");
+        assert_eq!(error.status, 422);
+        assert_eq!(error.code, "desktop.change_reader_disabled");
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_change_reader_qa_respects_toggle() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-change-reader-qa-disabled");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: None,
+            vector_search: None,
+            change_reader: Some(DesktopRuntimeChangeReaderSettingsUpdate {
+                enabled: true,
+                scope: DesktopChangeReaderScope::SummaryOnly,
+                qa_enabled: false,
+                max_context_chars: 12_000,
+            }),
+        })
+        .expect("enable change reader with qa disabled");
+
+        let result = tauri::async_runtime::block_on(desktop_ask_session_changes(
+            DesktopChangeQuestionRequest {
+                session_id: "session-1".to_string(),
+                question: "무엇이 바뀌었나요?".to_string(),
+                scope: None,
+            },
+        ));
+        let error = result.expect_err("qa disabled should fail");
+        assert_eq!(error.status, 422);
+        assert_eq!(error.code, "desktop.change_reader_qa_disabled");
 
         let _ = std::fs::remove_dir_all(&temp_home);
     }

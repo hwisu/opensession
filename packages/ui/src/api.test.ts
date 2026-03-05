@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+	askSessionChanges,
 	ApiError,
 	authLogin,
 	authRegister,
@@ -14,6 +15,7 @@ import {
 	listSessionRepos,
 	listSessions,
 	searchSessionsVector,
+	readSessionChanges,
 	setBaseUrl,
 	updateRuntimeSettings,
 	vectorIndexRebuild,
@@ -156,6 +158,12 @@ function installInvokeProbe(calls: InvokeCall[]) {
 			top_k_chunks: 30,
 			top_k_sessions: 20,
 		},
+		change_reader: {
+			enabled: false,
+			scope: 'summary_only',
+			qa_enabled: true,
+			max_context_chars: 12000,
+		},
 		ui_constraints: {
 			source_mode_locked: true,
 			source_mode_locked_value: 'session_only',
@@ -166,7 +174,7 @@ function installInvokeProbe(calls: InvokeCall[]) {
 		calls.push({ cmd, args });
 		switch (cmd) {
 				case 'desktop_get_contract_version':
-					return { version: 'desktop-ipc-v3' };
+					return { version: 'desktop-ipc-v4' };
 			case 'desktop_list_sessions':
 				return { total: 3, page: 2, per_page: 30, sessions: [] };
 			case 'desktop_list_repos':
@@ -226,6 +234,12 @@ function installInvokeProbe(calls: InvokeCall[]) {
 						top_k_chunks: number;
 						top_k_sessions: number;
 					};
+					change_reader?: {
+						enabled: boolean;
+						scope: 'summary_only' | 'full_context';
+						qa_enabled: boolean;
+						max_context_chars: number;
+					};
 				};
 				if (request.summary?.source_mode && request.summary.source_mode !== 'session_only') {
 					throw {
@@ -273,6 +287,14 @@ function installInvokeProbe(calls: InvokeCall[]) {
 								top_k_sessions: request.vector_search.top_k_sessions,
 							}
 						: runtimeSettings.vector_search,
+					change_reader: request.change_reader
+						? {
+								enabled: request.change_reader.enabled,
+								scope: request.change_reader.scope,
+								qa_enabled: request.change_reader.qa_enabled,
+								max_context_chars: request.change_reader.max_context_chars,
+							}
+						: runtimeSettings.change_reader,
 				};
 				return runtimeSettings;
 			}
@@ -310,6 +332,25 @@ function installInvokeProbe(calls: InvokeCall[]) {
 					sessions: [],
 					next_cursor: null,
 					total_candidates: 0,
+				};
+			case 'desktop_read_session_changes':
+				return {
+					session_id: (args?.request as { session_id?: string })?.session_id ?? 'session-1',
+					scope: (args?.request as { scope?: string })?.scope ?? 'summary_only',
+					narrative: '변경 요약: 런타임 설정과 UI가 업데이트되었습니다.',
+					citations: ['session.semantic_summary'],
+					provider: 'codex_exec',
+					warning: null,
+				};
+			case 'desktop_ask_session_changes':
+				return {
+					session_id: (args?.request as { session_id?: string })?.session_id ?? 'session-1',
+					question: (args?.request as { question?: string })?.question ?? '',
+					scope: (args?.request as { scope?: string })?.scope ?? 'summary_only',
+					answer: '질문 관련 변경은 settings runtime payload 경로에서 확인됩니다.',
+					citations: ['session.timeline'],
+					provider: 'codex_exec',
+					warning: null,
 				};
 			case 'desktop_get_capabilities':
 				return {
@@ -584,6 +625,29 @@ test('desktop vector controls use invoke bridge', async () => {
 	assert(calledCommands.includes('desktop_vector_index_rebuild'));
 	assert(calledCommands.includes('desktop_vector_index_status'));
 	assert(calledCommands.includes('desktop_search_sessions_vector'));
+});
+
+test('desktop change reader controls use invoke bridge', async () => {
+	const invokeCalls: InvokeCall[] = [];
+	installBrowserEnv({
+		origin: 'tauri://localhost',
+		tauriRuntime: true,
+		invoke: installInvokeProbe(invokeCalls),
+	});
+
+	const read = await readSessionChanges('session-123', 'full_context');
+	assert.equal(read.session_id, 'session-123');
+	assert.equal(read.scope, 'full_context');
+	assert.match(read.narrative, /변경 요약/);
+
+	const answer = await askSessionChanges('session-123', '무엇이 바뀌었어?', 'summary_only');
+	assert.equal(answer.session_id, 'session-123');
+	assert.equal(answer.scope, 'summary_only');
+	assert.match(answer.answer, /settings runtime payload/);
+
+	const calledCommands = invokeCalls.map((entry) => entry.cmd);
+	assert(calledCommands.includes('desktop_read_session_changes'));
+	assert(calledCommands.includes('desktop_ask_session_changes'));
 });
 
 test('web runtime handoff build returns unsupported error', async () => {

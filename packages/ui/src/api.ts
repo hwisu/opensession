@@ -11,6 +11,9 @@ import type {
 	AuthTokenResponse,
 	CapabilitiesResponse,
 	DesktopHandoffBuildResponse,
+	DesktopChangeQuestionResponse,
+	DesktopChangeReadResponse,
+	DesktopChangeReaderScope,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
 	DesktopVectorIndexStatusResponse,
@@ -352,6 +355,29 @@ export async function buildSessionHandoff(
 ): Promise<DesktopHandoffBuildResponse> {
 	try {
 		return await getSessionReadCore().buildHandoff(sessionId, pinLatest);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function readSessionChanges(
+	sessionId: string,
+	scope?: DesktopChangeReaderScope | null,
+): Promise<DesktopChangeReadResponse> {
+	try {
+		return await getSessionReadCore().readSessionChanges(sessionId, scope);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function askSessionChanges(
+	sessionId: string,
+	question: string,
+	scope?: DesktopChangeReaderScope | null,
+): Promise<DesktopChangeQuestionResponse> {
+	try {
+		return await getSessionReadCore().askSessionChanges(sessionId, question, scope);
 	} catch (error) {
 		throw normalizeSessionAdapterError(error);
 	}

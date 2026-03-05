@@ -104,6 +104,12 @@ test.describe('Settings', () => {
 					top_k_chunks: 30,
 					top_k_sessions: 20,
 				},
+				change_reader: {
+					enabled: false,
+					scope: 'summary_only' as 'summary_only' | 'full_context',
+					qa_enabled: true,
+					max_context_chars: 12000,
+				},
 				ui_constraints: {
 					source_mode_locked: true,
 					source_mode_locked_value: 'session_only' as 'session_only',
@@ -119,7 +125,7 @@ test.describe('Settings', () => {
 			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
 				core: {
 					invoke: async (cmd: string, args?: Record<string, unknown>) => {
-						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v3' };
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v4' };
 						if (cmd === 'desktop_get_capabilities') {
 							return {
 								auth_enabled: false,
@@ -200,6 +206,12 @@ test.describe('Settings', () => {
 									top_k_chunks: number;
 									top_k_sessions: number;
 								};
+								change_reader?: {
+									enabled: boolean;
+									scope: 'summary_only' | 'full_context';
+									qa_enabled: boolean;
+									max_context_chars: number;
+								};
 							};
 							if (request.summary && request.summary.source_mode !== 'session_only') {
 								throw {
@@ -242,6 +254,14 @@ test.describe('Settings', () => {
 											top_k_sessions: request.vector_search.top_k_sessions,
 										}
 									: runtimeState.vector_search,
+								change_reader: request.change_reader
+									? {
+											enabled: request.change_reader.enabled,
+											scope: request.change_reader.scope,
+											qa_enabled: request.change_reader.qa_enabled,
+											max_context_chars: request.change_reader.max_context_chars,
+										}
+									: runtimeState.change_reader,
 							};
 							return runtimeState;
 						}
@@ -280,6 +300,13 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="runtime-vector-status"]')).toContainText(
 			'install_state: ready',
 		);
+		await expect(page.locator('[data-testid="settings-runtime-change-reader"]')).toBeVisible();
+		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
+		await page
+			.locator('[data-testid="settings-runtime-change-reader"] select')
+			.first()
+			.selectOption('full_context');
+		await page.locator('[data-testid="runtime-change-reader-max-context"]').fill('18000');
 	});
 
 	test('can issue personal api key from settings page', async ({ page }) => {

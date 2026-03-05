@@ -28,6 +28,8 @@ pub struct DaemonConfig {
     pub summary: SummarySettings,
     #[serde(default)]
     pub vector_search: VectorSearchSettings,
+    #[serde(default)]
+    pub change_reader: ChangeReaderSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,6 +328,37 @@ impl Default for VectorSearchSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeReaderSettings {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub scope: ChangeReaderScope,
+    #[serde(default = "default_true")]
+    pub qa_enabled: bool,
+    #[serde(default = "default_change_reader_max_context_chars")]
+    pub max_context_chars: u32,
+}
+
+impl Default for ChangeReaderSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_false(),
+            scope: ChangeReaderScope::default(),
+            qa_enabled: default_true(),
+            max_context_chars: default_change_reader_max_context_chars(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeReaderScope {
+    #[default]
+    SummaryOnly,
+    FullContext,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VectorSearchProvider {
@@ -500,6 +533,9 @@ fn default_vector_top_k_chunks() -> u16 {
 }
 fn default_vector_top_k_sessions() -> u16 {
     20
+}
+fn default_change_reader_max_context_chars() -> u32 {
+    12_000
 }
 fn default_server_url() -> String {
     "https://opensession.io".to_string()
@@ -900,6 +936,48 @@ granularity = "session_text"
         assert!(
             parsed.is_err(),
             "unsupported vector granularity must be rejected"
+        );
+    }
+
+    #[test]
+    fn change_reader_defaults_are_stable() {
+        let cfg = DaemonConfig::default();
+        assert!(!cfg.change_reader.enabled);
+        assert_eq!(cfg.change_reader.scope, ChangeReaderScope::SummaryOnly);
+        assert!(cfg.change_reader.qa_enabled);
+        assert_eq!(cfg.change_reader.max_context_chars, 12_000);
+    }
+
+    #[test]
+    fn change_reader_settings_deserialize_from_toml() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[change_reader]
+enabled = true
+scope = "full_context"
+qa_enabled = false
+max_context_chars = 24000
+"#,
+        )
+        .expect("parse change reader settings");
+
+        assert!(cfg.change_reader.enabled);
+        assert_eq!(cfg.change_reader.scope, ChangeReaderScope::FullContext);
+        assert!(!cfg.change_reader.qa_enabled);
+        assert_eq!(cfg.change_reader.max_context_chars, 24_000);
+    }
+
+    #[test]
+    fn change_reader_scope_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[change_reader]
+scope = "full"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported change reader scope must be rejected"
         );
     }
 

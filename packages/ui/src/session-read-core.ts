@@ -1,6 +1,9 @@
 import { parseHailInput } from './hail-parse';
 import type {
 	DesktopHandoffBuildResponse,
+	DesktopChangeQuestionResponse,
+	DesktopChangeReadResponse,
+	DesktopChangeReaderScope,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
 	DesktopVectorIndexStatusResponse,
@@ -70,6 +73,15 @@ export interface SessionReadCore {
 	getSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	regenerateSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
+	readSessionChanges(
+		sessionId: string,
+		scope?: DesktopChangeReaderScope | null,
+	): Promise<DesktopChangeReadResponse>;
+	askSessionChanges(
+		sessionId: string,
+		question: string,
+		scope?: DesktopChangeReaderScope | null,
+	): Promise<DesktopChangeQuestionResponse>;
 	getRuntimeSettings(): Promise<DesktopRuntimeSettingsResponse>;
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
@@ -152,6 +164,27 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 		): Promise<DesktopHandoffBuildResponse> {
 			try {
 				return await adapter.buildHandoff(sessionId, pinLatest);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async readSessionChanges(
+			sessionId: string,
+			scope?: DesktopChangeReaderScope | null,
+		): Promise<DesktopChangeReadResponse> {
+			try {
+				return await adapter.readSessionChanges(sessionId, scope);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async askSessionChanges(
+			sessionId: string,
+			question: string,
+			scope?: DesktopChangeReaderScope | null,
+		): Promise<DesktopChangeQuestionResponse> {
+			try {
+				return await adapter.askSessionChanges(sessionId, question, scope);
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

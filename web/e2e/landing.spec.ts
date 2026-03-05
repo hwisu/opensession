@@ -51,7 +51,7 @@ test.describe('Landing (unauthenticated)', () => {
 			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
 				core: {
 					invoke: async (cmd: string) => {
-						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v3' };
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v4' };
 						if (cmd === 'desktop_get_capabilities') {
 							return {
 								auth_enabled: false,

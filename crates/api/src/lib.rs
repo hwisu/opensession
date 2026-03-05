@@ -367,7 +367,7 @@ pub struct SessionListResponse {
 }
 
 /// Canonical desktop IPC contract version shared between Rust and TS clients.
-pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v3";
+pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v4";
 
 /// Query parameters for `GET /api/sessions` — pagination, filtering, sorting.
 #[derive(Debug, Deserialize)]
@@ -448,6 +448,7 @@ pub struct DesktopRuntimeSettingsResponse {
     pub session_default_view: String,
     pub summary: DesktopRuntimeSummarySettings,
     pub vector_search: DesktopRuntimeVectorSearchSettings,
+    pub change_reader: DesktopRuntimeChangeReaderSettings,
     pub ui_constraints: DesktopRuntimeSummaryUiConstraints,
 }
 
@@ -462,6 +463,8 @@ pub struct DesktopRuntimeSettingsUpdateRequest {
     pub summary: Option<DesktopRuntimeSummarySettingsUpdate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vector_search: Option<DesktopRuntimeVectorSearchSettingsUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_reader: Option<DesktopRuntimeChangeReaderSettingsUpdate>,
 }
 
 /// Local summary provider detection result for desktop setup/settings.
@@ -713,6 +716,35 @@ pub struct DesktopRuntimeVectorSearchSettingsUpdate {
     pub top_k_sessions: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopChangeReaderScope {
+    SummaryOnly,
+    FullContext,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeChangeReaderSettings {
+    pub enabled: bool,
+    pub scope: DesktopChangeReaderScope,
+    pub qa_enabled: bool,
+    pub max_context_chars: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeChangeReaderSettingsUpdate {
+    pub enabled: bool,
+    pub scope: DesktopChangeReaderScope,
+    pub qa_enabled: bool,
+    pub max_context_chars: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
@@ -799,6 +831,56 @@ pub struct DesktopSessionSummaryResponse {
     pub generation_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopChangeReadRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<DesktopChangeReaderScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopChangeReadResponse {
+    pub session_id: String,
+    pub scope: DesktopChangeReaderScope,
+    pub narrative: String,
+    #[serde(default)]
+    pub citations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<DesktopSummaryProviderId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopChangeQuestionRequest {
+    pub session_id: String,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<DesktopChangeReaderScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopChangeQuestionResponse {
+    pub session_id: String,
+    pub question: String,
+    pub scope: DesktopChangeReaderScope,
+    pub answer: String,
+    #[serde(default)]
+    pub citations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<DesktopSummaryProviderId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// Structured desktop bridge error payload.
@@ -1565,6 +1647,9 @@ mod tests {
             DesktopVectorIndexState,
             DesktopRuntimeVectorSearchSettings,
             DesktopRuntimeVectorSearchSettingsUpdate,
+            DesktopChangeReaderScope,
+            DesktopRuntimeChangeReaderSettings,
+            DesktopRuntimeChangeReaderSettingsUpdate,
             DesktopVectorPreflightResponse,
             DesktopVectorInstallStatusResponse,
             DesktopVectorIndexStatusResponse,
@@ -1574,6 +1659,10 @@ mod tests {
             DesktopRuntimeSettingsUpdateRequest,
             DesktopSummaryProviderDetectResponse,
             DesktopSessionSummaryResponse,
+            DesktopChangeReadRequest,
+            DesktopChangeReadResponse,
+            DesktopChangeQuestionRequest,
+            DesktopChangeQuestionResponse,
             DesktopApiError,
             SessionDetail,
             SessionLink,

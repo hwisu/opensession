@@ -117,6 +117,12 @@ export interface DesktopRuntimeVectorSearchSettings { enabled: boolean, provider
 
 export interface DesktopRuntimeVectorSearchSettingsUpdate { enabled: boolean, provider: DesktopVectorSearchProvider, model: string, endpoint: string, granularity: DesktopVectorSearchGranularity, chunk_size_lines: number, chunk_overlap_lines: number, top_k_chunks: number, top_k_sessions: number, }
 
+export type DesktopChangeReaderScope = "summary_only" | "full_context"
+
+export interface DesktopRuntimeChangeReaderSettings { enabled: boolean, scope: DesktopChangeReaderScope, qa_enabled: boolean, max_context_chars: number, }
+
+export interface DesktopRuntimeChangeReaderSettingsUpdate { enabled: boolean, scope: DesktopChangeReaderScope, qa_enabled: boolean, max_context_chars: number, }
+
 export interface DesktopVectorPreflightResponse { provider: DesktopVectorSearchProvider, endpoint: string, model: string, ollama_reachable: boolean, model_installed: boolean, install_state: DesktopVectorInstallState, progress_pct: number, message?: string | null, }
 
 export interface DesktopVectorInstallStatusResponse { state: DesktopVectorInstallState, model: string, progress_pct: number, message?: string | null, }
@@ -127,13 +133,21 @@ export interface DesktopVectorSessionMatch { session: SessionSummary, score: num
 
 export interface DesktopVectorSearchResponse { query: string, sessions: Array<DesktopVectorSessionMatch>, next_cursor?: string | null, total_candidates: number, }
 
-export interface DesktopRuntimeSettingsResponse { session_default_view: string, summary: DesktopRuntimeSummarySettings, vector_search: DesktopRuntimeVectorSearchSettings, ui_constraints: DesktopRuntimeSummaryUiConstraints, }
+export interface DesktopRuntimeSettingsResponse { session_default_view: string, summary: DesktopRuntimeSummarySettings, vector_search: DesktopRuntimeVectorSearchSettings, change_reader: DesktopRuntimeChangeReaderSettings, ui_constraints: DesktopRuntimeSummaryUiConstraints, }
 
-export interface DesktopRuntimeSettingsUpdateRequest { session_default_view?: string | null, summary?: DesktopRuntimeSummarySettingsUpdate | null, vector_search?: DesktopRuntimeVectorSearchSettingsUpdate | null, }
+export interface DesktopRuntimeSettingsUpdateRequest { session_default_view?: string | null, summary?: DesktopRuntimeSummarySettingsUpdate | null, vector_search?: DesktopRuntimeVectorSearchSettingsUpdate | null, change_reader?: DesktopRuntimeChangeReaderSettingsUpdate | null, }
 
 export interface DesktopSummaryProviderDetectResponse { detected: boolean, provider?: DesktopSummaryProviderId | null, transport?: DesktopSummaryProviderTransport | null, model?: string | null, endpoint?: string | null, }
 
 export interface DesktopSessionSummaryResponse { session_id: string, summary?: any, source_details?: any, diff_tree: any[], source_kind?: string | null, generation_kind?: string | null, error?: string | null, }
+
+export interface DesktopChangeReadRequest { session_id: string, scope?: DesktopChangeReaderScope | null, }
+
+export interface DesktopChangeReadResponse { session_id: string, scope: DesktopChangeReaderScope, narrative: string, citations: Array<string>, provider?: DesktopSummaryProviderId | null, warning?: string | null, }
+
+export interface DesktopChangeQuestionRequest { session_id: string, question: string, scope?: DesktopChangeReaderScope | null, }
+
+export interface DesktopChangeQuestionResponse { session_id: string, question: string, scope: DesktopChangeReaderScope, answer: string, citations: Array<string>, provider?: DesktopSummaryProviderId | null, warning?: string | null, }
 
 export interface DesktopApiError { code: string, status: number, message: string, details?: Record<string, any> | null, }
 

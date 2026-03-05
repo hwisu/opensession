@@ -217,6 +217,11 @@ pub async fn generate_summary(
     settings: &SummarySettings,
     prompt: &str,
 ) -> Result<SemanticSummary, String> {
+    let raw = generate_text(settings, prompt).await?;
+    Ok(parse_semantic_summary_or_fallback(&raw, settings))
+}
+
+pub async fn generate_text(settings: &SummarySettings, prompt: &str) -> Result<String, String> {
     if prompt.trim().is_empty() {
         return Err("summary prompt is empty".to_string());
     }
@@ -226,16 +231,16 @@ pub async fn generate_summary(
 
     match settings.provider.id {
         SummaryProvider::Disabled => Err("local summary provider is disabled".to_string()),
-        SummaryProvider::Ollama => generate_with_ollama(settings, prompt).await,
-        SummaryProvider::CodexExec => generate_with_codex_exec(settings, prompt).await,
-        SummaryProvider::ClaudeCli => generate_with_claude_cli(settings, prompt).await,
+        SummaryProvider::Ollama => generate_text_with_ollama(settings, prompt).await,
+        SummaryProvider::CodexExec => generate_text_with_codex_exec(settings, prompt).await,
+        SummaryProvider::ClaudeCli => generate_text_with_claude_cli(settings, prompt).await,
     }
 }
 
-async fn generate_with_ollama(
+async fn generate_text_with_ollama(
     settings: &SummarySettings,
     prompt: &str,
-) -> Result<SemanticSummary, String> {
+) -> Result<String, String> {
     let endpoint = if settings.provider.endpoint.trim().is_empty() {
         DEFAULT_OLLAMA_ENDPOINT
     } else {
@@ -281,16 +286,13 @@ async fn generate_with_ollama(
         return Err("ollama summary response was empty".to_string());
     }
 
-    Ok(parse_semantic_summary_or_fallback(
-        &payload.response,
-        settings,
-    ))
+    Ok(payload.response)
 }
 
-async fn generate_with_codex_exec(
+async fn generate_text_with_codex_exec(
     settings: &SummarySettings,
     prompt: &str,
-) -> Result<SemanticSummary, String> {
+) -> Result<String, String> {
     let output_path = temp_cli_output_path("codex-summary");
 
     let mut command = Command::new("codex");
@@ -314,13 +316,13 @@ async fn generate_with_codex_exec(
     if response.trim().is_empty() {
         return Err("codex exec summary response was empty".to_string());
     }
-    Ok(parse_semantic_summary_or_fallback(&response, settings))
+    Ok(response)
 }
 
-async fn generate_with_claude_cli(
+async fn generate_text_with_claude_cli(
     settings: &SummarySettings,
     prompt: &str,
-) -> Result<SemanticSummary, String> {
+) -> Result<String, String> {
     let model = settings.provider.model.trim().to_string();
     let timeout = Duration::from_secs(60);
 
@@ -359,7 +361,7 @@ async fn generate_with_claude_cli(
     if response.trim().is_empty() {
         return Err("claude summary response was empty".to_string());
     }
-    Ok(parse_semantic_summary_or_fallback(&response, settings))
+    Ok(response)
 }
 
 fn parse_semantic_summary_or_fallback(raw: &str, settings: &SummarySettings) -> SemanticSummary {

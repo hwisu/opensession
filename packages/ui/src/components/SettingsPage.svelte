@@ -17,6 +17,7 @@ import {
 	vectorPreflight,
 } from '../api';
 import type {
+	DesktopChangeReaderScope,
 	DesktopRuntimeSettingsResponse,
 	DesktopSummaryOutputShape,
 	DesktopSummaryProviderId,
@@ -85,6 +86,10 @@ let runtimeVectorChunkSizeLines = $state(12);
 let runtimeVectorChunkOverlapLines = $state(3);
 let runtimeVectorTopKChunks = $state(30);
 let runtimeVectorTopKSessions = $state(20);
+let runtimeChangeReaderEnabled = $state(false);
+let runtimeChangeReaderScope = $state<DesktopChangeReaderScope>('summary_only');
+let runtimeChangeReaderQaEnabled = $state(true);
+let runtimeChangeReaderMaxContextChars = $state(12000);
 let runtimeVectorPreflight = $state<DesktopVectorPreflightResponse | null>(null);
 let runtimeVectorIndex = $state<DesktopVectorIndexStatusResponse | null>(null);
 let runtimeVectorInstalling = $state(false);
@@ -243,6 +248,10 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimeVectorChunkOverlapLines = settings.vector_search.chunk_overlap_lines ?? 3;
 	runtimeVectorTopKChunks = settings.vector_search.top_k_chunks ?? 30;
 	runtimeVectorTopKSessions = settings.vector_search.top_k_sessions ?? 20;
+	runtimeChangeReaderEnabled = settings.change_reader?.enabled ?? false;
+	runtimeChangeReaderScope = settings.change_reader?.scope ?? 'summary_only';
+	runtimeChangeReaderQaEnabled = settings.change_reader?.qa_enabled ?? true;
+	runtimeChangeReaderMaxContextChars = settings.change_reader?.max_context_chars ?? 12000;
 }
 
 async function loadRuntimeSettings() {
@@ -303,6 +312,15 @@ function buildRuntimeVectorPayload() {
 	};
 }
 
+function buildRuntimeChangeReaderPayload() {
+	return {
+		enabled: runtimeChangeReaderEnabled,
+		scope: runtimeChangeReaderScope,
+		qa_enabled: runtimeChangeReaderQaEnabled,
+		max_context_chars: runtimeChangeReaderMaxContextChars,
+	};
+}
+
 function handleRuntimeProviderChange() {
 	runtimeProviderTransport = currentRuntimeProviderTransport();
 	if (runtimeProviderTransport !== 'http') {
@@ -323,6 +341,7 @@ async function handleSaveRuntimeSettings() {
 			session_default_view: runtimeSessionDefaultView,
 			summary: buildRuntimeSummaryPayload(),
 			vector_search: buildRuntimeVectorPayload(),
+			change_reader: buildRuntimeChangeReaderPayload(),
 		});
 		runtimeSettings = updated;
 		applyRuntimeSettingsToDraft(updated);
@@ -973,6 +992,48 @@ $effect(() => {
 							{/if}
 						{/if}
 					</div>
+				</section>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-change-reader">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader</h3>
+					<label class="flex items-center gap-2 text-xs text-text-secondary">
+						<input
+							type="checkbox"
+							bind:checked={runtimeChangeReaderEnabled}
+							data-testid="runtime-change-reader-enable"
+						/>
+						<span>Enable notebook-style change reading</span>
+					</label>
+					<div class="grid gap-2 sm:grid-cols-2">
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Default Scope</span>
+							<select bind:value={runtimeChangeReaderScope} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+								<option value="summary_only">summary_only</option>
+								<option value="full_context">full_context</option>
+							</select>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Max Context Chars</span>
+							<input
+								type="number"
+								min="1"
+								bind:value={runtimeChangeReaderMaxContextChars}
+								data-testid="runtime-change-reader-max-context"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+					</div>
+					<label class="flex items-center gap-2 text-xs text-text-secondary">
+						<input
+							type="checkbox"
+							bind:checked={runtimeChangeReaderQaEnabled}
+							data-testid="runtime-change-reader-qa"
+						/>
+						<span>Allow Q&A about change details</span>
+					</label>
+					<p class="text-[11px] text-text-muted">
+						Uses the configured summary provider when available, then falls back to local heuristic context extraction.
+					</p>
 				</section>
 
 				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-storage">

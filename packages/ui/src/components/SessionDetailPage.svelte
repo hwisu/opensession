@@ -1,10 +1,13 @@
 <script lang="ts">
 import { prepareTimelineEvents } from '../event-helpers';
 import {
+	askSessionChanges,
 	ApiError,
 	getSession,
 	getSessionDetail,
+	getRuntimeSettings,
 	getSessionSemanticSummary,
+	readSessionChanges,
 	regenerateSessionSemanticSummary,
 } from '../api';
 import {
@@ -12,7 +15,12 @@ import {
 	toggleAllBackedFilter,
 	type SessionViewMode,
 } from '../session-filters';
-import type { DesktopSessionSummaryResponse, Session, SessionDetail } from '../types';
+import type {
+	DesktopChangeReaderScope,
+	DesktopSessionSummaryResponse,
+	Session,
+	SessionDetail,
+} from '../types';
 import SessionRenderPage from './SessionRenderPage.svelte';
 
 const { sessionId }: { sessionId: string } = $props();
@@ -26,6 +34,20 @@ let summaryLoading = $state(false);
 let summaryRegenerating = $state(false);
 let summaryError = $state<string | null>(null);
 let semanticSummary = $state<DesktopSessionSummaryResponse | null>(null);
+let changeReaderSupported = $state(false);
+let changeReaderEnabled = $state(false);
+let changeReaderQaEnabled = $state(false);
+let changeReaderScope = $state<DesktopChangeReaderScope>('summary_only');
+let changeReaderRuntimeError = $state<string | null>(null);
+let changeReaderReading = $state(false);
+let changeReaderNarrative = $state<string | null>(null);
+let changeReaderReadError = $state<string | null>(null);
+let changeReaderQuestion = $state('');
+let changeReaderAsking = $state(false);
+let changeReaderAnswer = $state<string | null>(null);
+let changeReaderAskError = $state<string | null>(null);
+let changeReaderCitations = $state<string[]>([]);
+let changeReaderWarning = $state<string | null>(null);
 let viewMode = $state<SessionViewMode>('unified');
 let unifiedFilters = $state(new Set<string>());
 let branchFilters = $state(new Set<string>());
@@ -105,6 +127,46 @@ async function regenerateSummary() {
 	}
 }
 
+async function handleReadChanges() {
+	changeReaderReading = true;
+	changeReaderReadError = null;
+	changeReaderNarrative = null;
+	changeReaderWarning = null;
+	changeReaderCitations = [];
+	try {
+		const payload = await readSessionChanges(sessionId, changeReaderScope);
+		changeReaderNarrative = payload.narrative ?? null;
+		changeReaderCitations = payload.citations ?? [];
+		changeReaderWarning = payload.warning ?? null;
+	} catch (e) {
+		changeReaderReadError = e instanceof Error ? e.message : 'Failed to read session changes';
+	} finally {
+		changeReaderReading = false;
+	}
+}
+
+async function handleAskChangeQuestion() {
+	const question = changeReaderQuestion.trim();
+	if (!question) {
+		changeReaderAskError = 'Ask a question first.';
+		return;
+	}
+	changeReaderAsking = true;
+	changeReaderAskError = null;
+	changeReaderAnswer = null;
+	changeReaderWarning = null;
+	try {
+		const payload = await askSessionChanges(sessionId, question, changeReaderScope);
+		changeReaderAnswer = payload.answer ?? null;
+		changeReaderCitations = payload.citations ?? [];
+		changeReaderWarning = payload.warning ?? null;
+	} catch (e) {
+		changeReaderAskError = e instanceof Error ? e.message : 'Failed to answer question';
+	} finally {
+		changeReaderAsking = false;
+	}
+}
+
 $effect(() => {
 	loading = true;
 	error = null;
@@ -112,6 +174,16 @@ $effect(() => {
 	summaryLoading = true;
 	summaryError = null;
 	semanticSummary = null;
+	changeReaderSupported = false;
+	changeReaderEnabled = false;
+	changeReaderQaEnabled = false;
+	changeReaderRuntimeError = null;
+	changeReaderNarrative = null;
+	changeReaderAnswer = null;
+	changeReaderReadError = null;
+	changeReaderAskError = null;
+	changeReaderWarning = null;
+	changeReaderCitations = [];
 	Promise.all([getSession(sessionId), getSessionDetail(sessionId)])
 		.then(([loadedSession, loadedDetail]) => {
 			session = loadedSession;
@@ -135,6 +207,23 @@ $effect(() => {
 		})
 		.finally(() => {
 			summaryLoading = false;
+		});
+
+	getRuntimeSettings()
+		.then((runtime) => {
+			changeReaderSupported = true;
+			changeReaderEnabled = runtime.change_reader?.enabled ?? false;
+			changeReaderQaEnabled = runtime.change_reader?.qa_enabled ?? false;
+			changeReaderScope = runtime.change_reader?.scope ?? 'summary_only';
+		})
+		.catch((e) => {
+			changeReaderSupported = false;
+			changeReaderRuntimeError =
+				e instanceof ApiError && e.status === 501
+					? null
+					: e instanceof Error
+						? e.message
+						: 'Failed to load change reader settings';
 		});
 });
 
@@ -263,6 +352,86 @@ $effect(() => {
 			<p class="text-xs text-text-muted">No semantic summary generated yet.</p>
 		{/if}
 	</section>
+
+	{#if changeReaderSupported && changeReaderEnabled}
+		<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="change-reader-card">
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				<div>
+					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Change Reader</p>
+					<p class="mt-1 text-xs text-text-secondary">Read session changes and ask questions from local context.</p>
+				</div>
+				<label class="text-xs text-text-secondary">
+					<span class="mr-2">Scope</span>
+					<select bind:value={changeReaderScope} class="border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary">
+						<option value="summary_only">summary_only</option>
+						<option value="full_context">full_context</option>
+					</select>
+				</label>
+			</div>
+
+			<div class="flex flex-wrap items-center gap-2">
+				<button
+					type="button"
+					onclick={handleReadChanges}
+					disabled={changeReaderReading}
+					data-testid="change-reader-read"
+					class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+				>
+					{changeReaderReading ? 'Reading…' : 'Read Changes'}
+				</button>
+			</div>
+			{#if changeReaderReadError}
+				<p class="text-xs text-error">{changeReaderReadError}</p>
+			{/if}
+			{#if changeReaderNarrative}
+				<pre class="overflow-x-auto whitespace-pre-wrap rounded border border-border/70 bg-bg-primary p-2 text-xs text-text-secondary" data-testid="change-reader-narrative">{changeReaderNarrative}</pre>
+			{/if}
+
+			{#if changeReaderQaEnabled}
+				<div class="space-y-2 border-t border-border/60 pt-2">
+					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Q&A</p>
+					<div class="flex flex-wrap items-center gap-2">
+						<input
+							bind:value={changeReaderQuestion}
+							data-testid="change-reader-question-input"
+							placeholder="Ask about this change..."
+							class="min-w-[220px] flex-1 border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
+						/>
+						<button
+							type="button"
+							onclick={handleAskChangeQuestion}
+							disabled={changeReaderAsking}
+							data-testid="change-reader-ask"
+							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+						>
+							{changeReaderAsking ? 'Asking…' : 'Ask'}
+						</button>
+					</div>
+					{#if changeReaderAskError}
+						<p class="text-xs text-error">{changeReaderAskError}</p>
+					{/if}
+					{#if changeReaderAnswer}
+						<pre class="overflow-x-auto whitespace-pre-wrap rounded border border-border/70 bg-bg-primary p-2 text-xs text-text-secondary" data-testid="change-reader-answer">{changeReaderAnswer}</pre>
+					{/if}
+				</div>
+			{:else}
+				<p class="text-xs text-text-muted">Q&A is disabled in runtime settings.</p>
+			{/if}
+
+			{#if changeReaderCitations.length}
+				<p class="text-[11px] text-text-muted" data-testid="change-reader-citations">
+					citations: {changeReaderCitations.join(', ')}
+				</p>
+			{/if}
+			{#if changeReaderWarning}
+				<p class="text-xs text-warning" data-testid="change-reader-warning">{changeReaderWarning}</p>
+			{/if}
+		</section>
+	{:else if changeReaderRuntimeError}
+		<section class="mb-3 rounded border border-border bg-bg-secondary p-3">
+			<p class="text-xs text-warning">{changeReaderRuntimeError}</p>
+		</section>
+	{/if}
 
 	<SessionRenderPage
 		{session}

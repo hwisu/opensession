@@ -514,7 +514,7 @@ test.describe('Sessions', () => {
 							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
 							switch (cmd) {
 								case 'desktop_get_contract_version':
-									return { version: 'desktop-ipc-v3' };
+									return { version: 'desktop-ipc-v4' };
 								case 'desktop_get_capabilities':
 									return {
 										auth_enabled: false,
@@ -552,6 +552,135 @@ test.describe('Sessions', () => {
 			return (window as { __invokeCalls?: Array<{ cmd: string }> }).__invokeCalls ?? [];
 		});
 		expect(invokeCalls.some((call) => call.cmd === 'desktop_build_handoff')).toBeTruthy();
+	});
+
+	test('desktop change reader reads and answers from session context', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Change Reader ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		await page.addInitScript(
+			(data) => {
+				type InvokeCall = { cmd: string; args?: Record<string, unknown> };
+				(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+				(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = [];
+				(window as { __TAURI__?: { core?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } } }).__TAURI__ = {
+					core: {
+						invoke: async (cmd: string, args?: Record<string, unknown>) => {
+							const calls = (window as { __invokeCalls?: InvokeCall[] }).__invokeCalls ?? [];
+							calls.push({ cmd, args });
+							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
+							switch (cmd) {
+								case 'desktop_get_contract_version':
+									return { version: 'desktop-ipc-v4' };
+								case 'desktop_get_capabilities':
+									return {
+										auth_enabled: false,
+										parse_preview_enabled: false,
+										register_targets: [],
+										share_modes: [],
+									};
+								case 'desktop_get_session_raw':
+									return data.raw_jsonl;
+								case 'desktop_get_session_detail':
+									return { ...data.summary, linked_sessions: [] };
+								case 'desktop_get_session_summary':
+									return {
+										session_id: data.summary.id,
+										summary: {
+											changes: 'runtime settings and reader UI were updated',
+											auth_security: 'none detected',
+											layer_file_changes: [],
+										},
+										source_details: null,
+										diff_tree: [],
+										source_kind: 'session_signals',
+										generation_kind: 'heuristic_fallback',
+										error: null,
+									};
+								case 'desktop_get_runtime_settings':
+									return {
+										session_default_view: 'full',
+										summary: {
+											provider: {
+												id: 'codex_exec',
+												transport: 'cli',
+												endpoint: '',
+												model: '',
+											},
+											prompt: {
+												template: 'HAIL_COMPACT={{HAIL_COMPACT}}',
+												default_template: 'HAIL_COMPACT={{HAIL_COMPACT}}',
+											},
+											response: {
+												style: 'standard',
+												shape: 'layered',
+											},
+											storage: {
+												trigger: 'on_session_save',
+												backend: 'hidden_ref',
+											},
+											source_mode: 'session_only',
+										},
+										vector_search: {
+											enabled: false,
+											provider: 'ollama',
+											model: 'bge-m3',
+											endpoint: 'http://127.0.0.1:11434',
+											granularity: 'event_line_chunk',
+											chunk_size_lines: 12,
+											chunk_overlap_lines: 3,
+											top_k_chunks: 30,
+											top_k_sessions: 20,
+										},
+										change_reader: {
+											enabled: true,
+											scope: 'summary_only',
+											qa_enabled: true,
+											max_context_chars: 12000,
+										},
+										ui_constraints: {
+											source_mode_locked: true,
+											source_mode_locked_value: 'session_only',
+										},
+									};
+								case 'desktop_read_session_changes':
+									return {
+										session_id: data.summary.id,
+										scope: 'summary_only',
+										narrative: '변경 핵심: reader 패널이 추가되고 요약 기반 읽기가 활성화되었습니다.',
+										citations: ['session.semantic_summary'],
+										provider: 'codex_exec',
+										warning: null,
+									};
+								case 'desktop_ask_session_changes':
+									return {
+										session_id: data.summary.id,
+										question: (args?.request as { question?: string })?.question ?? '',
+										scope: 'summary_only',
+										answer: '질문한 변경은 session semantic summary와 runtime settings에서 확인할 수 있습니다.',
+										citations: ['session.timeline'],
+										provider: 'codex_exec',
+										warning: null,
+									};
+								default:
+									throw new Error(`unexpected invoke command: ${cmd}`);
+							}
+						},
+					},
+				};
+			},
+			{ raw_jsonl: fixture.raw_jsonl, summary: fixture.summary },
+		);
+
+		await page.goto(`/session/${fixture.id}`);
+		await expect(page.getByTestId('change-reader-card')).toBeVisible({ timeout: 10000 });
+		await page.getByTestId('change-reader-read').click();
+		await expect(page.getByTestId('change-reader-narrative')).toContainText('reader 패널이 추가');
+
+		await page.getByTestId('change-reader-question-input').fill('무엇이 바뀌었어?');
+		await page.getByTestId('change-reader-ask').click();
+		await expect(page.getByTestId('change-reader-answer')).toContainText('runtime settings');
+		await expect(page.getByTestId('change-reader-citations')).toContainText('session.timeline');
 	});
 
 	test('session flow track drag scrolls timeline smoothly', async ({ page }) => {

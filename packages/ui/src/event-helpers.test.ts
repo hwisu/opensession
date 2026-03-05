@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isBoilerplateEvent, pairToolCallResults, prepareTimelineEvents } from './event-helpers';
+import {
+	extractFileEditDiff,
+	isBoilerplateEvent,
+	pairToolCallResults,
+	prepareTimelineEvents,
+} from './event-helpers';
 import type { Event } from './types';
 
 function textEvent(args: {
@@ -44,6 +49,23 @@ test('isBoilerplateEvent does not hide empty exec results', () => {
 	});
 
 	assert.equal(isBoilerplateEvent(emptyResult), false);
+});
+
+test('isBoilerplateEvent keeps exec output when low-signal markers precede real content', () => {
+	const mixedResult: Event = {
+		...textEvent({
+			id: 'e2',
+			type: {
+				type: 'ToolResult',
+				data: { name: 'exec_command', is_error: false, call_id: 'call-2' },
+			},
+		}),
+		content: {
+			blocks: [{ type: 'Code', code: '.\ncompleted: updated 1 file', language: 'text', start_line: 1 }],
+		},
+	};
+
+	assert.equal(isBoilerplateEvent(mixedResult), false);
 });
 
 test('prepareTimelineEvents coalesces consecutive duplicate thinking rows', () => {
@@ -130,6 +152,80 @@ test('prepareTimelineEvents filters low-signal custom dot events', () => {
 	);
 });
 
+test('prepareTimelineEvents filters low-signal user dot events', () => {
+	const events: Event[] = [
+		textEvent({
+			id: 'u-dot',
+			type: { type: 'UserMessage' },
+			text: '.',
+		}),
+		textEvent({
+			id: 'agent-ok',
+			type: { type: 'AgentMessage' },
+			text: 'real response',
+		}),
+	];
+
+	const prepared = prepareTimelineEvents(events);
+	assert.deepEqual(
+		prepared.map((event) => event.event_id),
+		['agent-ok'],
+	);
+});
+
+test('prepareTimelineEvents filters low-signal tool result dot events in code blocks', () => {
+	const events: Event[] = [
+		{
+			event_id: 'r-dot',
+			timestamp: '2026-03-03T00:00:00Z',
+			event_type: {
+				type: 'ToolResult',
+				data: { name: 'exec_command', is_error: false, call_id: 'call-dot' },
+			},
+			task_id: null,
+			content: {
+				blocks: [{ type: 'Code', code: '.', language: 'text', start_line: 1 }],
+			},
+			duration_ms: undefined,
+			attributes: {},
+		},
+		textEvent({
+			id: 'agent-ok',
+			type: { type: 'AgentMessage' },
+			text: 'real response',
+		}),
+	];
+
+	const prepared = prepareTimelineEvents(events);
+	assert.deepEqual(
+		prepared.map((event) => event.event_id),
+		['agent-ok'],
+	);
+});
+
+test('prepareTimelineEvents keeps tool result code blocks when they include meaningful lines', () => {
+	const events: Event[] = [
+		{
+			event_id: 'r-meaningful',
+			timestamp: '2026-03-03T00:00:00Z',
+			event_type: {
+				type: 'ToolResult',
+				data: { name: 'exec_command', is_error: false, call_id: 'call-meaningful' },
+			},
+			task_id: null,
+			content: {
+				blocks: [{ type: 'Code', code: '.\ncompleted: 1 file updated', language: 'text', start_line: 1 }],
+			},
+			duration_ms: undefined,
+			attributes: {},
+		},
+	];
+
+	const prepared = prepareTimelineEvents(events);
+	assert.equal(prepared.length, 1);
+	assert.equal(prepared[0].event_id, 'r-meaningful');
+});
+
 test('pairToolCallResults matches semantic.call_id and ignores legacy attrs.call_id', () => {
 	const events: Event[] = [
 		{
@@ -181,4 +277,58 @@ test('pairToolCallResults does not use legacy attrs.call_id for direct matching'
 
 	const pairs = pairToolCallResults(events);
 	assert.equal(pairs.has(0), false);
+});
+
+test('extractFileEditDiff returns direct diff payload when present', () => {
+	const event = textEvent({
+		id: 'file-edit-direct',
+		type: {
+			type: 'FileEdit',
+			data: {
+				path: 'src/app.ts',
+				diff: '@@ -1 +1 @@\n-old\n+new',
+			},
+		},
+	});
+
+	assert.equal(extractFileEditDiff(event), '@@ -1 +1 @@\n-old\n+new');
+});
+
+test('extractFileEditDiff converts apply_patch json payload into unified diff', () => {
+	const event: Event = {
+		...textEvent({
+			id: 'file-edit-patch',
+			type: {
+				type: 'FileEdit',
+				data: {
+					path: 'src/app.ts',
+				},
+			},
+		}),
+		content: {
+			blocks: [
+				{
+					type: 'Json',
+					data: {
+						input: [
+							'*** Begin Patch',
+							'*** Update File: src/app.ts',
+							'@@ -1,2 +1,2 @@',
+							'-const value = 1;',
+							'+const value = 2;',
+							' console.log(value);',
+							'*** End Patch',
+						].join('\n'),
+					},
+				},
+			],
+		},
+	};
+
+	const diff = extractFileEditDiff(event);
+	assert.ok(diff);
+	assert.match(diff, /diff --git a\/src\/app\.ts b\/src\/app\.ts/);
+	assert.match(diff, /@@ -1,2 \+1,2 @@/);
+	assert.match(diff, /\+const value = 2;/);
+	assert.match(diff, /-const value = 1;/);
 });

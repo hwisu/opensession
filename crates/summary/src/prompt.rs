@@ -6,7 +6,11 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
-const MAX_PROMPT_CHARS: usize = 10_000;
+const MAX_PROMPT_CHARS: usize = 16_000;
+const MAX_EVIDENCE_FILES: usize = 24;
+const MAX_EVIDENCE_SAMPLES_PER_KIND: usize = 3;
+const MAX_EVIDENCE_LINE_CHARS: usize = 120;
+const MAX_COVERAGE_TARGETS: usize = 6;
 pub const DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2: &str = "Convert a real coding session into semantic compression.\n\
 Pipeline: session -> HAIL compact -> semantic summary.\n\
 Return JSON only (no markdown, no prose outside JSON):\n\
@@ -19,11 +23,16 @@ Return JSON only (no markdown, no prose outside JSON):\n\
 }\n\
 Rules:\n\
 - Use only facts from HAIL_COMPACT.\n\
-- Mention what was modified.\n\
+- Derive semantic meaning from timeline_signals + change_evidence (intent, implementation, impact).\n\
+- If intent is unclear from signals, explicitly say intent is unclear instead of guessing.\n\
+- In \"changes\", include: (1) goal/intent, (2) concrete modifications, (3) expected impact.\n\
+- Mention concrete modified files and operations (create/edit/delete), prioritizing high-change files.\n\
 - If no auth/security-related change exists, set auth_security to \"none detected\".\n\
-- In layer_file_changes, include changed files grouped by architectural layer.\n\
-- Keep output compact and factual.\n\
+- In layer_file_changes, group by architectural layer and make each summary describe what changed + why it matters.\n\
+- Prefer concrete identifiers from signals (file path, API/config key, command, component/module name).\n\
+- Keep output compact, factual, and free of generic filler.\n\
 - Use the same language as the session signals when obvious.\n\
+{{COVERAGE_RULE}}\n\
 {{SOURCE_RULE}}\n\
 {{STYLE_RULE}}\n\
 {{SHAPE_RULE}}\n\
@@ -34,6 +43,19 @@ pub struct HailCompactLayerRollup {
     layer: String,
     file_count: usize,
     files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HailCompactChangeEvidence {
+    path: String,
+    layer: String,
+    operation: String,
+    lines_added: u64,
+    lines_removed: u64,
+    #[serde(default)]
+    added_samples: Vec<String>,
+    #[serde(default)]
+    removed_samples: Vec<String>,
 }
 
 pub struct SummaryPromptConfig<'a> {
@@ -310,6 +332,136 @@ pub fn collect_file_changes(session: &Session, max_entries: usize) -> Vec<HailCo
     changes
 }
 
+fn collect_change_evidence(
+    session: &Session,
+    file_changes: &[HailCompactFileChange],
+    max_entries: usize,
+) -> Vec<HailCompactChangeEvidence> {
+    let mut evidence_by_path = file_changes
+        .iter()
+        .map(|change| {
+            (
+                change.path.clone(),
+                HailCompactChangeEvidence {
+                    path: change.path.clone(),
+                    layer: change.layer.clone(),
+                    operation: change.operation.clone(),
+                    lines_added: change.lines_added,
+                    lines_removed: change.lines_removed,
+                    added_samples: Vec::new(),
+                    removed_samples: Vec::new(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for event in &session.events {
+        let EventType::FileEdit {
+            path,
+            diff: Some(diff),
+        } = &event.event_type
+        else {
+            continue;
+        };
+        let Some(entry) = evidence_by_path.get_mut(path) else {
+            continue;
+        };
+        append_diff_samples(
+            diff,
+            &mut entry.added_samples,
+            &mut entry.removed_samples,
+            MAX_EVIDENCE_SAMPLES_PER_KIND,
+        );
+    }
+
+    let mut evidence = evidence_by_path.into_values().collect::<Vec<_>>();
+    evidence.sort_by(|lhs, rhs| {
+        rhs.lines_added
+            .saturating_add(rhs.lines_removed)
+            .cmp(&lhs.lines_added.saturating_add(lhs.lines_removed))
+            .then_with(|| lhs.path.cmp(&rhs.path))
+    });
+    evidence.truncate(max_entries);
+    evidence
+}
+
+fn append_diff_samples(
+    diff: &str,
+    added_samples: &mut Vec<String>,
+    removed_samples: &mut Vec<String>,
+    max_samples: usize,
+) {
+    for line in diff.lines() {
+        if line.starts_with("diff --git")
+            || line.starts_with("+++")
+            || line.starts_with("---")
+            || line.starts_with("@@")
+        {
+            continue;
+        }
+
+        if let Some(raw) = line.strip_prefix('+') {
+            push_sample(added_samples, raw, max_samples);
+        } else if let Some(raw) = line.strip_prefix('-') {
+            push_sample(removed_samples, raw, max_samples);
+        }
+
+        if added_samples.len() >= max_samples && removed_samples.len() >= max_samples {
+            break;
+        }
+    }
+}
+
+fn push_sample(samples: &mut Vec<String>, raw_line: &str, max_samples: usize) {
+    if samples.len() >= max_samples {
+        return;
+    }
+    let normalized = compact_summary_snippet(raw_line, MAX_EVIDENCE_LINE_CHARS);
+    if normalized.is_empty() {
+        return;
+    }
+    if normalized.eq_ignore_ascii_case("binary files differ")
+        || normalized.eq_ignore_ascii_case("no newline at end of file")
+    {
+        return;
+    }
+    if samples.iter().any(|item| item == &normalized) {
+        return;
+    }
+    samples.push(normalized);
+}
+
+fn build_coverage_rule(file_changes: &[HailCompactFileChange]) -> String {
+    if file_changes.is_empty() {
+        return "- Coverage requirement: no concrete file_changes were provided; state limitations from timeline signals only.".to_string();
+    }
+
+    let mut prioritized = file_changes.to_vec();
+    prioritized.sort_by(|lhs, rhs| {
+        rhs.lines_added
+            .saturating_add(rhs.lines_removed)
+            .cmp(&lhs.lines_added.saturating_add(lhs.lines_removed))
+            .then_with(|| lhs.path.cmp(&rhs.path))
+    });
+    prioritized.truncate(MAX_COVERAGE_TARGETS);
+
+    let required_mentions = prioritized.len().min(3);
+    let targets = prioritized
+        .iter()
+        .map(|row| {
+            format!(
+                "{} ({}, +{}/-{})",
+                row.path, row.operation, row.lines_added, row.lines_removed
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!(
+        "- Coverage requirement: mention at least {required_mentions} concrete file paths from MUST_COVER_FILES across changes or layer_file_changes when file_changes exists.\nMUST_COVER_FILES=[{}]",
+        targets.join("; ")
+    )
+}
+
 pub fn build_summary_prompt(
     session: &Session,
     source_kind: String,
@@ -323,6 +475,7 @@ pub fn build_summary_prompt(
     }
 
     let layer_rollup = summarize_layer_rollup(&file_changes);
+    let change_evidence = collect_change_evidence(session, &file_changes, MAX_EVIDENCE_FILES);
     let auth_security_signals = collect_auth_security_signals(&file_changes, &timeline_snippets);
 
     let title = session
@@ -349,6 +502,7 @@ pub fn build_summary_prompt(
         "summary_source": source_kind,
         "timeline_signals": timeline_snippets,
         "file_changes": file_changes,
+        "change_evidence": change_evidence,
         "layer_rollup": layer_rollup,
         "auth_security_signals": auth_security_signals,
         "git_context": git_context
@@ -388,6 +542,7 @@ pub fn build_summary_prompt(
             "- Input source mode: session_or_git_changes. If session signals are empty, use git change signals from HAIL_COMPACT."
         }
     };
+    let coverage_rule = build_coverage_rule(&file_changes);
     let prompt_template = if config.prompt_template.trim().is_empty() {
         DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2
     } else {
@@ -409,11 +564,15 @@ pub fn build_summary_prompt(
     if !normalized_template.contains("{{SHAPE_RULE}}") {
         normalized_template = format!("{{{{SHAPE_RULE}}}}\n{normalized_template}");
     }
+    if !normalized_template.contains("{{COVERAGE_RULE}}") {
+        normalized_template = format!("{{{{COVERAGE_RULE}}}}\n{normalized_template}");
+    }
 
     let mut prompt = normalized_template
         .replace("{{SOURCE_RULE}}", source_rule)
         .replace("{{STYLE_RULE}}", style_rule)
         .replace("{{SHAPE_RULE}}", shape_rule)
+        .replace("{{COVERAGE_RULE}}", &coverage_rule)
         .replace("{{HAIL_COMPACT}}", &compact_json);
 
     if prompt.chars().count() > MAX_PROMPT_CHARS {
@@ -701,6 +860,10 @@ diff --git a/src/a.rs b/src/a.rs\n\
         assert!(prompt.contains("\"summary_source\":\"git_working_tree\""));
         assert!(prompt.contains("file:auth/login.rs"));
         assert!(prompt.contains("timeline:assistant: fixed oauth token validation"));
+        assert!(prompt.contains("Coverage requirement: mention at least 1 concrete file paths"));
+        assert!(prompt.contains("MUST_COVER_FILES=[auth/login.rs (edit, +8/-2)]"));
+        assert!(prompt.contains("\"change_evidence\":"));
+        assert!(prompt.contains("\"path\":\"auth/login.rs\""));
     }
 
     #[test]
@@ -734,7 +897,56 @@ diff --git a/src/a.rs b/src/a.rs\n\
         assert!(prompt.contains("- Response style: compact."));
         assert!(prompt.contains("- Output shape: file_list."));
         assert!(prompt.contains("- Input source mode: session_only."));
+        assert!(prompt.contains("MUST_COVER_FILES=[src/auth/guard.rs (edit, +3/-1)]"));
         assert!(prompt.contains("\"summary_source\":\"session_events\""));
+    }
+
+    #[test]
+    fn build_summary_prompt_includes_diff_change_evidence_samples() {
+        let mut session = make_session("prompt-evidence");
+        session.events.push(make_event(
+            "edit-auth",
+            EventType::FileEdit {
+                path: "src/auth/guard.rs".to_string(),
+                diff: Some(
+                    "\
+diff --git a/src/auth/guard.rs b/src/auth/guard.rs\n\
+@@ -10,2 +10,3 @@\n\
+-if token == \"\" { return Err(AuthError::MissingToken); }\n\
++if token.trim().is_empty() { return Err(AuthError::MissingToken); }\n\
++ensure_valid_token(token)?;\n"
+                        .to_string(),
+                ),
+            },
+            "",
+        ));
+        session.recompute_stats();
+
+        let prompt = build_summary_prompt(
+            &session,
+            "session_events".to_string(),
+            vec!["assistant: tightened auth token validation".to_string()],
+            vec![HailCompactFileChange {
+                path: "src/auth/guard.rs".to_string(),
+                layer: "application".to_string(),
+                operation: "edit".to_string(),
+                lines_added: 2,
+                lines_removed: 1,
+            }],
+            serde_json::Value::Null,
+            SummaryPromptConfig {
+                response_style: SummaryResponseStyle::Detailed,
+                output_shape: SummaryOutputShape::SecurityFirst,
+                source_mode: SummarySourceMode::SessionOnly,
+                prompt_template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2,
+            },
+        );
+
+        assert!(prompt.contains("\"change_evidence\":"));
+        assert!(prompt.contains("\"path\":\"src/auth/guard.rs\""));
+        assert!(prompt.contains("\"added_samples\":"));
+        assert!(prompt.contains("ensure_valid_token(token)?;"));
+        assert!(prompt.contains("\"removed_samples\":"));
     }
 
     #[test]
@@ -766,7 +978,7 @@ diff --git a/src/a.rs b/src/a.rs\n\
             },
         );
 
-        assert_eq!(prompt.chars().count(), 10_000);
+        assert_eq!(prompt.chars().count(), 16_000);
     }
 
     #[test]

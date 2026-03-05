@@ -2,6 +2,11 @@ import { TRUNCATE_LENGTH } from './constants';
 import type { ContentBlock, Event, EventType } from './types';
 
 const LOW_SIGNAL_LINE_RE = /^[.\u00B7\u2022\-_=~`]+$/;
+const APPLY_PATCH_FILE_PREFIXES = {
+	update: '*** Update File:',
+	add: '*** Add File:',
+	delete: '*** Delete File:',
+} as const;
 
 /** Extract tool name from ToolCall/ToolResult event types */
 export function getToolName(eventType: EventType): string {
@@ -112,8 +117,187 @@ export function firstMeaningfulEventLine(event: Event): string | null {
 	return null;
 }
 
-function isRunningSessionStatusLine(line: string | null): boolean {
-	if (!line) return false;
+function normalizePatchPath(raw: string): string {
+	const trimmed = raw.trim().replace(/^['"]|['"]$/g, '').trim();
+	return trimmed;
+}
+
+type ApplyPatchSectionKind = keyof typeof APPLY_PATCH_FILE_PREFIXES;
+
+type ApplyPatchSection = {
+	kind: ApplyPatchSectionKind;
+	path: string;
+	lines: string[];
+};
+
+function parseApplyPatchSections(rawPatch: string): ApplyPatchSection[] {
+	const sections: ApplyPatchSection[] = [];
+	let current: ApplyPatchSection | null = null;
+
+	const pushCurrent = () => {
+		if (!current) return;
+		if (!current.path.trim()) {
+			current = null;
+			return;
+		}
+		sections.push(current);
+		current = null;
+	};
+
+	for (const line of rawPatch.replace(/\r\n?/g, '\n').split('\n')) {
+		if (line.startsWith('*** Begin Patch')) continue;
+		if (line.startsWith('*** End Patch')) break;
+		if (line.startsWith('*** Move to:') || line.startsWith('*** End of File')) continue;
+
+		if (line.startsWith(APPLY_PATCH_FILE_PREFIXES.update)) {
+			pushCurrent();
+			current = {
+				kind: 'update',
+				path: normalizePatchPath(line.slice(APPLY_PATCH_FILE_PREFIXES.update.length)),
+				lines: [],
+			};
+			continue;
+		}
+		if (line.startsWith(APPLY_PATCH_FILE_PREFIXES.add)) {
+			pushCurrent();
+			current = {
+				kind: 'add',
+				path: normalizePatchPath(line.slice(APPLY_PATCH_FILE_PREFIXES.add.length)),
+				lines: [],
+			};
+			continue;
+		}
+		if (line.startsWith(APPLY_PATCH_FILE_PREFIXES.delete)) {
+			pushCurrent();
+			current = {
+				kind: 'delete',
+				path: normalizePatchPath(line.slice(APPLY_PATCH_FILE_PREFIXES.delete.length)),
+				lines: [],
+			};
+			continue;
+		}
+
+		if (!current) continue;
+		if (line.startsWith('@@') || line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) {
+			current.lines.push(line);
+		}
+	}
+
+	pushCurrent();
+	return sections;
+}
+
+function syntheticHunkHeader(kind: ApplyPatchSectionKind, lines: string[]): string {
+	const added = lines.filter((line) => line.startsWith('+')).length;
+	const removed = lines.filter((line) => line.startsWith('-')).length;
+	if (kind === 'add') return `@@ -0,0 +1,${Math.max(added, 1)} @@`;
+	if (kind === 'delete') return `@@ -1,${Math.max(removed, 1)} +0,0 @@`;
+	return `@@ -1,${Math.max(removed, 1)} +1,${Math.max(added, 1)} @@`;
+}
+
+function sectionToUnifiedDiff(section: ApplyPatchSection): string {
+	const path = section.path;
+	const out: string[] = [`diff --git a/${path} b/${path}`];
+
+	if (section.kind === 'add') {
+		out.push('--- /dev/null', `+++ b/${path}`);
+	} else if (section.kind === 'delete') {
+		out.push(`--- a/${path}`, '+++ /dev/null');
+	} else {
+		out.push(`--- a/${path}`, `+++ b/${path}`);
+	}
+
+	const hasHunk = section.lines.some((line) => line.startsWith('@@'));
+	if (!hasHunk) out.push(syntheticHunkHeader(section.kind, section.lines));
+	out.push(...section.lines);
+
+	return out.join('\n').trimEnd();
+}
+
+function applyPatchToUnifiedDiff(rawPatch: string): string | null {
+	const sections = parseApplyPatchSections(rawPatch);
+	if (sections.length === 0) return null;
+	return sections.map((section) => sectionToUnifiedDiff(section)).join('\n');
+}
+
+function isLikelyUnifiedDiff(raw: string): boolean {
+	const text = raw.trim();
+	if (!text) return false;
+	return (
+		text.includes('\n@@ ') ||
+		text.startsWith('@@ ') ||
+		text.includes('\ndiff --git ') ||
+		text.startsWith('diff --git ')
+	);
+}
+
+function findNestedStringField(
+	value: unknown,
+	seen: Set<unknown>,
+	keys: ReadonlySet<string>,
+): string | null {
+	if (value == null) return null;
+	if (typeof value === 'string') return value;
+	if (typeof value !== 'object') return null;
+	if (seen.has(value)) return null;
+	seen.add(value);
+
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = findNestedStringField(item, seen, keys);
+			if (found) return found;
+		}
+		return null;
+	}
+
+	const row = value as Record<string, unknown>;
+	for (const [key, item] of Object.entries(row)) {
+		if (keys.has(key) && typeof item === 'string' && item.trim().length > 0) {
+			return item;
+		}
+	}
+	for (const item of Object.values(row)) {
+		const found = findNestedStringField(item, seen, keys);
+		if (found) return found;
+	}
+	return null;
+}
+
+function extractDiffCandidateFromBlocks(blocks: ContentBlock[]): string | null {
+	for (const block of blocks) {
+		if (block.type === 'Code' || block.type === 'Text') {
+			const source = block.type === 'Code' ? block.code : block.text;
+			if (source.trim().startsWith('*** Begin Patch')) {
+				const converted = applyPatchToUnifiedDiff(source);
+				if (converted) return converted;
+			}
+			if (isLikelyUnifiedDiff(source)) return source;
+		}
+		if (block.type === 'Json') {
+			const diffLike = findNestedStringField(
+				block.data,
+				new Set(),
+				new Set(['diff', 'patch', 'input']),
+			);
+			if (!diffLike) continue;
+			if (diffLike.trim().startsWith('*** Begin Patch')) {
+				const converted = applyPatchToUnifiedDiff(diffLike);
+				if (converted) return converted;
+			}
+			if (isLikelyUnifiedDiff(diffLike)) return diffLike;
+		}
+	}
+	return null;
+}
+
+export function extractFileEditDiff(event: Event): string | null {
+	if (event.event_type.type !== 'FileEdit') return null;
+	const direct = event.event_type.data.diff;
+	if (typeof direct === 'string' && direct.trim().length > 0) return direct;
+	return extractDiffCandidateFromBlocks(event.content.blocks);
+}
+
+function isSessionStatusMarkerLine(line: string): boolean {
 	const lowered = line.trim().toLowerCase();
 	return (
 		lowered.length === 0 ||
@@ -122,6 +306,15 @@ function isRunningSessionStatusLine(line: string | null): boolean {
 		lowered === 'output:' ||
 		isLowSignalLine(lowered)
 	);
+}
+
+function isRunningSessionStatusEvent(event: Event): boolean {
+	const lines = eventTextLines(event);
+	if (lines.length === 0) return false;
+	const meaningfulLines = lines.filter((line) => !isLowSignalLine(line));
+	if (meaningfulLines.length === 0) return true;
+	if (meaningfulLines.length > 1) return false;
+	return isSessionStatusMarkerLine(meaningfulLines[0]);
 }
 
 function isMarkdownProgressLine(line: string): boolean {
@@ -146,10 +339,10 @@ export function isBoilerplateEvent(event: Event): boolean {
 	if (typeName === 'ToolResult') {
 		const tool = getToolName(event.event_type).toLowerCase();
 		if (tool === 'write_stdin') {
-			return isRunningSessionStatusLine(firstEventTextLine(event));
+			return isRunningSessionStatusEvent(event);
 		}
 		if (['exec_command', 'shell', 'bash', 'execute_command', 'spawn_process'].includes(tool)) {
-			return isRunningSessionStatusLine(firstEventTextLine(event));
+			return isRunningSessionStatusEvent(event);
 		}
 	}
 	if (typeName === 'Thinking') {
@@ -242,6 +435,7 @@ function pickPreferredDuplicate(previous: Event, current: Event): Event {
 function isLowSignalStandaloneEvent(event: Event): boolean {
 	const typeName = event.event_type.type;
 	if (
+		typeName !== 'UserMessage' &&
 		typeName !== 'AgentMessage' &&
 		typeName !== 'Thinking' &&
 		typeName !== 'ToolResult' &&
@@ -252,7 +446,6 @@ function isLowSignalStandaloneEvent(event: Event): boolean {
 	}
 	if (typeName === 'ToolResult' && isToolError(event.event_type)) return false;
 	if (event.content.blocks.length === 0) return false;
-	if (!event.content.blocks.every((block) => block.type === 'Text')) return false;
 	const lines = eventTextLines(event);
 	if (lines.length === 0) return false;
 	return lines.every((line) => isLowSignalLine(line));

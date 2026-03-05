@@ -9,11 +9,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434";
-const DEFAULT_SUMMARY_CHAR_LIMIT: usize = 420;
-const DEFAULT_AUTH_SECURITY_CHAR_LIMIT: usize = 260;
-const DEFAULT_LAYER_SUMMARY_CHAR_LIMIT: usize = 200;
-const DEFAULT_MAX_LAYER_ITEMS: usize = 8;
-const DEFAULT_MAX_FILES_PER_LAYER: usize = 10;
+const DEFAULT_SUMMARY_CHAR_LIMIT: usize = 560;
+const DEFAULT_AUTH_SECURITY_CHAR_LIMIT: usize = 320;
+const DEFAULT_LAYER_SUMMARY_CHAR_LIMIT: usize = 260;
+const DEFAULT_MAX_LAYER_ITEMS: usize = 10;
+const DEFAULT_MAX_FILES_PER_LAYER: usize = 14;
 
 #[derive(Debug, Clone, Copy)]
 struct SummaryNormalizationLimits {
@@ -32,12 +32,12 @@ fn summary_limits(settings: &SummarySettings) -> SummaryNormalizationLimits {
             DEFAULT_AUTH_SECURITY_CHAR_LIMIT,
             DEFAULT_LAYER_SUMMARY_CHAR_LIMIT,
         ),
-        SummaryResponseStyle::Detailed => (720, 420, 320),
+        SummaryResponseStyle::Detailed => (960, 520, 360),
     };
     let (max_layer_items, max_files_per_layer) = match settings.response.shape {
         SummaryOutputShape::Layered => (DEFAULT_MAX_LAYER_ITEMS, DEFAULT_MAX_FILES_PER_LAYER),
         SummaryOutputShape::FileList => (16, 20),
-        SummaryOutputShape::SecurityFirst => (10, 12),
+        SummaryOutputShape::SecurityFirst => (12, 14),
     };
     SummaryNormalizationLimits {
         summary_chars,

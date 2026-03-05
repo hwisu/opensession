@@ -510,6 +510,21 @@ test.describe('Sessions', () => {
 		await expect(page.locator('[data-testid="session-flow-bar"]')).toBeVisible({ timeout: 10000 });
 	});
 
+	test('session detail hides low-signal dot-only messages', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Dot Filter ${crypto.randomUUID().slice(0, 8)}`,
+			events: [
+				{ type: 'UserMessage', text: '.', task_id: crypto.randomUUID() },
+				{ type: 'AgentMessage', text: 'meaningful agent reply', task_id: null },
+			],
+		});
+		await mockSessionApis(page, fixture);
+		await page.goto(`/session/${fixture.id}`);
+		await expect(page.getByText('meaningful agent reply')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText('.', { exact: true })).toHaveCount(0);
+		await expect(page.locator('[data-timeline-idx]')).toHaveCount(1);
+	});
+
 	test('desktop runtime handoff build uses invoke bridge and shows artifact uri', async ({
 		page,
 	}) => {
@@ -865,6 +880,97 @@ test.describe('Sessions', () => {
 		await expect(page.locator('[data-timeline-idx] [data-event-type="Thinking"]')).toHaveCount(1);
 		await expect(page.getByText('Chunk ID: keep123')).toBeVisible({ timeout: 10000 });
 		await expect(page.getByText(/^\.$/)).toHaveCount(0);
+	});
+
+	test('session detail renders concrete diff for file edit events from apply_patch payload', async ({
+		page,
+	}) => {
+		const fixture = createSessionFixture({
+			title: `PW FileEdit Diff ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		const now = new Date().toISOString();
+		const rawJsonl = [
+			JSON.stringify({
+				type: 'header',
+				version: 'hail-1.0.0',
+				session_id: fixture.id,
+				agent: {
+					provider: 'openai',
+					model: 'gpt-5',
+					tool: 'codex',
+				},
+				context: {
+					title: fixture.title,
+					description: 'file edit diff extraction regression',
+					tags: ['e2e'],
+					created_at: now,
+					updated_at: now,
+					related_session_ids: [],
+					attributes: {},
+				},
+			}),
+			JSON.stringify({
+				type: 'event',
+				event_id: crypto.randomUUID(),
+				timestamp: now,
+				event_type: {
+					type: 'FileEdit',
+					data: {
+						path: 'src/app.ts',
+						diff: null,
+					},
+				},
+				task_id: null,
+				content: {
+					blocks: [
+						{
+							type: 'Json',
+							data: {
+								input: [
+									'*** Begin Patch',
+									'*** Update File: src/app.ts',
+									'@@ -1,2 +1,2 @@',
+									'-const value = 1;',
+									'+const value = 2;',
+									' console.log(value);',
+									'*** End Patch',
+								].join('\n'),
+							},
+						},
+					],
+				},
+				duration_ms: null,
+				attributes: {},
+			}),
+			JSON.stringify({
+				type: 'stats',
+				event_count: 1,
+				message_count: 0,
+				tool_call_count: 0,
+				task_count: 0,
+				duration_seconds: 0,
+				total_input_tokens: 0,
+				total_output_tokens: 0,
+				user_message_count: 0,
+				files_changed: 1,
+				lines_added: 1,
+				lines_removed: 1,
+			}),
+		].join('\n');
+
+		await mockSessionApis(page, {
+			...fixture,
+			raw_jsonl: `${rawJsonl}\n`,
+		});
+
+		await page.goto(`/session/${fixture.id}`);
+		const fileEditRow = page.getByText('src/app.ts').first();
+		await expect(fileEditRow).toBeVisible({ timeout: 10000 });
+		await fileEditRow.click();
+		await expect(page.getByText('@@ -1,2 +1,2 @@')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText('const value = 2;')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText('const value = 1;')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText('*** Begin Patch')).toHaveCount(0);
 	});
 
 	test('session detail shows agent info', async ({ page }) => {

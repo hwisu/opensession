@@ -2,6 +2,7 @@
 import { CHIP_LABEL_MAX } from '../constants';
 import {
 	calcContentLength,
+	extractFileEditDiff,
 	findCodeStats,
 	findFirstText,
 	firstMeaningfulEventLine,
@@ -411,8 +412,8 @@ const metaBadgeText = $derived.by(() => {
 	if (t.type === 'FileRead' && codeStats) {
 		return `L1-${codeStats.lines}`;
 	}
-	if (t.type === 'FileEdit' && t.data.diff) {
-		const s = diffStats(t.data.diff);
+	if (t.type === 'FileEdit' && fileEditDiff) {
+		const s = diffStats(fileEditDiff);
 		const parts: string[] = [];
 		if (s.added > 0) parts.push(`+${s.added}`);
 		if (s.removed > 0) parts.push(`-${s.removed}`);
@@ -458,6 +459,7 @@ const chipNameColorClass = $derived(
 );
 
 const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'));
+const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff(event) : null);
 </script>
 
 <!-- ═══ MESSAGE (User / Agent / System) ═══ -->
@@ -608,7 +610,7 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 				{:else if resultOk}
 					<span class="shrink-0 font-mono text-[10px] text-success">✓</span>
 				{:else if isFileEdit && metaBadgeText}
-					{@const stats = diffStats(('data' in event.event_type ? (event.event_type.data as { diff?: string }).diff : '') ?? '')}
+					{@const stats = diffStats(fileEditDiff ?? '')}
 					<span class="shrink-0 font-mono text-[10px]">
 						{#if stats.added > 0}<span class="text-success">+{stats.added + stats.modified}</span>{/if}
 						{#if stats.removed > 0}<span class="text-error ml-0.5">-{stats.removed + stats.modified}</span>{/if}
@@ -699,12 +701,12 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 						{/if}
 					</div>
 				{:else}
+					{#if isFileEdit && fileEditDiff}
+						<DiffView diff={fileEditDiff} />
+					{/if}
 					{#each event.content.blocks as block}
 						{#if block.type === 'Code'}
-							{@const fileEditData = isFileEdit && 'data' in event.event_type ? (event.event_type as { data: { diff?: string } }).data : null}
-							{#if fileEditData?.diff}
-								<DiffView diff={fileEditData.diff} />
-							{:else}
+							{#if !(isFileEdit && fileEditDiff)}
 								<CodeBlockView code={block.code} language={block.language}
 									startLine={block.start_line ?? 1} bind:showFull />
 							{/if}
@@ -731,7 +733,9 @@ const hasCodeBlock = $derived(event.content.blocks.some((b) => b.type === 'Code'
 								{/if}
 							{/if}
 						{:else if block.type === 'Json'}
-							<pre class="overflow-x-auto p-3 leading-relaxed"><code class="hljs">{@html highlightCode(JSON.stringify(block.data, null, 2), 'json')}</code></pre>
+							{#if !(isFileEdit && fileEditDiff)}
+								<pre class="overflow-x-auto p-3 leading-relaxed"><code class="hljs">{@html highlightCode(JSON.stringify(block.data, null, 2), 'json')}</code></pre>
+							{/if}
 						{:else if block.type === 'Image'}
 							<img src={block.url} alt={block.alt ?? ''} class="max-h-64 p-2" />
 						{:else if block.type === 'File'}

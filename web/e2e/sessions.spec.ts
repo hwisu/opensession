@@ -688,6 +688,7 @@ test.describe('Sessions', () => {
 		);
 
 		await page.goto(`/session/${fixture.id}`);
+		await page.getByTestId('session-detail-view-summary').click();
 		await expect(page.getByTestId('change-reader-card')).toBeVisible({ timeout: 10000 });
 		await page.getByTestId('change-reader-read').click();
 		await expect(page.getByTestId('change-reader-narrative')).toContainText('reader 패널이 추가');
@@ -696,6 +697,31 @@ test.describe('Sessions', () => {
 		await page.getByTestId('change-reader-ask').click();
 		await expect(page.getByTestId('change-reader-answer')).toContainText('runtime settings');
 		await expect(page.getByTestId('change-reader-citations')).toContainText('session.timeline');
+	});
+
+	test('session detail toggles between summary and full views', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Detail Toggle ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		await mockSessionApis(page, fixture);
+		await page.goto(`/session/${fixture.id}`);
+
+		const summaryButton = page.getByTestId('session-detail-view-summary');
+		const fullButton = page.getByTestId('session-detail-view-full');
+
+		await expect(fullButton).toHaveAttribute('aria-pressed', 'true');
+		await expect(page.getByTestId('session-detail-hero')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('semantic-summary-card')).toHaveCount(0);
+
+		await summaryButton.click();
+		await expect(summaryButton).toHaveAttribute('aria-pressed', 'true');
+		await expect(page.getByTestId('semantic-summary-card')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('session-detail-hero')).toHaveCount(0);
+
+		await fullButton.click();
+		await expect(fullButton).toHaveAttribute('aria-pressed', 'true');
+		await expect(page.getByTestId('session-detail-hero')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('semantic-summary-card')).toHaveCount(0);
 	});
 
 	test('session flow track drag scrolls timeline smoothly', async ({ page }) => {

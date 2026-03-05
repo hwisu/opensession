@@ -58,6 +58,7 @@ let changeReaderAskError = $state<string | null>(null);
 let changeReaderCitations = $state<string[]>([]);
 let changeReaderWarning = $state<string | null>(null);
 let viewMode = $state<SessionViewMode>('unified');
+let detailView = $state<'summary' | 'full'>('full');
 let unifiedFilters = $state(new Set<string>());
 let branchFilters = $state(new Set<string>());
 let nativeFilters = $state(new Set<string>());
@@ -336,235 +337,263 @@ $effect(() => {
 		<a href="/sessions" class="mt-2 inline-block text-xs text-accent hover:underline">Back to feed</a>
 	</div>
 {:else if session}
-	<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="semantic-summary-card">
-		<div class="flex flex-wrap items-center justify-between gap-3">
-			<div>
-				<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Semantic Summary</p>
-				{#if semanticSummary?.generation_kind === 'heuristic_fallback'}
-					<p class="mt-1 text-xs text-warning">Heuristic fallback · 변경 신호가 제한되어 간략 요약을 표시합니다.</p>
-				{:else if semanticSummary?.source_kind}
-					<p class="mt-1 text-xs text-text-secondary">
-						source={semanticSummary.source_kind}
-						{#if semanticSummary.generation_kind}
-							· mode={semanticSummary.generation_kind}
-						{/if}
-					</p>
-				{/if}
-			</div>
-			<button
-				type="button"
-				class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
-				onclick={regenerateSummary}
-				disabled={summaryRegenerating}
-			>
-				{summaryRegenerating ? 'Regenerating…' : 'Regenerate'}
-			</button>
-		</div>
-
-		{#if summaryLoading}
-			<p class="text-xs text-text-muted">Loading semantic summary...</p>
-		{:else if summaryError}
-			<p class="text-xs text-error">{summaryError}</p>
-		{:else if semanticPayload}
-			<div class="grid gap-3 md:grid-cols-2">
-				<div>
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Changes</p>
-					<p class="mt-1 text-xs text-text-primary">{semanticPayload.changes ?? '(none)'}</p>
-				</div>
-				<div>
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Auth/Security</p>
-					<p class="mt-1 text-xs text-text-primary">{semanticPayload.auth_security ?? '(none)'}</p>
-				</div>
-			</div>
-			<div>
-				<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Layer/File Changes</p>
-				{#if semanticPayload.layer_file_changes?.length}
-					<div class="mt-2 space-y-2">
-						{#each semanticPayload.layer_file_changes as item}
-							<div class="rounded border border-border/70 p-2">
-								<div class="text-xs font-medium text-text-primary">{item.layer ?? '(unknown layer)'}</div>
-								<div class="mt-1 text-xs text-text-secondary">{item.summary ?? ''}</div>
-								{#if item.files?.length}
-									<div class="mt-1 text-[11px] text-text-muted">{item.files.join(', ')}</div>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<p class="mt-1 text-xs text-text-muted">변경 신호가 부족해 레이어/파일 요약을 만들지 못했습니다.</p>
-				{/if}
-			</div>
-			{#if semanticDiffTree.length}
-				<div>
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Diff Tree</p>
-					<div class="mt-2 space-y-2">
-						{#each semanticDiffTree as layer}
-							<details class="rounded border border-border/70 p-2" open={layer.file_count != null && layer.file_count <= 5}>
-								<summary class="cursor-pointer text-xs text-text-primary">
-									{layer.layer ?? '(layer)'} · files={layer.file_count ?? 0} · +{layer.lines_added ?? 0}/-{layer.lines_removed ?? 0}
-								</summary>
-								<div class="mt-2 space-y-2">
-									{#each layer.files ?? [] as file}
-										<details class="rounded border border-border/60 p-2" open={!file.is_large}>
-											<summary class="cursor-pointer text-[11px] text-text-secondary">
-												{file.path ?? '(file)'} [{file.operation ?? 'edit'}] +{file.lines_added ?? 0}/-{file.lines_removed ?? 0}
-												{#if file.is_large}
-													· large
-												{/if}
-											</summary>
-											{#if file.hunks?.length}
-												<div class="mt-2 space-y-1">
-													{#each file.hunks as hunk}
-														<div class="rounded border border-border/50 bg-bg-primary p-2">
-															<div class="text-[11px] font-mono text-text-muted">{hunk.header ?? '(hunk)'}</div>
-															{#if hunk.lines?.length}
-																<pre class="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] text-text-secondary">{hunk.lines.join('\n')}</pre>
-															{/if}
-															{#if (hunk.omitted_lines ?? 0) > 0}
-																<div class="mt-1 text-[11px] text-text-muted">… {hunk.omitted_lines} lines omitted</div>
-															{/if}
-														</div>
-													{/each}
-												</div>
-											{/if}
-										</details>
-									{/each}
-								</div>
-							</details>
-						{/each}
-					</div>
-				</div>
-			{/if}
-			{#if semanticSummary?.error && semanticSummary.error !== 'no usable summary signals found'}
-				<p class="text-xs text-warning">generation note: {semanticSummary.error}</p>
-			{/if}
-		{:else}
-			<p class="text-xs text-text-muted">No semantic summary generated yet.</p>
-		{/if}
-	</section>
-
-	{#if changeReaderSupported && changeReaderEnabled}
-		<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="change-reader-card">
-			<div class="flex flex-wrap items-center justify-between gap-2">
-				<div>
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Change Reader (Text + Voice)</p>
-					<p class="mt-1 text-xs text-text-secondary">Read session changes, ask questions, and play voice narration from local context.</p>
-				</div>
-				<label class="text-xs text-text-secondary">
-					<span class="mr-2">Scope</span>
-					<select bind:value={changeReaderScope} class="border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary">
-						<option value="summary_only">summary_only</option>
-						<option value="full_context">full_context</option>
-					</select>
-				</label>
-			</div>
-
-			<div class="flex flex-wrap items-center gap-2">
+	<section class="mb-3 rounded border border-border bg-bg-secondary p-3" data-testid="session-detail-view-switch">
+		<div class="flex flex-wrap items-center gap-2">
+			<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">View</p>
+			<div class="inline-flex rounded border border-border bg-bg-primary p-0.5">
 				<button
 					type="button"
-					onclick={handleReadChanges}
-					disabled={changeReaderReading}
-					data-testid="change-reader-read"
-					class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+					class={`px-2 py-1 text-xs ${detailView === 'summary' ? 'bg-accent/20 text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+					aria-pressed={detailView === 'summary'}
+					data-testid="session-detail-view-summary"
+					onclick={() => (detailView = 'summary')}
 				>
-					{changeReaderReading ? 'Reading…' : 'Read Changes'}
+					요약
 				</button>
-				{#if changeReaderVoiceEnabled && changeReaderVoiceConfigured}
-					<button
-						type="button"
-						onclick={handlePlayChangeReaderVoice}
-						disabled={changeReaderVoicePending}
-						data-testid="change-reader-play-voice"
-						class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
-					>
-						{changeReaderVoicePending ? 'Synthesizing…' : changeReaderVoicePlaying ? 'Replay Voice' : 'Play Voice'}
-					</button>
-					<button
-						type="button"
-						onclick={handleStopChangeReaderVoice}
-						disabled={!changeReaderVoicePlaying}
-						data-testid="change-reader-stop-voice"
-						class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
-					>
-						Stop Voice
-					</button>
-				{/if}
+				<button
+					type="button"
+					class={`px-2 py-1 text-xs ${detailView === 'full' ? 'bg-accent/20 text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+					aria-pressed={detailView === 'full'}
+					data-testid="session-detail-view-full"
+					onclick={() => (detailView = 'full')}
+				>
+					전체
+				</button>
 			</div>
-			{#if changeReaderReadError}
-				<p class="text-xs text-error">{changeReaderReadError}</p>
-			{/if}
-			{#if !changeReaderVoiceEnabled}
-				<p class="text-xs text-text-muted">Voice is disabled in runtime settings.</p>
-			{:else if !changeReaderVoiceConfigured}
-				<p class="text-xs text-text-muted">Set Change Reader Voice API key in Settings to enable playback.</p>
-			{/if}
-			{#if changeReaderVoiceError}
-				<p class="text-xs text-error" data-testid="change-reader-voice-error">{changeReaderVoiceError}</p>
-			{/if}
-			{#if changeReaderVoiceWarning}
-				<p class="text-xs text-warning" data-testid="change-reader-voice-warning">{changeReaderVoiceWarning}</p>
-			{/if}
-			{#if changeReaderNarrative}
-				<pre class="overflow-x-auto whitespace-pre-wrap rounded border border-border/70 bg-bg-primary p-2 text-xs text-text-secondary" data-testid="change-reader-narrative">{changeReaderNarrative}</pre>
-			{/if}
+		</div>
+	</section>
 
-			{#if changeReaderQaEnabled}
-				<div class="space-y-2 border-t border-border/60 pt-2">
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Q&A</p>
-					<div class="flex flex-wrap items-center gap-2">
-						<input
-							bind:value={changeReaderQuestion}
-							data-testid="change-reader-question-input"
-							placeholder="Ask about this change..."
-							class="min-w-[220px] flex-1 border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
-						/>
-						<button
-							type="button"
-							onclick={handleAskChangeQuestion}
-							disabled={changeReaderAsking}
-							data-testid="change-reader-ask"
-							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
-						>
-							{changeReaderAsking ? 'Asking…' : 'Ask'}
-						</button>
-					</div>
-					{#if changeReaderAskError}
-						<p class="text-xs text-error">{changeReaderAskError}</p>
-					{/if}
-					{#if changeReaderAnswer}
-						<pre class="overflow-x-auto whitespace-pre-wrap rounded border border-border/70 bg-bg-primary p-2 text-xs text-text-secondary" data-testid="change-reader-answer">{changeReaderAnswer}</pre>
+	{#if detailView === 'summary'}
+		<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="semantic-summary-card">
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Semantic Summary</p>
+					{#if semanticSummary?.generation_kind === 'heuristic_fallback'}
+						<p class="mt-1 text-xs text-warning">Heuristic fallback · 변경 신호가 제한되어 간략 요약을 표시합니다.</p>
+					{:else if semanticSummary?.source_kind}
+						<p class="mt-1 text-xs text-text-secondary">
+							source={semanticSummary.source_kind}
+							{#if semanticSummary.generation_kind}
+								· mode={semanticSummary.generation_kind}
+							{/if}
+						</p>
 					{/if}
 				</div>
+				<button
+					type="button"
+					class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+					onclick={regenerateSummary}
+					disabled={summaryRegenerating}
+				>
+					{summaryRegenerating ? 'Regenerating…' : 'Regenerate'}
+				</button>
+			</div>
+
+			{#if summaryLoading}
+				<p class="text-xs text-text-muted">Loading semantic summary...</p>
+			{:else if summaryError}
+				<p class="text-xs text-error">{summaryError}</p>
+			{:else if semanticPayload}
+				<div class="grid gap-3 md:grid-cols-2">
+					<div>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Changes</p>
+						<p class="mt-1 text-xs text-text-primary">{semanticPayload.changes ?? '(none)'}</p>
+					</div>
+					<div>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Auth/Security</p>
+						<p class="mt-1 text-xs text-text-primary">{semanticPayload.auth_security ?? '(none)'}</p>
+					</div>
+				</div>
+				<div>
+					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Layer/File Changes</p>
+					{#if semanticPayload.layer_file_changes?.length}
+						<div class="mt-2 space-y-2">
+							{#each semanticPayload.layer_file_changes as item}
+								<div class="rounded border border-border/70 p-2">
+									<div class="text-xs font-medium text-text-primary">{item.layer ?? '(unknown layer)'}</div>
+									<div class="mt-1 text-xs text-text-secondary">{item.summary ?? ''}</div>
+									{#if item.files?.length}
+										<div class="mt-1 text-[11px] text-text-muted">{item.files.join(', ')}</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="mt-1 text-xs text-text-muted">변경 신호가 부족해 레이어/파일 요약을 만들지 못했습니다.</p>
+					{/if}
+				</div>
+				{#if semanticDiffTree.length}
+					<div>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Diff Tree</p>
+						<div class="mt-2 space-y-2">
+							{#each semanticDiffTree as layer}
+								<details class="rounded border border-border/70 p-2" open={layer.file_count != null && layer.file_count <= 5}>
+									<summary class="cursor-pointer text-xs text-text-primary">
+										{layer.layer ?? '(layer)'} · files={layer.file_count ?? 0} · +{layer.lines_added ?? 0}/-{layer.lines_removed ?? 0}
+									</summary>
+									<div class="mt-2 space-y-2">
+										{#each layer.files ?? [] as file}
+											<details class="rounded border border-border/60 p-2" open={!file.is_large}>
+												<summary class="cursor-pointer text-[11px] text-text-secondary">
+													{file.path ?? '(file)'} [{file.operation ?? 'edit'}] +{file.lines_added ?? 0}/-{file.lines_removed ?? 0}
+													{#if file.is_large}
+														· large
+													{/if}
+												</summary>
+												{#if file.hunks?.length}
+													<div class="mt-2 space-y-1">
+														{#each file.hunks as hunk}
+															<div class="rounded border border-border/50 bg-bg-primary p-2">
+																<div class="text-[11px] font-mono text-text-muted">{hunk.header ?? '(hunk)'}</div>
+																{#if hunk.lines?.length}
+																	<pre class="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] text-text-secondary">{hunk.lines.join('\n')}</pre>
+																{/if}
+																{#if (hunk.omitted_lines ?? 0) > 0}
+																	<div class="mt-1 text-[11px] text-text-muted">… {hunk.omitted_lines} lines omitted</div>
+																{/if}
+															</div>
+														{/each}
+													</div>
+												{/if}
+											</details>
+										{/each}
+									</div>
+								</details>
+							{/each}
+						</div>
+					</div>
+				{/if}
+				{#if semanticSummary?.error && semanticSummary.error !== 'no usable summary signals found'}
+					<p class="text-xs text-warning">generation note: {semanticSummary.error}</p>
+				{/if}
 			{:else}
-				<p class="text-xs text-text-muted">Q&A is disabled in runtime settings.</p>
+				<p class="text-xs text-text-muted">No semantic summary generated yet.</p>
 			{/if}
+		</section>
 
-			{#if changeReaderCitations.length}
-				<p class="text-[11px] text-text-muted" data-testid="change-reader-citations">
-					citations: {changeReaderCitations.join(', ')}
-				</p>
-			{/if}
-			{#if changeReaderWarning}
-				<p class="text-xs text-warning" data-testid="change-reader-warning">{changeReaderWarning}</p>
-			{/if}
-		</section>
-	{:else if changeReaderRuntimeError}
-		<section class="mb-3 rounded border border-border bg-bg-secondary p-3">
-			<p class="text-xs text-warning">{changeReaderRuntimeError}</p>
-		</section>
+		{#if changeReaderSupported && changeReaderEnabled}
+			<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="change-reader-card">
+				<div class="flex flex-wrap items-center justify-between gap-2">
+					<div>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Change Reader (Text + Voice)</p>
+						<p class="mt-1 text-xs text-text-secondary">Read session changes, ask questions, and play voice narration from local context.</p>
+					</div>
+					<label class="text-xs text-text-secondary">
+						<span class="mr-2">Scope</span>
+						<select bind:value={changeReaderScope} class="border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary">
+							<option value="summary_only">summary_only</option>
+							<option value="full_context">full_context</option>
+						</select>
+					</label>
+				</div>
+
+				<div class="flex flex-wrap items-center gap-2">
+					<button
+						type="button"
+						onclick={handleReadChanges}
+						disabled={changeReaderReading}
+						data-testid="change-reader-read"
+						class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+					>
+						{changeReaderReading ? 'Reading…' : 'Read Changes'}
+					</button>
+					{#if changeReaderVoiceEnabled && changeReaderVoiceConfigured}
+						<button
+							type="button"
+							onclick={handlePlayChangeReaderVoice}
+							disabled={changeReaderVoicePending}
+							data-testid="change-reader-play-voice"
+							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+						>
+							{changeReaderVoicePending ? 'Synthesizing…' : changeReaderVoicePlaying ? 'Replay Voice' : 'Play Voice'}
+						</button>
+						<button
+							type="button"
+							onclick={handleStopChangeReaderVoice}
+							disabled={!changeReaderVoicePlaying}
+							data-testid="change-reader-stop-voice"
+							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+						>
+							Stop Voice
+						</button>
+					{/if}
+				</div>
+				{#if changeReaderReadError}
+					<p class="text-xs text-error">{changeReaderReadError}</p>
+				{/if}
+				{#if !changeReaderVoiceEnabled}
+					<p class="text-xs text-text-muted">Voice is disabled in runtime settings.</p>
+				{:else if !changeReaderVoiceConfigured}
+					<p class="text-xs text-text-muted">Set Change Reader Voice API key in Settings to enable playback.</p>
+				{/if}
+				{#if changeReaderVoiceError}
+					<p class="text-xs text-error" data-testid="change-reader-voice-error">{changeReaderVoiceError}</p>
+				{/if}
+				{#if changeReaderVoiceWarning}
+					<p class="text-xs text-warning" data-testid="change-reader-voice-warning">{changeReaderVoiceWarning}</p>
+				{/if}
+				{#if changeReaderNarrative}
+					<pre class="overflow-x-auto whitespace-pre-wrap rounded border border-border/70 bg-bg-primary p-2 text-xs text-text-secondary" data-testid="change-reader-narrative">{changeReaderNarrative}</pre>
+				{/if}
+
+				{#if changeReaderQaEnabled}
+					<div class="space-y-2 border-t border-border/60 pt-2">
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Q&A</p>
+						<div class="flex flex-wrap items-center gap-2">
+							<input
+								bind:value={changeReaderQuestion}
+								data-testid="change-reader-question-input"
+								placeholder="Ask about this change..."
+								class="min-w-[220px] flex-1 border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
+							/>
+							<button
+								type="button"
+								onclick={handleAskChangeQuestion}
+								disabled={changeReaderAsking}
+								data-testid="change-reader-ask"
+								class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+							>
+								{changeReaderAsking ? 'Asking…' : 'Ask'}
+							</button>
+						</div>
+						{#if changeReaderAskError}
+							<p class="text-xs text-error">{changeReaderAskError}</p>
+						{/if}
+						{#if changeReaderAnswer}
+							<pre class="overflow-x-auto whitespace-pre-wrap rounded border border-border/70 bg-bg-primary p-2 text-xs text-text-secondary" data-testid="change-reader-answer">{changeReaderAnswer}</pre>
+						{/if}
+					</div>
+				{:else}
+					<p class="text-xs text-text-muted">Q&A is disabled in runtime settings.</p>
+				{/if}
+
+				{#if changeReaderCitations.length}
+					<p class="text-[11px] text-text-muted" data-testid="change-reader-citations">
+						citations: {changeReaderCitations.join(', ')}
+					</p>
+				{/if}
+				{#if changeReaderWarning}
+					<p class="text-xs text-warning" data-testid="change-reader-warning">{changeReaderWarning}</p>
+				{/if}
+			</section>
+		{:else if changeReaderRuntimeError}
+			<section class="mb-3 rounded border border-border bg-bg-secondary p-3">
+				<p class="text-xs text-warning">{changeReaderRuntimeError}</p>
+			</section>
+		{/if}
+	{:else}
+		<SessionRenderPage
+			{session}
+			{detail}
+			{viewMode}
+			nativeAdapter={session.agent.tool}
+			{unifiedFilters}
+			{branchFilters}
+			{nativeFilters}
+			onViewModeChange={(mode) => (viewMode = mode)}
+			onToggleUnifiedFilter={toggleUnifiedFilter}
+			onToggleBranchFilter={toggleBranchFilter}
+			onToggleNativeFilter={toggleNativeFilter}
+		/>
 	{/if}
-
-	<SessionRenderPage
-		{session}
-		{detail}
-		{viewMode}
-		nativeAdapter={session.agent.tool}
-		{unifiedFilters}
-		{branchFilters}
-		{nativeFilters}
-		onViewModeChange={(mode) => (viewMode = mode)}
-		onToggleUnifiedFilter={toggleUnifiedFilter}
-		onToggleBranchFilter={toggleBranchFilter}
-		onToggleNativeFilter={toggleNativeFilter}
-	/>
 {/if}

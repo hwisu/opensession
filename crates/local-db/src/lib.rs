@@ -13,6 +13,9 @@ use std::sync::Mutex;
 
 use git::{normalize_repo_name, GitContext};
 
+const SUMMARY_WORKER_TITLE_PREFIX_LOWER: &str =
+    "convert a real coding session into semantic compression.";
+
 /// A local session row stored in the local SQLite index/cache database.
 #[derive(Debug, Clone)]
 pub struct LocalSessionRow {
@@ -594,6 +597,11 @@ impl LocalDb {
         let mut where_clauses = vec![
             "1=1".to_string(),
             "COALESCE(s.is_auxiliary, 0) = 0".to_string(),
+            format!(
+                "NOT (LOWER(COALESCE(s.tool, '')) = 'codex' \
+                 AND LOWER(COALESCE(s.title, '')) LIKE '{}%')",
+                SUMMARY_WORKER_TITLE_PREFIX_LOWER
+            ),
         ];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1u32;
@@ -747,6 +755,11 @@ impl LocalDb {
         let mut where_clauses = vec![
             "1=1".to_string(),
             "COALESCE(s.is_auxiliary, 0) = 0".to_string(),
+            format!(
+                "NOT (LOWER(COALESCE(s.tool, '')) = 'codex' \
+                 AND LOWER(COALESCE(s.title, '')) LIKE '{}%')",
+                SUMMARY_WORKER_TITLE_PREFIX_LOWER
+            ),
         ];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1u32;
@@ -2204,6 +2217,69 @@ mod tests {
             .find(|row| row.id == "primary-override")
             .expect("session with explicit primary role should stay visible");
         assert!(!row.is_auxiliary);
+    }
+
+    #[test]
+    fn test_list_sessions_hides_codex_summary_worker_titles() {
+        let db = test_db();
+        let mut codex_summary_worker = Session::new(
+            "codex-summary-worker".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        codex_summary_worker.context.title = Some(
+            "Convert a real coding session into semantic compression. Pipeline: ...".to_string(),
+        );
+        codex_summary_worker.stats.event_count = 2;
+        codex_summary_worker.stats.message_count = 1;
+
+        db.upsert_local_session(
+            &codex_summary_worker,
+            "/Users/test/.codex/sessions/2026/03/05/summary-worker.jsonl",
+            &crate::git::GitContext::default(),
+        )
+        .expect("upsert codex summary worker session");
+
+        let mut non_codex_same_title = Session::new(
+            "claude-similar-title".to_string(),
+            opensession_core::trace::Agent {
+                provider: "anthropic".to_string(),
+                model: "claude-opus-4-6".to_string(),
+                tool: "claude-code".to_string(),
+                tool_version: None,
+            },
+        );
+        non_codex_same_title.context.title = Some(
+            "Convert a real coding session into semantic compression. Pipeline: ...".to_string(),
+        );
+        non_codex_same_title.stats.event_count = 2;
+        non_codex_same_title.stats.message_count = 1;
+
+        db.upsert_local_session(
+            &non_codex_same_title,
+            "/Users/test/.claude/projects/p1/claude-similar-title.jsonl",
+            &crate::git::GitContext::default(),
+        )
+        .expect("upsert non-codex session");
+
+        let rows = db.list_sessions(&LocalSessionFilter::default()).unwrap();
+        assert!(
+            rows.iter().all(|row| row.id != "codex-summary-worker"),
+            "codex summary worker sessions should be hidden from default listing"
+        );
+        assert!(
+            rows.iter().any(|row| row.id == "claude-similar-title"),
+            "non-codex sessions must remain visible even with similar title"
+        );
+
+        let count = db
+            .count_sessions_filtered(&LocalSessionFilter::default())
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

@@ -68,6 +68,12 @@ Auto-capture note:
 - `opensession` covers parse/register/share/handoff.
 - Automatic background capture requires the daemon process (`opensession-daemon run`) to be running.
 
+Repository development toolchain:
+
+- Local validation hooks are executed via `mise`.
+- Run `mise install` at repo root before `./.githooks/pre-commit` / `./.githooks/pre-push`.
+- Desktop preflight gate: `node scripts/validate/desktop-build-preflight.mjs --mode local`.
+
 Local object storage:
 
 - In repo: `.opensession/objects/sha256/ab/cd/<hash>.jsonl`
@@ -212,6 +218,22 @@ Quick local gate commands:
 ./.githooks/pre-commit
 ./.githooks/pre-push
 ```
+
+Desktop build policy:
+
+- Linux desktop bundle build verification is required in CI (`desktop-bundle-verify`).
+- macOS desktop release target is `universal-apple-darwin` only.
+- Universal architecture is validated by `lipo -archs` and must include both `x86_64` and `arm64`.
+- A scheduled/manual `Desktop Dry Run` workflow validates no-sign desktop bundling and uploads diagnostics/metrics artifacts.
+
+Release signing checklist (manual secret provisioning):
+
+- `APPLE_CERTIFICATE`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_ID`
+- `APPLE_PASSWORD`
+- `APPLE_TEAM_ID`
 
 ## Failure Recovery
 

@@ -8,37 +8,6 @@ import { spawnSync } from 'node:child_process';
 const repoRoot = process.cwd();
 const cacheDir = path.join(repoRoot, '.opensession', '.cache', 'pre-push');
 
-function resolveRustCargoCommand() {
-	const rustup = spawnSync('rustup', ['which', '--toolchain', 'stable', 'cargo'], {
-		stdio: 'pipe',
-		encoding: 'utf8',
-	});
-	const rustc = spawnSync('rustup', ['which', '--toolchain', 'stable', 'rustc'], {
-		stdio: 'pipe',
-		encoding: 'utf8',
-	});
-	if (rustup.status === 0 && rustc.status === 0) {
-		const cargoBin = rustup.stdout.trim();
-		const rustcBin = rustc.stdout.trim();
-		if (cargoBin && rustcBin) {
-			const toolchainBin = path.dirname(rustcBin);
-			return {
-				cargoCmd: cargoBin,
-				env: {
-					PATH: `${toolchainBin}${path.delimiter}${process.env.PATH ?? ''}`,
-					RUSTC: rustcBin,
-				},
-				usingRustupStable: true,
-			};
-		}
-	}
-	return {
-		cargoCmd: 'cargo',
-		env: {},
-		usingRustupStable: false,
-	};
-}
-
 function run(cmd, args, opts = {}) {
 	const result = spawnSync(cmd, args, {
 		cwd: opts.cwd ?? repoRoot,
@@ -53,16 +22,20 @@ function run(cmd, args, opts = {}) {
 	}
 }
 
-function hasCommand(command) {
-	const result = spawnSync(command, ['--version'], {
+function assertMiseAvailable() {
+	const result = spawnSync('mise', ['--version'], {
 		stdio: 'ignore',
 	});
-	if (result.error) return false;
-	return result.status === 0;
+	if (result.error || result.status !== 0) {
+		console.error('ERROR: mise is required for pre-push validation.');
+		console.error('Install mise, then run: mise install');
+		console.error('https://mise.jdx.dev/getting-started.html');
+		process.exit(1);
+	}
 }
 
-function runCargo(rustToolchain, args) {
-	run(rustToolchain.cargoCmd, args, { env: rustToolchain.env });
+function runMise(command, args, opts = {}) {
+	run('mise', ['exec', '--', command, ...args], opts);
 }
 
 function sha256File(filePath) {
@@ -89,7 +62,7 @@ function maybeNpmCi({ packageDir, lockFile, cacheKeyName }) {
 
 	if (shouldInstall) {
 		console.log(`Running npm ci for ${packageDir}...`);
-		run('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund', '--silent'], {
+		runMise('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund', '--silent'], {
 			cwd: pkgPath,
 		});
 		fs.mkdirSync(cacheDir, { recursive: true });
@@ -99,14 +72,9 @@ function maybeNpmCi({ packageDir, lockFile, cacheKeyName }) {
 
 function main() {
 	console.log('Running pre-push validation pipeline (pre-commit -> pre-push)...');
-	const rustToolchain = resolveRustCargoCommand();
+	assertMiseAvailable();
 	run('sh', ['.githooks/pre-commit']);
-
-	if (!hasCommand('npm')) {
-		console.error('ERROR: npm is required for pre-push validation.');
-		console.error('Install Node.js/npm and re-run ./.githooks/pre-push.');
-		process.exit(1);
-	}
+	runMise('node', ['scripts/validate/desktop-build-preflight.mjs', '--mode', 'local']);
 
 	if (process.env.OPENSESSION_SKIP_FRONTEND_PRE_PUSH === '1') {
 		console.log('No frontend-related changes vs upstream; skipping frontend checks');
@@ -121,16 +89,13 @@ function main() {
 			lockFile: 'web/package-lock.json',
 			cacheKeyName: 'web.lock.sha256',
 		});
-		run('npm', ['run', 'test', '--silent'], { cwd: path.join(repoRoot, 'packages/ui') });
-		run('npm', ['run', 'check'], { cwd: path.join(repoRoot, 'web') });
+		runMise('npm', ['run', 'test', '--silent'], { cwd: path.join(repoRoot, 'packages/ui') });
+		runMise('npm', ['run', 'check'], { cwd: path.join(repoRoot, 'web') });
 	}
 
-	runCargo(rustToolchain, ['clippy', '--workspace', '--quiet', '--', '-D', 'warnings']);
-
-	if (rustToolchain.usingRustupStable) {
-		run('rustup', ['target', 'add', 'wasm32-unknown-unknown', '--toolchain', 'stable']);
-	}
-	runCargo(rustToolchain, [
+	runMise('cargo', ['clippy', '--workspace', '--quiet', '--', '-D', 'warnings']);
+	runMise('rustup', ['target', 'add', 'wasm32-unknown-unknown']);
+	runMise('cargo', [
 		'clippy',
 		'--manifest-path',
 		'crates/worker/Cargo.toml',
@@ -141,8 +106,8 @@ function main() {
 		'-D',
 		'warnings',
 	]);
-	runCargo(rustToolchain, ['test', '--workspace', '--exclude', 'opensession-e2e', '--quiet']);
-	runCargo(rustToolchain, ['test', '-p', 'opensession-e2e', '--no-run', '--quiet']);
+	runMise('cargo', ['test', '--workspace', '--exclude', 'opensession-e2e', '--quiet']);
+	runMise('cargo', ['test', '-p', 'opensession-e2e', '--no-run', '--quiet']);
 
 	console.log('pre-push validation pipeline passed.');
 }

@@ -9,7 +9,8 @@ const checks = [
 	{
 		file: '.githooks/pre-commit',
 		requiredSnippets: [
-			'ERROR: node is required for pre-commit validation.',
+			'ERROR: mise is required for pre-commit validation.',
+			'scripts/validate/desktop-build-preflight.mjs --mode local',
 			'run_node_check()',
 			'scripts/check-validation-hooks.mjs',
 			'scripts/check-doc-portability.mjs',
@@ -19,7 +20,7 @@ const checks = [
 	{
 		file: '.githooks/pre-push',
 		requiredSnippets: [
-			'ERROR: npm is required for pre-push validation.',
+			'ERROR: mise is required for pre-push validation.',
 			'No frontend-related changes vs upstream; skipping frontend checks',
 			'Skipping npm ci for',
 			'.opensession/.cache/pre-push',

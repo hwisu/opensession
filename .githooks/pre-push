@@ -34,12 +34,18 @@ original_hook="$(dirname "$0")/pre-push.original.pre-opensession"
 if [ -f "$original_hook" ]; then
     sh "$original_hook" "$@" || exit $?
 else
-    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-        echo "ERROR: npm is required for pre-push validation."
-        echo "Install Node.js/npm and re-run ./.githooks/pre-push."
+    if ! command -v mise >/dev/null 2>&1; then
+        echo "ERROR: mise is required for pre-push validation."
+        echo "Install mise, then run: mise install"
+        echo "https://mise.jdx.dev/getting-started.html"
         exit 1
     fi
-    node scripts/validate/pre-push.mjs || exit $?
+    if ! mise exec -- node --version >/dev/null 2>&1 || ! mise exec -- npm --version >/dev/null 2>&1; then
+        echo "ERROR: node/npm are not available via mise."
+        echo "Run: mise install"
+        exit 1
+    fi
+    mise exec -- node scripts/validate/pre-push.mjs || exit $?
 fi
 
 tmp_fanout="/tmp/opensession-ledger-fanout.$$"

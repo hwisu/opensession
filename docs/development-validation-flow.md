@@ -12,9 +12,16 @@ Run both hook stages before pushing:
 ./.githooks/pre-push
 ```
 
+Toolchain requirement:
+
+- Hooks now require `mise` (`mise install` in repo root).
+- Hooks execute Node/Rust commands through `mise exec`.
+- Desktop build preflight is part of hook validation (`scripts/validate/desktop-build-preflight.mjs`).
+
 `pre-commit` runs:
 
 - content/session-review/workflow/docs guardrail scripts (`node scripts/*.mjs`)
+- desktop build preflight (`node scripts/validate/desktop-build-preflight.mjs --mode local`)
 - `cargo fmt --all -- --check`
 - `cargo test -p opensession-daemon --quiet`
 
@@ -117,8 +124,15 @@ Desktop E2E:
 - API E2E server suite
 - worker API + web live Playwright E2E
 - desktop E2E
+- desktop bundle verify (Linux + macOS universal build + smoke + diagnostics)
 
 Failure artifacts (Playwright report/trace and runtime logs) are uploaded on failing E2E jobs.
+
+Desktop dry-run reliability workflow:
+
+- `.github/workflows/desktop-dryrun.yml` runs on schedule/manual trigger.
+- Performs Linux/macOS no-sign bundle builds and smoke checks.
+- Uploads diagnostics (`.ci-logs`, `.ci-diagnostics`) and metrics summary artifacts.
 
 ## Session Review Automation Output
 

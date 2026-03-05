@@ -13,6 +13,12 @@ npm run dev
 `npm run dev` starts Tauri and the web UI dev server.
 It does not require `opensession-server`.
 
+Before running desktop commands, install the repo toolchain via `mise`:
+
+```bash
+mise install
+```
+
 ## Build
 
 ```bash
@@ -24,6 +30,12 @@ Build flow:
 
 1. `web` static bundle build (`../web/build`)
 2. Tauri desktop bundle
+
+macOS universal bundle (unsigned local verification):
+
+```bash
+npm run tauri:build -- --target universal-apple-darwin --bundles app --no-sign --ci
+```
 
 ## Notes
 
@@ -74,8 +86,9 @@ Desktop vector search (optional):
 - Run `node scripts/sync-product-version.mjs --check` before release, or `--write` to apply.
 - GitHub Actions `Release` workflow (manual) now runs:
   1. `release-plz update` + release publish
-  2. macOS Tauri bundle build (`.dmg`, `.app.zip`, checksum)
+  2. macOS universal Tauri bundle build (`.dmg`, `.app.zip`, checksum)
   3. upload artifacts to tag `v<workspace-version>`
+- Universal policy: release build uses `universal-apple-darwin` and validates `lipo -archs` as `x86_64 arm64`.
 - Security gate: desktop artifacts are uploaded only when code signing + notarization validation passes.
   Required repo secrets:
   - `APPLE_CERTIFICATE`
@@ -84,3 +97,5 @@ Desktop vector search (optional):
   - `APPLE_ID`
   - `APPLE_PASSWORD`
   - `APPLE_TEAM_ID`
+- Preflight helper for release/CI/local checks:
+  - `node scripts/validate/desktop-build-preflight.mjs --mode release --os macos`

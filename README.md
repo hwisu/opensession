@@ -53,6 +53,18 @@ cargo install opensession
 
 `opensession` is the user-facing CLI. Session auto-capture additionally requires the daemon process to be running.
 
+## Development Toolchain (Required for Repo Work)
+
+Repository validation hooks now require `mise`-managed tools to avoid local toolchain drift.
+
+```bash
+mise install
+mise exec -- node --version
+mise exec -- cargo --version
+```
+
+Local gates (`./.githooks/pre-commit`, `./.githooks/pre-push`) run through `mise exec`.
+
 ## Install-and-Forget Setup
 
 ```bash
@@ -107,6 +119,7 @@ This starts the Tauri desktop window with the local desktop runtime.
 It does not require `opensession-server`.
 
 Desktop release is manual via GitHub Actions `Release` workflow; it now publishes crates and uploads macOS desktop artifacts on the same version tag.
+Release policy is `macOS universal` (`x86_64 + arm64`) only, with `lipo` verification in CI/release.
 
 ## Desktop Runtime Summary Settings (v3)
 
@@ -135,6 +148,12 @@ Desktop search options:
 - Vector search is disabled by default until the embedding model is explicitly installed from Settings.
 - Default embedding model is `bge-m3` on local Ollama (`http://127.0.0.1:11434`).
 - Settings expose install/indexing status (`NotInstalled/Installing/Ready/Failed`, `Idle/Running/Complete/Failed`) and manual `Rebuild index`.
+
+Desktop build reliability policy:
+
+- Linux desktop bundle build verification is required in CI (`desktop-bundle-verify`).
+- macOS desktop bundle build is required as `universal-apple-darwin` with architecture checks.
+- Nightly/manual dry-run workflow (`Desktop Dry Run`) validates no-sign desktop bundling and uploads diagnostics.
 
 ## Quick Start
 

@@ -12,6 +12,7 @@ const docTargets = [
 	'docs.md',
 	'docs/development-validation-flow.md',
 	'web/README.md',
+	'desktop/README.md',
 	'docs/harness-auto-improve-loop.md',
 ];
 

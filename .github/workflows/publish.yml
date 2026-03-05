@@ -128,7 +128,9 @@ jobs:
         working-directory: desktop
       - name: Check product version sync
         run: node scripts/sync-product-version.mjs --check
-      - name: Verify signing/notarization secrets
+      - name: Install universal Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Desktop release preflight
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -136,21 +138,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          set -euo pipefail
-          missing=0
-          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!key:-}" ]; then
-              echo "::error::Missing required secret: ${key}"
-              missing=1
-            fi
-          done
-          if [ "${missing}" -ne 0 ]; then
-            echo "Desktop release requires signed+notarized bundles. Configure required Apple signing secrets."
-            exit 1
-          fi
+        run: node scripts/validate/desktop-build-preflight.mjs --mode release --os macos
       - name: Build desktop bundle
-        run: npm run build
+        run: npm run tauri:build -- --target universal-apple-darwin --ci
         working-directory: desktop
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -164,7 +154,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          BUNDLE_DIR="desktop/src-tauri/target/release/bundle"
+          BUNDLE_DIR="desktop/src-tauri/target/universal-apple-darwin/release/bundle"
           MACOS_DIR="${BUNDLE_DIR}/macos"
           DMG_PATH="$(find "${BUNDLE_DIR}/dmg" -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
           APP_PATH="$(find "${MACOS_DIR}" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
@@ -174,6 +164,21 @@ jobs:
           fi
           if [ -z "${DMG_PATH}" ]; then
             echo "No .dmg artifact found under ${BUNDLE_DIR}/dmg"
+            exit 1
+          fi
+          APP_BIN="${APP_PATH}/Contents/MacOS/opensession-desktop"
+          if [ ! -f "${APP_BIN}" ]; then
+            echo "No app executable found at ${APP_BIN}"
+            exit 1
+          fi
+          archs="$(lipo -archs "${APP_BIN}" | xargs)"
+          if [ "${archs}" != "x86_64 arm64" ] && [ "${archs}" != "arm64 x86_64" ]; then
+            echo "Universal arch check failed: ${archs}"
+            exit 1
+          fi
+          if find "${BUNDLE_DIR}/dmg" -maxdepth 1 -type f -name '*_aarch64.dmg' | grep -q .; then
+            echo "Found single-arch aarch64 dmg artifact in universal release output"
+            find "${BUNDLE_DIR}/dmg" -maxdepth 1 -type f -name '*_aarch64.dmg'
             exit 1
           fi
 
@@ -193,7 +198,7 @@ jobs:
       - name: Archive app bundle + checksums
         run: |
           set -euo pipefail
-          BUNDLE_DIR="desktop/src-tauri/target/release/bundle"
+          BUNDLE_DIR="desktop/src-tauri/target/universal-apple-darwin/release/bundle"
           MACOS_DIR="${BUNDLE_DIR}/macos"
           APP_PATH="$(find "${MACOS_DIR}" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
           if [ -z "${APP_PATH}" ]; then
@@ -219,8 +224,8 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           overwrite_files: true
           files: |
-            desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/release/bundle/macos/*.app.zip
-            desktop/src-tauri/target/release/bundle/SHA256SUMS.txt
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.zip
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

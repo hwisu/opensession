@@ -5,19 +5,8 @@ set -e
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT_DIR"
 
-run_cargo() {
-  if command -v rustup >/dev/null 2>&1; then
-    RUSTC_BIN=$(rustup which --toolchain stable rustc 2>/dev/null || true)
-    CARGO_BIN=$(rustup which --toolchain stable cargo 2>/dev/null || true)
-    if [ -n "$RUSTC_BIN" ] && [ -n "$CARGO_BIN" ]; then
-      RUSTC_VER=$("$RUSTC_BIN" --version | awk '{print $2}' | tr '.' '_')
-      TOOLCHAIN_BIN=$(dirname "$RUSTC_BIN")
-      PATH="$TOOLCHAIN_BIN:$PATH" RUSTC="$RUSTC_BIN" CARGO_TARGET_DIR="$ROOT_DIR/target-rustup-$RUSTC_VER" "$CARGO_BIN" "$@"
-      return
-    fi
-  fi
-
-  cargo "$@"
+run_mise() {
+  mise exec -- "$@"
 }
 
 run_node_check() {
@@ -25,7 +14,7 @@ run_node_check() {
   script="$2"
   shift 2
   echo "Running $label..."
-  node "$script" "$@"
+  run_mise node "$script" "$@"
 }
 
 hash_file_sha256() {
@@ -56,12 +45,26 @@ hash_file_sha256() {
 # Cargo.lock 변경 감지를 위한 스냅샷
 LOCK_HASH_BEFORE=$(hash_file_sha256 Cargo.lock)
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "ERROR: node is required for pre-commit validation."
-  echo "Install Node.js and re-run ./.githooks/pre-commit."
+if ! command -v mise >/dev/null 2>&1; then
+  echo "ERROR: mise is required for pre-commit validation."
+  echo "Install mise, then run: mise install"
+  echo "https://mise.jdx.dev/getting-started.html"
   exit 1
 fi
 
+if ! run_mise node --version >/dev/null 2>&1 || ! run_mise npm --version >/dev/null 2>&1; then
+  echo "ERROR: node/npm are not available via mise."
+  echo "Run: mise install"
+  exit 1
+fi
+
+if ! run_mise cargo --version >/dev/null 2>&1 || ! run_mise rustc --version >/dev/null 2>&1; then
+  echo "ERROR: rust/cargo are not available via mise."
+  echo "Run: mise install"
+  exit 1
+fi
+
+run_node_check "desktop build preflight" scripts/validate/desktop-build-preflight.mjs --mode local
 run_node_check "content contract check" scripts/verify-content-contract.mjs --check
 run_node_check "session-review workflow check" scripts/check-session-review-workflow.mjs
 run_node_check "publishable dependency check" scripts/check-publishable-deps.mjs
@@ -70,10 +73,10 @@ run_node_check "docs portability check" scripts/check-doc-portability.mjs
 run_node_check "product version sync check" scripts/sync-product-version.mjs --check
 
 echo "Running cargo fmt check..."
-run_cargo fmt --all -- --check
+run_mise cargo fmt --all -- --check
 
 echo "Running daemon smoke tests..."
-run_cargo test -p opensession-daemon --quiet
+run_mise cargo test -p opensession-daemon --quiet
 
 # Cargo.lock 변경 여부 확인
 LOCK_HASH_AFTER=$(hash_file_sha256 Cargo.lock)

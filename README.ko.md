@@ -53,6 +53,18 @@ cargo install opensession
 
 사용자 표면은 `opensession` CLI입니다. 자동 세션 수집(auto-capture)을 쓰려면 daemon 프로세스가 추가로 실행 중이어야 합니다.
 
+## 개발 툴체인 (레포 작업 필수)
+
+로컬 환경 편차를 줄이기 위해 레포 훅/검증은 `mise` 관리 툴체인을 필수로 사용합니다.
+
+```bash
+mise install
+mise exec -- node --version
+mise exec -- cargo --version
+```
+
+로컬 게이트(`./.githooks/pre-commit`, `./.githooks/pre-push`)는 `mise exec` 경로로 실행됩니다.
+
 ## Install-and-Forget 설정
 
 ```bash
@@ -108,6 +120,7 @@ npm run dev
 `opensession-server`는 필요하지 않습니다.
 
 데스크톱 릴리즈는 GitHub Actions `Release` 워크플로에서 수동 실행하며, 이제 crates 릴리즈와 macOS 데스크톱 아티팩트 업로드를 같은 버전 태그로 처리합니다.
+릴리즈 정책은 `macOS universal`(`x86_64 + arm64`) 단일이며, CI/Release에서 `lipo` 검증을 수행합니다.
 
 ## 데스크톱 런타임 Summary 설정(v3)
 
@@ -136,6 +149,12 @@ npm run dev
 - 벡터 검색은 기본 비활성화이며 Settings에서 임베딩 모델 설치를 명시적으로 완료해야 활성화할 수 있습니다.
 - 기본 임베딩 모델은 로컬 Ollama의 `bge-m3` (`http://127.0.0.1:11434`)입니다.
 - Settings에서 모델 설치/인덱싱 상태(`NotInstalled/Installing/Ready/Failed`, `Idle/Running/Complete/Failed`)와 `Rebuild index`를 제공합니다.
+
+데스크톱 빌드 안정성 정책:
+
+- CI에서 Linux 데스크톱 번들 빌드 검증(`desktop-bundle-verify`)을 필수로 수행합니다.
+- macOS 번들 빌드는 `universal-apple-darwin`으로 강제되고 아키텍처 검증을 통과해야 합니다.
+- 정기/수동 `Desktop Dry Run` 워크플로가 no-sign 번들 빌드를 점검하고 진단 아티팩트를 업로드합니다.
 
 ## 빠른 시작
 

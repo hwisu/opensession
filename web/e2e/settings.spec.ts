@@ -336,6 +336,13 @@ test.describe('Settings', () => {
 		await page.goto('/settings');
 		await expect(page.locator('[data-testid="settings-runtime-provider"]')).toBeVisible();
 		await expect(page.locator('option[value="session_or_git_changes"]')).toHaveCount(0);
+		const detectProviderButton = page.locator('[data-testid="runtime-detect-provider"]');
+		const saveRuntimeButton = page.locator('[data-testid="runtime-save"]');
+		const detectProviderBox = await detectProviderButton.boundingBox();
+		const saveRuntimeBox = await saveRuntimeButton.boundingBox();
+		expect(detectProviderBox).not.toBeNull();
+		expect(saveRuntimeBox).not.toBeNull();
+		expect(Math.abs((detectProviderBox?.height ?? 0) - (saveRuntimeBox?.height ?? 0))).toBeLessThanOrEqual(2);
 
 		await page.locator('[data-testid="runtime-provider-select"]').selectOption('ollama');
 		await expect(page.locator('[data-testid="runtime-provider-endpoint"]')).toBeVisible();
@@ -369,6 +376,19 @@ test.describe('Settings', () => {
 			.first()
 			.selectOption('full_context');
 		await page.locator('[data-testid="runtime-change-reader-max-context"]').fill('18000');
+
+		await expect(page.locator('[data-testid="settings-runtime-storage"]')).toBeVisible();
+		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
+			'Persist summary artifacts in git-native hidden refs',
+		);
+		await page.locator('[data-testid="settings-runtime-storage"] select').nth(1).selectOption('local_db');
+		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
+			'session_semantic_summaries',
+		);
+		await page.locator('[data-testid="settings-runtime-storage"] select').nth(1).selectOption('none');
+		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
+			'results are not stored',
+		);
 
 		await expect(page.locator('[data-testid="settings-runtime-summary-batch"]')).toBeVisible();
 		await page

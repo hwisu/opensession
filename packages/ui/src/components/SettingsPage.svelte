@@ -120,6 +120,26 @@ function currentRuntimeProviderTransport(): DesktopSummaryProviderTransport {
 	return providerTransportForId(runtimeProvider);
 }
 
+function storageBackendSummary(backend: DesktopSummaryStorageBackend): string {
+	if (backend === 'hidden_ref') {
+		return 'Persist summary artifacts in git-native hidden refs.';
+	}
+	if (backend === 'local_db') {
+		return 'Persist summary artifacts in local SQLite only.';
+	}
+	return 'Do not persist summary artifacts after generation.';
+}
+
+function storageBackendDetails(backend: DesktopSummaryStorageBackend): string {
+	if (backend === 'hidden_ref') {
+		return 'Best when you want git-backed summary history. Search/filter metadata is still indexed in local SQLite for fast queries.';
+	}
+	if (backend === 'local_db') {
+		return 'Writes summary rows to local SQLite (session_semantic_summaries). Nothing is written to git refs.';
+	}
+	return 'Summary generation can still run on demand, but results are not stored and will be regenerated next time.';
+}
+
 function responsePreview(
 	style: DesktopSummaryResponseStyle,
 	shape: DesktopSummaryOutputShape,
@@ -800,22 +820,24 @@ $effect(() => {
 				</p>
 			</div>
 			<div class="flex items-center gap-2">
-				<button
-					type="button"
-					onclick={handleDetectRuntimeProvider}
-					disabled={!runtimeSupported || runtimeDetecting || runtimeSaving || runtimeLoading}
-					class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
-				>
-					{runtimeDetecting ? 'Detecting...' : 'Detect Provider'}
-				</button>
-				<button
-					type="button"
-					onclick={handleSaveRuntimeSettings}
-					disabled={!runtimeSupported || runtimeSaving || runtimeLoading}
-					class="bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
-				>
-					{runtimeSaving ? 'Saving...' : 'Save Runtime'}
-				</button>
+					<button
+						type="button"
+						data-testid="runtime-detect-provider"
+						onclick={handleDetectRuntimeProvider}
+						disabled={!runtimeSupported || runtimeDetecting || runtimeSaving || runtimeLoading}
+						class="inline-flex h-9 items-center border border-border px-3 text-xs font-semibold text-text-secondary hover:text-text-primary disabled:opacity-60"
+					>
+						{runtimeDetecting ? 'Detecting...' : 'Detect Provider'}
+					</button>
+					<button
+						type="button"
+						data-testid="runtime-save"
+						onclick={handleSaveRuntimeSettings}
+						disabled={!runtimeSupported || runtimeSaving || runtimeLoading}
+						class="inline-flex h-9 items-center border border-transparent bg-accent px-3 text-xs font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
+					>
+						{runtimeSaving ? 'Saving...' : 'Save Runtime'}
+					</button>
 			</div>
 		</div>
 
@@ -1115,18 +1137,16 @@ $effect(() => {
 						<label class="text-xs text-text-secondary">
 							<span class="mb-1 block">Backend</span>
 							<select bind:value={runtimeStorageBackend} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-								<option value="hidden_ref">hidden_ref</option>
-								<option value="local_db">local_db</option>
-								<option value="none">none</option>
+								<option value="hidden_ref">hidden_ref (git refs)</option>
+								<option value="local_db">local_db (sqlite)</option>
+								<option value="none">none (no persistence)</option>
 							</select>
 						</label>
 					</div>
-					{#if runtimeStorageBackend === 'hidden_ref'}
-						<p class="text-[11px] text-text-muted" data-testid="runtime-storage-hidden-ref-notice">
-							<code>hidden_ref</code> stores summary artifacts in git-native refs. Search/filter metadata is still indexed in local SQLite
-							(<code>OPENSESSION_LOCAL_DB_PATH</code> or default <code>~/.local/share/opensession/local.db</code>) for fast queries.
-						</p>
-					{/if}
+					<div class="space-y-1 rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-storage-backend-notice">
+						<p><code>{runtimeStorageBackend}</code> · {storageBackendSummary(runtimeStorageBackend)}</p>
+						<p>{storageBackendDetails(runtimeStorageBackend)}</p>
+					</div>
 				</section>
 
 				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-summary-batch">

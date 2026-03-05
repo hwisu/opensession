@@ -945,6 +945,23 @@ impl LocalDb {
         Ok(result)
     }
 
+    /// List every session id with a non-empty source path from session_sync.
+    pub fn list_session_source_paths(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, source_path \
+             FROM session_sync \
+             WHERE source_path IS NOT NULL AND TRIM(source_path) != ''",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let session_id: String = row.get(0)?;
+            let source_path: String = row.get(1)?;
+            Ok((session_id, source_path))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     /// Get a single session row by id.
     pub fn get_session_by_id(&self, session_id: &str) -> Result<Option<LocalSessionRow>> {
         let sql = format!(
@@ -2297,6 +2314,48 @@ mod tests {
             db.get_sync_cursor("team1").unwrap(),
             Some("2024-06-01T00:00:00Z".to_string())
         );
+    }
+
+    #[test]
+    fn test_list_session_source_paths_returns_non_empty_paths_only() {
+        let db = test_db();
+        let mut s1 = Session::new(
+            "source-path-1".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        s1.stats.event_count = 1;
+        db.upsert_local_session(
+            &s1,
+            "/tmp/source-path-1.jsonl",
+            &crate::git::GitContext::default(),
+        )
+        .expect("upsert first session");
+
+        let mut s2 = Session::new(
+            "source-path-2".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        s2.stats.event_count = 1;
+        db.upsert_local_session(&s2, "", &crate::git::GitContext::default())
+            .expect("upsert second session");
+
+        let paths = db
+            .list_session_source_paths()
+            .expect("list source paths should work");
+        assert!(paths
+            .iter()
+            .any(|(id, path)| id == "source-path-1" && path == "/tmp/source-path-1.jsonl"));
+        assert!(paths.iter().all(|(id, _)| id != "source-path-2"));
     }
 
     #[test]

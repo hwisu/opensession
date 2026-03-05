@@ -84,6 +84,15 @@ fn resolve_lifecycle_schedule(config: &DaemonConfig) -> Option<Duration> {
     ))
 }
 
+fn run_lifecycle_cleanup_on_start(config: &DaemonConfig, db: &LocalDb, registry: &RepoRegistry) {
+    if resolve_lifecycle_schedule(config).is_none() {
+        return;
+    }
+    if let Err(e) = run_lifecycle_cleanup_once(config, db, registry) {
+        warn!("Lifecycle startup cleanup failed: {e}");
+    }
+}
+
 fn run_git_retention_once(registry: &RepoRegistry, keep_days: u32) -> Result<()> {
     let repo_roots = registry.repo_roots();
     if repo_roots.is_empty() {
@@ -164,6 +173,30 @@ fn collect_lifecycle_repo_roots(db: &LocalDb, registry: &RepoRegistry) -> Result
     Ok(roots)
 }
 
+fn source_parent_directory_missing(source_path: &str) -> bool {
+    let path = Path::new(source_path);
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .is_some_and(|parent| !parent.exists())
+}
+
+fn list_sessions_with_missing_source_parent_dirs(db: &LocalDb) -> Result<Vec<String>> {
+    let mut orphaned = db
+        .list_session_source_paths()?
+        .into_iter()
+        .filter_map(|(session_id, source_path)| {
+            if source_parent_directory_missing(&source_path) {
+                Some(session_id)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    orphaned.sort();
+    orphaned.dedup();
+    Ok(orphaned)
+}
+
 fn run_lifecycle_cleanup_once(
     config: &DaemonConfig,
     db: &LocalDb,
@@ -175,9 +208,15 @@ fn run_lifecycle_cleanup_once(
 
     let storage = opensession_git_native::NativeGitStorage;
     let expired_sessions = db.list_expired_session_ids(config.lifecycle.session_ttl_days)?;
+    let orphaned_sessions = list_sessions_with_missing_source_parent_dirs(db)?;
+    let mut sessions_to_delete = expired_sessions
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    sessions_to_delete.extend(orphaned_sessions);
+    let total_sessions_to_delete = sessions_to_delete.len();
     let mut deleted_sessions = 0usize;
 
-    for session_id in expired_sessions {
+    for session_id in sessions_to_delete {
         let row = db.get_session_by_id(&session_id)?;
         let repo_root = resolve_repo_root_from_working_directory(
             row.as_ref()
@@ -245,6 +284,7 @@ fn run_lifecycle_cleanup_once(
 
     info!(
         deleted_sessions,
+        total_sessions_to_delete,
         deleted_local_summaries,
         session_ttl_days = config.lifecycle.session_ttl_days,
         summary_ttl_days = config.lifecycle.summary_ttl_days,
@@ -382,6 +422,9 @@ pub async fn run_scheduler(
             RepoRegistry::default()
         }
     };
+
+    // Run lifecycle cleanup once at startup before interval-driven cycles.
+    run_lifecycle_cleanup_on_start(&config, &db, &repo_registry);
 
     // Pending changes: path -> when we last saw a change
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
@@ -1133,6 +1176,38 @@ mod tests {
     }
 
     #[test]
+    fn test_run_lifecycle_cleanup_on_start_runs_immediately() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = tmp.path().join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let mut expired = make_interaction_fixture_session("startup-expired-session");
+        expired.context.created_at = Utc::now() - chrono::Duration::days(90);
+        expired.context.updated_at = expired.context.created_at;
+        db.upsert_local_session(
+            &expired,
+            "/tmp/startup-expired-session.jsonl",
+            &opensession_local_db::git::GitContext::default(),
+        )
+        .expect("upsert expired session");
+
+        let mut config = DaemonConfig::default();
+        config.lifecycle.enabled = true;
+        config.lifecycle.session_ttl_days = 30;
+        config.lifecycle.summary_ttl_days = 30;
+        config.lifecycle.cleanup_interval_secs = 3600;
+
+        run_lifecycle_cleanup_on_start(&config, &db, &RepoRegistry::default());
+
+        assert!(
+            db.get_session_by_id("startup-expired-session")
+                .expect("query expired session")
+                .is_none(),
+            "expired session should be deleted during startup lifecycle cleanup"
+        );
+    }
+
+    #[test]
     fn test_run_lifecycle_cleanup_deletes_expired_sessions_and_hidden_ref_summaries() {
         let tmp = tempdir().expect("tempdir");
         let repo_root = tmp.path().join("repo");
@@ -1318,6 +1393,65 @@ mod tests {
                 .expect("query new summary")
                 .is_some(),
             "new summary should remain"
+        );
+    }
+
+    #[test]
+    fn test_run_lifecycle_cleanup_deletes_sessions_with_missing_source_parent_dir() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = tmp.path().join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let missing_parent_root = tmp.path().join("deleted-source-root");
+        std::fs::create_dir_all(&missing_parent_root).expect("create missing parent root");
+        let missing_parent_source = missing_parent_root.join("missing-parent.jsonl");
+
+        let existing_parent_root = tmp.path().join("existing-source-root");
+        std::fs::create_dir_all(&existing_parent_root).expect("create existing parent root");
+        let existing_parent_source = existing_parent_root.join("missing-file.jsonl");
+
+        let missing_parent_session = make_interaction_fixture_session("missing-parent-session");
+        db.upsert_local_session(
+            &missing_parent_session,
+            missing_parent_source
+                .to_str()
+                .expect("missing parent source path should be utf-8"),
+            &opensession_local_db::git::GitContext::default(),
+        )
+        .expect("upsert missing-parent session");
+
+        let existing_parent_session = make_interaction_fixture_session("existing-parent-session");
+        db.upsert_local_session(
+            &existing_parent_session,
+            existing_parent_source
+                .to_str()
+                .expect("existing parent source path should be utf-8"),
+            &opensession_local_db::git::GitContext::default(),
+        )
+        .expect("upsert existing-parent session");
+
+        std::fs::remove_dir_all(&missing_parent_root).expect("remove missing parent root");
+
+        let mut config = DaemonConfig::default();
+        config.lifecycle.enabled = true;
+        config.lifecycle.session_ttl_days = 10_000;
+        config.lifecycle.summary_ttl_days = 10_000;
+        config.lifecycle.cleanup_interval_secs = 60;
+
+        run_lifecycle_cleanup_once(&config, &db, &RepoRegistry::default())
+            .expect("run lifecycle cleanup");
+
+        assert!(
+            db.get_session_by_id("missing-parent-session")
+                .expect("query missing-parent session")
+                .is_none(),
+            "session should be deleted when source parent directory is gone"
+        );
+        assert!(
+            db.get_session_by_id("existing-parent-session")
+                .expect("query existing-parent session")
+                .is_some(),
+            "session should remain when source parent directory still exists"
         );
     }
 

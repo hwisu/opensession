@@ -30,6 +30,8 @@ pub struct DaemonConfig {
     pub vector_search: VectorSearchSettings,
     #[serde(default)]
     pub change_reader: ChangeReaderSettings,
+    #[serde(default)]
+    pub lifecycle: LifecycleSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +218,8 @@ pub struct SummarySettings {
     /// Kept for CLI/CI and non-desktop runtimes.
     #[serde(default)]
     pub source_mode: SummarySourceMode,
+    #[serde(default)]
+    pub batch: SummaryBatchSettings,
 }
 
 impl SummarySettings {
@@ -291,6 +295,26 @@ pub struct SummaryStorageSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryBatchSettings {
+    #[serde(default)]
+    pub execution_mode: SummaryBatchExecutionMode,
+    #[serde(default)]
+    pub scope: SummaryBatchScope,
+    #[serde(default = "default_summary_batch_recent_days")]
+    pub recent_days: u16,
+}
+
+impl Default for SummaryBatchSettings {
+    fn default() -> Self {
+        Self {
+            execution_mode: SummaryBatchExecutionMode::default(),
+            scope: SummaryBatchScope::default(),
+            recent_days: default_summary_batch_recent_days(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorSearchSettings {
     #[serde(default = "default_false")]
     pub enabled: bool,
@@ -347,6 +371,29 @@ impl Default for ChangeReaderSettings {
             scope: ChangeReaderScope::default(),
             qa_enabled: default_true(),
             max_context_chars: default_change_reader_max_context_chars(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_lifecycle_session_ttl_days")]
+    pub session_ttl_days: u32,
+    #[serde(default = "default_lifecycle_summary_ttl_days")]
+    pub summary_ttl_days: u32,
+    #[serde(default = "default_lifecycle_cleanup_interval_secs")]
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for LifecycleSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            session_ttl_days: default_lifecycle_session_ttl_days(),
+            summary_ttl_days: default_lifecycle_summary_ttl_days(),
+            cleanup_interval_secs: default_lifecycle_cleanup_interval_secs(),
         }
     }
 }
@@ -445,6 +492,22 @@ pub enum SummaryStorageBackend {
     LocalDb,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryBatchExecutionMode {
+    Manual,
+    #[default]
+    OnAppStart,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryBatchScope {
+    #[default]
+    RecentDays,
+    All,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitRetentionSettings {
     #[serde(default = "default_false")]
@@ -536,6 +599,18 @@ fn default_vector_top_k_sessions() -> u16 {
 }
 fn default_change_reader_max_context_chars() -> u32 {
     12_000
+}
+fn default_summary_batch_recent_days() -> u16 {
+    30
+}
+fn default_lifecycle_session_ttl_days() -> u32 {
+    30
+}
+fn default_lifecycle_summary_ttl_days() -> u32 {
+    30
+}
+fn default_lifecycle_cleanup_interval_secs() -> u64 {
+    3_600
 }
 fn default_server_url() -> String {
     "https://opensession.io".to_string()
@@ -679,6 +754,11 @@ shape = "security_first"
 [summary.storage]
 trigger = "on_session_save"
 backend = "local_db"
+
+[summary.batch]
+execution_mode = "manual"
+scope = "all"
+recent_days = 90
 "#,
         )
         .expect("parse summary settings");
@@ -701,7 +781,24 @@ backend = "local_db"
             SummaryTriggerMode::OnSessionSave
         );
         assert_eq!(cfg.summary.storage.backend, SummaryStorageBackend::LocalDb);
+        assert_eq!(
+            cfg.summary.batch.execution_mode,
+            SummaryBatchExecutionMode::Manual
+        );
+        assert_eq!(cfg.summary.batch.scope, SummaryBatchScope::All);
+        assert_eq!(cfg.summary.batch.recent_days, 90);
         assert!(cfg.summary.is_configured());
+    }
+
+    #[test]
+    fn summary_batch_defaults_are_stable() {
+        let cfg = DaemonConfig::default();
+        assert_eq!(
+            cfg.summary.batch.execution_mode,
+            SummaryBatchExecutionMode::OnAppStart
+        );
+        assert_eq!(cfg.summary.batch.scope, SummaryBatchScope::RecentDays);
+        assert_eq!(cfg.summary.batch.recent_days, 30);
     }
 
     #[test]
@@ -771,6 +868,34 @@ backend = "remote_db"
         assert!(
             parsed.is_err(),
             "unsupported summary storage.backend must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_batch_execution_mode_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary.batch]
+execution_mode = "scheduled"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary batch execution mode must be rejected"
+        );
+    }
+
+    #[test]
+    fn summary_batch_scope_requires_canonical_values() {
+        let parsed: Result<DaemonConfig, _> = toml::from_str(
+            r#"
+[summary.batch]
+scope = "recent_weeks"
+"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "unsupported summary batch scope must be rejected"
         );
     }
 
@@ -979,6 +1104,34 @@ scope = "full"
             parsed.is_err(),
             "unsupported change reader scope must be rejected"
         );
+    }
+
+    #[test]
+    fn lifecycle_defaults_are_stable() {
+        let cfg = DaemonConfig::default();
+        assert!(cfg.lifecycle.enabled);
+        assert_eq!(cfg.lifecycle.session_ttl_days, 30);
+        assert_eq!(cfg.lifecycle.summary_ttl_days, 30);
+        assert_eq!(cfg.lifecycle.cleanup_interval_secs, 3_600);
+    }
+
+    #[test]
+    fn lifecycle_settings_deserialize_from_toml() {
+        let cfg: DaemonConfig = toml::from_str(
+            r#"
+[lifecycle]
+enabled = true
+session_ttl_days = 45
+summary_ttl_days = 14
+cleanup_interval_secs = 7200
+"#,
+        )
+        .expect("parse lifecycle settings");
+
+        assert!(cfg.lifecycle.enabled);
+        assert_eq!(cfg.lifecycle.session_ttl_days, 45);
+        assert_eq!(cfg.lifecycle.summary_ttl_days, 14);
+        assert_eq!(cfg.lifecycle.cleanup_interval_secs, 7_200);
     }
 
     #[test]

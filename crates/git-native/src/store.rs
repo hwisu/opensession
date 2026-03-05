@@ -117,6 +117,16 @@ impl NativeGitStorage {
         };
         format!("v1/summaries/{prefix}/{session_id}")
     }
+
+    fn summary_session_id_from_commit_message(message: &str) -> Option<&str> {
+        let first = message.lines().next()?.trim();
+        let id = first.strip_prefix("summary: ")?.trim();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
+    }
 }
 
 fn sanitize_path_component(raw: &str) -> String {
@@ -380,6 +390,142 @@ impl NativeGitStorage {
         }))
     }
 
+    /// Delete a session semantic summary from an explicit ref.
+    ///
+    /// Returns true when the ref was rewritten, false when no summary existed.
+    pub fn delete_summary_at_ref(
+        &self,
+        repo_path: &Path,
+        ref_name: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        let repo = ops::open_repo(repo_path)?;
+        let tip = match ops::find_ref_tip(&repo, ref_name)? {
+            Some(tip) => tip.detach(),
+            None => return Ok(false),
+        };
+
+        let prefix = Self::summary_prefix(session_id);
+        let summary_path = format!("{prefix}.summary.json");
+        let meta_path = format!("{prefix}.summary.meta.json");
+        let has_summary = read_path_from_ref(repo_path, ref_name, &summary_path)?.is_some();
+        let has_meta = read_path_from_ref(repo_path, ref_name, &meta_path)?.is_some();
+        if !has_summary && !has_meta {
+            return Ok(false);
+        }
+
+        let base_tree_id = ops::commit_tree_id(&repo, tip)?;
+        let mut editor = repo.edit_tree(base_tree_id).map_err(gix_err)?;
+        if has_summary {
+            editor.remove(&summary_path).map_err(gix_err)?;
+        }
+        if has_meta {
+            editor.remove(&meta_path).map_err(gix_err)?;
+        }
+
+        let new_tree_id = editor.write().map_err(gix_err)?.detach();
+        let message = format!("summary-delete: {session_id}");
+        let sig = ops::make_signature();
+        let commit = gix::objs::Commit {
+            message: message.clone().into(),
+            tree: new_tree_id,
+            author: sig.clone(),
+            committer: sig,
+            encoding: None,
+            parents: Vec::<ObjectId>::new().into(),
+            extra_headers: Default::default(),
+        };
+        let new_tip = repo.write_object(&commit).map_err(gix_err)?.detach();
+        ops::replace_ref_tip(&repo, ref_name, tip, new_tip, &message)?;
+        Ok(true)
+    }
+
+    /// Prune expired semantic summaries from a specific summary ref by age (days).
+    pub fn prune_summaries_by_age_at_ref(
+        &self,
+        repo_path: &Path,
+        ref_name: &str,
+        keep_days: u32,
+    ) -> Result<PruneStats> {
+        let repo = ops::open_repo(repo_path)?;
+        let tip = match ops::find_ref_tip(&repo, ref_name)? {
+            Some(tip) => tip.detach(),
+            None => return Ok(PruneStats::default()),
+        };
+
+        let cutoff = chrono::Utc::now()
+            .timestamp()
+            .saturating_sub((keep_days as i64).saturating_mul(24 * 60 * 60));
+
+        let mut latest_seen: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        let mut current = Some(tip);
+        while let Some(commit_id) = current {
+            let commit = repo.find_commit(commit_id).map_err(gix_err)?;
+            let message = String::from_utf8_lossy(commit.message_raw_sloppy().as_ref());
+            if let Some(session_id) = Self::summary_session_id_from_commit_message(&message) {
+                latest_seen
+                    .entry(session_id.to_string())
+                    .or_insert(commit.time().map_err(gix_err)?.seconds);
+            }
+            current = commit.parent_ids().next().map(|id| id.detach());
+        }
+
+        let mut expired: Vec<String> = latest_seen
+            .iter()
+            .filter_map(|(id, ts)| {
+                if *ts <= cutoff {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        expired.sort();
+
+        if expired.is_empty() {
+            return Ok(PruneStats {
+                scanned_sessions: latest_seen.len(),
+                expired_sessions: 0,
+                rewritten: false,
+            });
+        }
+
+        let base_tree_id = ops::commit_tree_id(&repo, tip)?;
+        let mut editor = repo.edit_tree(base_tree_id).map_err(gix_err)?;
+        for session_id in &expired {
+            let prefix = Self::summary_prefix(session_id);
+            let summary_path = format!("{prefix}.summary.json");
+            let meta_path = format!("{prefix}.summary.meta.json");
+            editor.remove(&summary_path).map_err(gix_err)?;
+            editor.remove(&meta_path).map_err(gix_err)?;
+        }
+
+        let new_tree_id = editor.write().map_err(gix_err)?.detach();
+        let message = format!(
+            "summary-retention-prune: keep_days={keep_days} expired={}",
+            expired.len()
+        );
+        let sig = ops::make_signature();
+        let commit = gix::objs::Commit {
+            message: message.clone().into(),
+            tree: new_tree_id,
+            author: sig.clone(),
+            committer: sig,
+            encoding: None,
+            parents: Vec::<ObjectId>::new().into(),
+            extra_headers: Default::default(),
+        };
+        let new_tip = repo.write_object(&commit).map_err(gix_err)?.detach();
+        ops::replace_ref_tip(&repo, ref_name, tip, new_tip, &message)?;
+
+        Ok(PruneStats {
+            scanned_sessions: latest_seen.len(),
+            expired_sessions: expired.len(),
+            rewritten: true,
+        })
+    }
+
     /// Prune expired sessions from a specific ledger ref by age (days).
     pub fn prune_by_age_at_ref(
         &self,
@@ -641,6 +787,95 @@ mod tests {
             .load_summary_at_ref(tmp.path(), "refs/opensession/summaries", "missing-session")
             .expect("load summary");
         assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_delete_summary_at_ref_removes_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_test_repo(tmp.path());
+
+        let storage = NativeGitStorage;
+        let ref_name = "refs/opensession/summaries";
+        let record = SessionSummaryLedgerRecord {
+            session_id: "session-delete".to_string(),
+            generated_at: "2026-03-05T00:00:00Z".to_string(),
+            provider: "codex_exec".to_string(),
+            model: None,
+            source_kind: "session_signals".to_string(),
+            generation_kind: "provider".to_string(),
+            prompt_fingerprint: None,
+            summary: json!({ "changes": "x" }),
+            source_details: json!({}),
+            diff_tree: vec![],
+            error: None,
+        };
+        storage
+            .store_summary_at_ref(tmp.path(), ref_name, &record)
+            .expect("store summary");
+
+        let rewritten = storage
+            .delete_summary_at_ref(tmp.path(), ref_name, "session-delete")
+            .expect("delete summary");
+        assert!(rewritten);
+        assert!(storage
+            .load_summary_at_ref(tmp.path(), ref_name, "session-delete")
+            .expect("load after delete")
+            .is_none());
+    }
+
+    #[test]
+    fn test_prune_summaries_by_age_rewrites_and_removes_expired_summaries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_test_repo(tmp.path());
+
+        let storage = NativeGitStorage;
+        let ref_name = "refs/opensession/summaries";
+        let record_a = SessionSummaryLedgerRecord {
+            session_id: "summary-a".to_string(),
+            generated_at: "2026-03-05T00:00:00Z".to_string(),
+            provider: "codex_exec".to_string(),
+            model: None,
+            source_kind: "session_signals".to_string(),
+            generation_kind: "provider".to_string(),
+            prompt_fingerprint: None,
+            summary: json!({ "changes": "a" }),
+            source_details: json!({}),
+            diff_tree: vec![],
+            error: None,
+        };
+        let record_b = SessionSummaryLedgerRecord {
+            session_id: "summary-b".to_string(),
+            generated_at: "2026-03-05T00:00:01Z".to_string(),
+            provider: "codex_exec".to_string(),
+            model: None,
+            source_kind: "session_signals".to_string(),
+            generation_kind: "provider".to_string(),
+            prompt_fingerprint: None,
+            summary: json!({ "changes": "b" }),
+            source_details: json!({}),
+            diff_tree: vec![],
+            error: None,
+        };
+        storage
+            .store_summary_at_ref(tmp.path(), ref_name, &record_a)
+            .expect("store summary a");
+        storage
+            .store_summary_at_ref(tmp.path(), ref_name, &record_b)
+            .expect("store summary b");
+
+        let stats = storage
+            .prune_summaries_by_age_at_ref(tmp.path(), ref_name, 0)
+            .expect("prune summaries");
+        assert!(stats.rewritten);
+        assert_eq!(stats.expired_sessions, 2);
+        assert!(storage
+            .load_summary_at_ref(tmp.path(), ref_name, "summary-a")
+            .expect("load summary a")
+            .is_none());
+        assert!(storage
+            .load_summary_at_ref(tmp.path(), ref_name, "summary-b")
+            .expect("load summary b")
+            .is_none());
     }
 
     #[test]

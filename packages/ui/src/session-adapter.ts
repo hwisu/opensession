@@ -12,6 +12,7 @@ import type {
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSummaryBatchStatusResponse,
 	DesktopSessionListQuery,
 	DesktopSessionSummaryResponse,
 	DesktopSummaryProviderDetectResponse,
@@ -37,7 +38,7 @@ export type SessionListParams = {
 
 export type DesktopInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
-export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v4';
+export const DESKTOP_CONTRACT_VERSION = 'desktop-ipc-v5';
 
 type ErrorDetails = Record<string, unknown> | null;
 
@@ -74,6 +75,8 @@ export interface SessionReadAdapter {
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
 	): Promise<DesktopRuntimeSettingsResponse>;
+	summaryBatchRun(): Promise<DesktopSummaryBatchStatusResponse>;
+	summaryBatchStatus(): Promise<DesktopSummaryBatchStatusResponse>;
 	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
 	vectorPreflight(): Promise<DesktopVectorPreflightResponse>;
 	vectorInstallModel(model: string): Promise<DesktopVectorInstallStatusResponse>;
@@ -325,6 +328,26 @@ export function createWebSessionReadAdapter(args: {
 				}),
 			);
 		},
+		async summaryBatchRun() {
+			throw new SessionAdapterError(
+				'desktop_summary_batch_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_summary_batch_unsupported',
+					message: 'Summary batch controls are available only in desktop runtime.',
+				}),
+			);
+		},
+		async summaryBatchStatus() {
+			throw new SessionAdapterError(
+				'desktop_summary_batch_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_summary_batch_unsupported',
+					message: 'Summary batch controls are available only in desktop runtime.',
+				}),
+			);
+		},
 		async detectSummaryProvider() {
 			throw new SessionAdapterError(
 				'desktop_runtime_settings_unsupported',
@@ -535,6 +558,16 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 				{ request },
 			);
 		},
+		async summaryBatchRun() {
+			return invokeAfterContractCheck<DesktopSummaryBatchStatusResponse>(
+				'desktop_summary_batch_run',
+			);
+		},
+		async summaryBatchStatus() {
+			return invokeAfterContractCheck<DesktopSummaryBatchStatusResponse>(
+				'desktop_summary_batch_status',
+			);
+		},
 		async detectSummaryProvider() {
 			return invokeAfterContractCheck<DesktopSummaryProviderDetectResponse>(
 				'desktop_detect_summary_provider',
@@ -613,6 +646,12 @@ export function createUnavailableDesktopSessionReadAdapter(): SessionReadAdapter
 			throw desktopBridgeUnavailableError();
 		},
 		async updateRuntimeSettings() {
+			throw desktopBridgeUnavailableError();
+		},
+		async summaryBatchRun() {
+			throw desktopBridgeUnavailableError();
+		},
+		async summaryBatchStatus() {
 			throw desktopBridgeUnavailableError();
 		},
 		async detectSummaryProvider() {

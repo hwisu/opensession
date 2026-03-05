@@ -75,6 +75,15 @@ fn resolve_git_retention_schedule(config: &DaemonConfig) -> Option<(u32, Duratio
     Some((keep_days, Duration::from_secs(interval_secs)))
 }
 
+fn resolve_lifecycle_schedule(config: &DaemonConfig) -> Option<Duration> {
+    if !config.lifecycle.enabled {
+        return None;
+    }
+    Some(Duration::from_secs(
+        config.lifecycle.cleanup_interval_secs.max(60),
+    ))
+}
+
 fn run_git_retention_once(registry: &RepoRegistry, keep_days: u32) -> Result<()> {
     let repo_roots = registry.repo_roots();
     if repo_roots.is_empty() {
@@ -126,6 +135,121 @@ fn run_git_retention_once(registry: &RepoRegistry, keep_days: u32) -> Result<()>
         }
     }
 
+    Ok(())
+}
+
+fn resolve_repo_root_from_working_directory(cwd: Option<&str>) -> Option<PathBuf> {
+    cwd.and_then(crate::config::find_repo_root)
+}
+
+fn collect_lifecycle_repo_roots(db: &LocalDb, registry: &RepoRegistry) -> Result<Vec<PathBuf>> {
+    let mut deduped: HashSet<PathBuf> = registry.repo_roots().into_iter().collect();
+
+    let filter = opensession_local_db::LocalSessionFilter {
+        limit: None,
+        offset: None,
+        ..Default::default()
+    };
+    let rows = db.list_sessions(&filter)?;
+    for row in rows {
+        if let Some(repo_root) =
+            resolve_repo_root_from_working_directory(row.working_directory.as_deref())
+        {
+            deduped.insert(repo_root);
+        }
+    }
+
+    let mut roots = deduped.into_iter().collect::<Vec<_>>();
+    roots.sort();
+    Ok(roots)
+}
+
+fn run_lifecycle_cleanup_once(
+    config: &DaemonConfig,
+    db: &LocalDb,
+    registry: &RepoRegistry,
+) -> Result<()> {
+    if !config.lifecycle.enabled {
+        return Ok(());
+    }
+
+    let storage = opensession_git_native::NativeGitStorage;
+    let expired_sessions = db.list_expired_session_ids(config.lifecycle.session_ttl_days)?;
+    let mut deleted_sessions = 0usize;
+
+    for session_id in expired_sessions {
+        let row = db.get_session_by_id(&session_id)?;
+        let repo_root = resolve_repo_root_from_working_directory(
+            row.as_ref()
+                .and_then(|row| row.working_directory.as_deref()),
+        );
+        if let Some(repo_root) = repo_root {
+            if let Err(e) =
+                storage.delete_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &session_id)
+            {
+                warn!(
+                    repo = %repo_root.display(),
+                    session_id,
+                    "Lifecycle cleanup: failed to delete hidden-ref summary for expired session: {e}"
+                );
+            }
+        }
+        db.delete_session(&session_id)?;
+        deleted_sessions = deleted_sessions.saturating_add(1);
+    }
+
+    let deleted_local_summaries =
+        db.delete_expired_session_summaries(config.lifecycle.summary_ttl_days)? as usize;
+
+    let repo_roots = collect_lifecycle_repo_roots(db, registry)?;
+    for repo_root in repo_roots {
+        match storage.prune_summaries_by_age_at_ref(
+            &repo_root,
+            SUMMARY_LEDGER_REF,
+            config.lifecycle.summary_ttl_days,
+        ) {
+            Ok(PruneStats {
+                scanned_sessions,
+                expired_sessions,
+                rewritten,
+            }) => {
+                if rewritten {
+                    info!(
+                        repo = %repo_root.display(),
+                        scanned_sessions,
+                        expired_sessions,
+                        keep_days = config.lifecycle.summary_ttl_days,
+                        "Lifecycle cleanup: pruned hidden-ref summaries"
+                    );
+                } else {
+                    debug!(
+                        repo = %repo_root.display(),
+                        scanned_sessions,
+                        keep_days = config.lifecycle.summary_ttl_days,
+                        "Lifecycle cleanup: no hidden-ref summary pruning required"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    repo = %repo_root.display(),
+                    "Lifecycle cleanup: hidden-ref summary pruning failed: {e}"
+                );
+            }
+        }
+    }
+
+    if config.git_storage.method != GitStorageMethod::Sqlite {
+        run_git_retention_once(registry, config.lifecycle.session_ttl_days)?;
+    }
+
+    info!(
+        deleted_sessions,
+        deleted_local_summaries,
+        session_ttl_days = config.lifecycle.session_ttl_days,
+        summary_ttl_days = config.lifecycle.summary_ttl_days,
+        "Lifecycle cleanup: cycle complete"
+    );
     Ok(())
 }
 
@@ -265,6 +389,8 @@ pub async fn run_scheduler(
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let retention_schedule = resolve_git_retention_schedule(&config);
     let mut next_retention_run = retention_schedule.map(|(_, interval)| Instant::now() + interval);
+    let lifecycle_interval = resolve_lifecycle_schedule(&config);
+    let mut next_lifecycle_run = lifecycle_interval.map(|interval| Instant::now() + interval);
 
     loop {
         tokio::select! {
@@ -317,6 +443,15 @@ pub async fn run_scheduler(
                             warn!("Git retention scan failed: {e}");
                         }
                         next_retention_run = Some(now + interval);
+                    }
+                }
+
+                if let (Some(interval), Some(next_at)) = (lifecycle_interval, next_lifecycle_run) {
+                    if now >= next_at {
+                        if let Err(e) = run_lifecycle_cleanup_once(&config, &db, &repo_registry) {
+                            warn!("Lifecycle cleanup failed: {e}");
+                        }
+                        next_lifecycle_run = Some(now + interval);
                     }
                 }
 
@@ -690,10 +825,14 @@ fn mark_session_share_ready(session: &Session, db: &LocalDb, body_url: Option<&s
 mod tests {
     use super::*;
     use opensession_core::{Agent, Content, Event, EventType, Session};
+    use opensession_git_native::{
+        NativeGitStorage, SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
+    };
     use opensession_runtime_config::{SummaryProvider, SummaryStorageBackend, SummaryTriggerMode};
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::process::Command;
     use tempfile::tempdir;
 
     /// Helper: build a minimal Session with the given context attributes.
@@ -745,6 +884,29 @@ mod tests {
         ];
         session.recompute_stats();
         session
+    }
+
+    fn init_git_repo(path: &Path) {
+        let status = Command::new("git")
+            .arg("init")
+            .current_dir(path)
+            .status()
+            .expect("git init should run");
+        assert!(status.success(), "git init should succeed");
+
+        let status = Command::new("git")
+            .args(["config", "user.email", "test@opensession.local"])
+            .current_dir(path)
+            .status()
+            .expect("git config user.email should run");
+        assert!(status.success(), "git config user.email should succeed");
+
+        let status = Command::new("git")
+            .args(["config", "user.name", "OpenSession Tests"])
+            .current_dir(path)
+            .status()
+            .expect("git config user.name should run");
+        assert!(status.success(), "git config user.name should succeed");
     }
 
     #[test]
@@ -931,6 +1093,215 @@ mod tests {
         let (_, interval) =
             resolve_git_retention_schedule(&config).expect("retention should be enabled");
         assert_eq!(interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_resolve_lifecycle_schedule_honors_enabled_and_min_interval() {
+        let mut config = DaemonConfig::default();
+        config.lifecycle.enabled = false;
+        assert!(resolve_lifecycle_schedule(&config).is_none());
+
+        config.lifecycle.enabled = true;
+        config.lifecycle.cleanup_interval_secs = 12;
+        assert_eq!(
+            resolve_lifecycle_schedule(&config),
+            Some(Duration::from_secs(60))
+        );
+
+        config.lifecycle.cleanup_interval_secs = 120;
+        assert_eq!(
+            resolve_lifecycle_schedule(&config),
+            Some(Duration::from_secs(120))
+        );
+    }
+
+    #[test]
+    fn test_run_lifecycle_cleanup_deletes_expired_sessions_and_hidden_ref_summaries() {
+        let tmp = tempdir().expect("tempdir");
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("create repo root");
+        init_git_repo(&repo_root);
+
+        let db_path = tmp.path().join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+        let mut expired = make_interaction_fixture_session("expired-session");
+        expired.context.created_at = Utc::now() - chrono::Duration::days(90);
+        expired.context.updated_at = expired.context.created_at;
+        expired.context.attributes.insert(
+            "working_directory".to_string(),
+            json!(repo_root.to_string_lossy().to_string()),
+        );
+        db.upsert_local_session(
+            &expired,
+            "/tmp/expired-session.jsonl",
+            &opensession_local_db::git::GitContext::default(),
+        )
+        .expect("upsert expired session");
+
+        let mut active = make_interaction_fixture_session("active-session");
+        active.context.attributes.insert(
+            "working_directory".to_string(),
+            json!(repo_root.to_string_lossy().to_string()),
+        );
+        db.upsert_local_session(
+            &active,
+            "/tmp/active-session.jsonl",
+            &opensession_local_db::git::GitContext::default(),
+        )
+        .expect("upsert active session");
+
+        let storage = NativeGitStorage;
+        storage
+            .store_summary_at_ref(
+                &repo_root,
+                SUMMARY_LEDGER_REF,
+                &SessionSummaryLedgerRecord {
+                    session_id: "expired-session".to_string(),
+                    generated_at: "2026-01-01T00:00:00Z".to_string(),
+                    provider: "codex_exec".to_string(),
+                    model: None,
+                    source_kind: "session_signals".to_string(),
+                    generation_kind: "provider".to_string(),
+                    prompt_fingerprint: None,
+                    summary: json!({ "changes": "expired" }),
+                    source_details: json!({}),
+                    diff_tree: vec![],
+                    error: None,
+                },
+            )
+            .expect("store expired summary");
+        storage
+            .store_summary_at_ref(
+                &repo_root,
+                SUMMARY_LEDGER_REF,
+                &SessionSummaryLedgerRecord {
+                    session_id: "active-session".to_string(),
+                    generated_at: "2026-01-01T00:00:00Z".to_string(),
+                    provider: "codex_exec".to_string(),
+                    model: None,
+                    source_kind: "session_signals".to_string(),
+                    generation_kind: "provider".to_string(),
+                    prompt_fingerprint: None,
+                    summary: json!({ "changes": "active" }),
+                    source_details: json!({}),
+                    diff_tree: vec![],
+                    error: None,
+                },
+            )
+            .expect("store active summary");
+
+        let mut registry = RepoRegistry::default();
+        registry
+            .add(&repo_root)
+            .expect("repo registry should accept repo root");
+
+        let mut config = DaemonConfig::default();
+        config.lifecycle.enabled = true;
+        config.lifecycle.session_ttl_days = 30;
+        config.lifecycle.summary_ttl_days = 10_000;
+        config.lifecycle.cleanup_interval_secs = 60;
+
+        run_lifecycle_cleanup_once(&config, &db, &registry).expect("run lifecycle cleanup");
+
+        assert!(
+            db.get_session_by_id("expired-session")
+                .expect("query expired session")
+                .is_none(),
+            "expired session should be deleted"
+        );
+        assert!(
+            db.get_session_by_id("active-session")
+                .expect("query active session")
+                .is_some(),
+            "active session should remain"
+        );
+        assert!(
+            storage
+                .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, "expired-session")
+                .expect("load expired summary")
+                .is_none(),
+            "hidden-ref summary for expired session should be deleted"
+        );
+        assert!(
+            storage
+                .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, "active-session")
+                .expect("load active summary")
+                .is_some(),
+            "active session summary should remain"
+        );
+    }
+
+    #[test]
+    fn test_run_lifecycle_cleanup_prunes_local_summary_rows_by_ttl() {
+        let tmp = tempdir().expect("tempdir");
+        let db_path = tmp.path().join("local.db");
+        let db = LocalDb::open_path(&db_path).expect("open local db");
+
+        let session_old = make_interaction_fixture_session("summary-old");
+        db.upsert_local_session(
+            &session_old,
+            "/tmp/summary-old.jsonl",
+            &opensession_local_db::git::GitContext::default(),
+        )
+        .expect("upsert old summary session");
+        let session_new = make_interaction_fixture_session("summary-new");
+        db.upsert_local_session(
+            &session_new,
+            "/tmp/summary-new.jsonl",
+            &opensession_local_db::git::GitContext::default(),
+        )
+        .expect("upsert new summary session");
+
+        db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
+            session_id: "summary-old",
+            summary_json: r#"{"changes":"old"}"#,
+            generated_at: "2020-01-01T00:00:00Z",
+            provider: "codex_exec",
+            model: None,
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: None,
+            source_details_json: None,
+            diff_tree_json: None,
+            error: None,
+        })
+        .expect("insert old summary");
+        db.upsert_session_semantic_summary(&opensession_local_db::SessionSemanticSummaryUpsert {
+            session_id: "summary-new",
+            summary_json: r#"{"changes":"new"}"#,
+            generated_at: "2999-01-01T00:00:00Z",
+            provider: "codex_exec",
+            model: None,
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: None,
+            source_details_json: None,
+            diff_tree_json: None,
+            error: None,
+        })
+        .expect("insert new summary");
+
+        let mut config = DaemonConfig::default();
+        config.lifecycle.enabled = true;
+        config.lifecycle.session_ttl_days = 10_000;
+        config.lifecycle.summary_ttl_days = 30;
+        config.lifecycle.cleanup_interval_secs = 60;
+
+        run_lifecycle_cleanup_once(&config, &db, &RepoRegistry::default())
+            .expect("run lifecycle cleanup");
+
+        assert!(
+            db.get_session_semantic_summary("summary-old")
+                .expect("query old summary")
+                .is_none(),
+            "old summary should be pruned"
+        );
+        assert!(
+            db.get_session_semantic_summary("summary-new")
+                .expect("query new summary")
+                .is_some(),
+            "new summary should remain"
+        );
     }
 
     #[test]

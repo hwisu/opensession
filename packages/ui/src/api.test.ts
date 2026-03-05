@@ -10,12 +10,14 @@ import {
 	getAuthProviders,
 	getOAuthUrl,
 	getRuntimeSettings,
+	getSummaryBatchStatus,
 	getSessionDetail,
 	getSettings,
 	listSessionRepos,
 	listSessions,
 	quickShareSession,
 	readSessionChanges,
+	runSummaryBatch,
 	searchSessionsVector,
 	setBaseUrl,
 	updateRuntimeSettings,
@@ -147,6 +149,11 @@ function installInvokeProbe(calls: InvokeCall[]) {
 				backend: 'hidden_ref',
 			},
 			source_mode: 'session_only',
+			batch: {
+				execution_mode: 'on_app_start',
+				scope: 'recent_days',
+				recent_days: 30,
+			},
 		},
 		vector_search: {
 			enabled: false,
@@ -165,17 +172,32 @@ function installInvokeProbe(calls: InvokeCall[]) {
 			qa_enabled: true,
 			max_context_chars: 12000,
 		},
+		lifecycle: {
+			enabled: true,
+			session_ttl_days: 30,
+			summary_ttl_days: 30,
+			cleanup_interval_secs: 3600,
+		},
 		ui_constraints: {
 			source_mode_locked: true,
 			source_mode_locked_value: 'session_only',
 		},
+	};
+	let summaryBatchStatus = {
+		state: 'idle',
+		processed_sessions: 0,
+		total_sessions: 0,
+		failed_sessions: 0,
+		message: null as string | null,
+		started_at: null as string | null,
+		finished_at: null as string | null,
 	};
 
 	return async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
 		calls.push({ cmd, args });
 		switch (cmd) {
 			case 'desktop_get_contract_version':
-				return { version: 'desktop-ipc-v4' };
+				return { version: 'desktop-ipc-v5' };
 			case 'desktop_list_sessions':
 				return { total: 3, page: 2, per_page: 30, sessions: [] };
 			case 'desktop_list_repos':
@@ -233,6 +255,11 @@ function installInvokeProbe(calls: InvokeCall[]) {
 						response: { style: string; shape: string };
 						storage: { trigger: string; backend: string };
 						source_mode: string;
+						batch: {
+							execution_mode: 'manual' | 'on_app_start';
+							scope: 'recent_days' | 'all';
+							recent_days: number;
+						};
 					};
 					vector_search?: {
 						enabled: boolean;
@@ -250,6 +277,12 @@ function installInvokeProbe(calls: InvokeCall[]) {
 						scope: 'summary_only' | 'full_context';
 						qa_enabled: boolean;
 						max_context_chars: number;
+					};
+					lifecycle?: {
+						enabled: boolean;
+						session_ttl_days: number;
+						summary_ttl_days: number;
+						cleanup_interval_secs: number;
 					};
 				};
 				if (request.summary?.source_mode && request.summary.source_mode !== 'session_only') {
@@ -283,6 +316,7 @@ function installInvokeProbe(calls: InvokeCall[]) {
 								response: request.summary.response,
 								storage: request.summary.storage,
 								source_mode: request.summary.source_mode,
+								batch: request.summary.batch,
 							}
 						: runtimeSettings.summary,
 					vector_search: request.vector_search
@@ -306,9 +340,41 @@ function installInvokeProbe(calls: InvokeCall[]) {
 								max_context_chars: request.change_reader.max_context_chars,
 							}
 						: runtimeSettings.change_reader,
+					lifecycle: request.lifecycle
+						? {
+								enabled: request.lifecycle.enabled,
+								session_ttl_days: request.lifecycle.session_ttl_days,
+								summary_ttl_days: request.lifecycle.summary_ttl_days,
+								cleanup_interval_secs: request.lifecycle.cleanup_interval_secs,
+							}
+						: runtimeSettings.lifecycle,
 				};
 				return runtimeSettings;
 			}
+			case 'desktop_summary_batch_run':
+				summaryBatchStatus = {
+					state: 'running',
+					processed_sessions: 0,
+					total_sessions: 3,
+					failed_sessions: 0,
+					message: 'processing semantic summaries',
+					started_at: '2026-03-05T00:00:00Z',
+					finished_at: null,
+				};
+				return summaryBatchStatus;
+			case 'desktop_summary_batch_status':
+				if (summaryBatchStatus.state === 'running') {
+					summaryBatchStatus = {
+						...summaryBatchStatus,
+						state: 'complete',
+						processed_sessions: 3,
+						total_sessions: 3,
+						failed_sessions: 0,
+						message: 'summary batch complete',
+						finished_at: '2026-03-05T00:00:05Z',
+					};
+				}
+				return summaryBatchStatus;
 			case 'desktop_vector_preflight':
 				return {
 					provider: 'ollama',
@@ -594,6 +660,17 @@ test('desktop runtime settings use typed payload through invoke bridge', async (
 				backend: 'hidden_ref',
 			},
 			source_mode: 'session_only',
+			batch: {
+				execution_mode: 'manual',
+				scope: 'all',
+				recent_days: 90,
+			},
+		},
+		lifecycle: {
+			enabled: true,
+			session_ttl_days: 45,
+			summary_ttl_days: 60,
+			cleanup_interval_secs: 120,
 		},
 	});
 	assert.equal(after.session_default_view, 'compressed');
@@ -601,6 +678,12 @@ test('desktop runtime settings use typed payload through invoke bridge', async (
 	assert.equal(after.summary.provider.transport, 'http');
 	assert.equal(after.summary.prompt.template, 'Use {{HAIL_COMPACT}} only');
 	assert.equal(after.summary.source_mode, 'session_only');
+	assert.equal(after.summary.batch.execution_mode, 'manual');
+	assert.equal(after.summary.batch.scope, 'all');
+	assert.equal(after.summary.batch.recent_days, 90);
+	assert.equal(after.lifecycle.session_ttl_days, 45);
+	assert.equal(after.lifecycle.summary_ttl_days, 60);
+	assert.equal(after.lifecycle.cleanup_interval_secs, 120);
 	assert.equal(invokeCalls.at(-1)?.cmd, 'desktop_update_runtime_settings');
 });
 
@@ -633,6 +716,11 @@ test('desktop runtime settings surfaces source-mode lock errors', async () => {
 						backend: 'hidden_ref',
 					},
 					source_mode: 'session_or_git_changes',
+					batch: {
+						execution_mode: 'manual',
+						scope: 'recent_days',
+						recent_days: 30,
+					},
 				},
 			}),
 		(error: unknown) =>
@@ -641,6 +729,28 @@ test('desktop runtime settings surfaces source-mode lock errors', async () => {
 			error.code === 'desktop.runtime_settings_source_mode_locked',
 	);
 	assert.equal(invokeCalls.at(-1)?.cmd, 'desktop_update_runtime_settings');
+});
+
+test('desktop summary batch controls use invoke bridge', async () => {
+	const invokeCalls: InvokeCall[] = [];
+	installBrowserEnv({
+		origin: 'tauri://localhost',
+		tauriRuntime: true,
+		invoke: installInvokeProbe(invokeCalls),
+	});
+
+	const started = await runSummaryBatch();
+	assert.equal(started.state, 'running');
+
+	const status = await getSummaryBatchStatus();
+	assert.equal(status.state, 'complete');
+	assert.equal(status.processed_sessions, 3);
+	assert.equal(status.total_sessions, 3);
+	assert.equal(status.failed_sessions, 0);
+
+	const calledCommands = invokeCalls.map((entry) => entry.cmd);
+	assert(calledCommands.includes('desktop_summary_batch_run'));
+	assert(calledCommands.includes('desktop_summary_batch_status'));
 });
 
 test('desktop vector controls use invoke bridge', async () => {

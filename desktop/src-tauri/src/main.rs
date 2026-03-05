@@ -7,12 +7,15 @@ use opensession_api::{
     DesktopChangeReadResponse, DesktopChangeReaderScope,
     DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopQuickShareRequest,
     DesktopQuickShareResponse, DesktopRuntimeSettingsResponse,
-    DesktopRuntimeChangeReaderSettings, DesktopRuntimeSettingsUpdateRequest,
+    DesktopRuntimeChangeReaderSettings, DesktopRuntimeLifecycleSettings,
+    DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryBatchSettings,
     DesktopRuntimeSummaryPromptSettings,
     DesktopRuntimeSummaryProviderSettings, DesktopRuntimeSummaryResponseSettings,
     DesktopRuntimeSummarySettings, DesktopRuntimeSummaryStorageSettings,
     DesktopRuntimeSummaryUiConstraints, DesktopRuntimeVectorSearchSettings,
     DesktopSessionListQuery, DesktopSessionSummaryResponse, DesktopSummaryOutputShape,
+    DesktopSummaryBatchExecutionMode, DesktopSummaryBatchScope, DesktopSummaryBatchState,
+    DesktopSummaryBatchStatusResponse,
     DesktopSummaryProviderDetectResponse, DesktopSummaryProviderId,
     DesktopSummaryProviderTransport, DesktopSummaryResponseStyle, DesktopSummarySourceMode,
     DesktopSummaryStorageBackend, DesktopSummaryTriggerMode, DesktopVectorIndexState,
@@ -35,11 +38,12 @@ use opensession_git_native::{
 };
 use opensession_local_db::{
     LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow, VectorChunkUpsert,
-    VectorIndexJobRow,
+    SummaryBatchJobRow, VectorIndexJobRow,
 };
 use opensession_parsers::ingest::preview_parse_bytes;
 use opensession_runtime_config::{
-    ChangeReaderScope, DaemonConfig, SessionDefaultView, SummaryOutputShape, SummaryProvider,
+    ChangeReaderScope, DaemonConfig, LifecycleSettings, SessionDefaultView, SummaryBatchExecutionMode as RuntimeSummaryBatchExecutionMode,
+    SummaryBatchScope as RuntimeSummaryBatchScope, SummaryOutputShape, SummaryProvider,
     SummaryResponseStyle, SummarySourceMode, SummaryStorageBackend, SummaryTriggerMode,
     VectorSearchGranularity,
     VectorSearchProvider,
@@ -100,6 +104,7 @@ static VECTOR_INSTALL_STATE: LazyLock<Mutex<VectorInstallRuntimeState>> = LazyLo
     })
 });
 static VECTOR_INDEX_REBUILD_RUNNING: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+static SUMMARY_BATCH_RUNNING: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DesktopHandoffArtifactRecord {
@@ -1240,6 +1245,90 @@ fn set_vector_index_job_snapshot(db: &LocalDb, payload: VectorIndexJobRow) -> De
     })
 }
 
+fn map_summary_batch_state(raw: &str) -> DesktopSummaryBatchState {
+    match raw {
+        "running" => DesktopSummaryBatchState::Running,
+        "complete" => DesktopSummaryBatchState::Complete,
+        "failed" => DesktopSummaryBatchState::Failed,
+        _ => DesktopSummaryBatchState::Idle,
+    }
+}
+
+fn desktop_summary_batch_status_from_db(
+    db: &LocalDb,
+) -> DesktopApiResult<DesktopSummaryBatchStatusResponse> {
+    let row = db.get_summary_batch_job().map_err(|error| {
+        desktop_error(
+            "desktop.summary_batch_status_failed",
+            500,
+            "failed to read summary batch status",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+
+    let Some(row) = row else {
+        return Ok(DesktopSummaryBatchStatusResponse {
+            state: DesktopSummaryBatchState::Idle,
+            processed_sessions: 0,
+            total_sessions: 0,
+            failed_sessions: 0,
+            message: None,
+            started_at: None,
+            finished_at: None,
+        });
+    };
+
+    Ok(DesktopSummaryBatchStatusResponse {
+        state: map_summary_batch_state(&row.status),
+        processed_sessions: row.processed_sessions,
+        total_sessions: row.total_sessions,
+        failed_sessions: row.failed_sessions,
+        message: row.message,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+    })
+}
+
+fn set_summary_batch_job_snapshot(db: &LocalDb, payload: SummaryBatchJobRow) -> DesktopApiResult<()> {
+    db.set_summary_batch_job(&payload).map_err(|error| {
+        desktop_error(
+            "desktop.summary_batch_status_failed",
+            500,
+            "failed to persist summary batch status",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })
+}
+
+fn summary_batch_session_ids_for_scope(
+    db: &LocalDb,
+    scope: &RuntimeSummaryBatchScope,
+    recent_days: u16,
+) -> DesktopApiResult<Vec<String>> {
+    let mut filter = LocalSessionFilter::default();
+    filter.limit = None;
+    filter.offset = None;
+    let mut rows = db.list_sessions(&filter).map_err(|error| {
+        desktop_error(
+            "desktop.summary_batch_list_failed",
+            500,
+            "failed to list sessions for summary batch",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+
+    if matches!(scope, RuntimeSummaryBatchScope::RecentDays) {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(recent_days.max(1)));
+        rows.retain(|row| {
+            chrono::DateTime::parse_from_rfc3339(&row.created_at)
+                .map(|parsed| parsed.with_timezone(&chrono::Utc) >= cutoff)
+                .unwrap_or(true)
+        });
+    }
+
+    Ok(rows.into_iter().map(|row| row.id).collect())
+}
+
 fn rebuild_vector_index_blocking(db: &LocalDb, runtime: &DaemonConfig) -> DesktopApiResult<()> {
     let mut filter = LocalSessionFilter::default();
     filter.limit = None;
@@ -1489,6 +1578,42 @@ fn map_summary_storage_backend_to_runtime(
     }
 }
 
+fn map_summary_batch_execution_mode_from_runtime(
+    value: &RuntimeSummaryBatchExecutionMode,
+) -> DesktopSummaryBatchExecutionMode {
+    match value {
+        RuntimeSummaryBatchExecutionMode::Manual => DesktopSummaryBatchExecutionMode::Manual,
+        RuntimeSummaryBatchExecutionMode::OnAppStart => {
+            DesktopSummaryBatchExecutionMode::OnAppStart
+        }
+    }
+}
+
+fn map_summary_batch_execution_mode_to_runtime(
+    value: &DesktopSummaryBatchExecutionMode,
+) -> RuntimeSummaryBatchExecutionMode {
+    match value {
+        DesktopSummaryBatchExecutionMode::Manual => RuntimeSummaryBatchExecutionMode::Manual,
+        DesktopSummaryBatchExecutionMode::OnAppStart => {
+            RuntimeSummaryBatchExecutionMode::OnAppStart
+        }
+    }
+}
+
+fn map_summary_batch_scope_from_runtime(value: &RuntimeSummaryBatchScope) -> DesktopSummaryBatchScope {
+    match value {
+        RuntimeSummaryBatchScope::RecentDays => DesktopSummaryBatchScope::RecentDays,
+        RuntimeSummaryBatchScope::All => DesktopSummaryBatchScope::All,
+    }
+}
+
+fn map_summary_batch_scope_to_runtime(value: &DesktopSummaryBatchScope) -> RuntimeSummaryBatchScope {
+    match value {
+        DesktopSummaryBatchScope::RecentDays => RuntimeSummaryBatchScope::RecentDays,
+        DesktopSummaryBatchScope::All => RuntimeSummaryBatchScope::All,
+    }
+}
+
 fn map_vector_provider_from_runtime(value: &VectorSearchProvider) -> DesktopVectorSearchProvider {
     match value {
         VectorSearchProvider::Ollama => DesktopVectorSearchProvider::Ollama,
@@ -1553,6 +1678,22 @@ fn desktop_summary_settings_from_runtime(config: &DaemonConfig) -> DesktopRuntim
             backend: map_summary_storage_backend_from_runtime(&config.summary.storage.backend),
         },
         source_mode: map_summary_source_mode_from_runtime(&source_mode),
+        batch: DesktopRuntimeSummaryBatchSettings {
+            execution_mode: map_summary_batch_execution_mode_from_runtime(
+                &config.summary.batch.execution_mode,
+            ),
+            scope: map_summary_batch_scope_from_runtime(&config.summary.batch.scope),
+            recent_days: config.summary.batch.recent_days.max(1),
+        },
+    }
+}
+
+fn desktop_lifecycle_settings_from_runtime(config: &DaemonConfig) -> DesktopRuntimeLifecycleSettings {
+    DesktopRuntimeLifecycleSettings {
+        enabled: config.lifecycle.enabled,
+        session_ttl_days: config.lifecycle.session_ttl_days.max(1),
+        summary_ttl_days: config.lifecycle.summary_ttl_days.max(1),
+        cleanup_interval_secs: config.lifecycle.cleanup_interval_secs.max(60),
     }
 }
 
@@ -2026,6 +2167,7 @@ fn desktop_get_runtime_settings() -> DesktopApiResult<DesktopRuntimeSettingsResp
         summary: desktop_summary_settings_from_runtime(&config),
         vector_search: desktop_vector_settings_from_runtime(&config),
         change_reader: desktop_change_reader_settings_from_runtime(&config),
+        lifecycle: desktop_lifecycle_settings_from_runtime(&config),
         ui_constraints: DesktopRuntimeSummaryUiConstraints {
             source_mode_locked: true,
             source_mode_locked_value: DesktopSummarySourceMode::SessionOnly,
@@ -2082,6 +2224,18 @@ fn desktop_update_runtime_settings(
         config.summary.storage.backend =
             map_summary_storage_backend_to_runtime(&summary.storage.backend);
         config.summary.source_mode = map_summary_source_mode_to_runtime(&summary.source_mode);
+        if summary.batch.recent_days == 0 {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_summary_batch_recent_days",
+                422,
+                "summary.batch.recent_days must be greater than zero",
+                Some(json!({ "recent_days": summary.batch.recent_days })),
+            ));
+        }
+        config.summary.batch.execution_mode =
+            map_summary_batch_execution_mode_to_runtime(&summary.batch.execution_mode);
+        config.summary.batch.scope = map_summary_batch_scope_to_runtime(&summary.batch.scope);
+        config.summary.batch.recent_days = summary.batch.recent_days.max(1);
     }
 
     if let Some(vector_search) = request.vector_search {
@@ -2164,6 +2318,40 @@ fn desktop_update_runtime_settings(
         config.change_reader.scope = map_change_reader_scope_to_runtime(&change_reader.scope);
         config.change_reader.qa_enabled = change_reader.qa_enabled;
         config.change_reader.max_context_chars = change_reader.max_context_chars.max(1);
+    }
+
+    if let Some(lifecycle) = request.lifecycle {
+        if lifecycle.session_ttl_days == 0 {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_session_ttl_days",
+                422,
+                "lifecycle.session_ttl_days must be greater than zero",
+                Some(json!({ "session_ttl_days": lifecycle.session_ttl_days })),
+            ));
+        }
+        if lifecycle.summary_ttl_days == 0 {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_summary_ttl_days",
+                422,
+                "lifecycle.summary_ttl_days must be greater than zero",
+                Some(json!({ "summary_ttl_days": lifecycle.summary_ttl_days })),
+            ));
+        }
+        if lifecycle.cleanup_interval_secs < 60 {
+            return Err(desktop_error(
+                "desktop.runtime_settings_invalid_cleanup_interval",
+                422,
+                "lifecycle.cleanup_interval_secs must be at least 60 seconds",
+                Some(json!({ "cleanup_interval_secs": lifecycle.cleanup_interval_secs })),
+            ));
+        }
+
+        config.lifecycle = LifecycleSettings {
+            enabled: lifecycle.enabled,
+            session_ttl_days: lifecycle.session_ttl_days.max(1),
+            summary_ttl_days: lifecycle.summary_ttl_days.max(1),
+            cleanup_interval_secs: lifecycle.cleanup_interval_secs.max(60),
+        };
     }
 
     save_runtime_config(&config)?;
@@ -2576,41 +2764,246 @@ fn desktop_get_session_summary(id: String) -> DesktopApiResult<DesktopSessionSum
     load_session_summary_for_runtime(&db, &runtime, &id)
 }
 
-#[tauri::command]
-async fn desktop_regenerate_session_summary(
-    id: String,
-) -> DesktopApiResult<DesktopSessionSummaryResponse> {
-    let db = open_local_db()?;
-    let normalized_session = load_normalized_session_body(&db, &id)?;
+fn build_git_summary_request_for_session(
+    session: &HailSession,
+    runtime: &DaemonConfig,
+) -> Option<GitSummaryRequest> {
+    if !runtime.summary.allows_git_changes_fallback() {
+        return None;
+    }
+    working_directory(session)
+        .and_then(|cwd| find_git_repo_root(Path::new(cwd)).map(|repo_root| (cwd, repo_root)))
+        .map(|(cwd, repo_root)| GitSummaryRequest {
+            repo_root,
+            commit: extract_git_context(cwd).commit,
+        })
+}
+
+async fn generate_session_summary_artifact_for_id(
+    db: &LocalDb,
+    runtime: &DaemonConfig,
+    session_id: &str,
+) -> DesktopApiResult<opensession_summary::SemanticSummaryArtifact> {
+    let normalized_session = load_normalized_session_body(db, session_id)?;
     let session = HailSession::from_jsonl(&normalized_session).map_err(|error| {
         desktop_error(
             "desktop.session_summary_parse_failed",
             422,
             "failed to decode session body for summary regeneration",
-            Some(json!({ "cause": error.to_string(), "session_id": id })),
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
         )
     })?;
-    let runtime = load_runtime_config()?;
-    let git_request = if runtime.summary.allows_git_changes_fallback() {
-        working_directory(&session)
-            .and_then(|cwd| find_git_repo_root(Path::new(cwd)).map(|repo_root| (cwd, repo_root)))
-            .map(|(cwd, repo_root)| GitSummaryRequest {
-                repo_root,
-                commit: extract_git_context(cwd).commit,
-            })
-    } else {
-        None
-    };
-    let artifact = summarize_session(&session, &runtime.summary, git_request.as_ref())
+    let git_request = build_git_summary_request_for_session(&session, runtime);
+    summarize_session(&session, &runtime.summary, git_request.as_ref())
         .await
         .map_err(|error| {
             desktop_error(
                 "desktop.session_summary_generate_failed",
                 500,
                 "failed to generate semantic summary",
-                Some(json!({ "cause": error.to_string(), "session_id": id })),
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
             )
-        })?;
+        })
+}
+
+fn persist_summary_for_runtime(
+    db: &LocalDb,
+    runtime: &DaemonConfig,
+    session_id: &str,
+    artifact: &opensession_summary::SemanticSummaryArtifact,
+) -> DesktopApiResult<()> {
+    match runtime.summary.storage.backend {
+        SummaryStorageBackend::LocalDb => persist_summary_to_local_db(db, session_id, artifact),
+        SummaryStorageBackend::HiddenRef => {
+            let Some(repo_root) = resolve_summary_repo_root(db, session_id)? else {
+                return Err(desktop_error(
+                    "desktop.session_summary_repo_required",
+                    422,
+                    "hidden_ref summary backend requires a git repository",
+                    Some(json!({ "session_id": session_id })),
+                ));
+            };
+            persist_summary_to_hidden_ref(&repo_root, session_id, artifact)
+        }
+        SummaryStorageBackend::None => Ok(()),
+    }
+}
+
+fn summary_response_from_artifact(
+    session_id: &str,
+    artifact: &opensession_summary::SemanticSummaryArtifact,
+) -> DesktopSessionSummaryResponse {
+    DesktopSessionSummaryResponse {
+        session_id: session_id.to_string(),
+        summary: serde_json::to_value(&artifact.summary).ok(),
+        source_details: if artifact.source_details.is_empty() {
+            None
+        } else {
+            serde_json::to_value(&artifact.source_details).ok()
+        },
+        diff_tree: serde_json::to_value(&artifact.diff_tree)
+            .ok()
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default(),
+        source_kind: Some(enum_label(&artifact.source_kind)),
+        generation_kind: Some(enum_label(&artifact.generation_kind)),
+        error: artifact.error.clone(),
+    }
+}
+
+fn run_summary_batch_for_runtime(
+    runtime: DaemonConfig,
+) -> DesktopApiResult<DesktopSummaryBatchStatusResponse> {
+    let db = open_local_db()?;
+    {
+        let mut running = SUMMARY_BATCH_RUNNING
+            .lock()
+            .expect("summary batch mutex poisoned");
+        if *running {
+            return desktop_summary_batch_status_from_db(&db);
+        }
+        *running = true;
+    }
+
+    let started_at = chrono::Utc::now().to_rfc3339();
+    set_summary_batch_job_snapshot(
+        &db,
+        SummaryBatchJobRow {
+            status: "running".to_string(),
+            processed_sessions: 0,
+            total_sessions: 0,
+            failed_sessions: 0,
+            message: Some("starting summary batch".to_string()),
+            started_at: Some(started_at),
+            finished_at: None,
+        },
+    )?;
+
+    std::thread::spawn(move || {
+        let run_result: DesktopApiResult<()> = (|| {
+            let db = open_local_db()?;
+            let session_ids = summary_batch_session_ids_for_scope(
+                &db,
+                &runtime.summary.batch.scope,
+                runtime.summary.batch.recent_days,
+            )?;
+            let total_sessions = session_ids.len() as u32;
+            let started_at = chrono::Utc::now().to_rfc3339();
+            set_summary_batch_job_snapshot(
+                &db,
+                SummaryBatchJobRow {
+                    status: "running".to_string(),
+                    processed_sessions: 0,
+                    total_sessions,
+                    failed_sessions: 0,
+                    message: Some("processing semantic summaries".to_string()),
+                    started_at: Some(started_at.clone()),
+                    finished_at: None,
+                },
+            )?;
+
+            let mut processed_sessions = 0u32;
+            let mut failed_sessions = 0u32;
+            for session_id in session_ids {
+                set_summary_batch_job_snapshot(
+                    &db,
+                    SummaryBatchJobRow {
+                        status: "running".to_string(),
+                        processed_sessions,
+                        total_sessions,
+                        failed_sessions,
+                        message: Some(format!("processing {session_id}")),
+                        started_at: Some(started_at.clone()),
+                        finished_at: None,
+                    },
+                )?;
+
+                let generated = tauri::async_runtime::block_on(
+                    generate_session_summary_artifact_for_id(&db, &runtime, &session_id),
+                );
+                if let Err(error) =
+                    generated.and_then(|artifact| persist_summary_for_runtime(&db, &runtime, &session_id, &artifact))
+                {
+                    failed_sessions = failed_sessions.saturating_add(1);
+                    eprintln!("summary batch: failed to process {session_id}: {}", error.message);
+                }
+
+                processed_sessions = processed_sessions.saturating_add(1);
+                set_summary_batch_job_snapshot(
+                    &db,
+                    SummaryBatchJobRow {
+                        status: "running".to_string(),
+                        processed_sessions,
+                        total_sessions,
+                        failed_sessions,
+                        message: Some(format!(
+                            "processed {processed_sessions}/{total_sessions} sessions"
+                        )),
+                        started_at: Some(started_at.clone()),
+                        finished_at: None,
+                    },
+                )?;
+            }
+
+            let status = if failed_sessions > 0 {
+                "failed"
+            } else {
+                "complete"
+            };
+            let message = if failed_sessions > 0 {
+                format!("summary batch finished with {failed_sessions} failures")
+            } else {
+                "summary batch complete".to_string()
+            };
+            set_summary_batch_job_snapshot(
+                &db,
+                SummaryBatchJobRow {
+                    status: status.to_string(),
+                    processed_sessions,
+                    total_sessions,
+                    failed_sessions,
+                    message: Some(message),
+                    started_at: Some(started_at),
+                    finished_at: Some(chrono::Utc::now().to_rfc3339()),
+                },
+            )?;
+            Ok(())
+        })();
+
+        if let Err(error) = run_result {
+            if let Ok(db) = open_local_db() {
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = set_summary_batch_job_snapshot(
+                    &db,
+                    SummaryBatchJobRow {
+                        status: "failed".to_string(),
+                        processed_sessions: 0,
+                        total_sessions: 0,
+                        failed_sessions: 0,
+                        message: Some(error.message.clone()),
+                        started_at: Some(now.clone()),
+                        finished_at: Some(now),
+                    },
+                );
+            }
+            eprintln!("summary batch run failed: {}", error.message);
+        }
+
+        if let Ok(mut running) = SUMMARY_BATCH_RUNNING.lock() {
+            *running = false;
+        }
+    });
+
+    desktop_summary_batch_status_from_db(&db)
+}
+
+#[tauri::command]
+async fn desktop_regenerate_session_summary(
+    id: String,
+) -> DesktopApiResult<DesktopSessionSummaryResponse> {
+    let db = open_local_db()?;
+    let runtime = load_runtime_config()?;
+    let artifact = generate_session_summary_artifact_for_id(&db, &runtime, &id).await?;
 
     match runtime.summary.storage.backend {
         SummaryStorageBackend::LocalDb => {
@@ -2629,23 +3022,20 @@ async fn desktop_regenerate_session_summary(
             persist_summary_to_hidden_ref(&repo_root, &id, &artifact)?;
             desktop_get_session_summary(id)
         }
-        SummaryStorageBackend::None => Ok(DesktopSessionSummaryResponse {
-            session_id: id,
-            summary: serde_json::to_value(&artifact.summary).ok(),
-            source_details: if artifact.source_details.is_empty() {
-                None
-            } else {
-                serde_json::to_value(&artifact.source_details).ok()
-            },
-            diff_tree: serde_json::to_value(&artifact.diff_tree)
-                .ok()
-                .and_then(|value| value.as_array().cloned())
-                .unwrap_or_default(),
-            source_kind: Some(enum_label(&artifact.source_kind)),
-            generation_kind: Some(enum_label(&artifact.generation_kind)),
-            error: artifact.error.clone(),
-        }),
+        SummaryStorageBackend::None => Ok(summary_response_from_artifact(&id, &artifact)),
     }
+}
+
+#[tauri::command]
+fn desktop_summary_batch_status() -> DesktopApiResult<DesktopSummaryBatchStatusResponse> {
+    let db = open_local_db()?;
+    desktop_summary_batch_status_from_db(&db)
+}
+
+#[tauri::command]
+fn desktop_summary_batch_run() -> DesktopApiResult<DesktopSummaryBatchStatusResponse> {
+    let runtime = load_runtime_config()?;
+    run_summary_batch_for_runtime(runtime)
 }
 
 #[derive(Debug, Clone)]
@@ -3504,7 +3894,33 @@ fn desktop_share_session_quick(
     parse_cli_quick_share_response(&stdout)
 }
 
+fn maybe_start_summary_batch_on_app_start() {
+    let runtime = match load_runtime_config() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!(
+                "failed to load runtime config for app-start summary batch: {}",
+                error.message
+            );
+            return;
+        }
+    };
+
+    if !matches!(
+        runtime.summary.batch.execution_mode,
+        RuntimeSummaryBatchExecutionMode::OnAppStart
+    ) {
+        return;
+    }
+
+    if let Err(error) = run_summary_batch_for_runtime(runtime) {
+        eprintln!("failed to start app-start summary batch: {}", error.message);
+    }
+}
+
 fn main() {
+    maybe_start_summary_batch_on_app_start();
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             desktop_get_capabilities,
@@ -3513,6 +3929,8 @@ fn main() {
             desktop_get_docs_markdown,
             desktop_get_runtime_settings,
             desktop_update_runtime_settings,
+            desktop_summary_batch_status,
+            desktop_summary_batch_run,
             desktop_detect_summary_provider,
             desktop_vector_preflight,
             desktop_vector_install_model,
@@ -3543,6 +3961,7 @@ mod tests {
         desktop_ask_session_changes, desktop_get_contract_version, desktop_get_runtime_settings,
         desktop_get_session_detail, desktop_get_session_raw, desktop_list_sessions,
         desktop_read_session_changes, desktop_share_session_quick, desktop_update_runtime_settings,
+        desktop_summary_batch_run, desktop_summary_batch_status,
         extract_vector_lines, map_link_type, normalize_launch_route,
         normalize_session_body_to_hail_jsonl, session_summary_from_local_row, split_search_mode,
         parse_cli_quick_share_response, validate_pin_alias, DesktopSessionListQuery, SearchMode,
@@ -3551,9 +3970,12 @@ mod tests {
         DesktopChangeQuestionRequest, DesktopChangeReadRequest, DesktopChangeReaderScope,
         DesktopQuickShareRequest,
         DesktopRuntimeChangeReaderSettingsUpdate,
+        DesktopRuntimeLifecycleSettingsUpdate,
+        DesktopRuntimeSummaryBatchSettingsUpdate,
         DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettingsUpdate,
         DesktopRuntimeSummaryProviderSettingsUpdate, DesktopRuntimeSummaryResponseSettingsUpdate,
         DesktopRuntimeSummarySettingsUpdate, DesktopRuntimeSummaryStorageSettingsUpdate,
+        DesktopSummaryBatchExecutionMode, DesktopSummaryBatchScope, DesktopSummaryBatchState,
         DesktopSummaryOutputShape, DesktopSummaryProviderId, DesktopSummaryResponseStyle,
         DesktopSummarySourceMode, DesktopSummaryStorageBackend, DesktopSummaryTriggerMode,
     };
@@ -3565,7 +3987,7 @@ mod tests {
     use opensession_summary::DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2;
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -3994,6 +4416,11 @@ mod tests {
                     backend: DesktopSummaryStorageBackend::HiddenRef,
                 },
                 source_mode: DesktopSummarySourceMode::SessionOnly,
+                batch: DesktopRuntimeSummaryBatchSettingsUpdate {
+                    execution_mode: DesktopSummaryBatchExecutionMode::Manual,
+                    scope: DesktopSummaryBatchScope::All,
+                    recent_days: 45,
+                },
             }),
             vector_search: None,
             change_reader: Some(DesktopRuntimeChangeReaderSettingsUpdate {
@@ -4001,6 +4428,12 @@ mod tests {
                 scope: DesktopChangeReaderScope::FullContext,
                 qa_enabled: true,
                 max_context_chars: 18_000,
+            }),
+            lifecycle: Some(DesktopRuntimeLifecycleSettingsUpdate {
+                enabled: true,
+                session_ttl_days: 45,
+                summary_ttl_days: 60,
+                cleanup_interval_secs: 120,
             }),
         })
         .expect("update runtime settings");
@@ -4024,11 +4457,21 @@ mod tests {
             loaded.summary.source_mode,
             DesktopSummarySourceMode::SessionOnly
         );
+        assert_eq!(
+            loaded.summary.batch.execution_mode,
+            DesktopSummaryBatchExecutionMode::Manual
+        );
+        assert_eq!(loaded.summary.batch.scope, DesktopSummaryBatchScope::All);
+        assert_eq!(loaded.summary.batch.recent_days, 45);
         assert!(loaded.summary.prompt.template.contains("customized"));
         assert!(loaded.change_reader.enabled);
         assert_eq!(loaded.change_reader.scope, DesktopChangeReaderScope::FullContext);
         assert!(loaded.change_reader.qa_enabled);
         assert_eq!(loaded.change_reader.max_context_chars, 18_000);
+        assert!(loaded.lifecycle.enabled);
+        assert_eq!(loaded.lifecycle.session_ttl_days, 45);
+        assert_eq!(loaded.lifecycle.summary_ttl_days, 60);
+        assert_eq!(loaded.lifecycle.cleanup_interval_secs, 120);
 
         let _ = std::fs::remove_dir_all(&temp_home);
     }
@@ -4059,9 +4502,15 @@ mod tests {
                     backend: DesktopSummaryStorageBackend::HiddenRef,
                 },
                 source_mode: DesktopSummarySourceMode::SessionOrGitChanges,
+                batch: DesktopRuntimeSummaryBatchSettingsUpdate {
+                    execution_mode: DesktopSummaryBatchExecutionMode::Manual,
+                    scope: DesktopSummaryBatchScope::RecentDays,
+                    recent_days: 30,
+                },
             }),
             vector_search: None,
             change_reader: None,
+            lifecycle: None,
         });
 
         let error = result.expect_err("source mode lock should reject update");
@@ -4069,6 +4518,149 @@ mod tests {
         assert_eq!(error.code, "desktop.runtime_settings_source_mode_locked");
 
         let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_runtime_settings_rejects_zero_summary_batch_recent_days() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-runtime-summary-batch-invalid");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+
+        let result = desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(DesktopRuntimeSummarySettingsUpdate {
+                provider: DesktopRuntimeSummaryProviderSettingsUpdate {
+                    id: DesktopSummaryProviderId::Disabled,
+                    endpoint: String::new(),
+                    model: String::new(),
+                },
+                prompt: DesktopRuntimeSummaryPromptSettingsUpdate {
+                    template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2.to_string(),
+                },
+                response: DesktopRuntimeSummaryResponseSettingsUpdate {
+                    style: DesktopSummaryResponseStyle::Standard,
+                    shape: DesktopSummaryOutputShape::Layered,
+                },
+                storage: DesktopRuntimeSummaryStorageSettingsUpdate {
+                    trigger: DesktopSummaryTriggerMode::OnSessionSave,
+                    backend: DesktopSummaryStorageBackend::HiddenRef,
+                },
+                source_mode: DesktopSummarySourceMode::SessionOnly,
+                batch: DesktopRuntimeSummaryBatchSettingsUpdate {
+                    execution_mode: DesktopSummaryBatchExecutionMode::OnAppStart,
+                    scope: DesktopSummaryBatchScope::RecentDays,
+                    recent_days: 0,
+                },
+            }),
+            vector_search: None,
+            change_reader: None,
+            lifecycle: None,
+        });
+
+        let error = result.expect_err("recent_days=0 should fail");
+        assert_eq!(error.status, 422);
+        assert_eq!(
+            error.code,
+            "desktop.runtime_settings_invalid_summary_batch_recent_days"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_runtime_settings_rejects_short_lifecycle_interval() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-runtime-lifecycle-invalid");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+
+        let result = desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: None,
+            vector_search: None,
+            change_reader: None,
+            lifecycle: Some(DesktopRuntimeLifecycleSettingsUpdate {
+                enabled: true,
+                session_ttl_days: 30,
+                summary_ttl_days: 30,
+                cleanup_interval_secs: 59,
+            }),
+        });
+
+        let error = result.expect_err("cleanup interval under 60 should fail");
+        assert_eq!(error.status, 422);
+        assert_eq!(error.code, "desktop.runtime_settings_invalid_cleanup_interval");
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn desktop_summary_batch_run_and_status_complete_when_no_sessions() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_home = unique_temp_dir("opensession-desktop-summary-batch-home");
+        let temp_db = unique_temp_dir("opensession-desktop-summary-batch-db");
+        let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
+        let _db_env = EnvVarGuard::set(
+            "OPENSESSION_LOCAL_DB_PATH",
+            temp_db.join("local.db").as_os_str(),
+        );
+
+        desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
+            session_default_view: None,
+            summary: Some(DesktopRuntimeSummarySettingsUpdate {
+                provider: DesktopRuntimeSummaryProviderSettingsUpdate {
+                    id: DesktopSummaryProviderId::Disabled,
+                    endpoint: String::new(),
+                    model: String::new(),
+                },
+                prompt: DesktopRuntimeSummaryPromptSettingsUpdate {
+                    template: DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2.to_string(),
+                },
+                response: DesktopRuntimeSummaryResponseSettingsUpdate {
+                    style: DesktopSummaryResponseStyle::Standard,
+                    shape: DesktopSummaryOutputShape::Layered,
+                },
+                storage: DesktopRuntimeSummaryStorageSettingsUpdate {
+                    trigger: DesktopSummaryTriggerMode::Manual,
+                    backend: DesktopSummaryStorageBackend::None,
+                },
+                source_mode: DesktopSummarySourceMode::SessionOnly,
+                batch: DesktopRuntimeSummaryBatchSettingsUpdate {
+                    execution_mode: DesktopSummaryBatchExecutionMode::Manual,
+                    scope: DesktopSummaryBatchScope::All,
+                    recent_days: 30,
+                },
+            }),
+            vector_search: None,
+            change_reader: None,
+            lifecycle: None,
+        })
+        .expect("set summary batch config");
+
+        let started = desktop_summary_batch_run().expect("start summary batch");
+        assert!(
+            matches!(
+                started.state,
+                DesktopSummaryBatchState::Running | DesktopSummaryBatchState::Complete
+            ),
+            "initial state should be running or complete"
+        );
+
+        let mut final_state = started;
+        for _ in 0..40 {
+            final_state = desktop_summary_batch_status().expect("read batch status");
+            if !matches!(final_state.state, DesktopSummaryBatchState::Running) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        assert_eq!(final_state.state, DesktopSummaryBatchState::Complete);
+        assert_eq!(final_state.total_sessions, 0);
+        assert_eq!(final_state.processed_sessions, 0);
+        assert_eq!(final_state.failed_sessions, 0);
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+        let _ = std::fs::remove_dir_all(&temp_db);
     }
 
     #[test]
@@ -4106,6 +4698,7 @@ mod tests {
                 qa_enabled: false,
                 max_context_chars: 12_000,
             }),
+            lifecycle: None,
         })
         .expect("enable change reader with qa disabled");
 

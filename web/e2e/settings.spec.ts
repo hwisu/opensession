@@ -87,12 +87,17 @@ test.describe('Settings', () => {
 						style: 'standard' as 'compact' | 'standard' | 'detailed',
 						shape: 'layered' as 'layered' | 'file_list' | 'security_first',
 					},
-					storage: {
-						trigger: 'on_session_save' as 'manual' | 'on_session_save',
-						backend: 'hidden_ref' as 'hidden_ref' | 'local_db' | 'none',
-					},
-					source_mode: 'session_only' as 'session_only' | 'session_or_git_changes',
+				storage: {
+					trigger: 'on_session_save' as 'manual' | 'on_session_save',
+					backend: 'hidden_ref' as 'hidden_ref' | 'local_db' | 'none',
 				},
+				source_mode: 'session_only' as 'session_only' | 'session_or_git_changes',
+				batch: {
+					execution_mode: 'on_app_start' as 'manual' | 'on_app_start',
+					scope: 'recent_days' as 'recent_days' | 'all',
+					recent_days: 30,
+				},
+			},
 				vector_search: {
 					enabled: false,
 					provider: 'ollama' as 'ollama',
@@ -104,17 +109,32 @@ test.describe('Settings', () => {
 					top_k_chunks: 30,
 					top_k_sessions: 20,
 				},
-				change_reader: {
-					enabled: false,
-					scope: 'summary_only' as 'summary_only' | 'full_context',
-					qa_enabled: true,
-					max_context_chars: 12000,
-				},
-				ui_constraints: {
-					source_mode_locked: true,
-					source_mode_locked_value: 'session_only' as 'session_only',
-				},
-			};
+			change_reader: {
+				enabled: false,
+				scope: 'summary_only' as 'summary_only' | 'full_context',
+				qa_enabled: true,
+				max_context_chars: 12000,
+			},
+			lifecycle: {
+				enabled: true,
+				session_ttl_days: 30,
+				summary_ttl_days: 30,
+				cleanup_interval_secs: 3600,
+			},
+			ui_constraints: {
+				source_mode_locked: true,
+				source_mode_locked_value: 'session_only' as 'session_only',
+			},
+		};
+		let summaryBatchStatus = {
+			state: 'idle' as 'idle' | 'running' | 'complete' | 'failed',
+			processed_sessions: 0,
+			total_sessions: 0,
+			failed_sessions: 0,
+			message: null as string | null,
+			started_at: null as string | null,
+			finished_at: null as string | null,
+		};
 
 			(
 				window as Window & {
@@ -125,7 +145,7 @@ test.describe('Settings', () => {
 			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
 				core: {
 					invoke: async (cmd: string, args?: Record<string, unknown>) => {
-						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v4' };
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v5' };
 						if (cmd === 'desktop_get_capabilities') {
 							return {
 								auth_enabled: false,
@@ -194,6 +214,7 @@ test.describe('Settings', () => {
 									response: { style: 'compact' | 'standard' | 'detailed'; shape: 'layered' | 'file_list' | 'security_first' };
 									storage: { trigger: 'manual' | 'on_session_save'; backend: 'hidden_ref' | 'local_db' | 'none' };
 									source_mode: 'session_only' | 'session_or_git_changes';
+									batch: { execution_mode: 'manual' | 'on_app_start'; scope: 'recent_days' | 'all'; recent_days: number };
 								};
 								vector_search?: {
 									enabled: boolean;
@@ -211,6 +232,12 @@ test.describe('Settings', () => {
 									scope: 'summary_only' | 'full_context';
 									qa_enabled: boolean;
 									max_context_chars: number;
+								};
+								lifecycle?: {
+									enabled: boolean;
+									session_ttl_days: number;
+									summary_ttl_days: number;
+									cleanup_interval_secs: number;
 								};
 							};
 							if (request.summary && request.summary.source_mode !== 'session_only') {
@@ -239,6 +266,7 @@ test.describe('Settings', () => {
 											response: request.summary.response,
 											storage: request.summary.storage,
 											source_mode: request.summary.source_mode,
+											batch: request.summary.batch,
 										}
 									: runtimeState.summary,
 								vector_search: request.vector_search
@@ -262,8 +290,42 @@ test.describe('Settings', () => {
 											max_context_chars: request.change_reader.max_context_chars,
 										}
 									: runtimeState.change_reader,
+								lifecycle: request.lifecycle
+									? {
+											enabled: request.lifecycle.enabled,
+											session_ttl_days: request.lifecycle.session_ttl_days,
+											summary_ttl_days: request.lifecycle.summary_ttl_days,
+											cleanup_interval_secs: request.lifecycle.cleanup_interval_secs,
+										}
+									: runtimeState.lifecycle,
 							};
 							return runtimeState;
+						}
+						if (cmd === 'desktop_summary_batch_run') {
+							summaryBatchStatus = {
+								state: 'running',
+								processed_sessions: 0,
+								total_sessions: 4,
+								failed_sessions: 0,
+								message: 'processing semantic summaries',
+								started_at: '2026-03-05T00:00:00Z',
+								finished_at: null,
+							};
+							return summaryBatchStatus;
+						}
+						if (cmd === 'desktop_summary_batch_status') {
+							if (summaryBatchStatus.state === 'running') {
+								summaryBatchStatus = {
+									...summaryBatchStatus,
+									state: 'complete',
+									processed_sessions: 4,
+									total_sessions: 4,
+									failed_sessions: 0,
+									message: 'summary batch complete',
+									finished_at: '2026-03-05T00:00:05Z',
+								};
+							}
+							return summaryBatchStatus;
 						}
 						throw new Error(`unexpected command: ${cmd}`);
 					},
@@ -307,6 +369,30 @@ test.describe('Settings', () => {
 			.first()
 			.selectOption('full_context');
 		await page.locator('[data-testid="runtime-change-reader-max-context"]').fill('18000');
+
+		await expect(page.locator('[data-testid="settings-runtime-summary-batch"]')).toBeVisible();
+		await page
+			.locator('[data-testid="settings-runtime-summary-batch"] select')
+			.first()
+			.selectOption('manual');
+		await page
+			.locator('[data-testid="settings-runtime-summary-batch"] select')
+			.nth(1)
+			.selectOption('recent_days');
+		await page.locator('[data-testid="runtime-summary-batch-recent-days"]').fill('14');
+		await page.locator('[data-testid="runtime-summary-batch-run"]').click();
+		await expect(page.locator('[data-testid="runtime-summary-batch-status"]')).toContainText(
+			'state: complete',
+		);
+
+		await expect(page.locator('[data-testid="settings-runtime-lifecycle"]')).toBeVisible();
+		await page.locator('[data-testid="runtime-lifecycle-session-ttl"]').fill('45');
+		await page.locator('[data-testid="runtime-lifecycle-summary-ttl"]').fill('60');
+		await page.locator('[data-testid="runtime-lifecycle-interval"]').fill('120');
+		await page.getByRole('button', { name: 'Save Runtime' }).click();
+		await expect(page.locator('[data-testid="settings-runtime-lifecycle"]')).toContainText(
+			'Enable periodic lifecycle cleanup',
+		);
 	});
 
 	test('can issue personal api key from settings page', async ({ page }) => {

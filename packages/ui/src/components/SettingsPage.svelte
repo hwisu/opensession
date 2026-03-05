@@ -6,10 +6,12 @@ import {
 	detectSummaryProvider,
 	getApiCapabilities,
 	getRuntimeSettings,
+	getSummaryBatchStatus,
 	getSettings,
 	isAuthenticated,
 	issueApiKey,
 	listGitCredentials,
+	runSummaryBatch,
 	updateRuntimeSettings,
 	vectorIndexRebuild,
 	vectorIndexStatus,
@@ -19,6 +21,9 @@ import {
 import type {
 	DesktopChangeReaderScope,
 	DesktopRuntimeSettingsResponse,
+	DesktopSummaryBatchExecutionMode,
+	DesktopSummaryBatchScope,
+	DesktopSummaryBatchStatusResponse,
 	DesktopSummaryOutputShape,
 	DesktopSummaryProviderDetectResponse,
 	DesktopSummaryProviderId,
@@ -77,6 +82,9 @@ let runtimePromptTemplate = $state('');
 let runtimePromptDefaultTemplate = $state('');
 let runtimeTriggerMode = $state<DesktopSummaryTriggerMode>('on_session_save');
 let runtimeStorageBackend = $state<DesktopSummaryStorageBackend>('hidden_ref');
+let runtimeBatchExecutionMode = $state<DesktopSummaryBatchExecutionMode>('on_app_start');
+let runtimeBatchScope = $state<DesktopSummaryBatchScope>('recent_days');
+let runtimeBatchRecentDays = $state(30);
 let runtimeVectorEnabled = $state(false);
 let runtimeVectorProvider = $state<DesktopVectorSearchProvider>('ollama');
 let runtimeVectorModel = $state('bge-m3');
@@ -90,10 +98,16 @@ let runtimeChangeReaderEnabled = $state(false);
 let runtimeChangeReaderScope = $state<DesktopChangeReaderScope>('summary_only');
 let runtimeChangeReaderQaEnabled = $state(true);
 let runtimeChangeReaderMaxContextChars = $state(12000);
+let runtimeLifecycleEnabled = $state(true);
+let runtimeSessionTtlDays = $state(30);
+let runtimeSummaryTtlDays = $state(30);
+let runtimeCleanupIntervalSecs = $state(3600);
 let runtimeVectorPreflight = $state<DesktopVectorPreflightResponse | null>(null);
 let runtimeVectorIndex = $state<DesktopVectorIndexStatusResponse | null>(null);
 let runtimeVectorInstalling = $state(false);
 let runtimeVectorReindexing = $state(false);
+let runtimeSummaryBatchStatus = $state<DesktopSummaryBatchStatusResponse | null>(null);
+let runtimeSummaryBatchRunning = $state(false);
 
 function providerTransportForId(id: DesktopSummaryProviderId): DesktopSummaryProviderTransport {
 	if (id === 'ollama') return 'http';
@@ -245,6 +259,9 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimePromptDefaultTemplate = settings.summary.prompt.default_template ?? '';
 	runtimeTriggerMode = settings.summary.storage.trigger ?? 'on_session_save';
 	runtimeStorageBackend = settings.summary.storage.backend ?? 'hidden_ref';
+	runtimeBatchExecutionMode = settings.summary.batch.execution_mode ?? 'on_app_start';
+	runtimeBatchScope = settings.summary.batch.scope ?? 'recent_days';
+	runtimeBatchRecentDays = settings.summary.batch.recent_days ?? 30;
 	runtimeVectorEnabled = settings.vector_search.enabled ?? false;
 	runtimeVectorProvider = settings.vector_search.provider ?? 'ollama';
 	runtimeVectorModel = settings.vector_search.model ?? 'bge-m3';
@@ -258,6 +275,10 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimeChangeReaderScope = settings.change_reader?.scope ?? 'summary_only';
 	runtimeChangeReaderQaEnabled = settings.change_reader?.qa_enabled ?? true;
 	runtimeChangeReaderMaxContextChars = settings.change_reader?.max_context_chars ?? 12000;
+	runtimeLifecycleEnabled = settings.lifecycle?.enabled ?? true;
+	runtimeSessionTtlDays = settings.lifecycle?.session_ttl_days ?? 30;
+	runtimeSummaryTtlDays = settings.lifecycle?.summary_ttl_days ?? 30;
+	runtimeCleanupIntervalSecs = settings.lifecycle?.cleanup_interval_secs ?? 3600;
 }
 
 async function loadRuntimeSettings() {
@@ -268,6 +289,7 @@ async function loadRuntimeSettings() {
 		const settings = await getRuntimeSettings();
 		runtimeSettings = settings;
 		applyRuntimeSettingsToDraft(settings);
+		await refreshSummaryBatchStatus();
 		await refreshVectorPreflight();
 		await refreshVectorIndexStatus();
 	} catch (err) {
@@ -301,6 +323,11 @@ function buildRuntimeSummaryPayload() {
 			backend: runtimeStorageBackend,
 		},
 		source_mode: runtimeSourceMode,
+		batch: {
+			execution_mode: runtimeBatchExecutionMode,
+			scope: runtimeBatchScope,
+			recent_days: runtimeBatchRecentDays,
+		},
 	};
 }
 
@@ -327,6 +354,15 @@ function buildRuntimeChangeReaderPayload() {
 	};
 }
 
+function buildRuntimeLifecyclePayload() {
+	return {
+		enabled: runtimeLifecycleEnabled,
+		session_ttl_days: runtimeSessionTtlDays,
+		summary_ttl_days: runtimeSummaryTtlDays,
+		cleanup_interval_secs: runtimeCleanupIntervalSecs,
+	};
+}
+
 function handleRuntimeProviderChange() {
 	runtimeProviderTransport = currentRuntimeProviderTransport();
 	if (runtimeProviderTransport !== 'http') {
@@ -348,9 +384,11 @@ async function handleSaveRuntimeSettings() {
 			summary: buildRuntimeSummaryPayload(),
 			vector_search: buildRuntimeVectorPayload(),
 			change_reader: buildRuntimeChangeReaderPayload(),
+			lifecycle: buildRuntimeLifecyclePayload(),
 		});
 		runtimeSettings = updated;
 		applyRuntimeSettingsToDraft(updated);
+		await refreshSummaryBatchStatus();
 		runtimeDetectMessage = 'Runtime settings saved.';
 	} catch (err) {
 		runtimeError = normalizeError(err, 'Failed to save runtime settings');
@@ -384,6 +422,34 @@ async function handleDetectRuntimeProvider() {
 		runtimeError = normalizeError(err, 'Failed to detect/apply local provider');
 	} finally {
 		runtimeDetecting = false;
+	}
+}
+
+async function refreshSummaryBatchStatus() {
+	try {
+		runtimeSummaryBatchStatus = await getSummaryBatchStatus();
+	} catch (err) {
+		runtimeSummaryBatchStatus = null;
+		runtimeError = normalizeError(err, 'Failed to fetch summary batch status');
+	}
+}
+
+async function handleRunSummaryBatchNow() {
+	runtimeSummaryBatchRunning = true;
+	runtimeError = null;
+	try {
+		runtimeSummaryBatchStatus = await runSummaryBatch();
+		for (let attempt = 0; attempt < 300; attempt += 1) {
+			await delay(500);
+			await refreshSummaryBatchStatus();
+			if (runtimeSummaryBatchStatus && runtimeSummaryBatchStatus.state !== 'running') {
+				break;
+			}
+		}
+	} catch (err) {
+		runtimeError = normalizeError(err, 'Failed to run summary batch');
+	} finally {
+		runtimeSummaryBatchRunning = false;
 	}
 }
 
@@ -1061,6 +1127,128 @@ $effect(() => {
 							(<code>OPENSESSION_LOCAL_DB_PATH</code> or default <code>~/.local/share/opensession/local.db</code>) for fast queries.
 						</p>
 					{/if}
+				</section>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-summary-batch">
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Summary Batch</h3>
+						<button
+							type="button"
+							data-testid="runtime-summary-batch-run"
+							onclick={handleRunSummaryBatchNow}
+							disabled={runtimeSummaryBatchRunning || runtimeSaving || runtimeLoading}
+							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
+						>
+							{runtimeSummaryBatchRunning ? 'Running...' : 'Run now'}
+						</button>
+					</div>
+					<div class="grid gap-2 sm:grid-cols-3">
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Execution Mode</span>
+							<select bind:value={runtimeBatchExecutionMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+								<option value="manual">manual</option>
+								<option value="on_app_start">on_app_start</option>
+							</select>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Scope</span>
+							<select bind:value={runtimeBatchScope} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
+								<option value="recent_days">recent_days</option>
+								<option value="all">all</option>
+							</select>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Recent Days</span>
+							<input
+								type="number"
+								min="1"
+								bind:value={runtimeBatchRecentDays}
+								disabled={runtimeBatchScope === 'all'}
+								data-testid="runtime-summary-batch-recent-days"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary disabled:opacity-60"
+							/>
+						</label>
+					</div>
+					<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-summary-batch-status">
+						{#if runtimeSummaryBatchStatus}
+							<p>
+								state: {runtimeSummaryBatchStatus.state} | processed: {runtimeSummaryBatchStatus.processed_sessions}/
+								{runtimeSummaryBatchStatus.total_sessions} | failed: {runtimeSummaryBatchStatus.failed_sessions}
+							</p>
+							{#if runtimeSummaryBatchStatus.message}
+								<p class="mt-1">{runtimeSummaryBatchStatus.message}</p>
+							{/if}
+							<p class="mt-1">
+								started: {formatDate(runtimeSummaryBatchStatus.started_at)} | finished: {formatDate(runtimeSummaryBatchStatus.finished_at)}
+							</p>
+						{:else}
+							<p>batch status unavailable.</p>
+						{/if}
+					</div>
+				</section>
+
+				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-lifecycle">
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Data Lifecycle</h3>
+					<label class="flex items-center gap-2 text-xs text-text-secondary">
+						<input type="checkbox" bind:checked={runtimeLifecycleEnabled} data-testid="runtime-lifecycle-enable" />
+						<span>Enable periodic lifecycle cleanup</span>
+					</label>
+					<div class="grid gap-2 sm:grid-cols-3">
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Session TTL (days)</span>
+							<input
+								type="number"
+								min="1"
+								bind:value={runtimeSessionTtlDays}
+								data-testid="runtime-lifecycle-session-ttl"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Summary TTL (days)</span>
+							<input
+								type="number"
+								min="1"
+								bind:value={runtimeSummaryTtlDays}
+								data-testid="runtime-lifecycle-summary-ttl"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+						<label class="text-xs text-text-secondary">
+							<span class="mb-1 block">Cleanup Interval (sec)</span>
+							<input
+								type="number"
+								min="60"
+								bind:value={runtimeCleanupIntervalSecs}
+								data-testid="runtime-lifecycle-interval"
+								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+							/>
+						</label>
+					</div>
+					<div class="overflow-x-auto border border-border/70 bg-bg-primary p-2">
+						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">Root / Dependent Cleanup</p>
+						<table class="w-full text-left text-[11px] text-text-secondary">
+							<thead>
+								<tr class="text-text-muted">
+									<th class="pb-1">Root</th>
+									<th class="pb-1">Dependents</th>
+									<th class="pb-1">Rule</th>
+								</tr>
+							</thead>
+							<tbody>
+								<tr>
+									<td class="pr-4 align-top">session</td>
+									<td class="pr-4 align-top">summary, vector chunks, vector index, body cache, session links</td>
+									<td class="align-top">delete session => delete all dependents</td>
+								</tr>
+								<tr>
+									<td class="pr-4 align-top">summary</td>
+									<td class="pr-4 align-top">summary metadata (hidden_ref/local row)</td>
+									<td class="align-top">delete summary => keep session</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
 				</section>
 			</div>
 		{/if}

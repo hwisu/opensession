@@ -130,6 +130,18 @@ pub struct VectorIndexJobRow {
     pub finished_at: Option<String>,
 }
 
+/// Summary batch generation progress/status snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryBatchJobRow {
+    pub status: String,
+    pub processed_sessions: u32,
+    pub total_sessions: u32,
+    pub failed_sessions: u32,
+    pub message: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
     let source_path = source_path.map(|path| path.to_ascii_lowercase())?;
 
@@ -967,6 +979,10 @@ impl LocalDb {
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let conn = self.conn();
         conn.execute(
+            "DELETE FROM session_links WHERE session_id = ?1 OR linked_session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
             "DELETE FROM vector_embeddings \
              WHERE chunk_id IN (SELECT id FROM vector_chunks WHERE session_id = ?1)",
             params![session_id],
@@ -1044,6 +1060,18 @@ impl LocalDb {
         Ok(())
     }
 
+    pub fn list_expired_session_ids(&self, keep_days: u32) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM sessions \
+             WHERE julianday(created_at) <= julianday('now') - ?1 \
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![keep_days as i64], |row| row.get(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn get_session_semantic_summary(
         &self,
         session_id: &str,
@@ -1075,6 +1103,15 @@ impl LocalDb {
             )
             .optional()?;
         Ok(row)
+    }
+
+    pub fn delete_expired_session_summaries(&self, keep_days: u32) -> Result<u32> {
+        let deleted = self.conn().execute(
+            "DELETE FROM session_semantic_summaries \
+             WHERE julianday(generated_at) <= julianday('now') - ?1",
+            params![keep_days as i64],
+        )?;
+        Ok(deleted as u32)
     }
 
     // ── Semantic vector index cache ────────────────────────────────────
@@ -1282,6 +1319,56 @@ impl LocalDb {
                         message: row.get(3)?,
                         started_at: row.get(4)?,
                         finished_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn set_summary_batch_job(&self, payload: &SummaryBatchJobRow) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO summary_batch_jobs \
+             (id, status, processed_sessions, total_sessions, failed_sessions, message, started_at, finished_at, updated_at) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now')) \
+             ON CONFLICT(id) DO UPDATE SET \
+             status=excluded.status, \
+             processed_sessions=excluded.processed_sessions, \
+             total_sessions=excluded.total_sessions, \
+             failed_sessions=excluded.failed_sessions, \
+             message=excluded.message, \
+             started_at=excluded.started_at, \
+             finished_at=excluded.finished_at, \
+             updated_at=datetime('now')",
+            params![
+                payload.status,
+                payload.processed_sessions as i64,
+                payload.total_sessions as i64,
+                payload.failed_sessions as i64,
+                payload.message,
+                payload.started_at,
+                payload.finished_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_summary_batch_job(&self) -> Result<Option<SummaryBatchJobRow>> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT status, processed_sessions, total_sessions, failed_sessions, message, started_at, finished_at \
+                 FROM summary_batch_jobs WHERE id = 1 LIMIT 1",
+                [],
+                |row| {
+                    Ok(SummaryBatchJobRow {
+                        status: row.get(0)?,
+                        processed_sessions: row.get::<_, i64>(1)?.max(0) as u32,
+                        total_sessions: row.get::<_, i64>(2)?.max(0) as u32,
+                        failed_sessions: row.get::<_, i64>(3)?.max(0) as u32,
+                        message: row.get(4)?,
+                        started_at: row.get(5)?,
+                        finished_at: row.get(6)?,
                     })
                 },
             )
@@ -2204,10 +2291,14 @@ mod tests {
             migration_names.contains(&"local_0003_vector_index"),
             "expected local_0003_vector_index migration from opensession-api"
         );
+        assert!(
+            migration_names.contains(&"local_0004_summary_batch_status"),
+            "expected local_0004_summary_batch_status migration from opensession-api"
+        );
         assert_eq!(
             migration_names.len(),
-            3,
-            "local schema should include baseline + summary cache + vector index steps"
+            4,
+            "local schema should include baseline + summary cache + vector index + summary batch status steps"
         );
 
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2802,6 +2893,109 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_session_removes_session_links_bidirectionally() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO session_links (session_id, linked_session_id, link_type, created_at) \
+                 VALUES (?1, ?2, 'handoff', datetime('now'))",
+                params!["s1", "s2"],
+            )
+            .expect("insert forward link");
+        db.conn()
+            .execute(
+                "INSERT INTO session_links (session_id, linked_session_id, link_type, created_at) \
+                 VALUES (?1, ?2, 'related', datetime('now'))",
+                params!["s3", "s1"],
+            )
+            .expect("insert reverse link");
+
+        db.delete_session("s1").expect("delete root session");
+
+        let remaining: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM session_links WHERE session_id = ?1 OR linked_session_id = ?1",
+                params!["s1"],
+                |row| row.get(0),
+            )
+            .expect("count linked rows");
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn test_delete_expired_session_summaries_uses_generated_at_ttl() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        db.upsert_session_semantic_summary(&SessionSemanticSummaryUpsert {
+            session_id: "s1",
+            summary_json: r#"{"changes":"old"}"#,
+            generated_at: "2020-01-01T00:00:00Z",
+            provider: "codex_exec",
+            model: None,
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: None,
+            source_details_json: None,
+            diff_tree_json: None,
+            error: None,
+        })
+        .expect("upsert old summary");
+        db.upsert_session_semantic_summary(&SessionSemanticSummaryUpsert {
+            session_id: "s2",
+            summary_json: r#"{"changes":"new"}"#,
+            generated_at: "2999-01-01T00:00:00Z",
+            provider: "codex_exec",
+            model: None,
+            source_kind: "session_signals",
+            generation_kind: "provider",
+            prompt_fingerprint: None,
+            source_details_json: None,
+            diff_tree_json: None,
+            error: None,
+        })
+        .expect("upsert new summary");
+
+        let deleted = db
+            .delete_expired_session_summaries(30)
+            .expect("delete expired summaries");
+        assert_eq!(deleted, 1);
+        assert!(db
+            .get_session_semantic_summary("s1")
+            .expect("query old summary")
+            .is_none());
+        assert!(db
+            .get_session_semantic_summary("s2")
+            .expect("query new summary")
+            .is_some());
+    }
+
+    #[test]
+    fn test_list_expired_session_ids_uses_created_at_ttl() {
+        let db = test_db();
+        seed_sessions(&db);
+
+        let expired = db
+            .list_expired_session_ids(30)
+            .expect("list expired sessions");
+        assert!(
+            expired.contains(&"s1".to_string()),
+            "older seeded sessions should be expired for 30-day keep"
+        );
+
+        let none_expired = db
+            .list_expired_session_ids(10_000)
+            .expect("list non-expired sessions");
+        assert!(
+            none_expired.is_empty(),
+            "seeded sessions should be retained with a large keep window"
+        );
+    }
+
+    #[test]
     fn test_build_fts_query_quotes_tokens() {
         assert_eq!(
             build_fts_query("parser retry"),
@@ -2913,6 +3107,32 @@ mod tests {
         assert_eq!(loaded.processed_sessions, 2);
         assert_eq!(loaded.total_sessions, 10);
         assert_eq!(loaded.message.as_deref(), Some("indexing"));
+    }
+
+    #[test]
+    fn test_summary_batch_job_round_trip() {
+        let db = test_db();
+        let payload = SummaryBatchJobRow {
+            status: "running".to_string(),
+            processed_sessions: 4,
+            total_sessions: 12,
+            failed_sessions: 1,
+            message: Some("processing summaries".to_string()),
+            started_at: Some("2026-03-05T10:00:00Z".to_string()),
+            finished_at: None,
+        };
+        db.set_summary_batch_job(&payload)
+            .expect("set summary batch job snapshot");
+
+        let loaded = db
+            .get_summary_batch_job()
+            .expect("read summary batch job snapshot")
+            .expect("summary batch job row should exist");
+        assert_eq!(loaded.status, "running");
+        assert_eq!(loaded.processed_sessions, 4);
+        assert_eq!(loaded.total_sessions, 12);
+        assert_eq!(loaded.failed_sessions, 1);
+        assert_eq!(loaded.message.as_deref(), Some("processing summaries"));
     }
 
     #[test]

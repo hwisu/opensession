@@ -17,6 +17,7 @@ import type {
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSummaryBatchStatusResponse,
 	DesktopSessionSummaryResponse,
 	DesktopSummaryProviderDetectResponse,
 	DesktopVectorIndexStatusResponse,
@@ -408,6 +409,22 @@ export async function updateRuntimeSettings(
 ): Promise<DesktopRuntimeSettingsResponse> {
 	try {
 		return await getSessionReadCore().updateRuntimeSettings(request);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function runSummaryBatch(): Promise<DesktopSummaryBatchStatusResponse> {
+	try {
+		return await getSessionReadCore().summaryBatchRun();
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function getSummaryBatchStatus(): Promise<DesktopSummaryBatchStatusResponse> {
+	try {
+		return await getSessionReadCore().summaryBatchStatus();
 	} catch (error) {
 		throw normalizeSessionAdapterError(error);
 	}

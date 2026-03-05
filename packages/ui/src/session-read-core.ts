@@ -12,6 +12,7 @@ import type {
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSummaryBatchStatusResponse,
 	DesktopSessionSummaryResponse,
 	DesktopSummaryProviderDetectResponse,
 	DesktopVectorIndexStatusResponse,
@@ -88,6 +89,8 @@ export interface SessionReadCore {
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
 	): Promise<DesktopRuntimeSettingsResponse>;
+	summaryBatchRun(): Promise<DesktopSummaryBatchStatusResponse>;
+	summaryBatchStatus(): Promise<DesktopSummaryBatchStatusResponse>;
 	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
 	vectorPreflight(): Promise<DesktopVectorPreflightResponse>;
 	vectorInstallModel(model: string): Promise<DesktopVectorInstallStatusResponse>;
@@ -213,6 +216,20 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 		): Promise<DesktopRuntimeSettingsResponse> {
 			try {
 				return await adapter.updateRuntimeSettings(request);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async summaryBatchRun(): Promise<DesktopSummaryBatchStatusResponse> {
+			try {
+				return await adapter.summaryBatchRun();
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async summaryBatchStatus(): Promise<DesktopSummaryBatchStatusResponse> {
+			try {
+				return await adapter.summaryBatchStatus();
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

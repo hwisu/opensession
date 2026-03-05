@@ -514,7 +514,7 @@ test.describe('Sessions', () => {
 							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
 							switch (cmd) {
 								case 'desktop_get_contract_version':
-									return { version: 'desktop-ipc-v4' };
+									return { version: 'desktop-ipc-v5' };
 								case 'desktop_get_capabilities':
 									return {
 										auth_enabled: false,
@@ -571,7 +571,7 @@ test.describe('Sessions', () => {
 							(window as { __invokeCalls?: InvokeCall[] }).__invokeCalls = calls;
 							switch (cmd) {
 								case 'desktop_get_contract_version':
-									return { version: 'desktop-ipc-v4' };
+									return { version: 'desktop-ipc-v5' };
 								case 'desktop_get_capabilities':
 									return {
 										auth_enabled: false,

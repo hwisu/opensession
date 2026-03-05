@@ -367,7 +367,7 @@ pub struct SessionListResponse {
 }
 
 /// Canonical desktop IPC contract version shared between Rust and TS clients.
-pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v4";
+pub const DESKTOP_IPC_CONTRACT_VERSION: &str = "desktop-ipc-v5";
 
 /// Query parameters for `GET /api/sessions` — pagination, filtering, sorting.
 #[derive(Debug, Deserialize)]
@@ -474,6 +474,7 @@ pub struct DesktopRuntimeSettingsResponse {
     pub summary: DesktopRuntimeSummarySettings,
     pub vector_search: DesktopRuntimeVectorSearchSettings,
     pub change_reader: DesktopRuntimeChangeReaderSettings,
+    pub lifecycle: DesktopRuntimeLifecycleSettings,
     pub ui_constraints: DesktopRuntimeSummaryUiConstraints,
 }
 
@@ -490,6 +491,8 @@ pub struct DesktopRuntimeSettingsUpdateRequest {
     pub vector_search: Option<DesktopRuntimeVectorSearchSettingsUpdate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_reader: Option<DesktopRuntimeChangeReaderSettingsUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<DesktopRuntimeLifecycleSettingsUpdate>,
 }
 
 /// Local summary provider detection result for desktop setup/settings.
@@ -577,6 +580,24 @@ pub enum DesktopSummaryStorageBackend {
     None,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryBatchExecutionMode {
+    Manual,
+    OnAppStart,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryBatchScope {
+    RecentDays,
+    All,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
@@ -614,12 +635,22 @@ pub struct DesktopRuntimeSummaryStorageSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryBatchSettings {
+    pub execution_mode: DesktopSummaryBatchExecutionMode,
+    pub scope: DesktopSummaryBatchScope,
+    pub recent_days: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct DesktopRuntimeSummarySettings {
     pub provider: DesktopRuntimeSummaryProviderSettings,
     pub prompt: DesktopRuntimeSummaryPromptSettings,
     pub response: DesktopRuntimeSummaryResponseSettings,
     pub storage: DesktopRuntimeSummaryStorageSettings,
     pub source_mode: DesktopSummarySourceMode,
+    pub batch: DesktopRuntimeSummaryBatchSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -657,12 +688,22 @@ pub struct DesktopRuntimeSummaryStorageSettingsUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeSummaryBatchSettingsUpdate {
+    pub execution_mode: DesktopSummaryBatchExecutionMode,
+    pub scope: DesktopSummaryBatchScope,
+    pub recent_days: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct DesktopRuntimeSummarySettingsUpdate {
     pub provider: DesktopRuntimeSummaryProviderSettingsUpdate,
     pub prompt: DesktopRuntimeSummaryPromptSettingsUpdate,
     pub response: DesktopRuntimeSummaryResponseSettingsUpdate,
     pub storage: DesktopRuntimeSummaryStorageSettingsUpdate,
     pub source_mode: DesktopSummarySourceMode,
+    pub batch: DesktopRuntimeSummaryBatchSettingsUpdate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -773,6 +814,26 @@ pub struct DesktopRuntimeChangeReaderSettingsUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeLifecycleSettings {
+    pub enabled: bool,
+    pub session_ttl_days: u32,
+    pub summary_ttl_days: u32,
+    pub cleanup_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopRuntimeLifecycleSettingsUpdate {
+    pub enabled: bool,
+    pub session_ttl_days: u32,
+    pub summary_ttl_days: u32,
+    pub cleanup_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct DesktopVectorPreflightResponse {
     pub provider: DesktopVectorSearchProvider,
     pub endpoint: String,
@@ -803,6 +864,33 @@ pub struct DesktopVectorIndexStatusResponse {
     pub state: DesktopVectorIndexState,
     pub processed_sessions: u32,
     pub total_sessions: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopSummaryBatchState {
+    Idle,
+    Running,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopSummaryBatchStatusResponse {
+    pub state: DesktopSummaryBatchState,
+    pub processed_sessions: u32,
+    pub total_sessions: u32,
+    pub failed_sessions: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1657,15 +1745,19 @@ mod tests {
             DesktopSummaryOutputShape,
             DesktopSummaryTriggerMode,
             DesktopSummaryStorageBackend,
+            DesktopSummaryBatchExecutionMode,
+            DesktopSummaryBatchScope,
             DesktopRuntimeSummaryProviderSettings,
             DesktopRuntimeSummaryPromptSettings,
             DesktopRuntimeSummaryResponseSettings,
             DesktopRuntimeSummaryStorageSettings,
+            DesktopRuntimeSummaryBatchSettings,
             DesktopRuntimeSummarySettings,
             DesktopRuntimeSummaryProviderSettingsUpdate,
             DesktopRuntimeSummaryPromptSettingsUpdate,
             DesktopRuntimeSummaryResponseSettingsUpdate,
             DesktopRuntimeSummaryStorageSettingsUpdate,
+            DesktopRuntimeSummaryBatchSettingsUpdate,
             DesktopRuntimeSummarySettingsUpdate,
             DesktopRuntimeSummaryUiConstraints,
             DesktopVectorSearchProvider,
@@ -1677,9 +1769,13 @@ mod tests {
             DesktopChangeReaderScope,
             DesktopRuntimeChangeReaderSettings,
             DesktopRuntimeChangeReaderSettingsUpdate,
+            DesktopRuntimeLifecycleSettings,
+            DesktopRuntimeLifecycleSettingsUpdate,
             DesktopVectorPreflightResponse,
             DesktopVectorInstallStatusResponse,
             DesktopVectorIndexStatusResponse,
+            DesktopSummaryBatchState,
+            DesktopSummaryBatchStatusResponse,
             DesktopVectorSessionMatch,
             DesktopVectorSearchResponse,
             DesktopRuntimeSettingsResponse,

@@ -1,26 +1,27 @@
 import { parseHailInput } from './hail-parse';
-import type {
-	DesktopHandoffBuildResponse,
-	DesktopChangeQuestionResponse,
-	DesktopChangeReadResponse,
-	DesktopChangeReaderScope,
-	DesktopRuntimeSettingsResponse,
-	DesktopRuntimeSettingsUpdateRequest,
-	DesktopVectorIndexStatusResponse,
-	DesktopVectorInstallStatusResponse,
-	DesktopVectorPreflightResponse,
-	DesktopVectorSearchResponse,
-	DesktopSessionSummaryResponse,
-	DesktopSummaryProviderDetectResponse,
-	Session,
-	SessionDetail,
-	SessionListResponse,
-} from './types';
 import {
 	SessionAdapterError,
 	type SessionListParams,
 	type SessionReadAdapter,
 } from './session-adapter';
+import type {
+	DesktopChangeQuestionResponse,
+	DesktopChangeReaderScope,
+	DesktopChangeReadResponse,
+	DesktopHandoffBuildResponse,
+	DesktopQuickShareResponse,
+	DesktopRuntimeSettingsResponse,
+	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSessionSummaryResponse,
+	DesktopSummaryProviderDetectResponse,
+	DesktopVectorIndexStatusResponse,
+	DesktopVectorInstallStatusResponse,
+	DesktopVectorPreflightResponse,
+	DesktopVectorSearchResponse,
+	Session,
+	SessionDetail,
+	SessionListResponse,
+} from './types';
 
 function normalizeMessageFromBody(status: number, body: string): string {
 	let msg = body.trimStart().startsWith('<') ? `Server returned ${status}` : body.slice(0, 200);
@@ -73,6 +74,7 @@ export interface SessionReadCore {
 	getSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	regenerateSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
+	quickShareSession(sessionId: string, remote?: string | null): Promise<DesktopQuickShareResponse>;
 	readSessionChanges(
 		sessionId: string,
 		scope?: DesktopChangeReaderScope | null,
@@ -164,6 +166,16 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 		): Promise<DesktopHandoffBuildResponse> {
 			try {
 				return await adapter.buildHandoff(sessionId, pinLatest);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async quickShareSession(
+			sessionId: string,
+			remote?: string | null,
+		): Promise<DesktopQuickShareResponse> {
+			try {
+				return await adapter.quickShareSession(sessionId, remote);
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

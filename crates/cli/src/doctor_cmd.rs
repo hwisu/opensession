@@ -2,7 +2,7 @@ use crate::open_target::OpenTarget;
 use crate::runtime_settings::{
     apply_summary_profile, detect_local_summary_profile, load_runtime_config, save_runtime_config,
 };
-use crate::setup_cmd::{self, SetupArgs, SetupFanoutMode};
+use crate::setup_cmd::{self, SetupArgs, SetupFanoutMode, SetupProfile};
 use crate::user_guidance::guided_error;
 use anyhow::Result;
 use clap::{Args, ValueEnum};
@@ -28,8 +28,8 @@ impl DoctorFanoutMode {
 #[command(after_long_help = r"Recovery examples:
   opensession doctor
   opensession doctor --fix
-  opensession doctor --fix --yes --fanout-mode hidden_ref
-  opensession doctor --fix --yes --fanout-mode hidden_ref --open-target app
+  opensession doctor --fix --profile local
+  opensession doctor --fix --yes --profile app --fanout-mode hidden_ref --open-target app
   opensession docs quickstart")]
 pub struct DoctorArgs {
     /// Apply recommended setup fixes (hooks/shims/fanout defaults).
@@ -44,6 +44,9 @@ pub struct DoctorArgs {
     /// Set default review opener (`app` or `web`) before applying fixes.
     #[arg(long, value_enum)]
     pub open_target: Option<OpenTarget>,
+    /// Choose setup profile (`local` = CLI-local-first, `app` = desktop-linked defaults).
+    #[arg(long, value_enum)]
+    pub profile: Option<SetupProfile>,
 }
 
 pub fn run(args: DoctorArgs) -> Result<()> {
@@ -63,6 +66,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         print_fanout_mode: false,
         sync_branch_session: None,
         sync_branch_commit: None,
+        profile: args.profile,
     })?;
 
     if args.fix {
@@ -104,8 +108,8 @@ fn validate_args(args: &DoctorArgs) -> Result<()> {
         return Err(guided_error(
             "`--open-target` requires `--fix`",
             [
-                "run `opensession doctor --fix --open-target app`",
-                "or run `opensession doctor --fix --open-target web`",
+                "run `opensession doctor --fix --profile app --open-target app`",
+                "or run `opensession doctor --fix --profile local --open-target web`",
             ],
         ));
     }
@@ -113,7 +117,7 @@ fn validate_args(args: &DoctorArgs) -> Result<()> {
         return Err(guided_error(
             "`--yes` requires `--fix`",
             [
-                "run `opensession doctor --fix --yes --fanout-mode hidden_ref`",
+                "run `opensession doctor --fix --yes --profile local --fanout-mode hidden_ref`",
                 "or run `opensession doctor --fix` in interactive mode",
             ],
         ));
@@ -132,6 +136,7 @@ mod tests {
             yes: false,
             fanout_mode: Some(DoctorFanoutMode::HiddenRef),
             open_target: None,
+            profile: None,
         };
         let err = validate_args(&args).expect_err("validate");
         let msg = err.to_string();
@@ -147,6 +152,7 @@ mod tests {
             yes: true,
             fanout_mode: Some(DoctorFanoutMode::GitNotes),
             open_target: Some(OpenTarget::Web),
+            profile: Some(SetupProfile::Local),
         };
         validate_args(&args).expect("validate");
     }
@@ -158,12 +164,13 @@ mod tests {
             yes: true,
             fanout_mode: None,
             open_target: None,
+            profile: None,
         };
         let err = validate_args(&args).expect_err("validate");
         let msg = err.to_string();
         assert!(msg.contains("requires `--fix`"));
         assert!(msg.contains("next:"));
-        assert!(msg.contains("doctor --fix --yes --fanout-mode hidden_ref"));
+        assert!(msg.contains("doctor --fix --yes --profile local --fanout-mode hidden_ref"));
     }
 
     #[test]
@@ -173,10 +180,11 @@ mod tests {
             yes: false,
             fanout_mode: None,
             open_target: Some(OpenTarget::App),
+            profile: None,
         };
         let err = validate_args(&args).expect_err("validate");
         let msg = err.to_string();
         assert!(msg.contains("`--open-target` requires `--fix`"));
-        assert!(msg.contains("doctor --fix --open-target app"));
+        assert!(msg.contains("doctor --fix --profile app --open-target app"));
     }
 }

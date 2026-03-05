@@ -5,7 +5,8 @@ use opensession_api::{
     CapabilitiesResponse, DesktopApiError, DesktopContractVersionResponse,
     DesktopChangeQuestionRequest, DesktopChangeQuestionResponse, DesktopChangeReadRequest,
     DesktopChangeReadResponse, DesktopChangeReaderScope,
-    DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopRuntimeSettingsResponse,
+    DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopQuickShareRequest,
+    DesktopQuickShareResponse, DesktopRuntimeSettingsResponse,
     DesktopRuntimeChangeReaderSettings, DesktopRuntimeSettingsUpdateRequest,
     DesktopRuntimeSummaryPromptSettings,
     DesktopRuntimeSummaryProviderSettings, DesktopRuntimeSummaryResponseSettings,
@@ -52,6 +53,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -1687,6 +1689,36 @@ fn load_normalized_session_body(db: &LocalDb, session_id: &str) -> DesktopApiRes
         "session body not found in local cache",
         Some(json!({ "session_id": session_id })),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct CliQuickSharePayload {
+    uri: String,
+    source_uri: String,
+    remote: String,
+    push_cmd: String,
+    pushed: bool,
+    #[serde(default)]
+    auto_push_consent: bool,
+}
+
+fn parse_cli_quick_share_response(stdout: &str) -> DesktopApiResult<DesktopQuickShareResponse> {
+    let payload: CliQuickSharePayload = serde_json::from_str(stdout).map_err(|error| {
+        desktop_error(
+            "desktop.quick_share_parse_failed",
+            500,
+            "failed to decode quick-share response from CLI",
+            Some(json!({ "cause": error.to_string(), "stdout": stdout })),
+        )
+    })?;
+    Ok(DesktopQuickShareResponse {
+        source_uri: payload.source_uri,
+        shared_uri: payload.uri,
+        remote: payload.remote,
+        push_cmd: payload.push_cmd,
+        pushed: payload.pushed,
+        auto_push_consent: payload.auto_push_consent,
+    })
 }
 
 fn canonicalize_summaries(summaries: &[HandoffSummary]) -> DesktopApiResult<String> {
@@ -3370,6 +3402,108 @@ fn desktop_build_handoff(
     build_handoff_artifact_record(&normalized_session, session, request.pin_latest, &cwd)
 }
 
+#[tauri::command]
+fn desktop_share_session_quick(
+    request: DesktopQuickShareRequest,
+) -> DesktopApiResult<DesktopQuickShareResponse> {
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err(desktop_error(
+            "desktop.quick_share_invalid_request",
+            400,
+            "session_id is required",
+            None,
+        ));
+    }
+
+    let db = open_local_db()?;
+    let normalized_session = load_normalized_session_body(&db, &session_id)?;
+    let session = HailSession::from_jsonl(&normalized_session).map_err(|error| {
+        desktop_error(
+            "desktop.quick_share_parse_failed",
+            422,
+            "failed to decode normalized session for quick share",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+
+    let command_cwd = working_directory(&session)
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| {
+            desktop_error(
+                "desktop.quick_share_cwd_unavailable",
+                500,
+                "failed to resolve command working directory",
+                Some(json!({ "session_id": session_id })),
+            )
+        })?;
+
+    let source_object = store_local_object(normalized_session.as_bytes(), &command_cwd).map_err(|error| {
+        desktop_error(
+            "desktop.quick_share_source_store_failed",
+            500,
+            "failed to store normalized source object for quick share",
+            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+        )
+    })?;
+
+    let mut command = Command::new("opensession");
+    command
+        .arg("share")
+        .arg(source_object.uri.to_string())
+        .arg("--quick")
+        .arg("--json")
+        .current_dir(&command_cwd);
+    if let Some(remote) = normalize_non_empty(request.remote) {
+        command.arg("--remote").arg(remote);
+    }
+
+    let output = command.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return desktop_error(
+                "desktop.quick_share_cli_missing",
+                501,
+                "opensession CLI is unavailable. Install/enable the CLI bundle and retry.",
+                Some(json!({ "cause": error.to_string() })),
+            );
+        }
+        desktop_error(
+            "desktop.quick_share_spawn_failed",
+            500,
+            "failed to start opensession CLI quick-share command",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(desktop_error(
+            "desktop.quick_share_failed",
+            422,
+            "quick-share command failed",
+            Some(json!({
+                "session_id": session_id,
+                "source_uri": source_object.uri.to_string(),
+                "stdout": stdout,
+                "stderr": stderr,
+            })),
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        desktop_error(
+            "desktop.quick_share_invalid_utf8",
+            500,
+            "quick-share command returned non-UTF8 output",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+    parse_cli_quick_share_response(&stdout)
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -3394,7 +3528,8 @@ fn main() {
             desktop_read_session_changes,
             desktop_ask_session_changes,
             desktop_take_launch_route,
-            desktop_build_handoff
+            desktop_build_handoff,
+            desktop_share_session_quick
         ])
         .run(tauri::generate_context!())
         .expect("failed to run opensession desktop app");
@@ -3407,13 +3542,14 @@ mod tests {
         build_vector_chunks_for_session, canonicalize_summaries, cosine_similarity,
         desktop_ask_session_changes, desktop_get_contract_version, desktop_get_runtime_settings,
         desktop_get_session_detail, desktop_get_session_raw, desktop_list_sessions,
-        desktop_read_session_changes, desktop_update_runtime_settings, extract_vector_lines,
-        map_link_type, normalize_launch_route,
+        desktop_read_session_changes, desktop_share_session_quick, desktop_update_runtime_settings,
+        extract_vector_lines, map_link_type, normalize_launch_route,
         normalize_session_body_to_hail_jsonl, session_summary_from_local_row, split_search_mode,
-        validate_pin_alias, DesktopSessionListQuery, SearchMode,
+        parse_cli_quick_share_response, validate_pin_alias, DesktopSessionListQuery, SearchMode,
     };
     use opensession_api::{
         DesktopChangeQuestionRequest, DesktopChangeReadRequest, DesktopChangeReaderScope,
+        DesktopQuickShareRequest,
         DesktopRuntimeChangeReaderSettingsUpdate,
         DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettingsUpdate,
         DesktopRuntimeSummaryProviderSettingsUpdate, DesktopRuntimeSummaryResponseSettingsUpdate,
@@ -3709,6 +3845,39 @@ mod tests {
             payload.version,
             opensession_api::DESKTOP_IPC_CONTRACT_VERSION
         );
+    }
+
+    #[test]
+    fn parse_cli_quick_share_response_decodes_expected_fields() {
+        let stdout = r#"{
+  "uri": "os://src/git/cmVtb3Rl/ref/refs%2Fheads%2Fmain/path/sessions%2Fa.jsonl",
+  "source_uri": "os://src/local/abc123",
+  "remote": "https://github.com/org/repo.git",
+  "push_cmd": "git push origin refs/opensession/branches/bWFpbg:refs/opensession/branches/bWFpbg",
+  "quick": true,
+  "pushed": true,
+  "auto_push_consent": true
+}"#;
+        let parsed = parse_cli_quick_share_response(stdout).expect("parse quick-share payload");
+        assert_eq!(parsed.source_uri, "os://src/local/abc123");
+        assert_eq!(
+            parsed.shared_uri,
+            "os://src/git/cmVtb3Rl/ref/refs%2Fheads%2Fmain/path/sessions%2Fa.jsonl"
+        );
+        assert_eq!(parsed.remote, "https://github.com/org/repo.git");
+        assert!(parsed.pushed);
+        assert!(parsed.auto_push_consent);
+    }
+
+    #[test]
+    fn desktop_quick_share_rejects_empty_session_id() {
+        let err = desktop_share_session_quick(DesktopQuickShareRequest {
+            session_id: "   ".to_string(),
+            remote: None,
+        })
+        .expect_err("empty session_id should fail");
+        assert_eq!(err.code, "desktop.quick_share_invalid_request");
+        assert_eq!(err.status, 400);
     }
 
     #[test]

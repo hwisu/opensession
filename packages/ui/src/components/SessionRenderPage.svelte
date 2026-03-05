@@ -1,5 +1,5 @@
 <script lang="ts">
-import { ApiError, buildSessionHandoff } from '../api';
+import { ApiError, buildSessionHandoff, quickShareSession } from '../api';
 import { SCROLL_STEP_PX } from '../constants';
 import { prepareTimelineEvents } from '../event-helpers';
 import { isNativeAdapterSupported, type SessionViewMode } from '../session-filters';
@@ -52,6 +52,11 @@ let handoffDownloadFileName = $state<string | null>(null);
 let handoffDownloadContent = $state<string | null>(null);
 let handoffFeedback = $state<string | null>(null);
 let handoffFeedbackLevel = $state<'success' | 'error' | null>(null);
+let quickSharePending = $state(false);
+let quickShareRemote = $state('');
+let quickShareUri = $state<string | null>(null);
+let quickShareFeedback = $state<string | null>(null);
+let quickShareFeedbackLevel = $state<'success' | 'error' | null>(null);
 
 type FlowKind = 'user' | 'agent' | 'tool' | 'system';
 type FlowSegment = { kind: FlowKind; width: number; tooltip: string };
@@ -300,6 +305,11 @@ function setHandoffFeedback(message: string | null, level: 'success' | 'error' |
 	handoffFeedbackLevel = level;
 }
 
+function setQuickShareFeedback(message: string | null, level: 'success' | 'error' | null = null) {
+	quickShareFeedback = message;
+	quickShareFeedbackLevel = level;
+}
+
 async function writeClipboardText(text: string): Promise<boolean> {
 	if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
 		try {
@@ -365,6 +375,36 @@ async function handleCopyHandoffUri() {
 	const copied = await writeClipboardText(handoffArtifactUri);
 	setHandoffFeedback(
 		copied ? 'Artifact URI copied.' : 'Failed to copy artifact URI.',
+		copied ? 'success' : 'error',
+	);
+}
+
+async function handleQuickShare() {
+	if (quickSharePending) return;
+	quickSharePending = true;
+	setQuickShareFeedback(null);
+	try {
+		const response = await quickShareSession(session.session_id, quickShareRemote.trim() || null);
+		quickShareUri = response.shared_uri;
+		setQuickShareFeedback(
+			response.pushed
+				? 'Shared and pushed successfully.'
+				: 'Shared locally. Confirm first push once to enable auto push in quick mode.',
+			'success',
+		);
+	} catch (error) {
+		const message = error instanceof ApiError ? error.message : 'Failed to quick share session.';
+		setQuickShareFeedback(message, 'error');
+	} finally {
+		quickSharePending = false;
+	}
+}
+
+async function handleCopyQuickShareUri() {
+	if (!quickShareUri) return;
+	const copied = await writeClipboardText(quickShareUri);
+	setQuickShareFeedback(
+		copied ? 'Shared URI copied.' : 'Failed to copy shared URI.',
 		copied ? 'success' : 'error',
 	);
 }
@@ -614,6 +654,58 @@ $effect(() => {
 					data-testid="session-handoff-panel"
 					class="mt-3 rounded border border-border/80 bg-bg-secondary/55 p-2"
 				>
+					<div class="mb-3 rounded border border-border/60 bg-bg-primary/35 p-2">
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<div class="text-xs text-text-secondary">Public Share</div>
+							<div class="flex flex-wrap items-center gap-2">
+								<input
+									type="text"
+									bind:value={quickShareRemote}
+									placeholder="remote (optional, auto-detect by default)"
+									class="w-[260px] border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
+								/>
+								<button
+									type="button"
+									data-testid="session-quick-share-run"
+									onclick={handleQuickShare}
+									disabled={quickSharePending}
+									class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:opacity-60"
+								>
+									{quickSharePending ? 'Sharing...' : 'Quick Share'}
+								</button>
+								{#if quickShareUri}
+									<button
+										type="button"
+										data-testid="session-quick-share-copy"
+										onclick={handleCopyQuickShareUri}
+										class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
+									>
+										Copy URI
+									</button>
+								{/if}
+							</div>
+						</div>
+						{#if quickShareUri}
+							<div
+								data-testid="session-quick-share-uri"
+								class="mt-2 rounded border border-border/70 bg-bg-primary px-2 py-1 font-mono text-[11px] text-text-secondary"
+							>
+								{quickShareUri}
+							</div>
+						{/if}
+						{#if quickShareFeedback}
+							<div
+								data-testid="session-quick-share-feedback"
+								class="mt-2 text-xs"
+								class:text-success={quickShareFeedbackLevel === 'success'}
+								class:text-error={quickShareFeedbackLevel === 'error'}
+								class:text-text-muted={quickShareFeedbackLevel == null}
+							>
+								{quickShareFeedback}
+							</div>
+						{/if}
+					</div>
+
 					<div class="flex flex-wrap items-center justify-between gap-2">
 						<div class="text-xs text-text-secondary">Handoff Artifact</div>
 						<div class="flex items-center gap-2">

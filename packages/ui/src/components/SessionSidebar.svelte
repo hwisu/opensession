@@ -1,4 +1,8 @@
 <script lang="ts">
+import type { Session, SessionDetail } from '../types';
+import { formatDuration, formatTimestamp, getToolConfig } from '../types';
+import type { FileStats } from '../utils';
+import { formatFullDate } from '../utils';
 import {
 	botIcon,
 	calendarIcon,
@@ -13,10 +17,6 @@ import {
 	terminalIcon,
 	userIcon,
 } from './icons';
-import type { Session, SessionDetail } from '../types';
-import { formatDuration, formatTimestamp, getToolConfig } from '../types';
-import type { FileStats } from '../utils';
-import { formatFullDate } from '../utils';
 
 const {
 	session,

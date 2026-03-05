@@ -2,11 +2,11 @@
 import {
 	ApiError,
 	createGitCredential,
-	detectSummaryProvider,
 	deleteGitCredential,
+	detectSummaryProvider,
 	getApiCapabilities,
-	getSettings,
 	getRuntimeSettings,
+	getSettings,
 	isAuthenticated,
 	issueApiKey,
 	listGitCredentials,
@@ -20,8 +20,8 @@ import type {
 	DesktopChangeReaderScope,
 	DesktopRuntimeSettingsResponse,
 	DesktopSummaryOutputShape,
-	DesktopSummaryProviderId,
 	DesktopSummaryProviderDetectResponse,
+	DesktopSummaryProviderId,
 	DesktopSummaryProviderTransport,
 	DesktopSummaryResponseStyle,
 	DesktopSummarySourceMode,
@@ -106,7 +106,10 @@ function currentRuntimeProviderTransport(): DesktopSummaryProviderTransport {
 	return providerTransportForId(runtimeProvider);
 }
 
-function responsePreview(style: DesktopSummaryResponseStyle, shape: DesktopSummaryOutputShape): string {
+function responsePreview(
+	style: DesktopSummaryResponseStyle,
+	shape: DesktopSummaryOutputShape,
+): string {
 	const changesPrefix =
 		style === 'compact'
 			? 'Updated session summary pipeline.'
@@ -131,7 +134,10 @@ function responsePreview(style: DesktopSummaryResponseStyle, shape: DesktopSumma
 			layer_file_changes: [
 				{
 					layer,
-					summary: style === 'compact' ? 'Settings/runtime summary flow updated.' : 'Runtime settings and summary persistence behavior were updated.',
+					summary:
+						style === 'compact'
+							? 'Settings/runtime summary flow updated.'
+							: 'Runtime settings and summary persistence behavior were updated.',
 					files,
 				},
 			],
@@ -410,10 +416,7 @@ async function handleVectorInstallModel() {
 		for (let attempt = 0; attempt < 120; attempt += 1) {
 			await delay(1000);
 			await refreshVectorPreflight();
-			if (
-				runtimeVectorPreflight &&
-				runtimeVectorPreflight.install_state !== 'installing'
-			) {
+			if (runtimeVectorPreflight && runtimeVectorPreflight.install_state !== 'installing') {
 				break;
 			}
 		}
@@ -432,10 +435,7 @@ async function handleVectorReindex() {
 		for (let attempt = 0; attempt < 600; attempt += 1) {
 			await delay(500);
 			await refreshVectorIndexStatus();
-			if (
-				runtimeVectorIndex &&
-				runtimeVectorIndex.state !== 'running'
-			) {
+			if (runtimeVectorIndex && runtimeVectorIndex.state !== 'running') {
 				break;
 			}
 		}

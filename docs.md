@@ -33,12 +33,12 @@ cargo install opensession
 opensession doctor
 
 # 3) Apply setup after explicit confirmation prompt
-opensession doctor --fix
+opensession doctor --fix --profile local
 ```
 
 - `doctor --fix` prints a setup plan and asks before applying hook/shim/fanout changes.
 - For automation or non-interactive shells, use explicit mode + approval:
-  `opensession doctor --fix --yes --fanout-mode hidden_ref`
+  `opensession doctor --fix --yes --profile local --fanout-mode hidden_ref`
 
 Quick path:
 
@@ -62,6 +62,11 @@ Install:
 ```bash
 cargo install opensession
 ```
+
+Install profiles:
+
+- `local` (default): CLI-local-first path for backup/summary/handoff users
+- `app`: desktop-linked path for app users (`opensession doctor --fix --profile app --open-target app`)
 
 Auto-capture note:
 
@@ -115,30 +120,32 @@ Desktop local extras:
 `register` is local-only. Remote sharing is explicit via `share`.
 
 ```bash
-# Local source -> remote-shareable source URI
-opensession share os://src/local/<sha256> --git --remote origin
+# Local source -> one-click git share URI flow
+opensession share os://src/local/<sha256> --quick
 
 # Optional network side effect
 opensession share os://src/local/<sha256> --git --remote origin --push
 ```
 
-`share --git` rules:
+`share --git` / `share --quick` rules:
 
-- Required: `--remote <name|url>`
+- `--quick` auto-detects remote (`origin` preferred, single remote fallback)
+- `--git` requires explicit `--remote <name|url>`
 - Default ref: `refs/opensession/branches/<branch_b64url>`
 - Default path: `sessions/<sha256>.jsonl`
 - `--push` omitted: no network mutation (prints runnable push command)
+- `--quick` asks once before first push, then stores per-repo consent in `.git/config` as `opensession.share.auto-push-consent=true`
 - Legacy fixed ref `refs/heads/opensession/sessions` is no longer used for new writes.
 
 Install-and-forget setup:
 
 ```bash
 opensession doctor
-opensession doctor --fix
+opensession doctor --fix --profile local
 # optional explicit mode in interactive shells
-opensession doctor --fix --fanout-mode hidden_ref
+opensession doctor --fix --profile local --fanout-mode hidden_ref
 # automation/non-interactive
-opensession doctor --fix --yes --fanout-mode hidden_ref
+opensession doctor --fix --yes --profile local --fanout-mode hidden_ref --open-target web
 ```
 
 - `doctor` check mode maps to internal setup checks; `doctor --fix` maps to the internal setup apply flow.
@@ -147,6 +154,7 @@ opensession doctor --fix --yes --fanout-mode hidden_ref
 - Installs/updates OpenSession shim at `~/.local/share/opensession/bin/opensession`.
 - On first apply without a configured mode, interactive shells prompt for fanout mode (`hidden_ref` or `git_notes`) and store it in local git config (`opensession.fanout-mode`).
 - Non-interactive apply requires explicit fanout mode (`--fanout-mode`) if the repository has no stored `opensession.fanout-mode`.
+- Open target defaults by profile (`local -> web`, `app -> app`).
 - `doctor` check output includes daemon status from `~/.config/opensession/daemon.pid`.
 - Start daemon with `opensession-daemon run` (or `cargo run -p opensession-daemon -- run` in a source checkout).
 - Does **not** modify `remote.<name>.push`.
@@ -246,12 +254,12 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 ```
 2. `share --git` missing `--remote`:
 ```bash
-opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/local/<sha256> --quick
 ```
 3. `share --git` outside git repo:
 ```bash
 cd <repo>
-opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/local/<sha256> --quick
 ```
 4. `share --web` missing config:
 ```bash
@@ -283,10 +291,10 @@ opensession cleanup run
 Five-minute first-user recovery path:
 ```bash
 opensession doctor
-opensession doctor --fix
+opensession doctor --fix --profile local
 opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
 opensession register ./session.hail.jsonl
-opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/local/<sha256> --quick
 ```
 
 ## Inspect Timeline

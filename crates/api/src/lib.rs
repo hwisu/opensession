@@ -432,6 +432,31 @@ pub struct DesktopHandoffBuildResponse {
     pub download_content: Option<String>,
 }
 
+/// Desktop quick-share request payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopQuickShareRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+}
+
+/// Desktop quick-share response payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopQuickShareResponse {
+    pub source_uri: String,
+    pub shared_uri: String,
+    pub remote: String,
+    pub push_cmd: String,
+    #[serde(default)]
+    pub pushed: bool,
+    #[serde(default)]
+    pub auto_push_consent: bool,
+}
+
 /// Desktop bridge contract/version handshake response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1237,7 +1262,7 @@ pub struct CapabilitiesResponse {
 }
 
 pub const DEFAULT_REGISTER_TARGETS: &[&str] = &["local", "git"];
-pub const DEFAULT_SHARE_MODES: &[&str] = &["web", "git", "json"];
+pub const DEFAULT_SHARE_MODES: &[&str] = &["web", "git", "quick", "json"];
 
 impl CapabilitiesResponse {
     /// Build runtime capability payload with shared defaults.
@@ -1534,13 +1559,13 @@ mod schema_tests {
         assert!(decoded.auth_enabled);
         assert!(decoded.parse_preview_enabled);
         assert_eq!(decoded.register_targets, vec!["local", "git"]);
-        assert_eq!(decoded.share_modes, vec!["web", "git", "json"]);
+        assert_eq!(decoded.share_modes, vec!["web", "git", "quick", "json"]);
     }
 
     #[test]
     fn capabilities_defaults_are_stable() {
         assert_eq!(DEFAULT_REGISTER_TARGETS, &["local", "git"]);
-        assert_eq!(DEFAULT_SHARE_MODES, &["web", "git", "json"]);
+        assert_eq!(DEFAULT_SHARE_MODES, &["web", "git", "quick", "json"]);
     }
 }
 
@@ -1622,6 +1647,8 @@ mod tests {
             SessionRepoListResponse,
             DesktopHandoffBuildRequest,
             DesktopHandoffBuildResponse,
+            DesktopQuickShareRequest,
+            DesktopQuickShareResponse,
             DesktopContractVersionResponse,
             DesktopSummaryProviderId,
             DesktopSummaryProviderTransport,

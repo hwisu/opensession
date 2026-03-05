@@ -2,21 +2,23 @@ import type {
 	AuthProvidersResponse,
 	CapabilitiesResponse,
 	DesktopApiError,
+	DesktopChangeQuestionResponse,
+	DesktopChangeReaderScope,
+	DesktopChangeReadResponse,
 	DesktopContractVersionResponse,
 	DesktopHandoffBuildRequest,
 	DesktopHandoffBuildResponse,
-	DesktopChangeQuestionResponse,
-	DesktopChangeReadResponse,
-	DesktopChangeReaderScope,
+	DesktopQuickShareRequest,
+	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSessionListQuery,
+	DesktopSessionSummaryResponse,
+	DesktopSummaryProviderDetectResponse,
 	DesktopVectorIndexStatusResponse,
 	DesktopVectorInstallStatusResponse,
 	DesktopVectorPreflightResponse,
 	DesktopVectorSearchResponse,
-	DesktopSessionSummaryResponse,
-	DesktopSessionListQuery,
-	DesktopSummaryProviderDetectResponse,
 	SessionDetail,
 	SessionListResponse,
 	SessionRepoListResponse,
@@ -58,6 +60,7 @@ export interface SessionReadAdapter {
 	getSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	regenerateSessionSummary(id: string): Promise<DesktopSessionSummaryResponse>;
 	buildHandoff(sessionId: string, pinLatest?: boolean): Promise<DesktopHandoffBuildResponse>;
+	quickShareSession(sessionId: string, remote?: string | null): Promise<DesktopQuickShareResponse>;
 	readSessionChanges(
 		sessionId: string,
 		scope?: DesktopChangeReaderScope | null,
@@ -272,6 +275,16 @@ export function createWebSessionReadAdapter(args: {
 				}),
 			);
 		},
+		async quickShareSession() {
+			throw new SessionAdapterError(
+				'desktop_quick_share_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_quick_share_unsupported',
+					message: 'Session quick share is available only in desktop runtime.',
+				}),
+			);
+		},
 		async readSessionChanges() {
 			throw new SessionAdapterError(
 				'desktop_change_reader_unsupported',
@@ -482,16 +495,22 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 				request,
 			});
 		},
+		async quickShareSession(sessionId, remote) {
+			const request: DesktopQuickShareRequest = {
+				session_id: sessionId,
+				remote: remote ?? null,
+			};
+			return invokeAfterContractCheck<DesktopQuickShareResponse>('desktop_share_session_quick', {
+				request,
+			});
+		},
 		async readSessionChanges(sessionId, scope) {
-			return invokeAfterContractCheck<DesktopChangeReadResponse>(
-				'desktop_read_session_changes',
-				{
-					request: {
-						session_id: sessionId,
-						scope: scope ?? null,
-					},
+			return invokeAfterContractCheck<DesktopChangeReadResponse>('desktop_read_session_changes', {
+				request: {
+					session_id: sessionId,
+					scope: scope ?? null,
 				},
-			);
+			});
 		},
 		async askSessionChanges(sessionId, question, scope) {
 			return invokeAfterContractCheck<DesktopChangeQuestionResponse>(
@@ -522,9 +541,7 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 			);
 		},
 		async vectorPreflight() {
-			return invokeAfterContractCheck<DesktopVectorPreflightResponse>(
-				'desktop_vector_preflight',
-			);
+			return invokeAfterContractCheck<DesktopVectorPreflightResponse>('desktop_vector_preflight');
 		},
 		async vectorInstallModel(model) {
 			return invokeAfterContractCheck<DesktopVectorInstallStatusResponse>(
@@ -581,6 +598,9 @@ export function createUnavailableDesktopSessionReadAdapter(): SessionReadAdapter
 			throw desktopBridgeUnavailableError();
 		},
 		async buildHandoff() {
+			throw desktopBridgeUnavailableError();
+		},
+		async quickShareSession() {
 			throw desktopBridgeUnavailableError();
 		},
 		async readSessionChanges() {

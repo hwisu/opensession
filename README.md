@@ -45,13 +45,26 @@ Notes:
 - `ref_enc` is RFC3986 percent-encoding.
 - `project_b64` / `remote_b64` are base64url without padding.
 
-## Install
+## Install (Split Paths)
 
 ```bash
 cargo install opensession
 ```
 
 `opensession` is the user-facing CLI. Session auto-capture additionally requires the daemon process to be running.
+
+CLI local-only path (backup/summary/handoff):
+
+```bash
+opensession doctor
+opensession doctor --fix --profile local
+```
+
+Desktop app path (app + CLI + app-first defaults):
+
+```bash
+opensession doctor --fix --profile app --open-target app
+```
 
 ## Development Toolchain (Required for Repo Work)
 
@@ -75,23 +88,23 @@ cargo install opensession
 opensession doctor
 
 # 3) Apply recommended setup values (explicit confirmation prompt)
-opensession doctor --fix
+opensession doctor --fix --profile local
 
 # Optional: pin fanout storage mode while fixing
-opensession doctor --fix --fanout-mode hidden_ref
+opensession doctor --fix --profile local --fanout-mode hidden_ref
 
 # Optional: pin review opener mode while fixing
-opensession doctor --fix --open-target app
+opensession doctor --fix --profile app --open-target app
 
 # Automation / non-interactive mode
-opensession doctor --fix --yes --fanout-mode hidden_ref --open-target app
+opensession doctor --fix --yes --profile local --fanout-mode hidden_ref --open-target web
 ```
 
 `doctor` reuses the existing setup pipeline under the hood.
 `doctor --fix` now prints the setup plan and asks for confirmation before applying hook/shim/fanout changes.
 On first interactive apply, OpenSession asks which fanout storage mode to use (`hidden_ref` or `git_notes`) and stores the choice in local git config (`.git/config`) as `opensession.fanout-mode`.
 The same setup flow also asks which opener to use for `opensession view/review` (`app` or `web`) and stores it in local git config as `opensession.open-target`.
-In non-interactive mode, `--fix` requires `--yes` and an explicit `--fanout-mode` when no fanout mode is already configured in git. `--open-target` is optional and defaults to `app`.
+In non-interactive mode, `--fix` requires `--yes` and an explicit `--fanout-mode` when no fanout mode is already configured in git. `--open-target` is optional and defaults by profile (`local -> web`, `app -> app`).
 
 Start daemon (required for automatic session capture):
 
@@ -178,15 +191,15 @@ opensession inspect os://src/local/<sha256>
 ## Share
 
 ```bash
-# Convert local URI -> git shareable source URI
-opensession share os://src/local/<sha256> --git --remote origin
+# One-click git share (first push asks once; then auto-push in quick mode)
+opensession share os://src/local/<sha256> --quick
 
 # Optional network mutation
 opensession share os://src/local/<sha256> --git --remote origin --push
 
 # Install/update OpenSession pre-push hook (best-effort fanout)
 opensession doctor
-opensession doctor --fix
+opensession doctor --fix --profile local
 # Optional: fail push when fanout is unavailable/fails
 OPENSESSION_STRICT=1 git push
 
@@ -318,10 +331,10 @@ opensession cleanup run
 5-minute recovery path for first-time users:
 ```bash
 opensession doctor
-opensession doctor --fix
+opensession doctor --fix --profile local
 opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
 opensession register ./session.hail.jsonl
-opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/local/<sha256> --quick
 ```
 
 ## Local Development

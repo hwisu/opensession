@@ -21,6 +21,7 @@ test.describe('API Health', () => {
 		expect(typeof body.parse_preview_enabled).toBe('boolean');
 		expect(Array.isArray(body.register_targets)).toBeTruthy();
 		expect(Array.isArray(body.share_modes)).toBeTruthy();
+		expect(body.share_modes).toContain('quick');
 	});
 
 	test('auth providers endpoint returns email_password', async ({ request }) => {

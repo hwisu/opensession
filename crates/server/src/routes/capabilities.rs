@@ -33,6 +33,6 @@ mod tests {
         assert!(caps.auth_enabled);
         assert!(caps.parse_preview_enabled);
         assert_eq!(caps.register_targets, vec!["local", "git"]);
-        assert_eq!(caps.share_modes, vec!["web", "git", "json"]);
+        assert_eq!(caps.share_modes, vec!["web", "git", "quick", "json"]);
     }
 }

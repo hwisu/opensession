@@ -1,19 +1,19 @@
 <script lang="ts">
-import { prepareTimelineEvents } from '../event-helpers';
 import {
-	askSessionChanges,
 	ApiError,
+	askSessionChanges,
+	getRuntimeSettings,
 	getSession,
 	getSessionDetail,
-	getRuntimeSettings,
 	getSessionSemanticSummary,
 	readSessionChanges,
 	regenerateSessionSemanticSummary,
 } from '../api';
+import { prepareTimelineEvents } from '../event-helpers';
 import {
 	buildNativeFilterOptions,
-	toggleAllBackedFilter,
 	type SessionViewMode,
+	toggleAllBackedFilter,
 } from '../session-filters';
 import type {
 	DesktopChangeReaderScope,

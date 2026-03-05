@@ -53,8 +53,9 @@ function isDesktopRuntime(): boolean {
 
 async function readDesktopDocsMarkdown(): Promise<string | null> {
 	if (!isDesktopRuntime()) return null;
-	const tauri = (window as unknown as { __TAURI__?: { core?: { invoke?: <T>(cmd: string) => Promise<T> } } })
-		.__TAURI__;
+	const tauri = (
+		window as unknown as { __TAURI__?: { core?: { invoke?: <T>(cmd: string) => Promise<T> } } }
+	).__TAURI__;
 	const invoke = tauri?.core?.invoke;
 	if (typeof invoke !== 'function') return null;
 	try {

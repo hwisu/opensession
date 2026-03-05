@@ -4,10 +4,10 @@ import {
 	buildBranchpointFilterOptions,
 	buildNativeFilterOptions,
 	buildUnifiedFilterOptions,
+	type FilterOption,
 	filterEventsByBranchpointKeys,
 	filterEventsByNativeGroups,
 	filterEventsByUnifiedKeys,
-	type FilterOption,
 	type SessionViewMode,
 } from '../session-filters';
 import type { Event } from '../types';

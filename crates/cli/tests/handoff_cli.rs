@@ -311,7 +311,8 @@ fn doctor_help_shows_recovery_examples() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Recovery examples:"));
-    assert!(stdout.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
+    assert!(stdout.contains("opensession doctor --fix --profile local"));
+    assert!(stdout.contains("opensession doctor --fix --yes --profile app"));
     assert!(stdout.contains("opensession docs quickstart"));
 }
 
@@ -323,7 +324,9 @@ fn doctor_yes_without_fix_shows_next_steps() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("`--yes` requires `--fix`"));
     assert!(stderr.contains("next:"));
-    assert!(stderr.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
+    assert!(
+        stderr.contains("opensession doctor --fix --yes --profile local --fanout-mode hidden_ref")
+    );
 }
 
 #[test]
@@ -413,6 +416,257 @@ fn share_git_requires_remote_guidance() {
     assert!(stderr.contains("`--remote <name|url>` is required"));
     assert!(stderr.contains("next:"));
     assert!(stderr.contains("opensession share <local_uri> --git --remote origin"));
+}
+
+#[test]
+fn share_quick_auto_detects_origin_without_push_and_reports_state() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    let remote = tmp.path().join("remote.git");
+    init_git_repo(&repo);
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-quick-no-push"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(
+        tmp.path(),
+        &repo,
+        &["share", &local_uri, "--quick", "--json"],
+    );
+    assert!(
+        share_out.status.success(),
+        "share --quick failed: {}",
+        String::from_utf8_lossy(&share_out.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&share_out.stdout).expect("quick share json");
+    assert_eq!(payload.get("quick").and_then(Value::as_bool), Some(true));
+    assert_eq!(payload.get("pushed").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        payload.get("auto_push_consent").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        payload.get("remote_target").and_then(Value::as_str),
+        Some("origin")
+    );
+    assert!(payload
+        .get("push_cmd")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("git push origin"));
+}
+
+#[test]
+fn share_quick_push_consent_persists_and_enables_auto_push() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    let remote = tmp.path().join("remote.git");
+    init_git_repo(&repo);
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+
+    let first_input = repo.join("first.hail.jsonl");
+    write_file(&first_input, &make_hail_jsonl("s-share-quick-first"));
+    let first_register = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", first_input.to_str().expect("path")],
+    );
+    let first_local_uri = first_non_empty_line(&first_register.stdout);
+    let first_share = run(
+        tmp.path(),
+        &repo,
+        &["share", &first_local_uri, "--quick", "--push", "--json"],
+    );
+    assert!(
+        first_share.status.success(),
+        "share --quick --push failed: {}",
+        String::from_utf8_lossy(&first_share.stderr)
+    );
+    let first_payload: Value =
+        serde_json::from_slice(&first_share.stdout).expect("quick share json");
+    assert_eq!(
+        first_payload.get("quick").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        first_payload.get("pushed").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        first_payload
+            .get("auto_push_consent")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let consent_config = first_non_empty_line(
+        &run_git(
+            &repo,
+            &[
+                "config",
+                "--local",
+                "--get",
+                "opensession.share.auto-push-consent",
+            ],
+        )
+        .stdout,
+    );
+    assert_eq!(consent_config, "true");
+
+    let second_input = repo.join("second.hail.jsonl");
+    write_file(&second_input, &make_hail_jsonl("s-share-quick-second"));
+    let second_register = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", second_input.to_str().expect("path")],
+    );
+    let second_local_uri = first_non_empty_line(&second_register.stdout);
+    let second_hash = second_local_uri
+        .split('/')
+        .next_back()
+        .expect("local uri hash")
+        .to_string();
+
+    let second_share = run(
+        tmp.path(),
+        &repo,
+        &["share", &second_local_uri, "--quick", "--json"],
+    );
+    assert!(
+        second_share.status.success(),
+        "second share --quick failed: {}",
+        String::from_utf8_lossy(&second_share.stderr)
+    );
+    let second_payload: Value =
+        serde_json::from_slice(&second_share.stdout).expect("second quick share json");
+    assert_eq!(
+        second_payload.get("quick").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        second_payload.get("pushed").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        second_payload
+            .get("auto_push_consent")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let ledger_ref = opensession_git_native::branch_ledger_ref("main");
+    run_git(
+        tmp.path(),
+        &[
+            "--git-dir",
+            remote.to_str().expect("remote"),
+            "show",
+            &format!("{ledger_ref}:sessions/{second_hash}.jsonl"),
+        ],
+    );
+}
+
+#[test]
+fn share_quick_requires_remote_when_none_exist() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-quick-no-remote"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(tmp.path(), &repo, &["share", &local_uri, "--quick"]);
+    assert!(!share_out.status.success());
+    let stderr = String::from_utf8_lossy(&share_out.stderr);
+    assert!(stderr.contains("no remotes were found"));
+    assert!(stderr.contains("git remote add origin"));
+}
+
+#[test]
+fn share_quick_rejects_ambiguous_remote_and_allows_explicit_override() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    run_git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            "https://github.com/example/upstream.git",
+        ],
+    );
+    run_git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "mirror",
+            "https://github.com/example/mirror.git",
+        ],
+    );
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(&input, &make_hail_jsonl("s-share-quick-ambiguous"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let ambiguous = run(tmp.path(), &repo, &["share", &local_uri, "--quick"]);
+    assert!(!ambiguous.status.success());
+    let stderr = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(stderr.contains("could not choose a remote automatically"));
+    assert!(stderr.contains("--quick --remote origin"));
+
+    let explicit = run(
+        tmp.path(),
+        &repo,
+        &[
+            "share", &local_uri, "--quick", "--remote", "upstream", "--json",
+        ],
+    );
+    assert!(
+        explicit.status.success(),
+        "share --quick --remote upstream failed: {}",
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    let payload: Value =
+        serde_json::from_slice(&explicit.stdout).expect("explicit quick share json");
+    assert_eq!(payload.get("quick").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        payload.get("remote_target").and_then(Value::as_str),
+        Some("upstream")
+    );
 }
 
 #[test]
@@ -1479,7 +1733,9 @@ fn setup_non_tty_requires_yes() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("requires explicit approval"));
-    assert!(stderr.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
+    assert!(
+        stderr.contains("opensession doctor --fix --yes --profile local --fanout-mode hidden_ref")
+    );
 }
 
 #[test]
@@ -1495,7 +1751,9 @@ fn setup_non_tty_yes_requires_explicit_fanout_when_unset() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("fanout mode is not configured"));
-    assert!(stderr.contains("opensession doctor --fix --yes --fanout-mode hidden_ref"));
+    assert!(
+        stderr.contains("opensession doctor --fix --yes --profile local --fanout-mode hidden_ref")
+    );
 }
 
 #[test]
@@ -1562,7 +1820,7 @@ fn setup_yes_with_fanout_installs_pre_push_hook_with_original_copy() {
         &repo,
         &["config", "--local", "--get", "opensession.open-target"],
     );
-    assert_eq!(String::from_utf8_lossy(&open_target.stdout).trim(), "app");
+    assert_eq!(String::from_utf8_lossy(&open_target.stdout).trim(), "web");
 }
 
 #[test]
@@ -1924,7 +2182,7 @@ fn docs_quickstart_prints_first_user_flow() {
     assert!(stdout.contains("opensession doctor --fix"));
     assert!(stdout.contains("opensession parse --profile codex"));
     assert!(stdout.contains("opensession register ./session.hail.jsonl"));
-    assert!(stdout.contains("opensession share os://src/local/<sha256> --git --remote origin"));
+    assert!(stdout.contains("opensession share os://src/local/<sha256> --quick --remote origin"));
 }
 
 #[test]

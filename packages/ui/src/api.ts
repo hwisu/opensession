@@ -10,30 +10,31 @@ import type {
 	AuthProvidersResponse,
 	AuthTokenResponse,
 	CapabilitiesResponse,
-	DesktopHandoffBuildResponse,
 	DesktopChangeQuestionResponse,
-	DesktopChangeReadResponse,
 	DesktopChangeReaderScope,
+	DesktopChangeReadResponse,
+	DesktopHandoffBuildResponse,
+	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
+	DesktopSessionSummaryResponse,
+	DesktopSummaryProviderDetectResponse,
 	DesktopVectorIndexStatusResponse,
 	DesktopVectorInstallStatusResponse,
 	DesktopVectorPreflightResponse,
 	DesktopVectorSearchResponse,
-	DesktopSessionSummaryResponse,
-	DesktopSummaryProviderDetectResponse,
+	GitCredentialSummary,
+	IssueApiKeyResponse,
+	ListGitCredentialsResponse,
+	LocalReviewBundle,
 	ParsePreviewErrorResponse,
 	ParsePreviewRequest,
 	ParsePreviewResponse,
 	ParseSource,
-	IssueApiKeyResponse,
-	GitCredentialSummary,
-	ListGitCredentialsResponse,
-	LocalReviewBundle,
-	SessionRepoListResponse,
 	Session,
 	SessionDetail,
 	SessionListResponse,
+	SessionRepoListResponse,
 	UserSettings,
 } from './types';
 
@@ -355,6 +356,17 @@ export async function buildSessionHandoff(
 ): Promise<DesktopHandoffBuildResponse> {
 	try {
 		return await getSessionReadCore().buildHandoff(sessionId, pinLatest);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function quickShareSession(
+	sessionId: string,
+	remote?: string | null,
+): Promise<DesktopQuickShareResponse> {
+	try {
+		return await getSessionReadCore().quickShareSession(sessionId, remote ?? null);
 	} catch (error) {
 		throw normalizeSessionAdapterError(error);
 	}

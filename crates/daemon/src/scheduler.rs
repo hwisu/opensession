@@ -1,8 +1,5 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use opensession_api::UploadRequest;
-use opensession_api_client::retry::{retry_post, RetryConfig};
-use opensession_api_client::ApiClient;
 use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
 use opensession_core::session::{
     build_git_storage_meta_json_with_git, interaction_compressed_session, is_auxiliary_session,
@@ -244,7 +241,7 @@ fn collect_commit_shas_for_session(repo_root: &Path, session: &Session) -> Vec<S
     commits
 }
 
-/// Run the scheduler loop: receives file change events, debounces, parses, and uploads.
+/// Run the scheduler loop: receives file change events, debounces, parses, and marks share-ready state.
 pub async fn run_scheduler(
     config: DaemonConfig,
     mut rx: mpsc::UnboundedReceiver<FileChangeEvent>,
@@ -295,7 +292,7 @@ pub async fn run_scheduler(
                     pending.remove(&path);
                     if matches!(effective_mode, PublishMode::Manual) {
                         debug!(
-                            "Manual mode, indexing locally without auto-upload: {}",
+                            "Manual mode, indexing locally without auto-publish: {}",
                             path.display()
                         );
                     }
@@ -340,7 +337,7 @@ pub async fn run_scheduler(
 // process_file: orchestrator + helpers
 // ---------------------------------------------------------------------------
 
-/// Process a single file: parse, store in local DB, sanitize, upload.
+/// Process a single file: parse, store in local DB, sanitize, and prepare share state.
 async fn process_file(
     path: &PathBuf,
     config: &DaemonConfig,
@@ -388,15 +385,13 @@ async fn process_file(
         }
     }
 
-    upload_to_server(
+    mark_session_share_ready(
         &session,
-        &effective_config,
         db,
         git_store
             .as_ref()
             .and_then(|stored| stored.body_url.as_deref()),
     )
-    .await
 }
 
 fn resolve_effective_config(session: &Session, config: &DaemonConfig) -> DaemonConfig {
@@ -675,63 +670,19 @@ fn maybe_git_store(session: &Session, config: &DaemonConfig) -> Option<GitStoreO
     }
 }
 
-async fn upload_to_server(
-    session: &Session,
-    config: &DaemonConfig,
-    db: &LocalDb,
-    body_url: Option<&str>,
-) -> Result<()> {
-    let mut api = ApiClient::new(&config.server.url, Duration::from_secs(60))?;
-    api.set_auth(config.server.api_key.clone());
-
-    info!(
-        "Uploading session {} to {}",
-        session.session_id,
-        api.base_url()
-    );
-
-    let upload_body = serde_json::to_value(&UploadRequest {
-        session: session.clone(),
-        body_url: body_url.map(String::from),
-        linked_session_ids: None,
-        git_remote: None,
-        git_branch: None,
-        git_commit: None,
-        git_repo_name: None,
-        pr_number: None,
-        pr_url: None,
-        score_plugin: None,
-    })?;
-
-    let retry_cfg = RetryConfig {
-        max_retries: config.daemon.max_retries as usize,
-        delays: (0..config.daemon.max_retries)
-            .map(|i| 1u64 << i.min(4))
-            .collect(),
-    };
-
-    let url = format!("{}/api/sessions", api.base_url());
-    let response = retry_post(
-        api.reqwest_client(),
-        &url,
-        api.auth_token(),
-        &upload_body,
-        &retry_cfg,
-    )
-    .await?;
-
-    let status = response.status();
-    if status.is_success() {
-        info!("Uploaded session: {}", session.session_id);
-        db.mark_synced(&session.session_id)?;
-    } else if status.is_client_error() {
-        let body = response.text().await.unwrap_or_default();
-        error!("Upload rejected (HTTP {}): {}", status, body);
+fn mark_session_share_ready(session: &Session, db: &LocalDb, body_url: Option<&str>) -> Result<()> {
+    if let Some(url) = body_url {
+        info!(
+            "Session {} stored in git-native ledger and share-ready ({})",
+            session.session_id, url
+        );
     } else {
-        let body = response.text().await.unwrap_or_default();
-        error!("Upload failed (HTTP {}): {}", status, body);
+        info!(
+            "Session {} indexed locally. Share with CLI quick flow: opensession share os://src/local/<sha256> --quick",
+            session.session_id
+        );
     }
-
+    db.mark_synced(&session.session_id)?;
     Ok(())
 }
 

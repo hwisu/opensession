@@ -166,18 +166,6 @@ impl ApiClient {
 
     // ── Sessions ──────────────────────────────────────────────────────────
 
-    pub async fn upload_session(&self, req: &UploadRequest) -> Result<UploadResponse> {
-        let token = self.token_or_bail()?;
-        let resp = self
-            .client
-            .post(self.url("/sessions"))
-            .bearer_auth(token)
-            .json(req)
-            .send()
-            .await?;
-        parse_response(resp).await
-    }
-
     pub async fn list_sessions(&self, query: &SessionListQuery) -> Result<SessionListResponse> {
         let token = self.token_or_bail()?;
         let mut url = self.url("/sessions");

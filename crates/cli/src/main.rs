@@ -30,10 +30,10 @@ use std::path::PathBuf;
 
 Common next steps:
   opensession doctor
-  opensession doctor --fix
+  opensession doctor --fix --profile local
   opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
   opensession register ./session.hail.jsonl
-  opensession share os://src/local/<sha256> --git --remote origin"
+  opensession share os://src/local/<sha256> --quick"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -89,6 +89,9 @@ enum DocsAction {
         /// Parser profile used for first parse.
         #[arg(long, default_value = "codex")]
         profile: String,
+        /// Setup profile used for doctor/setup defaults.
+        #[arg(long, value_enum, default_value = "local")]
+        setup_profile: setup_cmd::SetupProfile,
         /// Raw input path for parse.
         #[arg(long, default_value = "./raw-session.jsonl")]
         input: PathBuf,
@@ -152,22 +155,35 @@ fn run_docs(action: DocsAction) -> anyhow::Result<()> {
         }
         DocsAction::Quickstart {
             profile,
+            setup_profile,
             input,
             out,
             remote,
         } => {
-            print_quickstart(&profile, &input, &out, &remote);
+            print_quickstart(&profile, setup_profile, &input, &out, &remote);
             Ok(())
         }
     }
 }
 
-fn print_quickstart(profile: &str, input: &Path, out: &Path, remote: &str) {
+fn print_quickstart(
+    profile: &str,
+    setup_profile: setup_cmd::SetupProfile,
+    input: &Path,
+    out: &Path,
+    remote: &str,
+) {
     println!("# OpenSession 5-minute first-user flow");
     println!();
     println!("# 1) Diagnose and apply setup");
     println!("opensession doctor");
-    println!("opensession doctor --fix");
+    println!(
+        "opensession doctor --fix --profile {}",
+        setup_profile.as_str()
+    );
+    if matches!(setup_profile, setup_cmd::SetupProfile::App) {
+        println!("opensession doctor --fix --profile app --open-target app");
+    }
     println!();
     println!("# 2) Parse raw logs into canonical HAIL JSONL");
     println!(
@@ -181,9 +197,9 @@ fn print_quickstart(profile: &str, input: &Path, out: &Path, remote: &str) {
     println!("opensession register {}", out.display());
     println!("# -> os://src/local/<sha256>");
     println!();
-    println!("# 4) Share local source URI via git");
+    println!("# 4) Share local source URI via quick git flow");
     println!(
-        "opensession share os://src/local/<sha256> --git --remote {}",
+        "opensession share os://src/local/<sha256> --quick --remote {}",
         remote
     );
     println!();

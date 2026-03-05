@@ -1,10 +1,10 @@
 <script lang="ts">
+import { onMount } from 'svelte';
 import { listSessionRepos, listSessions } from '../api';
 import type { SessionSummary, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import { stripTags } from '../utils';
 import SessionCard from './SessionCard.svelte';
-import { onMount } from 'svelte';
 
 const {
 	onNavigate,

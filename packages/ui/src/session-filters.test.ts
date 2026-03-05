@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+	branchpointFilterKeyForEvent,
 	buildBranchpointFilterOptions,
 	buildNativeFilterOptions,
 	buildUnifiedFilterOptions,
 	filterEventsByBranchpointKeys,
 	filterEventsByUnifiedKeys,
 	nativeGroupForEvent,
-	branchpointFilterKeyForEvent,
 	toggleAllBackedFilter,
 	unifiedFilterKeyForEvent,
 } from './session-filters';

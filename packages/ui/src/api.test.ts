@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-	askSessionChanges,
 	ApiError,
+	askSessionChanges,
 	authLogin,
 	authRegister,
 	buildSessionHandoff,
@@ -10,12 +10,13 @@ import {
 	getAuthProviders,
 	getOAuthUrl,
 	getRuntimeSettings,
-	getSettings,
 	getSessionDetail,
+	getSettings,
 	listSessionRepos,
 	listSessions,
-	searchSessionsVector,
+	quickShareSession,
 	readSessionChanges,
+	searchSessionsVector,
 	setBaseUrl,
 	updateRuntimeSettings,
 	vectorIndexRebuild,
@@ -173,8 +174,8 @@ function installInvokeProbe(calls: InvokeCall[]) {
 	return async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
 		calls.push({ cmd, args });
 		switch (cmd) {
-				case 'desktop_get_contract_version':
-					return { version: 'desktop-ipc-v4' };
+			case 'desktop_get_contract_version':
+				return { version: 'desktop-ipc-v4' };
 			case 'desktop_list_sessions':
 				return { total: 3, page: 2, per_page: 30, sessions: [] };
 			case 'desktop_list_repos':
@@ -210,6 +211,16 @@ function installInvokeProbe(calls: InvokeCall[]) {
 					pinned_alias: 'latest',
 					download_file_name: 'handoff-test123.jsonl',
 					download_content: '{"source_session_id":"session-1"}\n',
+				};
+			case 'desktop_share_session_quick':
+				return {
+					source_uri: 'os://src/local/abc123',
+					shared_uri: 'os://src/git/cmVtb3Rl/ref/refs%2Fheads%2Fmain/path/sessions%2Fabc123.jsonl',
+					remote: 'https://github.com/acme/repo.git',
+					push_cmd:
+						'git push origin refs/opensession/branches/bWFpbg:refs/opensession/branches/bWFpbg',
+					pushed: true,
+					auto_push_consent: true,
 				};
 			case 'desktop_get_runtime_settings':
 				return runtimeSettings;
@@ -515,6 +526,43 @@ test('desktop runtime builds handoff artifact via invoke bridge', async () => {
 	});
 });
 
+test('desktop runtime quick-shares session via invoke bridge', async () => {
+	const invokeCalls: InvokeCall[] = [];
+	installBrowserEnv({
+		origin: 'tauri://localhost',
+		tauriRuntime: true,
+		invoke: installInvokeProbe(invokeCalls),
+	});
+
+	const response = await quickShareSession('session-1', 'origin');
+	assert.equal(response.source_uri, 'os://src/local/abc123');
+	assert.match(response.shared_uri, /^os:\/\/src\/git\//);
+	assert.equal(response.pushed, true);
+	assert.equal(response.auto_push_consent, true);
+	assert.equal(invokeCalls[0]?.cmd, 'desktop_get_contract_version');
+	assert.equal(invokeCalls[1]?.cmd, 'desktop_share_session_quick');
+	assert.deepEqual(invokeCalls[1]?.args, {
+		request: { session_id: 'session-1', remote: 'origin' },
+	});
+});
+
+test('desktop runtime quick share sends null remote when omitted', async () => {
+	const invokeCalls: InvokeCall[] = [];
+	installBrowserEnv({
+		origin: 'tauri://localhost',
+		tauriRuntime: true,
+		invoke: installInvokeProbe(invokeCalls),
+	});
+
+	const response = await quickShareSession('session-1');
+	assert.match(response.shared_uri, /^os:\/\/src\/git\//);
+	assert.equal(invokeCalls[0]?.cmd, 'desktop_get_contract_version');
+	assert.equal(invokeCalls[1]?.cmd, 'desktop_share_session_quick');
+	assert.deepEqual(invokeCalls[1]?.args, {
+		request: { session_id: 'session-1', remote: null },
+	});
+});
+
 test('desktop runtime settings use typed payload through invoke bridge', async () => {
 	const invokeCalls: InvokeCall[] = [];
 	installBrowserEnv({
@@ -663,6 +711,19 @@ test('web runtime handoff build returns unsupported error', async () => {
 	);
 });
 
+test('web runtime quick share returns unsupported error', async () => {
+	installBrowserEnv({ origin: 'http://127.0.0.1:5173' });
+	installFetchProbe([]);
+
+	await assert.rejects(
+		() => quickShareSession('session-1'),
+		(error: unknown) =>
+			error instanceof ApiError &&
+			error.status === 501 &&
+			error.code === 'desktop_quick_share_unsupported',
+	);
+});
+
 test('runtime override wins over desktop bridge', async () => {
 	const invokeCalls: InvokeCall[] = [];
 	installBrowserEnv({
@@ -763,10 +824,7 @@ test('desktop runtime with API override uses HTTP auth endpoints', async () => {
 	await getSettings();
 	assert.equal(fetchCalls[0], 'http://localhost:3333/api/auth/me');
 	assert.equal(invokeCalls.length, 0);
-	assert.equal(
-		getOAuthUrl('github'),
-		'http://localhost:3333/api/auth/oauth/github',
-	);
+	assert.equal(getOAuthUrl('github'), 'http://localhost:3333/api/auth/oauth/github');
 });
 
 test('setBaseUrl updates persisted URL used by API client', async () => {

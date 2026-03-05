@@ -109,6 +109,9 @@ pub struct SetupArgs {
     /// Set default review opener (`app` or `web`) for this repository.
     #[arg(long, value_enum)]
     pub open_target: Option<OpenTarget>,
+    /// Choose setup profile (`local` = CLI-local-first, `app` = desktop-linked defaults).
+    #[arg(long, value_enum)]
+    pub profile: Option<SetupProfile>,
     /// Print hidden ledger ref for a branch name (internal use for hooks).
     #[arg(long, hide = true)]
     pub print_ledger_ref: Option<String>,
@@ -121,6 +124,23 @@ pub struct SetupArgs {
     /// Commit SHA hint used to improve commit mapping when syncing branch sessions (internal use).
     #[arg(long, hide = true)]
     pub sync_branch_commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SetupProfile {
+    #[value(name = "local")]
+    Local,
+    #[value(name = "app")]
+    App,
+}
+
+impl SetupProfile {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::App => "app",
+        }
+    }
 }
 
 pub fn run(args: SetupArgs) -> Result<()> {
@@ -163,6 +183,7 @@ pub fn run(args: SetupArgs) -> Result<()> {
         args.yes,
         args.fanout_mode.map(SetupFanoutMode::as_fanout_mode),
         args.open_target,
+        args.profile,
     )
 }
 
@@ -225,7 +246,7 @@ struct OpenTargetInstallPlan {
 }
 
 impl OpenTargetInstallPlan {
-    fn summary(self) -> String {
+    fn summary(self, profile: SetupProfile) -> String {
         match (self.existing, self.requested) {
             (Some(existing), Some(requested)) if existing == requested => {
                 format!(
@@ -245,12 +266,17 @@ impl OpenTargetInstallPlan {
                 )
             }
             (Some(existing), None) => format!("keep {existing}", existing = existing.as_str()),
-            (None, None) => "choose interactively (app or web)".to_string(),
+            (None, None) => format!(
+                "choose interactively (default: {})",
+                default_open_target_for_profile(profile).as_str()
+            ),
         }
     }
 
-    fn suggested_target(self) -> OpenTarget {
-        self.requested.or(self.existing).unwrap_or(OpenTarget::App)
+    fn suggested_target(self, profile: SetupProfile) -> OpenTarget {
+        self.requested
+            .or(self.existing)
+            .unwrap_or(default_open_target_for_profile(profile))
     }
 }
 
@@ -260,12 +286,12 @@ fn validate_setup_args(args: &SetupArgs) -> Result<()> {
     }
     if args.check && args.fanout_mode.is_some() {
         bail!(
-            "`--fanout-mode` requires apply mode. next: run `opensession doctor --fix --yes --fanout-mode hidden_ref`"
+            "`--fanout-mode` requires apply mode. next: run `opensession doctor --fix --yes --profile local --fanout-mode hidden_ref`"
         );
     }
     if args.check && args.open_target.is_some() {
         bail!(
-            "`--open-target` requires apply mode. next: run `opensession doctor --fix --yes --open-target app`"
+            "`--open-target` requires apply mode. next: run `opensession doctor --fix --yes --profile local --open-target web`"
         );
     }
     Ok(())
@@ -276,7 +302,9 @@ fn run_install(
     yes: bool,
     requested_fanout: Option<FanoutMode>,
     requested_open_target: Option<OpenTarget>,
+    requested_profile: Option<SetupProfile>,
 ) -> Result<()> {
+    let profile = requested_profile.unwrap_or(SetupProfile::Local);
     let interactive = is_interactive_terminal();
     let existing_fanout = read_fanout_mode(repo_root)?;
     let fanout_plan = FanoutInstallPlan {
@@ -296,6 +324,7 @@ fn run_install(
         repo_root,
         fanout_plan,
         open_target_plan,
+        profile,
         &hook_plans,
         &shim_plans,
         yes,
@@ -304,12 +333,13 @@ fn run_install(
     if !yes {
         prompt_apply_confirmation(
             fanout_plan.suggested_mode(),
-            open_target_plan.suggested_target(),
+            open_target_plan.suggested_target(profile),
+            profile,
         )?;
     }
 
     let fanout_mode = ensure_fanout_mode(repo_root, requested_fanout, interactive)?;
-    let open_target = ensure_open_target(repo_root, requested_open_target, interactive)?;
+    let open_target = ensure_open_target(repo_root, requested_open_target, interactive, profile)?;
     let shim_paths = install_cli_shims()?;
     let hook_reports = install_hooks_with_report(repo_root, HookType::all())?;
     print_applied_setup(
@@ -336,9 +366,10 @@ fn run_install(
     Ok(())
 }
 
-fn suggested_doctor_command(mode: FanoutMode, target: OpenTarget) -> String {
+fn suggested_doctor_command(mode: FanoutMode, target: OpenTarget, profile: SetupProfile) -> String {
     format!(
-        "opensession doctor --fix --yes --fanout-mode {} --open-target {}",
+        "opensession doctor --fix --yes --profile {} --fanout-mode {} --open-target {}",
+        profile.as_str(),
         mode.as_str(),
         target.as_str(),
     )
@@ -353,13 +384,17 @@ fn enforce_apply_mode_requirements(
     if !interactive && !yes {
         bail!(
             "setup requires explicit approval in non-interactive mode.\nnext: run `{}`",
-            suggested_doctor_command(suggested_mode, OpenTarget::App)
+            suggested_doctor_command(suggested_mode, OpenTarget::Web, SetupProfile::Local)
         );
     }
     if !interactive && fanout_plan.existing.is_none() && fanout_plan.requested.is_none() {
         bail!(
             "fanout mode is not configured for this repository, and setup cannot prompt in non-interactive mode.\nnext: run `{}`",
-            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
+            suggested_doctor_command(
+                FanoutMode::HiddenRef,
+                OpenTarget::Web,
+                SetupProfile::Local
+            )
         );
     }
     Ok(())
@@ -369,7 +404,11 @@ fn is_interactive_terminal() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
-fn prompt_apply_confirmation(mode_hint: FanoutMode, open_target_hint: OpenTarget) -> Result<()> {
+fn prompt_apply_confirmation(
+    mode_hint: FanoutMode,
+    open_target_hint: OpenTarget,
+    profile: SetupProfile,
+) -> Result<()> {
     print!("Apply these changes? [y/N]: ");
     io::stdout().flush().context("flush stdout")?;
     let mut line = String::new();
@@ -381,7 +420,7 @@ fn prompt_apply_confirmation(mode_hint: FanoutMode, open_target_hint: OpenTarget
     }
     bail!(
         "setup cancelled by user.\nnext: run `{}`",
-        suggested_doctor_command(mode_hint, open_target_hint)
+        suggested_doctor_command(mode_hint, open_target_hint, profile)
     );
 }
 
@@ -430,14 +469,16 @@ fn print_setup_plan(
     repo_root: &Path,
     fanout_plan: FanoutInstallPlan,
     open_target_plan: OpenTargetInstallPlan,
+    profile: SetupProfile,
     hook_plans: &[crate::hooks::HookInstallPlan],
     shim_plans: &[ShimInstallPlan],
     yes: bool,
 ) {
     println!("repo: {}", repo_root.display());
     println!("setup plan:");
+    println!("  - profile: {}", profile.as_str());
     println!("  - fanout mode: {}", fanout_plan.summary());
-    println!("  - open target: {}", open_target_plan.summary());
+    println!("  - open target: {}", open_target_plan.summary(profile));
     for plan in hook_plans {
         println!(
             "  - hook {}: {} ({})",
@@ -1081,7 +1122,7 @@ fn ensure_fanout_mode(
     if !interactive {
         bail!(
             "fanout mode is not configured for this repository.\nnext: run `{}`",
-            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
+            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::Web, SetupProfile::Local)
         );
     }
 
@@ -1095,6 +1136,7 @@ fn ensure_open_target(
     repo_root: &std::path::Path,
     requested: Option<OpenTarget>,
     interactive: bool,
+    profile: SetupProfile,
 ) -> Result<OpenTarget> {
     if let Some(target) = requested {
         write_repo_open_target(repo_root, target)?;
@@ -1105,19 +1147,27 @@ fn ensure_open_target(
         return Ok(target);
     }
 
+    let default_target = default_open_target_for_profile(profile);
     let target = if interactive {
-        let selected = prompt_open_target()?;
+        let selected = prompt_open_target(default_target, profile)?;
         println!("open target initialized: {}", selected.as_str());
         selected
     } else {
         println!(
             "open target defaulted: {} (non-interactive)",
-            OpenTarget::App.as_str()
+            default_target.as_str()
         );
-        OpenTarget::App
+        default_target
     };
     write_repo_open_target(repo_root, target)?;
     Ok(target)
+}
+
+fn default_open_target_for_profile(profile: SetupProfile) -> OpenTarget {
+    match profile {
+        SetupProfile::Local => OpenTarget::Web,
+        SetupProfile::App => OpenTarget::App,
+    }
 }
 
 fn read_fanout_mode(repo_root: &std::path::Path) -> Result<Option<FanoutMode>> {
@@ -1168,7 +1218,7 @@ fn prompt_fanout_mode() -> Result<FanoutMode> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
             "fanout mode prompt requires an interactive terminal.\nnext: run `{}`",
-            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
+            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::Web, SetupProfile::Local)
         );
     }
 
@@ -1187,23 +1237,24 @@ fn parse_fanout_choice(input: &str) -> Option<FanoutMode> {
     FanoutMode::parse(input)
 }
 
-fn prompt_open_target() -> Result<OpenTarget> {
+fn prompt_open_target(default_target: OpenTarget, profile: SetupProfile) -> Result<OpenTarget> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
             "open target prompt requires an interactive terminal.\nnext: run `{}`",
-            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::App)
+            suggested_doctor_command(FanoutMode::HiddenRef, default_target, profile)
         );
     }
 
     println!("Choose OpenSession review opener for this repository:");
-    println!("  1) app (default)");
+    println!("  1) app");
     println!("  2) web");
+    println!("  default: {}", default_target.as_str());
     print!("select [1/2]: ");
     io::stdout().flush().context("flush stdout")?;
 
     let mut line = String::new();
     io::stdin().read_line(&mut line).context("read selection")?;
-    Ok(parse_open_target_choice(&line).unwrap_or(OpenTarget::App))
+    Ok(parse_open_target_choice(&line).unwrap_or(default_target))
 }
 
 fn parse_open_target_choice(input: &str) -> Option<OpenTarget> {
@@ -1545,6 +1596,7 @@ mod tests {
             print_fanout_mode: false,
             sync_branch_session: None,
             sync_branch_commit: None,
+            profile: None,
         };
         let err = validate_setup_args(&args).expect_err("validate");
         assert!(err.to_string().contains("cannot be used"));
@@ -1561,6 +1613,7 @@ mod tests {
             print_fanout_mode: false,
             sync_branch_session: None,
             sync_branch_commit: None,
+            profile: None,
         };
         let err = validate_setup_args(&args).expect_err("validate");
         assert!(err.to_string().contains("requires apply mode"));
@@ -1577,6 +1630,7 @@ mod tests {
             print_fanout_mode: false,
             sync_branch_session: None,
             sync_branch_commit: None,
+            profile: None,
         };
         let err = validate_setup_args(&args).expect_err("validate");
         assert!(err
@@ -1651,6 +1705,28 @@ mod tests {
         assert_eq!(parse_open_target_choice("2"), Some(OpenTarget::Web));
         assert_eq!(parse_open_target_choice("web"), Some(OpenTarget::Web));
         assert_eq!(parse_open_target_choice("browser"), Some(OpenTarget::Web));
+    }
+
+    #[test]
+    fn default_open_target_depends_on_setup_profile() {
+        assert_eq!(
+            default_open_target_for_profile(SetupProfile::Local),
+            OpenTarget::Web
+        );
+        assert_eq!(
+            default_open_target_for_profile(SetupProfile::App),
+            OpenTarget::App
+        );
+    }
+
+    #[test]
+    fn open_target_plan_uses_profile_default_when_unset() {
+        let plan = OpenTargetInstallPlan {
+            existing: None,
+            requested: None,
+        };
+        assert_eq!(plan.suggested_target(SetupProfile::Local), OpenTarget::Web);
+        assert_eq!(plan.suggested_target(SetupProfile::App), OpenTarget::App);
     }
 
     #[test]

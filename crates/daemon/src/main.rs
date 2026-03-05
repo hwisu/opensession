@@ -15,7 +15,7 @@ use tracing::{error, info};
 #[derive(Debug, Parser)]
 #[command(
     name = "opensession-daemon",
-    about = "Background daemon for automatic session detection and upload"
+    about = "Background daemon for automatic session detection and local indexing"
 )]
 struct Cli {
     #[command(subcommand)]

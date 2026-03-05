@@ -39,6 +39,7 @@ import type {
 	GitCredentialSummary,
 	UserSettings,
 } from '../types';
+import FieldHelp from './FieldHelp.svelte';
 
 const {
 	onNavigate = (path: string) => {
@@ -139,6 +140,49 @@ function storageBackendDetails(backend: DesktopSummaryStorageBackend): string {
 	}
 	return 'Summary generation can still run on demand, but results are not stored and will be regenerated next time.';
 }
+
+const runtimeHelp = {
+	defaultSessionView:
+		'full shows the complete raw session. compressed prioritizes semantic summary + condensed context.',
+	summaryProvider:
+		'disabled turns off summary generation. ollama uses local HTTP inference. codex_exec/claude_cli run local CLI providers.',
+	providerEndpoint: 'HTTP base URL for ollama or other local model server.',
+	providerModel: 'Model name used by the selected provider.',
+	promptTemplate:
+		'Template passed to the summary generator. Keep placeholders used by your runtime prompt contract.',
+	responseStyle:
+		'compact = shortest output, standard = balanced, detailed = richer narrative and context.',
+	outputShape:
+		'layered groups by layer, file_list focuses per-file changes, security_first prioritizes auth/security impact.',
+	vectorModel: 'Embedding model name used for vector indexing.',
+	vectorEndpoint: 'Endpoint for local embedding provider (typically Ollama).',
+	vectorChunkSize: 'Number of lines per semantic chunk before embedding.',
+	vectorChunkOverlap: 'Overlapping lines preserved between adjacent chunks.',
+	vectorTopKChunks: 'Maximum chunk candidates retrieved per query.',
+	vectorTopKSessions: 'Maximum sessions surfaced after chunk ranking.',
+	vectorEnable:
+		'Turns on semantic retrieval in search and change analysis. Requires model install and index build.',
+	changeReaderEnable:
+		'Shows notebook-style change reading to inspect why/what changed across a session.',
+	changeReaderScope:
+		'summary_only reads compressed context. full_context expands to broader session context when needed.',
+	changeReaderMaxContext: 'Upper bound of context text loaded for change reading.',
+	changeReaderQa:
+		'Allows follow-up Q&A over the selected change context when the reader is enabled.',
+	storageTrigger: 'manual runs only when explicitly requested. on_session_save runs automatically on new saves.',
+	storageBackend:
+		'Where summary artifacts persist: hidden_ref (git), local_db (sqlite), none (ephemeral).',
+	batchExecution:
+		'manual means run only when clicking Run now. on_app_start runs once automatically at desktop startup.',
+	batchScope:
+		'recent_days targets only recent sessions. all targets every known session regardless of recency.',
+	batchRecentDays: 'Applies only when scope is recent_days. Minimum is 1 day.',
+	lifecycleEnable:
+		'Enables periodic TTL cleanup for session roots and summary artifacts using the rules below.',
+	sessionTtl: 'Sessions older than this threshold become cleanup candidates.',
+	summaryTtl: 'Summary artifacts older than this threshold become cleanup candidates.',
+	cleanupInterval: 'Seconds between periodic lifecycle cleanup runs.',
+};
 
 function responsePreview(
 	style: DesktopSummaryResponseStyle,
@@ -850,7 +894,11 @@ $effect(() => {
 		{:else}
 			<div class="mt-4 space-y-4">
 				<label class="block text-xs text-text-secondary">
-					<span class="mb-1 block">Default Session View</span>
+					<FieldHelp
+						label="Default Session View"
+						help={runtimeHelp.defaultSessionView}
+						testId="runtime-help-default-session-view"
+					/>
 					<select bind:value={runtimeSessionDefaultView} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 						<option value="full">full</option>
 						<option value="compressed">compressed</option>
@@ -860,7 +908,11 @@ $effect(() => {
 				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-provider">
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Provider</h3>
 					<label class="block text-xs text-text-secondary">
-						<span class="mb-1 block">Summary Provider</span>
+						<FieldHelp
+							label="Summary Provider"
+							help={runtimeHelp.summaryProvider}
+							testId="runtime-help-summary-provider"
+						/>
 						<select
 							bind:value={runtimeProvider}
 							onchange={handleRuntimeProviderChange}
@@ -878,7 +930,11 @@ $effect(() => {
 					</p>
 					{#if currentRuntimeProviderTransport() === 'http'}
 						<label class="block text-xs text-text-secondary">
-							<span class="mb-1 block">Endpoint</span>
+							<FieldHelp
+								label="Endpoint"
+								help={runtimeHelp.providerEndpoint}
+								testId="runtime-help-provider-endpoint"
+							/>
 							<input
 								bind:value={runtimeEndpoint}
 								data-testid="runtime-provider-endpoint"
@@ -886,7 +942,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="block text-xs text-text-secondary">
-							<span class="mb-1 block">Model</span>
+							<FieldHelp
+								label="Model"
+								help={runtimeHelp.providerModel}
+								testId="runtime-help-provider-model"
+							/>
 							<input
 								bind:value={runtimeModel}
 								data-testid="runtime-provider-model"
@@ -895,7 +955,11 @@ $effect(() => {
 						</label>
 					{:else if currentRuntimeProviderTransport() === 'cli'}
 						<label class="block text-xs text-text-secondary">
-							<span class="mb-1 block">Model (optional)</span>
+							<FieldHelp
+								label="Model (optional)"
+								help={runtimeHelp.providerModel}
+								testId="runtime-help-provider-model"
+							/>
 							<input
 								bind:value={runtimeModel}
 								data-testid="runtime-provider-model"
@@ -911,7 +975,11 @@ $effect(() => {
 				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-prompt">
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Prompt</h3>
 					<label class="block text-xs text-text-secondary">
-						<span class="mb-1 block">Prompt Template</span>
+						<FieldHelp
+							label="Prompt Template"
+							help={runtimeHelp.promptTemplate}
+							testId="runtime-help-prompt-template"
+						/>
 						<textarea
 							bind:value={runtimePromptTemplate}
 							data-testid="runtime-prompt-template"
@@ -944,7 +1012,11 @@ $effect(() => {
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Response</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Response Style</span>
+							<FieldHelp
+								label="Response Style"
+								help={runtimeHelp.responseStyle}
+								testId="runtime-help-response-style"
+							/>
 							<select bind:value={runtimeResponseStyle} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 								<option value="compact">compact</option>
 								<option value="standard">standard</option>
@@ -952,7 +1024,11 @@ $effect(() => {
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Output Shape</span>
+							<FieldHelp
+								label="Output Shape"
+								help={runtimeHelp.outputShape}
+								testId="runtime-help-output-shape"
+							/>
 							<select bind:value={runtimeOutputShape} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 								<option value="layered">layered</option>
 								<option value="file_list">file_list</option>
@@ -973,7 +1049,11 @@ $effect(() => {
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Vector Search</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Model</span>
+							<FieldHelp
+								label="Model"
+								help={runtimeHelp.vectorModel}
+								testId="runtime-help-vector-model"
+							/>
 							<input
 								bind:value={runtimeVectorModel}
 								data-testid="runtime-vector-model"
@@ -981,7 +1061,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Endpoint</span>
+							<FieldHelp
+								label="Endpoint"
+								help={runtimeHelp.vectorEndpoint}
+								testId="runtime-help-vector-endpoint"
+							/>
 							<input
 								bind:value={runtimeVectorEndpoint}
 								data-testid="runtime-vector-endpoint"
@@ -989,7 +1073,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Chunk Size (lines)</span>
+							<FieldHelp
+								label="Chunk Size (lines)"
+								help={runtimeHelp.vectorChunkSize}
+								testId="runtime-help-vector-chunk-size"
+							/>
 							<input
 								type="number"
 								min="1"
@@ -998,7 +1086,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Chunk Overlap (lines)</span>
+							<FieldHelp
+								label="Chunk Overlap (lines)"
+								help={runtimeHelp.vectorChunkOverlap}
+								testId="runtime-help-vector-chunk-overlap"
+							/>
 							<input
 								type="number"
 								min="0"
@@ -1007,7 +1099,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Top K Chunks</span>
+							<FieldHelp
+								label="Top K Chunks"
+								help={runtimeHelp.vectorTopKChunks}
+								testId="runtime-help-vector-top-k-chunks"
+							/>
 							<input
 								type="number"
 								min="1"
@@ -1016,7 +1112,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Top K Sessions</span>
+							<FieldHelp
+								label="Top K Sessions"
+								help={runtimeHelp.vectorTopKSessions}
+								testId="runtime-help-vector-top-k-sessions"
+							/>
 							<input
 								type="number"
 								min="1"
@@ -1033,7 +1133,12 @@ $effect(() => {
 							disabled={!runtimeVectorPreflight?.model_installed}
 							data-testid="runtime-vector-enable"
 						/>
-						<span>Enable semantic vector search</span>
+						<FieldHelp
+							inline
+							label="Enable semantic vector search"
+							help={runtimeHelp.vectorEnable}
+							testId="runtime-help-vector-enable"
+						/>
 					</label>
 
 					<div class="flex flex-wrap items-center gap-2">
@@ -1090,18 +1195,31 @@ $effect(() => {
 							bind:checked={runtimeChangeReaderEnabled}
 							data-testid="runtime-change-reader-enable"
 						/>
-						<span>Enable notebook-style change reading</span>
+						<FieldHelp
+							inline
+							label="Enable notebook-style change reading"
+							help={runtimeHelp.changeReaderEnable}
+							testId="runtime-help-change-reader-enable"
+						/>
 					</label>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Default Scope</span>
+							<FieldHelp
+								label="Default Scope"
+								help={runtimeHelp.changeReaderScope}
+								testId="runtime-help-change-reader-scope"
+							/>
 							<select bind:value={runtimeChangeReaderScope} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 								<option value="summary_only">summary_only</option>
 								<option value="full_context">full_context</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Max Context Chars</span>
+							<FieldHelp
+								label="Max Context Chars"
+								help={runtimeHelp.changeReaderMaxContext}
+								testId="runtime-help-change-reader-max-context"
+							/>
 							<input
 								type="number"
 								min="1"
@@ -1117,7 +1235,12 @@ $effect(() => {
 							bind:checked={runtimeChangeReaderQaEnabled}
 							data-testid="runtime-change-reader-qa"
 						/>
-						<span>Allow Q&A about change details</span>
+						<FieldHelp
+							inline
+							label="Allow Q&A about change details"
+							help={runtimeHelp.changeReaderQa}
+							testId="runtime-help-change-reader-qa"
+						/>
 					</label>
 					<p class="text-[11px] text-text-muted">
 						Uses the configured summary provider when available, then falls back to local heuristic context extraction.
@@ -1128,14 +1251,22 @@ $effect(() => {
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Storage</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Trigger</span>
+							<FieldHelp
+								label="Trigger"
+								help={runtimeHelp.storageTrigger}
+								testId="runtime-help-storage-trigger"
+							/>
 							<select bind:value={runtimeTriggerMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 								<option value="manual">manual</option>
 								<option value="on_session_save">on_session_save</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Backend</span>
+							<FieldHelp
+								label="Backend"
+								help={runtimeHelp.storageBackend}
+								testId="runtime-help-storage-backend"
+							/>
 							<select bind:value={runtimeStorageBackend} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 								<option value="hidden_ref">hidden_ref (git refs)</option>
 								<option value="local_db">local_db (sqlite)</option>
@@ -1164,21 +1295,33 @@ $effect(() => {
 					</div>
 					<div class="grid gap-2 sm:grid-cols-3">
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Execution Mode</span>
+							<FieldHelp
+								label="Execution Mode"
+								help={runtimeHelp.batchExecution}
+								testId="runtime-help-batch-execution-mode"
+							/>
 							<select bind:value={runtimeBatchExecutionMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 								<option value="manual">manual</option>
 								<option value="on_app_start">on_app_start</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Scope</span>
+							<FieldHelp
+								label="Scope"
+								help={runtimeHelp.batchScope}
+								testId="runtime-help-batch-scope"
+							/>
 							<select bind:value={runtimeBatchScope} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
 								<option value="recent_days">recent_days</option>
 								<option value="all">all</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Recent Days</span>
+							<FieldHelp
+								label="Recent Days"
+								help={runtimeHelp.batchRecentDays}
+								testId="runtime-help-batch-recent-days"
+							/>
 							<input
 								type="number"
 								min="1"
@@ -1211,11 +1354,20 @@ $effect(() => {
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Data Lifecycle</h3>
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input type="checkbox" bind:checked={runtimeLifecycleEnabled} data-testid="runtime-lifecycle-enable" />
-						<span>Enable periodic lifecycle cleanup</span>
+						<FieldHelp
+							inline
+							label="Enable periodic lifecycle cleanup"
+							help={runtimeHelp.lifecycleEnable}
+							testId="runtime-help-lifecycle-enable"
+						/>
 					</label>
 					<div class="grid gap-2 sm:grid-cols-3">
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Session TTL (days)</span>
+							<FieldHelp
+								label="Session TTL (days)"
+								help={runtimeHelp.sessionTtl}
+								testId="runtime-help-session-ttl"
+							/>
 							<input
 								type="number"
 								min="1"
@@ -1225,7 +1377,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Summary TTL (days)</span>
+							<FieldHelp
+								label="Summary TTL (days)"
+								help={runtimeHelp.summaryTtl}
+								testId="runtime-help-summary-ttl"
+							/>
 							<input
 								type="number"
 								min="1"
@@ -1235,7 +1391,11 @@ $effect(() => {
 							/>
 						</label>
 						<label class="text-xs text-text-secondary">
-							<span class="mb-1 block">Cleanup Interval (sec)</span>
+							<FieldHelp
+								label="Cleanup Interval (sec)"
+								help={runtimeHelp.cleanupInterval}
+								testId="runtime-help-cleanup-interval"
+							/>
 							<input
 								type="number"
 								min="60"

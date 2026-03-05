@@ -369,7 +369,16 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="runtime-vector-status"]')).toContainText(
 			'install_state: ready',
 		);
+		const runtimeHelpHints = page.locator('[data-testid^="runtime-help-"]');
+		expect(await runtimeHelpHints.count()).toBeGreaterThanOrEqual(20);
+		await expect(page.locator('[data-testid="runtime-help-storage-backend"]')).toHaveAttribute(
+			'title',
+			/Where summary artifacts persist/i,
+		);
 		await expect(page.locator('[data-testid="settings-runtime-change-reader"]')).toBeVisible();
+		await expect(
+			page.locator('[data-testid="runtime-help-change-reader-enable"]'),
+		).toHaveAttribute('title', /notebook-style change reading/i);
 		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
 		await page
 			.locator('[data-testid="settings-runtime-change-reader"] select')

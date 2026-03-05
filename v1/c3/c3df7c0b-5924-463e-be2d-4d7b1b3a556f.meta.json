@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "99c97bfb477a8d1fe6d6fcde7db4bc85d229cd1b"
+    ],
+    "head": "99c97bfb477a8d1fe6d6fcde7db4bc85d229cd1b",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "claude-opus-4-6",
+  "schema_version": 2,
+  "session_id": "c3df7c0b-5924-463e-be2d-4d7b1b3a556f",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 483,
+    "event_count": 414,
+    "files_changed": 1,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 48,
+    "task_count": 4,
+    "tool_call_count": 68,
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "user_message_count": 5
+  },
+  "title": "@platform-api-storage.md 의 계획을 다시 보고, 계획이 엄밀한지 다시 검토해",
+  "tool": "claude-code"
+}

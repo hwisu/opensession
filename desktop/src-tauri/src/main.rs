@@ -1,29 +1,27 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use opensession_api::{
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
-    CapabilitiesResponse, DesktopApiError, DesktopContractVersionResponse,
-    DesktopChangeQuestionRequest, DesktopChangeQuestionResponse, DesktopChangeReadRequest,
-    DesktopChangeReadResponse, DesktopChangeReaderScope, DesktopChangeReaderTtsRequest,
-    DesktopChangeReaderTtsResponse, DesktopChangeReaderVoiceProvider,
-    DesktopHandoffBuildRequest, DesktopHandoffBuildResponse, DesktopQuickShareRequest,
-    DesktopQuickShareResponse, DesktopRuntimeSettingsResponse,
+    CapabilitiesResponse, DesktopApiError, DesktopChangeQuestionRequest,
+    DesktopChangeQuestionResponse, DesktopChangeReadRequest, DesktopChangeReadResponse,
+    DesktopChangeReaderScope, DesktopChangeReaderTtsRequest, DesktopChangeReaderTtsResponse,
+    DesktopChangeReaderVoiceProvider, DesktopContractVersionResponse, DesktopHandoffBuildRequest,
+    DesktopHandoffBuildResponse, DesktopQuickShareRequest, DesktopQuickShareResponse,
     DesktopRuntimeChangeReaderSettings, DesktopRuntimeChangeReaderVoiceSettings,
-    DesktopRuntimeLifecycleSettings,
+    DesktopRuntimeLifecycleSettings, DesktopRuntimeSettingsResponse,
     DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryBatchSettings,
-    DesktopRuntimeSummaryPromptSettings,
-    DesktopRuntimeSummaryProviderSettings, DesktopRuntimeSummaryResponseSettings,
-    DesktopRuntimeSummarySettings, DesktopRuntimeSummaryStorageSettings,
-    DesktopRuntimeSummaryUiConstraints, DesktopRuntimeVectorSearchSettings,
-    DesktopSessionListQuery, DesktopSessionSummaryResponse, DesktopSummaryOutputShape,
+    DesktopRuntimeSummaryPromptSettings, DesktopRuntimeSummaryProviderSettings,
+    DesktopRuntimeSummaryResponseSettings, DesktopRuntimeSummarySettings,
+    DesktopRuntimeSummaryStorageSettings, DesktopRuntimeSummaryUiConstraints,
+    DesktopRuntimeVectorSearchSettings, DesktopSessionListQuery, DesktopSessionSummaryResponse,
     DesktopSummaryBatchExecutionMode, DesktopSummaryBatchScope, DesktopSummaryBatchState,
-    DesktopSummaryBatchStatusResponse,
+    DesktopSummaryBatchStatusResponse, DesktopSummaryOutputShape,
     DesktopSummaryProviderDetectResponse, DesktopSummaryProviderId,
     DesktopSummaryProviderTransport, DesktopSummaryResponseStyle, DesktopSummarySourceMode,
-    DesktopSummaryStorageBackend, DesktopSummaryTriggerMode, DesktopVectorIndexState,
-    DesktopVectorIndexStatusResponse, DesktopVectorInstallState,
+    DesktopSummaryStorageBackend, DesktopSummaryTriggerMode, DesktopVectorChunkingMode,
+    DesktopVectorIndexState, DesktopVectorIndexStatusResponse, DesktopVectorInstallState,
     DesktopVectorInstallStatusResponse, DesktopVectorPreflightResponse,
-    DesktopVectorChunkingMode,
     DesktopVectorSearchGranularity, DesktopVectorSearchProvider, DesktopVectorSearchResponse,
     DesktopVectorSessionMatch, LinkType, SessionDetail, SessionLink, SessionListResponse,
     SessionRepoListResponse, SessionSummary, DESKTOP_IPC_CONTRACT_VERSION,
@@ -40,20 +38,20 @@ use opensession_git_native::{
     SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
 };
 use opensession_local_db::{
-    LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow, VectorChunkUpsert,
-    SummaryBatchJobRow, VectorIndexJobRow,
+    LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow, SummaryBatchJobRow,
+    VectorChunkUpsert, VectorIndexJobRow,
 };
 use opensession_parsers::{
     discover::discover_for_tool, ingest::preview_parse_bytes, parse_with_default_parsers,
 };
 use opensession_runtime_config::{
-    ChangeReaderScope, ChangeReaderVoiceProvider, DaemonConfig, LifecycleSettings,
-    SessionDefaultView, SummaryBatchExecutionMode as RuntimeSummaryBatchExecutionMode,
+    ChangeReaderScope, ChangeReaderVoiceProvider, DaemonConfig, GitStorageMethod,
+    LifecycleSettings, SessionDefaultView,
+    SummaryBatchExecutionMode as RuntimeSummaryBatchExecutionMode,
     SummaryBatchScope as RuntimeSummaryBatchScope, SummaryOutputShape, SummaryProvider,
     SummaryResponseStyle, SummarySourceMode, SummaryStorageBackend, SummaryTriggerMode,
     VectorChunkingMode, VectorSearchGranularity, VectorSearchProvider,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use opensession_summary::{
     provider::generate_text, summarize_session, validate_summary_prompt_template, GitSummaryRequest,
 };
@@ -112,6 +110,7 @@ static VECTOR_INSTALL_STATE: LazyLock<Mutex<VectorInstallRuntimeState>> = LazyLo
 });
 static VECTOR_INDEX_REBUILD_RUNNING: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
 static SUMMARY_BATCH_RUNNING: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+static LIFECYCLE_CLEANUP_LOOP_STARTED: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DesktopHandoffArtifactRecord {
@@ -295,7 +294,10 @@ fn refresh_local_session_index(db: &LocalDb) {
             Err(error) => {
                 parse_errors = parse_errors.saturating_add(1);
                 if parse_errors <= 5 {
-                    eprintln!("failed to parse discovered session {}: {error}", path.display());
+                    eprintln!(
+                        "failed to parse discovered session {}: {error}",
+                        path.display()
+                    );
                 }
                 continue;
             }
@@ -321,7 +323,10 @@ fn refresh_local_session_index(db: &LocalDb) {
         if let Err(error) = db.upsert_local_session(&session, &path_str, &local_git) {
             upsert_errors = upsert_errors.saturating_add(1);
             if upsert_errors <= 5 {
-                eprintln!("failed to upsert discovered session {}: {error}", path.display());
+                eprintln!(
+                    "failed to upsert discovered session {}: {error}",
+                    path.display()
+                );
             }
             continue;
         }
@@ -1290,7 +1295,10 @@ fn extract_vector_lines(session: &HailSession) -> Vec<String> {
 }
 
 fn resolve_vector_chunking_profile(line_count: usize, runtime: &DaemonConfig) -> (usize, usize) {
-    if matches!(runtime.vector_search.chunking_mode, VectorChunkingMode::Manual) {
+    if matches!(
+        runtime.vector_search.chunking_mode,
+        VectorChunkingMode::Manual
+    ) {
         let chunk_size = runtime.vector_search.chunk_size_lines.max(1) as usize;
         let overlap = runtime
             .vector_search
@@ -1455,7 +1463,10 @@ fn desktop_summary_batch_status_from_db(
     })
 }
 
-fn set_summary_batch_job_snapshot(db: &LocalDb, payload: SummaryBatchJobRow) -> DesktopApiResult<()> {
+fn set_summary_batch_job_snapshot(
+    db: &LocalDb,
+    payload: SummaryBatchJobRow,
+) -> DesktopApiResult<()> {
     db.set_summary_batch_job(&payload).map_err(|error| {
         desktop_error(
             "desktop.summary_batch_status_failed",
@@ -1773,14 +1784,18 @@ fn map_summary_batch_execution_mode_to_runtime(
     }
 }
 
-fn map_summary_batch_scope_from_runtime(value: &RuntimeSummaryBatchScope) -> DesktopSummaryBatchScope {
+fn map_summary_batch_scope_from_runtime(
+    value: &RuntimeSummaryBatchScope,
+) -> DesktopSummaryBatchScope {
     match value {
         RuntimeSummaryBatchScope::RecentDays => DesktopSummaryBatchScope::RecentDays,
         RuntimeSummaryBatchScope::All => DesktopSummaryBatchScope::All,
     }
 }
 
-fn map_summary_batch_scope_to_runtime(value: &DesktopSummaryBatchScope) -> RuntimeSummaryBatchScope {
+fn map_summary_batch_scope_to_runtime(
+    value: &DesktopSummaryBatchScope,
+) -> RuntimeSummaryBatchScope {
     match value {
         DesktopSummaryBatchScope::RecentDays => RuntimeSummaryBatchScope::RecentDays,
         DesktopSummaryBatchScope::All => RuntimeSummaryBatchScope::All,
@@ -1891,7 +1906,9 @@ fn desktop_summary_settings_from_runtime(config: &DaemonConfig) -> DesktopRuntim
     }
 }
 
-fn desktop_lifecycle_settings_from_runtime(config: &DaemonConfig) -> DesktopRuntimeLifecycleSettings {
+fn desktop_lifecycle_settings_from_runtime(
+    config: &DaemonConfig,
+) -> DesktopRuntimeLifecycleSettings {
     DesktopRuntimeLifecycleSettings {
         enabled: config.lifecycle.enabled,
         session_ttl_days: config.lifecycle.session_ttl_days.max(1),
@@ -2043,9 +2060,7 @@ fn load_normalized_session_body(db: &LocalDb, session_id: &str) -> DesktopApiRes
         let source_body = read_source_session_text(&source_path)?;
         let normalized = normalize_session_body_to_hail_jsonl(&source_body, Some(&source_path))?;
         if let Err(error) = db.cache_body(session_id, source_body.as_bytes()) {
-            eprintln!(
-                "failed to cache normalized session source for {session_id}: {error}"
-            );
+            eprintln!("failed to cache normalized session source for {session_id}: {error}");
         }
         return Ok(normalized);
     }
@@ -2895,6 +2910,24 @@ fn load_session_summary_for_runtime(
     }
 }
 
+fn resolve_repo_root_from_working_directory(cwd: Option<&str>) -> Option<PathBuf> {
+    cwd.map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .and_then(|cwd| find_git_repo_root(Path::new(cwd)))
+}
+
+fn resolve_repo_root_from_source_path(source_path: Option<&str>) -> Option<PathBuf> {
+    source_path
+        .map(str::trim)
+        .filter(|source_path| !source_path.is_empty())
+        .and_then(|source_path| find_git_repo_root(Path::new(source_path)))
+}
+
+fn resolve_repo_root_from_session_row(row: &LocalSessionRow) -> Option<PathBuf> {
+    resolve_repo_root_from_working_directory(row.working_directory.as_deref())
+        .or_else(|| resolve_repo_root_from_source_path(row.source_path.as_deref()))
+}
+
 fn resolve_summary_repo_root(db: &LocalDb, session_id: &str) -> DesktopApiResult<Option<PathBuf>> {
     let row = db.get_session_by_id(session_id).map_err(|error| {
         desktop_error(
@@ -2905,10 +2938,8 @@ fn resolve_summary_repo_root(db: &LocalDb, session_id: &str) -> DesktopApiResult
         )
     })?;
     if let Some(row) = row {
-        if let Some(cwd) = row.working_directory.as_deref() {
-            if let Some(repo_root) = find_git_repo_root(Path::new(cwd)) {
-                return Ok(Some(repo_root));
-            }
+        if let Some(repo_root) = resolve_repo_root_from_session_row(&row) {
+            return Ok(Some(repo_root));
         }
     }
     let cwd = std::env::current_dir().ok();
@@ -2927,28 +2958,23 @@ fn resolve_summary_repo_root_for_migration(
             Some(json!({ "cause": error.to_string(), "session_id": session_id })),
         )
     })?;
-    if let Some(row) = row {
-        if let Some(cwd) = row.working_directory.as_deref() {
-            if let Some(repo_root) = find_git_repo_root(Path::new(cwd)) {
-                return Ok(Some(repo_root));
-            }
-        }
-    }
-    Ok(None)
+    Ok(row.and_then(|row| resolve_repo_root_from_session_row(&row)))
 }
 
 fn load_summary_storage_record_from_local_db(
     db: &LocalDb,
     session_id: &str,
 ) -> DesktopApiResult<Option<SummaryStorageRecord>> {
-    let row = db.get_session_semantic_summary(session_id).map_err(|error| {
-        desktop_error(
-            "desktop.session_summary_query_failed",
-            500,
-            "failed to load session summary from local_db",
-            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
-        )
-    })?;
+    let row = db
+        .get_session_semantic_summary(session_id)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.session_summary_query_failed",
+                500,
+                "failed to load session summary from local_db",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -3179,16 +3205,14 @@ fn summary_storage_migration_session_ids(
     from_backend: &SummaryStorageBackend,
 ) -> DesktopApiResult<Vec<String>> {
     match from_backend {
-        SummaryStorageBackend::LocalDb => {
-            db.list_session_semantic_summary_ids().map_err(|error| {
-                desktop_error(
-                    "desktop.runtime_settings_storage_migration_source_query_failed",
-                    500,
-                    "failed to list local_db summary session ids for migration",
-                    Some(json!({ "cause": error.to_string(), "backend": "local_db" })),
-                )
-            })
-        }
+        SummaryStorageBackend::LocalDb => db.list_session_semantic_summary_ids().map_err(|error| {
+            desktop_error(
+                "desktop.runtime_settings_storage_migration_source_query_failed",
+                500,
+                "failed to list local_db summary session ids for migration",
+                Some(json!({ "cause": error.to_string(), "backend": "local_db" })),
+            )
+        }),
         SummaryStorageBackend::HiddenRef => db.list_all_session_ids().map_err(|error| {
             desktop_error(
                 "desktop.runtime_settings_storage_migration_source_query_failed",
@@ -3561,15 +3585,18 @@ fn run_summary_batch_for_runtime(
                 let generated = tauri::async_runtime::block_on(
                     generate_session_summary_artifact_for_id(&db, &runtime, &session_id),
                 );
-                if let Err(error) =
-                    generated.and_then(|artifact| persist_summary_for_runtime(&db, &runtime, &session_id, &artifact))
-                {
+                if let Err(error) = generated.and_then(|artifact| {
+                    persist_summary_for_runtime(&db, &runtime, &session_id, &artifact)
+                }) {
                     if is_summary_batch_skippable_error(&error) {
                         skipped_sessions = skipped_sessions.saturating_add(1);
                         eprintln!("summary batch: skipped {session_id}: {}", error.message);
                     } else {
                         failed_sessions = failed_sessions.saturating_add(1);
-                        eprintln!("summary batch: failed to process {session_id}: {}", error.message);
+                        eprintln!(
+                            "summary batch: failed to process {session_id}: {}",
+                            error.message
+                        );
                     }
                 }
 
@@ -3847,13 +3874,12 @@ fn summary_lines_for_reader(summary: &DesktopSessionSummaryResponse) -> Vec<Stri
                 lines.push(format!("changes: {}", trim_chars(changes, 280)));
             }
         }
-        if let Some(auth_security) = summary_obj.get("auth_security").and_then(|value| value.as_str())
+        if let Some(auth_security) = summary_obj
+            .get("auth_security")
+            .and_then(|value| value.as_str())
         {
             if !auth_security.trim().is_empty() {
-                lines.push(format!(
-                    "auth_security: {}",
-                    trim_chars(auth_security, 200)
-                ));
+                lines.push(format!("auth_security: {}", trim_chars(auth_security, 200)));
             }
         }
         if let Some(layer_items) = summary_obj
@@ -3979,7 +4005,9 @@ fn trim_context_to_limit(raw: String, max_chars: usize) -> String {
 fn provider_for_change_reader(runtime: &DaemonConfig) -> Option<DesktopSummaryProviderId> {
     match runtime.summary.provider.id {
         SummaryProvider::Disabled => None,
-        _ => Some(map_summary_provider_id_from_runtime(&runtime.summary.provider.id)),
+        _ => Some(map_summary_provider_id_from_runtime(
+            &runtime.summary.provider.id,
+        )),
     }
 }
 
@@ -4028,9 +4056,8 @@ fn build_change_reader_context(
         chunks.push("[semantic_summary]".to_string());
         chunks.extend(summary_lines.into_iter().map(|line| format!("- {line}")));
     } else {
-        warning = Some(
-            "semantic summary is not available; using timeline-derived context".to_string(),
-        );
+        warning =
+            Some("semantic summary is not available; using timeline-derived context".to_string());
     }
 
     if matches!(scope, DesktopChangeReaderScope::FullContext)
@@ -4069,7 +4096,11 @@ Context:\n{context}\n"
     )
 }
 
-fn build_question_prompt(question: &str, context: &str, scope: &DesktopChangeReaderScope) -> String {
+fn build_question_prompt(
+    question: &str,
+    context: &str,
+    scope: &DesktopChangeReaderScope,
+) -> String {
     let scope_label = match scope {
         DesktopChangeReaderScope::SummaryOnly => "summary_only",
         DesktopChangeReaderScope::FullContext => "full_context",
@@ -4203,8 +4234,7 @@ fn request_openai_tts_audio(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().unwrap_or_default();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
-        {
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(desktop_error(
                 "desktop.change_reader_tts_auth_failed",
                 status.as_u16(),
@@ -4415,7 +4445,9 @@ fn desktop_change_reader_tts(
             "desktop.change_reader_tts_api_key_missing",
             422,
             "change reader voice API key is not configured",
-            Some(json!({ "hint": "Set OpenAI API key in Settings > Runtime Summary > Change Reader" })),
+            Some(
+                json!({ "hint": "Set OpenAI API key in Settings > Runtime Summary > Change Reader" }),
+            ),
         ));
     }
 
@@ -4466,8 +4498,7 @@ fn desktop_list_sessions(
     if query.force_refresh.unwrap_or(false) {
         refresh_local_session_index(&db);
     }
-    let (filter, page, per_page, search_mode) =
-        build_local_filter_with_mode(query);
+    let (filter, page, per_page, search_mode) = build_local_filter_with_mode(query);
 
     if search_mode == SearchMode::Vector {
         let vector_query = filter.search.clone().unwrap_or_default();
@@ -4658,14 +4689,15 @@ fn desktop_share_session_quick(
             )
         })?;
 
-    let source_object = store_local_object(normalized_session.as_bytes(), &command_cwd).map_err(|error| {
-        desktop_error(
-            "desktop.quick_share_source_store_failed",
-            500,
-            "failed to store normalized source object for quick share",
-            Some(json!({ "cause": error.to_string(), "session_id": session_id })),
-        )
-    })?;
+    let source_object =
+        store_local_object(normalized_session.as_bytes(), &command_cwd).map_err(|error| {
+            desktop_error(
+                "desktop.quick_share_source_store_failed",
+                500,
+                "failed to store normalized source object for quick share",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?;
 
     let mut command = Command::new("opensession");
     command
@@ -4722,6 +4754,233 @@ fn desktop_share_session_quick(
     parse_cli_quick_share_response(&stdout)
 }
 
+fn resolve_desktop_lifecycle_schedule(config: &DaemonConfig) -> Option<Duration> {
+    if !config.lifecycle.enabled {
+        return None;
+    }
+    Some(Duration::from_secs(
+        config.lifecycle.cleanup_interval_secs.max(60),
+    ))
+}
+
+fn source_parent_directory_missing(source_path: &str) -> bool {
+    let path = Path::new(source_path);
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .is_some_and(|parent| !parent.exists())
+}
+
+fn list_sessions_with_missing_source_parent_dirs(db: &LocalDb) -> DesktopApiResult<Vec<String>> {
+    let mut orphaned = db
+        .list_session_source_paths()
+        .map_err(|error| {
+            desktop_error(
+                "desktop.lifecycle_cleanup_list_source_paths_failed",
+                500,
+                "failed to list session source paths for lifecycle cleanup",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?
+        .into_iter()
+        .filter_map(|(session_id, source_path)| {
+            if source_parent_directory_missing(&source_path) {
+                Some(session_id)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    orphaned.sort();
+    orphaned.dedup();
+    Ok(orphaned)
+}
+
+fn collect_desktop_lifecycle_repo_roots(db: &LocalDb) -> DesktopApiResult<BTreeSet<PathBuf>> {
+    let mut roots = BTreeSet::new();
+    let rows = db
+        .list_sessions(&LocalSessionFilter::default())
+        .map_err(|error| {
+            desktop_error(
+                "desktop.lifecycle_cleanup_list_sessions_failed",
+                500,
+                "failed to list sessions for lifecycle cleanup",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
+
+    for row in rows {
+        if let Some(repo_root) = resolve_repo_root_from_session_row(&row) {
+            roots.insert(repo_root);
+        }
+    }
+
+    Ok(roots)
+}
+
+fn list_branch_ledger_refs(repo_root: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("for-each-ref")
+        .arg("--format=%(refname)")
+        .arg(opensession_git_native::BRANCH_LEDGER_REF_PREFIX)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn run_desktop_git_retention_once(repo_roots: &BTreeSet<PathBuf>, keep_days: u32) {
+    let storage = NativeGitStorage;
+    for repo_root in repo_roots {
+        for ref_name in list_branch_ledger_refs(repo_root) {
+            if let Err(error) = storage.prune_by_age_at_ref(repo_root, &ref_name, keep_days) {
+                eprintln!(
+                    "lifecycle cleanup: failed to prune branch ledger {ref_name} in {}: {error}",
+                    repo_root.display()
+                );
+            }
+        }
+    }
+}
+
+fn run_desktop_lifecycle_cleanup_once_with_db(
+    config: &DaemonConfig,
+    db: &LocalDb,
+) -> DesktopApiResult<()> {
+    if !config.lifecycle.enabled {
+        return Ok(());
+    }
+
+    let storage = NativeGitStorage;
+    let repo_roots = collect_desktop_lifecycle_repo_roots(db)?;
+    let expired_sessions = db
+        .list_expired_session_ids(config.lifecycle.session_ttl_days)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.lifecycle_cleanup_list_expired_sessions_failed",
+                500,
+                "failed to list expired sessions for lifecycle cleanup",
+                Some(json!({
+                    "cause": error.to_string(),
+                    "session_ttl_days": config.lifecycle.session_ttl_days
+                })),
+            )
+        })?;
+    let orphaned_sessions = list_sessions_with_missing_source_parent_dirs(db)?;
+    let mut sessions_to_delete = expired_sessions.into_iter().collect::<BTreeSet<_>>();
+    sessions_to_delete.extend(orphaned_sessions);
+
+    for session_id in &sessions_to_delete {
+        let row = db.get_session_by_id(session_id).map_err(|error| {
+            desktop_error(
+                "desktop.lifecycle_cleanup_load_session_failed",
+                500,
+                "failed to load session for lifecycle cleanup",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?;
+        if let Some(repo_root) = row.as_ref().and_then(resolve_repo_root_from_session_row) {
+            if let Err(error) =
+                storage.delete_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, session_id)
+            {
+                eprintln!(
+                    "lifecycle cleanup: failed to delete hidden-ref summary for {} in {}: {error}",
+                    session_id,
+                    repo_root.display()
+                );
+            }
+        }
+
+        db.delete_session(session_id).map_err(|error| {
+            desktop_error(
+                "desktop.lifecycle_cleanup_delete_session_failed",
+                500,
+                "failed to delete expired session during lifecycle cleanup",
+                Some(json!({ "cause": error.to_string(), "session_id": session_id })),
+            )
+        })?;
+    }
+
+    db.delete_expired_session_summaries(config.lifecycle.summary_ttl_days)
+        .map_err(|error| {
+            desktop_error(
+                "desktop.lifecycle_cleanup_delete_summaries_failed",
+                500,
+                "failed to delete expired semantic summaries during lifecycle cleanup",
+                Some(json!({
+                    "cause": error.to_string(),
+                    "summary_ttl_days": config.lifecycle.summary_ttl_days
+                })),
+            )
+        })?;
+
+    for repo_root in &repo_roots {
+        if let Err(error) = storage.prune_summaries_by_age_at_ref(
+            repo_root,
+            SUMMARY_LEDGER_REF,
+            config.lifecycle.summary_ttl_days,
+        ) {
+            eprintln!(
+                "lifecycle cleanup: failed to prune hidden-ref summaries in {}: {error}",
+                repo_root.display()
+            );
+        }
+    }
+
+    if config.git_storage.method != GitStorageMethod::Sqlite && config.git_storage.retention.enabled
+    {
+        run_desktop_git_retention_once(&repo_roots, config.lifecycle.session_ttl_days);
+    }
+
+    Ok(())
+}
+
+fn run_desktop_lifecycle_cleanup_once(config: &DaemonConfig) -> DesktopApiResult<()> {
+    let db = open_local_db()?;
+    run_desktop_lifecycle_cleanup_once_with_db(config, &db)
+}
+
+fn maybe_start_lifecycle_cleanup_loop() {
+    let mut started = LIFECYCLE_CLEANUP_LOOP_STARTED
+        .lock()
+        .expect("lifecycle cleanup loop mutex poisoned");
+    if *started {
+        return;
+    }
+    *started = true;
+    drop(started);
+
+    std::thread::spawn(|| loop {
+        let sleep_for = match load_runtime_config() {
+            Ok(config) => {
+                if let Err(error) = run_desktop_lifecycle_cleanup_once(&config) {
+                    eprintln!("failed to run desktop lifecycle cleanup: {}", error.message);
+                }
+                resolve_desktop_lifecycle_schedule(&config)
+                    .unwrap_or_else(|| Duration::from_secs(60))
+            }
+            Err(error) => {
+                eprintln!(
+                    "failed to load runtime config for lifecycle cleanup: {}",
+                    error.message
+                );
+                Duration::from_secs(60)
+            }
+        };
+        std::thread::sleep(sleep_for);
+    });
+}
+
 fn maybe_start_summary_batch_on_app_start() {
     let runtime = match load_runtime_config() {
         Ok(runtime) => runtime,
@@ -4748,6 +5007,7 @@ fn maybe_start_summary_batch_on_app_start() {
 
 fn main() {
     maybe_start_summary_batch_on_app_start();
+    maybe_start_lifecycle_cleanup_loop();
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -4788,37 +5048,32 @@ mod tests {
         artifact_path_for_hash, build_handoff_artifact_record, build_local_filter_with_mode,
         build_vector_chunks_for_session, canonicalize_summaries, cosine_similarity,
         desktop_ask_session_changes, desktop_change_reader_tts, desktop_get_contract_version,
-        desktop_get_runtime_settings,
-        desktop_get_session_detail, desktop_get_session_raw, desktop_list_sessions,
-        desktop_read_session_changes, desktop_share_session_quick, desktop_update_runtime_settings,
-        desktop_summary_batch_run, desktop_summary_batch_status,
-        extract_vector_lines, map_link_type, normalize_launch_route,
-        force_refresh_discovery_tools,
-        normalize_session_body_to_hail_jsonl, session_summary_from_local_row, split_search_mode,
-        parse_cli_quick_share_response, validate_pin_alias, validate_vector_preflight_ready,
-        DesktopSessionListQuery, SearchMode,
+        desktop_get_runtime_settings, desktop_get_session_detail, desktop_get_session_raw,
+        desktop_list_sessions, desktop_read_session_changes, desktop_share_session_quick,
+        desktop_summary_batch_run, desktop_summary_batch_status, desktop_update_runtime_settings,
+        extract_vector_lines, force_refresh_discovery_tools, map_link_type, normalize_launch_route,
+        normalize_session_body_to_hail_jsonl, parse_cli_quick_share_response,
+        session_summary_from_local_row, split_search_mode, validate_pin_alias,
+        validate_vector_preflight_ready, DesktopSessionListQuery, SearchMode,
     };
     use opensession_api::{
         DesktopChangeQuestionRequest, DesktopChangeReadRequest, DesktopChangeReaderScope,
-        DesktopChangeReaderTtsRequest,
-        DesktopQuickShareRequest,
-        DesktopRuntimeChangeReaderSettingsUpdate,
-        DesktopRuntimeChangeReaderVoiceSettingsUpdate,
-        DesktopChangeReaderVoiceProvider,
-        DesktopRuntimeLifecycleSettingsUpdate,
-        DesktopRuntimeSummaryBatchSettingsUpdate,
-        DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryPromptSettingsUpdate,
+        DesktopChangeReaderTtsRequest, DesktopChangeReaderVoiceProvider, DesktopQuickShareRequest,
+        DesktopRuntimeChangeReaderSettingsUpdate, DesktopRuntimeChangeReaderVoiceSettingsUpdate,
+        DesktopRuntimeLifecycleSettingsUpdate, DesktopRuntimeSettingsUpdateRequest,
+        DesktopRuntimeSummaryBatchSettingsUpdate, DesktopRuntimeSummaryPromptSettingsUpdate,
         DesktopRuntimeSummaryProviderSettingsUpdate, DesktopRuntimeSummaryResponseSettingsUpdate,
         DesktopRuntimeSummarySettingsUpdate, DesktopRuntimeSummaryStorageSettingsUpdate,
         DesktopSummaryBatchExecutionMode, DesktopSummaryBatchScope, DesktopSummaryBatchState,
         DesktopSummaryOutputShape, DesktopSummaryProviderId, DesktopSummaryResponseStyle,
         DesktopSummarySourceMode, DesktopSummaryStorageBackend, DesktopSummaryTriggerMode,
-        DesktopVectorInstallState, DesktopVectorPreflightResponse,
-        DesktopVectorSearchProvider,
+        DesktopVectorInstallState, DesktopVectorPreflightResponse, DesktopVectorSearchProvider,
     };
     use opensession_core::handoff::HandoffSummary;
     use opensession_core::trace::{Agent, Content, Event, EventType, Session as HailSession};
-    use opensession_git_native::{NativeGitStorage, SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF};
+    use opensession_git_native::{
+        NativeGitStorage, SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
+    };
     use opensession_local_db::git::GitContext;
     use opensession_local_db::LocalDb;
     use opensession_runtime_config::DaemonConfig;
@@ -5048,8 +5303,11 @@ mod tests {
                 .expect("metadata-only source parent must exist"),
         )
         .expect("create metadata-only source dir");
-        std::fs::write(&source_path, r#"{"type":"file-history-snapshot","files":[]}"#)
-            .expect("write metadata-only source fixture");
+        std::fs::write(
+            &source_path,
+            r#"{"type":"file-history-snapshot","files":[]}"#,
+        )
+        .expect("write metadata-only source fixture");
 
         let session = HailSession::new(
             "metadata-only-session".to_string(),
@@ -5219,7 +5477,8 @@ mod tests {
             attributes: std::collections::HashMap::new(),
         });
         let mut runtime = DaemonConfig::default();
-        runtime.vector_search.chunking_mode = opensession_runtime_config::VectorChunkingMode::Manual;
+        runtime.vector_search.chunking_mode =
+            opensession_runtime_config::VectorChunkingMode::Manual;
         runtime.vector_search.chunk_size_lines = 2;
         runtime.vector_search.chunk_overlap_lines = 1;
         let chunks = build_vector_chunks_for_session(&session, "source-hash", &runtime);
@@ -5557,7 +5816,10 @@ mod tests {
         assert_eq!(loaded.summary.batch.recent_days, 45);
         assert!(loaded.summary.prompt.template.contains("customized"));
         assert!(loaded.change_reader.enabled);
-        assert_eq!(loaded.change_reader.scope, DesktopChangeReaderScope::FullContext);
+        assert_eq!(
+            loaded.change_reader.scope,
+            DesktopChangeReaderScope::FullContext
+        );
         assert!(loaded.change_reader.qa_enabled);
         assert_eq!(loaded.change_reader.max_context_chars, 18_000);
         assert!(loaded.change_reader.voice.enabled);
@@ -5591,10 +5853,10 @@ mod tests {
 
         let db = LocalDb::open_path(&temp_db.join("local.db")).expect("open local db");
         let mut session = build_test_session("storage-migrate-local-to-hidden");
-        session
-            .context
-            .attributes
-            .insert("cwd".to_string(), json!(repo_root.to_string_lossy().to_string()));
+        session.context.attributes.insert(
+            "cwd".to_string(),
+            json!(repo_root.to_string_lossy().to_string()),
+        );
         let source_path = repo_root.join("storage-migrate-local-to-hidden.hail.jsonl");
         std::fs::write(
             &source_path,
@@ -5677,10 +5939,10 @@ mod tests {
 
         let db = LocalDb::open_path(&temp_db.join("local.db")).expect("open local db");
         let mut session = build_test_session("storage-migrate-hidden-to-local");
-        session
-            .context
-            .attributes
-            .insert("cwd".to_string(), json!(repo_root.to_string_lossy().to_string()));
+        session.context.attributes.insert(
+            "cwd".to_string(),
+            json!(repo_root.to_string_lossy().to_string()),
+        );
         let source_path = repo_root.join("storage-migrate-hidden-to-local.hail.jsonl");
         std::fs::write(
             &source_path,
@@ -5751,6 +6013,139 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_home);
         let _ = std::fs::remove_dir_all(&temp_db);
         let _ = std::fs::remove_dir_all(&repo_root);
+    }
+
+    #[test]
+    fn desktop_lifecycle_cleanup_deletes_expired_sessions_without_daemon() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let temp_root = unique_temp_dir("opensession-desktop-lifecycle-cleanup");
+        let repo_root = temp_root.join("repo");
+        std::fs::create_dir_all(&repo_root).expect("create repo root");
+        init_test_git_repo(&repo_root);
+
+        let db = LocalDb::open_path(&temp_root.join("local.db")).expect("open local db");
+
+        let mut expired = build_test_session("expired-session");
+        expired.context.created_at = chrono::Utc::now() - chrono::Duration::days(45);
+        expired.context.updated_at = expired.context.created_at;
+        expired.context.attributes.insert(
+            "cwd".to_string(),
+            json!(repo_root.to_string_lossy().to_string()),
+        );
+        let expired_source = repo_root.join("expired-session.hail.jsonl");
+        std::fs::write(
+            &expired_source,
+            expired.to_jsonl().expect("serialize expired session"),
+        )
+        .expect("write expired session source");
+        db.upsert_local_session(
+            &expired,
+            expired_source
+                .to_str()
+                .expect("expired session source path must be valid utf-8"),
+            &GitContext::default(),
+        )
+        .expect("upsert expired session");
+
+        let mut recent = build_test_session("recent-session");
+        recent.context.created_at = chrono::Utc::now() - chrono::Duration::days(5);
+        recent.context.updated_at = recent.context.created_at;
+        recent.context.attributes.insert(
+            "cwd".to_string(),
+            json!(repo_root.to_string_lossy().to_string()),
+        );
+        let recent_source = repo_root.join("recent-session.hail.jsonl");
+        std::fs::write(
+            &recent_source,
+            recent.to_jsonl().expect("serialize recent session"),
+        )
+        .expect("write recent session source");
+        db.upsert_local_session(
+            &recent,
+            recent_source
+                .to_str()
+                .expect("recent session source path must be valid utf-8"),
+            &GitContext::default(),
+        )
+        .expect("upsert recent session");
+
+        let storage = NativeGitStorage;
+        storage
+            .store_summary_at_ref(
+                &repo_root,
+                SUMMARY_LEDGER_REF,
+                &SessionSummaryLedgerRecord {
+                    session_id: "expired-session".to_string(),
+                    generated_at: "2026-01-01T00:00:00Z".to_string(),
+                    provider: "codex_exec".to_string(),
+                    model: None,
+                    source_kind: "session_signals".to_string(),
+                    generation_kind: "provider".to_string(),
+                    prompt_fingerprint: None,
+                    summary: json!({ "changes": "expired" }),
+                    source_details: json!({}),
+                    diff_tree: vec![],
+                    error: None,
+                },
+            )
+            .expect("store expired hidden_ref summary");
+        storage
+            .store_summary_at_ref(
+                &repo_root,
+                SUMMARY_LEDGER_REF,
+                &SessionSummaryLedgerRecord {
+                    session_id: "recent-session".to_string(),
+                    generated_at: "2026-01-01T00:00:00Z".to_string(),
+                    provider: "codex_exec".to_string(),
+                    model: None,
+                    source_kind: "session_signals".to_string(),
+                    generation_kind: "provider".to_string(),
+                    prompt_fingerprint: None,
+                    summary: json!({ "changes": "recent" }),
+                    source_details: json!({}),
+                    diff_tree: vec![],
+                    error: None,
+                },
+            )
+            .expect("store recent hidden_ref summary");
+
+        let mut config = DaemonConfig::default();
+        config.lifecycle.enabled = true;
+        config.lifecycle.session_ttl_days = 30;
+        config.lifecycle.summary_ttl_days = 30;
+        config.lifecycle.cleanup_interval_secs = 60;
+
+        super::run_desktop_lifecycle_cleanup_once_with_db(&config, &db)
+            .expect("run desktop lifecycle cleanup");
+
+        assert!(
+            db.get_session_by_id("expired-session")
+                .expect("query expired session")
+                .is_none(),
+            "expired session should be deleted by desktop lifecycle cleanup"
+        );
+        assert!(
+            db.get_session_by_id("recent-session")
+                .expect("query recent session")
+                .is_some(),
+            "recent session should remain after desktop lifecycle cleanup"
+        );
+        assert!(
+            storage
+                .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, "expired-session")
+                .expect("load expired hidden_ref summary")
+                .is_none(),
+            "expired hidden_ref summary should be deleted by desktop lifecycle cleanup"
+        );
+        assert!(
+            storage
+                .load_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, "recent-session")
+                .expect("load recent hidden_ref summary")
+                .is_some(),
+            "recent hidden_ref summary should remain after desktop lifecycle cleanup"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
@@ -5865,7 +6260,10 @@ mod tests {
 
         let error = result.expect_err("cleanup interval under 60 should fail");
         assert_eq!(error.status, 422);
-        assert_eq!(error.code, "desktop.runtime_settings_invalid_cleanup_interval");
+        assert_eq!(
+            error.code,
+            "desktop.runtime_settings_invalid_cleanup_interval"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_home);
     }
@@ -6017,12 +6415,10 @@ mod tests {
         assert_eq!(final_state.total_sessions, 1);
         assert_eq!(final_state.processed_sessions, 1);
         assert_eq!(final_state.failed_sessions, 0);
-        assert!(
-            final_state
-                .message
-                .as_deref()
-                .is_some_and(|message| message.contains("skipped missing sources"))
-        );
+        assert!(final_state
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("skipped missing sources")));
 
         let _ = std::fs::remove_dir_all(&temp_home);
         let _ = std::fs::remove_dir_all(&temp_db);
@@ -6034,12 +6430,12 @@ mod tests {
         let temp_home = unique_temp_dir("opensession-desktop-change-reader-disabled");
         let _home_env = EnvVarGuard::set("HOME", temp_home.as_os_str());
 
-        let result = tauri::async_runtime::block_on(
-            desktop_read_session_changes(DesktopChangeReadRequest {
+        let result = tauri::async_runtime::block_on(desktop_read_session_changes(
+            DesktopChangeReadRequest {
                 session_id: "session-1".to_string(),
                 scope: None,
-            }),
-        );
+            },
+        ));
         let error = result.expect_err("disabled change reader should fail");
         assert_eq!(error.status, 422);
         assert_eq!(error.code, "desktop.change_reader_disabled");

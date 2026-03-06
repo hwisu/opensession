@@ -63,6 +63,8 @@ test.describe('Settings', () => {
 	}) => {
 		await page.addInitScript(() => {
 			type SummaryProviderId = 'disabled' | 'ollama' | 'codex_exec' | 'claude_cli';
+			const runtimeStorageKey = '__opensession-settings-runtime-state__';
+			const runtimeBootKey = '__opensession-settings-runtime-booted__';
 			const transportFor = (provider: SummaryProviderId): 'none' | 'http' | 'cli' => {
 				if (provider === 'ollama') return 'http';
 				if (provider === 'codex_exec' || provider === 'claude_cli') return 'cli';
@@ -70,7 +72,7 @@ test.describe('Settings', () => {
 			};
 			const defaultTemplate =
 				'Convert a real coding session into semantic compression.\\nHAIL_COMPACT={{HAIL_COMPACT}}';
-			let runtimeState = {
+			const defaultRuntimeState = () => ({
 				session_default_view: 'full',
 				summary: {
 					provider: {
@@ -133,7 +135,24 @@ test.describe('Settings', () => {
 				source_mode_locked: true,
 				source_mode_locked_value: 'session_only' as 'session_only',
 			},
+		});
+		if (!window.sessionStorage.getItem(runtimeBootKey)) {
+			window.localStorage.removeItem(runtimeStorageKey);
+			window.sessionStorage.setItem(runtimeBootKey, '1');
+		}
+		let runtimeState = (() => {
+			const stored = window.localStorage.getItem(runtimeStorageKey);
+			if (!stored) return defaultRuntimeState();
+			try {
+				return JSON.parse(stored);
+			} catch {
+				return defaultRuntimeState();
+			}
+		})();
+		const persistRuntimeState = () => {
+			window.localStorage.setItem(runtimeStorageKey, JSON.stringify(runtimeState));
 		};
+		persistRuntimeState();
 		let summaryBatchStatus = {
 			state: 'idle' as 'idle' | 'running' | 'complete' | 'failed',
 			processed_sessions: 0,
@@ -326,6 +345,7 @@ test.describe('Settings', () => {
 										}
 									: runtimeState.lifecycle,
 							};
+							persistRuntimeState();
 							return runtimeState;
 						}
 						if (cmd === 'desktop_summary_batch_run') {
@@ -362,6 +382,9 @@ test.describe('Settings', () => {
 
 		await page.goto('/settings');
 		await expect(page.locator('[data-testid="settings-runtime-provider"]')).toBeVisible();
+		await expect(page.locator('[data-testid="runtime-persist-note"]')).toContainText(
+			'Current values match the saved desktop runtime config',
+		);
 		await expect(page.locator('option[value="session_or_git_changes"]')).toHaveCount(0);
 		const detectProviderButton = page.locator('[data-testid="runtime-detect-provider"]');
 		const saveRuntimeButton = page.locator('[data-testid="runtime-save"]');
@@ -370,6 +393,28 @@ test.describe('Settings', () => {
 		expect(detectProviderBox).not.toBeNull();
 		expect(saveRuntimeBox).not.toBeNull();
 		expect(Math.abs((detectProviderBox?.height ?? 0) - (saveRuntimeBox?.height ?? 0))).toBeLessThanOrEqual(2);
+		await expect(page.locator('[data-testid="settings-left-tabs"]')).toBeVisible();
+		const lifecycleNavTab = page.locator('[data-testid="settings-nav-runtime-section-lifecycle"]');
+		const lifecycleSection = page.locator('[data-testid="settings-runtime-lifecycle"]');
+		const lifecycleBeforeJumpY = (await lifecycleSection.boundingBox())?.y ?? 0;
+		expect(lifecycleBeforeJumpY).toBeGreaterThan(500);
+		await lifecycleNavTab.click();
+		await expect(lifecycleNavTab).toHaveAttribute('data-state', 'active');
+		await expect
+			.poll(async () => (await lifecycleSection.boundingBox())?.y ?? 999)
+			.toBeLessThan(lifecycleBeforeJumpY - 400);
+		await expect(page.locator('[data-testid="runtime-quick-menu"]')).toBeVisible();
+		await expect(page.locator('[data-testid="runtime-quick-draft-state"]')).toHaveText('Saved');
+		await page.locator('[data-testid="runtime-quick-toggle-lifecycle"]').click();
+		await expect(page.locator('[data-testid="runtime-lifecycle-enable"]')).not.toBeChecked();
+		await expect(page.locator('[data-testid="runtime-quick-draft-state"]')).toHaveText('Draft');
+		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toBeVisible();
+		await page.locator('[data-testid="runtime-quick-toggle-vector"]').click();
+		await expect(page.locator('[data-testid="runtime-vector-enable"]')).toBeChecked();
+		await page.locator('[data-testid="runtime-quick-reset"]').click();
+		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="runtime-lifecycle-enable"]')).toBeChecked();
+		await expect(page.locator('[data-testid="runtime-vector-enable"]')).not.toBeChecked();
 
 		await page.locator('[data-testid="runtime-provider-select"]').selectOption('ollama');
 		await expect(page.locator('[data-testid="runtime-provider-endpoint"]')).toBeVisible();
@@ -386,6 +431,15 @@ test.describe('Settings', () => {
 
 		const preview = page.locator('[data-testid="settings-response-preview"] pre');
 		await expect(preview).toContainText('Runtime settings and summary');
+		await expect(preview).toHaveText(/^\{/);
+		await expect
+			.poll(async () =>
+				preview.evaluate((node) => {
+					const element = node as HTMLElement;
+					return element.scrollWidth <= element.clientWidth + 1;
+				}),
+			)
+			.toBe(true);
 		await page
 			.locator('[data-testid="settings-runtime-response"] select')
 			.first()
@@ -405,11 +459,34 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="runtime-vector-chunk-size"]')).toBeEnabled();
 		const runtimeHelpHints = page.locator('[data-testid^="runtime-help-"]');
 		expect(await runtimeHelpHints.count()).toBeGreaterThanOrEqual(20);
-		await page.locator('[data-testid="runtime-help-storage-backend"]').hover();
-		await expect(page.getByRole('tooltip')).toContainText('Where summary artifacts persist');
+		const storageBackendHelp = page.locator('[data-testid="runtime-help-storage-backend"]');
+		await storageBackendHelp.hover();
+		const tooltip = page.getByRole('tooltip');
+		await expect(tooltip).toContainText('Where summaries are read from and written to');
+		const storageHelpBox = await storageBackendHelp.boundingBox();
+		const tooltipBox = await tooltip.boundingBox();
+		expect(storageHelpBox).not.toBeNull();
+		expect(tooltipBox).not.toBeNull();
+		expect((tooltipBox?.y ?? 0) + (tooltipBox?.height ?? 0)).toBeLessThanOrEqual(
+			(storageHelpBox?.y ?? 0) + 1,
+		);
+		expect(
+			Math.abs(
+				(tooltipBox?.x ?? 0) + (tooltipBox?.width ?? 0) -
+					((storageHelpBox?.x ?? 0) + (storageHelpBox?.width ?? 0)),
+			),
+		).toBeLessThanOrEqual(4);
 		await expect(page.locator('[data-testid="settings-runtime-change-reader"]')).toBeVisible();
 		await page.locator('[data-testid="runtime-help-change-reader-enable"]').hover();
 		await expect(page.getByRole('tooltip')).toContainText('notebook-style change reading');
+		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
+		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toBeVisible();
+		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toContainText(
+			'Checkbox, select, and input edits are drafts until you click Save Runtime',
+		);
+		await page.locator('[data-testid="runtime-reset-draft"]').click();
+		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="runtime-change-reader-enable"]')).not.toBeChecked();
 		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
 		await page
 			.locator('[data-testid="settings-runtime-change-reader"] select')
@@ -431,16 +508,27 @@ test.describe('Settings', () => {
 
 		await expect(page.locator('[data-testid="settings-runtime-storage"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
-			'Persist summary artifacts in git-native hidden refs',
+			'Current persisted backend:',
+		);
+		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
+			'Read and write persisted summaries from git hidden refs',
 		);
 		await page.locator('[data-testid="settings-runtime-storage"] select').nth(1).selectOption('local_db');
 		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
 			'session_semantic_summaries',
 		);
+		await expect(page.locator('[data-testid="runtime-storage-transition-note"]')).toContainText(
+			'existing summaries are copied from git hidden refs to local SQLite',
+		);
+		await expect(saveRuntimeButton).toHaveText('Save Runtime + Migrate');
 		await page.locator('[data-testid="settings-runtime-storage"] select').nth(1).selectOption('none');
 		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
-			'results are not stored',
+			'Do not read or write persisted summaries',
 		);
+		await expect(page.locator('[data-testid="runtime-storage-transition-note"]')).toContainText(
+			'Nothing is migrated or deleted automatically',
+		);
+		await expect(saveRuntimeButton).toHaveText('Save Runtime + Apply Storage');
 
 		await expect(page.locator('[data-testid="settings-runtime-summary-batch"]')).toBeVisible();
 		await page
@@ -461,7 +549,11 @@ test.describe('Settings', () => {
 		await page.locator('[data-testid="runtime-lifecycle-session-ttl"]').fill('45');
 		await page.locator('[data-testid="runtime-lifecycle-summary-ttl"]').fill('60');
 		await page.locator('[data-testid="runtime-lifecycle-interval"]').fill('120');
-		await page.getByRole('button', { name: 'Save Runtime' }).click();
+		await saveRuntimeButton.click();
+		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="runtime-persist-note"]')).toContainText(
+			'Current values match the saved desktop runtime config',
+		);
 		await expect(page.locator('[data-testid="settings-runtime-lifecycle"]')).toContainText(
 			'Enable periodic lifecycle cleanup',
 		);
@@ -482,6 +574,199 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="keyboard-help-modal"]')).toBeVisible();
 		await page.keyboard.press('Escape');
 		await expect(page.locator('[data-testid="keyboard-help-modal"]')).toHaveCount(0);
+		await page.reload();
+		await expect(page.locator('[data-testid="runtime-change-reader-enable"]')).toBeChecked();
+		await expect(page.locator('[data-testid="runtime-change-reader-voice-enable"]')).toBeChecked();
+		await expect(page.locator('[data-testid="runtime-lifecycle-session-ttl"]')).toHaveValue('45');
+		await expect(page.locator('[data-testid="runtime-lifecycle-summary-ttl"]')).toHaveValue('60');
+		await expect(page.locator('[data-testid="runtime-lifecycle-interval"]')).toHaveValue('120');
+	});
+
+	test('desktop vector status resumes polling after reload and shows explicit progress', async ({
+		page,
+	}) => {
+		await page.addInitScript(() => {
+			const runtimeState = {
+				session_default_view: 'full' as 'full' | 'compressed',
+				summary: {
+					provider: {
+						id: 'disabled' as 'disabled' | 'ollama' | 'codex_exec' | 'claude_cli',
+						transport: 'none' as 'none' | 'http' | 'cli',
+						endpoint: '',
+						model: '',
+					},
+					prompt: {
+						template: 'Convert a real coding session into semantic compression.',
+						default_template: 'Convert a real coding session into semantic compression.',
+					},
+					response: {
+						style: 'standard' as 'compact' | 'standard' | 'detailed',
+						shape: 'layered' as 'layered' | 'file_list' | 'security_first',
+					},
+					storage: {
+						trigger: 'on_session_save' as 'manual' | 'on_session_save',
+						backend: 'hidden_ref' as 'hidden_ref' | 'local_db' | 'none',
+					},
+					source_mode: 'session_only' as 'session_only',
+					batch: {
+						execution_mode: 'on_app_start' as 'manual' | 'on_app_start',
+						scope: 'recent_days' as 'recent_days' | 'all',
+						recent_days: 30,
+					},
+				},
+				vector_search: {
+					enabled: true,
+					provider: 'ollama' as 'ollama',
+					model: 'bge-m3',
+					endpoint: 'http://127.0.0.1:11434',
+					granularity: 'event_line_chunk' as 'event_line_chunk',
+					chunking_mode: 'auto' as 'auto' | 'manual',
+					chunk_size_lines: 12,
+					chunk_overlap_lines: 3,
+					top_k_chunks: 30,
+					top_k_sessions: 20,
+				},
+				change_reader: {
+					enabled: false,
+					scope: 'summary_only' as 'summary_only' | 'full_context',
+					qa_enabled: true,
+					max_context_chars: 12000,
+					voice: {
+						enabled: false,
+						provider: 'openai' as 'openai',
+						model: 'gpt-4o-mini-tts',
+						voice: 'alloy',
+						api_key_configured: false,
+					},
+				},
+				lifecycle: {
+					enabled: true,
+					session_ttl_days: 30,
+					summary_ttl_days: 30,
+					cleanup_interval_secs: 3600,
+				},
+				ui_constraints: {
+					source_mode_locked: true,
+					source_mode_locked_value: 'session_only' as 'session_only',
+				},
+			};
+
+			const nextVectorIndexStatus = () => {
+				const callCount = Number(window.sessionStorage.getItem('vector_index_status_calls') ?? '0');
+				window.sessionStorage.setItem('vector_index_status_calls', String(callCount + 1));
+				if (callCount === 0) {
+					return {
+						state: 'running' as const,
+						processed_sessions: 1,
+						total_sessions: 10,
+						message: 'indexing session-a',
+						started_at: '2026-03-05T00:00:00Z',
+						finished_at: null,
+					};
+				}
+				if (callCount === 1) {
+					return {
+						state: 'running' as const,
+						processed_sessions: 4,
+						total_sessions: 10,
+						message: 'indexing session-b',
+						started_at: '2026-03-05T00:00:00Z',
+						finished_at: null,
+					};
+				}
+				return {
+					state: 'complete' as const,
+					processed_sessions: 10,
+					total_sessions: 10,
+					message: 'vector indexing complete',
+					started_at: '2026-03-05T00:00:00Z',
+					finished_at: '2026-03-05T00:00:10Z',
+				};
+			};
+
+			(
+				window as Window & {
+					__TAURI_INTERNALS__?: Record<string, never>;
+					__TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } };
+				}
+			).__TAURI_INTERNALS__ = {};
+			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
+				core: {
+					invoke: async (cmd: string) => {
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v6' };
+						if (cmd === 'desktop_get_capabilities') {
+							return {
+								auth_enabled: false,
+								parse_preview_enabled: false,
+								register_targets: [],
+								share_modes: [],
+							};
+						}
+						if (cmd === 'desktop_get_auth_providers') {
+							return { email_password: false, oauth: [] };
+						}
+						if (cmd === 'desktop_get_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_summary_batch_status') {
+							return {
+								state: 'idle',
+								processed_sessions: 0,
+								total_sessions: 0,
+								failed_sessions: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
+						if (cmd === 'desktop_vector_preflight') {
+							return {
+								provider: 'ollama',
+								endpoint: runtimeState.vector_search.endpoint,
+								model: runtimeState.vector_search.model,
+								ollama_reachable: true,
+								model_installed: true,
+								install_state: 'ready',
+								progress_pct: 100,
+								message: 'model is installed and ready',
+							};
+						}
+						if (cmd === 'desktop_vector_index_status') {
+							return nextVectorIndexStatus();
+						}
+						throw new Error(`unexpected command: ${cmd}`);
+					},
+				},
+			};
+		});
+
+		await page.goto('/settings');
+
+		const vectorStatus = page.locator('[data-testid="runtime-vector-status"]');
+		await expect(vectorStatus).toContainText('Index running · processed 1/10 · 10%');
+		await expect(page.locator('[data-testid="runtime-vector-progress"]')).toContainText(
+			'1/10 (10%)',
+		);
+		await expect(page.locator('[data-testid="floating-job-vector-reindex"]')).toContainText(
+			'Processed 1/10 sessions (10%).',
+		);
+		await expect(page.locator('[data-testid="runtime-vector-reindex"]')).toBeDisabled();
+
+		await page.reload();
+
+		await expect(vectorStatus).toContainText('Index running · processed 4/10 · 40%');
+		await expect(page.locator('[data-testid="runtime-vector-progress"]')).toContainText(
+			'4/10 (40%)',
+		);
+		await expect(page.locator('[data-testid="floating-job-vector-reindex"]')).toContainText(
+			'Processed 4/10 sessions (40%).',
+		);
+		await expect(page.locator('[data-testid="runtime-vector-reindex"]')).toBeDisabled();
+
+		await expect(vectorStatus).toContainText('Index complete · processed 10/10 · 100%');
+		await expect(page.locator('[data-testid="runtime-vector-progress"]')).toContainText(
+			'10/10 (100%)',
+		);
+		await expect(page.locator('[data-testid="floating-job-vector-reindex"]')).toHaveCount(0);
+		await expect(page.locator('[data-testid="runtime-vector-reindex"]')).toBeEnabled();
 	});
 
 	test('can issue personal api key from settings page', async ({ page }) => {

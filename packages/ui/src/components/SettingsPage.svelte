@@ -120,6 +120,91 @@ let runtimeVectorReindexing = $state(false);
 let runtimeVectorError = $state<string | null>(null);
 let runtimeSummaryBatchStatus = $state<DesktopSummaryBatchStatusResponse | null>(null);
 let runtimeSummaryBatchRunning = $state(false);
+const BACKGROUND_JOB_POLL_INTERVAL_MS = 1000;
+
+type RuntimeDraftSnapshot = {
+	session_default_view: 'full' | 'compressed';
+	summary: {
+		provider: {
+			id: DesktopSummaryProviderId;
+			endpoint: string;
+			model: string;
+		};
+		prompt: {
+			template: string;
+		};
+		response: {
+			style: DesktopSummaryResponseStyle;
+			shape: DesktopSummaryOutputShape;
+		};
+		storage: {
+			trigger: DesktopSummaryTriggerMode;
+			backend: DesktopSummaryStorageBackend;
+		};
+		source_mode: DesktopSummarySourceMode;
+		batch: {
+			execution_mode: DesktopSummaryBatchExecutionMode;
+			scope: DesktopSummaryBatchScope;
+			recent_days: number;
+		};
+	};
+	vector_search: {
+		enabled: boolean;
+		provider: DesktopVectorSearchProvider;
+		model: string;
+		endpoint: string;
+		granularity: DesktopVectorSearchGranularity;
+		chunking_mode: DesktopVectorChunkingMode;
+		chunk_size_lines: number;
+		chunk_overlap_lines: number;
+		top_k_chunks: number;
+		top_k_sessions: number;
+	};
+	change_reader: {
+		enabled: boolean;
+		scope: DesktopChangeReaderScope;
+		qa_enabled: boolean;
+		max_context_chars: number;
+		voice: {
+			enabled: boolean;
+			provider: DesktopChangeReaderVoiceProvider;
+			model: string;
+			voice: string;
+			api_key_pending: boolean;
+		};
+	};
+	lifecycle: {
+		enabled: boolean;
+		session_ttl_days: number;
+		summary_ttl_days: number;
+		cleanup_interval_secs: number;
+	};
+};
+
+function isVectorInstallRunning(status: DesktopVectorPreflightResponse | null): boolean {
+	return status?.install_state === 'installing';
+}
+
+function isVectorIndexRunning(status: DesktopVectorIndexStatusResponse | null): boolean {
+	return status?.state === 'running';
+}
+
+function isSummaryBatchRunning(status: DesktopSummaryBatchStatusResponse | null): boolean {
+	return status?.state === 'running';
+}
+
+function progressPercent(processed: number, total: number): number | null {
+	if (total <= 0) return null;
+	return Math.min(100, Math.max(0, Math.round((processed / total) * 100)));
+}
+
+function vectorIndexProgressLabel(status: DesktopVectorIndexStatusResponse | null): string | null {
+	if (!status || status.total_sessions <= 0) return null;
+	const pct = progressPercent(status.processed_sessions, status.total_sessions);
+	if (pct == null) return null;
+	return `${status.processed_sessions}/${status.total_sessions} sessions (${pct}%)`;
+}
+
 const floatingJobs = $derived.by(() => {
 	const jobs: Array<{ id: string; label: string; detail: string }> = [];
 	if (runtimeSaving) {
@@ -137,10 +222,13 @@ const floatingJobs = $derived.by(() => {
 		});
 	}
 	if (runtimeVectorReindexing) {
+		const progress = vectorIndexProgressLabel(runtimeVectorIndex);
 		jobs.push({
 			id: 'vector-reindex',
 			label: 'Rebuilding vector index',
-			detail: 'Session embeddings are being rebuilt in background.',
+			detail: progress
+				? `Session embeddings are being rebuilt in background. Processed ${progress}.`
+				: 'Session embeddings are being rebuilt in background.',
 		});
 	}
 	if (runtimeSummaryBatchRunning) {
@@ -164,25 +252,218 @@ function currentRuntimeProviderTransport(): DesktopSummaryProviderTransport {
 	return providerTransportForId(runtimeProvider);
 }
 
+function storageBackendLabel(backend: DesktopSummaryStorageBackend): string {
+	if (backend === 'hidden_ref') return 'git hidden refs';
+	if (backend === 'local_db') return 'local SQLite';
+	return 'ephemeral only';
+}
+
+function persistedStorageBackend(): DesktopSummaryStorageBackend | null {
+	return runtimeSettings?.summary.storage.backend ?? null;
+}
+
+function persistedStorageBackendLabel(): string | null {
+	const current = persistedStorageBackend();
+	return current ? storageBackendLabel(current) : null;
+}
+
+function hasPendingStorageBackendChange(): boolean {
+	const current = persistedStorageBackend();
+	return current != null && current !== runtimeStorageBackend;
+}
+
 function storageBackendSummary(backend: DesktopSummaryStorageBackend): string {
 	if (backend === 'hidden_ref') {
-		return 'Persist summary artifacts in git-native hidden refs.';
+		return 'Read and write persisted summaries from git hidden refs in each session repository.';
 	}
 	if (backend === 'local_db') {
-		return 'Persist summary artifacts in local SQLite only.';
+		return 'Read and write persisted summaries from the local SQLite table `session_semantic_summaries`.';
 	}
-	return 'Do not persist summary artifacts after generation.';
+	return 'Do not read or write persisted summaries. Results are generated only for the current request.';
 }
 
 function storageBackendDetails(backend: DesktopSummaryStorageBackend): string {
 	if (backend === 'hidden_ref') {
-		return 'Best when you want git-backed summary history. On backend switch, existing summaries are migrated from local_db when possible. Search/filter metadata is still indexed in local SQLite for fast queries.';
+		return 'Best when the session belongs to a git repository and you want git-backed summary history alongside the repo.';
 	}
 	if (backend === 'local_db') {
-		return 'Writes summary rows to local SQLite (session_semantic_summaries). On backend switch, existing hidden_ref summaries are migrated back when possible. Nothing is written to git refs.';
+		return 'Best when you want machine-local persistence without writing anything into git refs.';
 	}
-	return 'Summary generation can still run on demand, but results are not stored and will be regenerated next time.';
+	return 'Use this only when you want no persistence. Existing stored summaries are left where they already are.';
 }
+
+function storageBackendTransitionDetail(): string {
+	const current = persistedStorageBackend();
+	if (!current) {
+		return 'Load runtime settings to inspect storage migration behavior.';
+	}
+	if (current === runtimeStorageBackend) {
+		return 'No storage backend switch is pending. Click Save Runtime only if you want to persist other runtime edits.';
+	}
+	if (current === 'none') {
+		return `On next save, new summaries will persist to ${storageBackendLabel(runtimeStorageBackend)}. Nothing is copied because the current backend stores no persisted summaries.`;
+	}
+	if (runtimeStorageBackend === 'none') {
+		return `On next save, desktop stops reading and writing persisted summaries. Existing summaries stay in ${storageBackendLabel(current)}. Nothing is migrated or deleted automatically.`;
+	}
+	return `On next save, existing summaries are copied from ${storageBackendLabel(current)} to ${storageBackendLabel(runtimeStorageBackend)}. Existing source copies are kept.`;
+}
+
+function runtimeSaveLabel(): string {
+	if (runtimeSaving) return 'Saving...';
+	const current = persistedStorageBackend();
+	if (!current || current === runtimeStorageBackend) {
+		return 'Save Runtime';
+	}
+	if (
+		(current === 'hidden_ref' && runtimeStorageBackend === 'local_db') ||
+		(current === 'local_db' && runtimeStorageBackend === 'hidden_ref')
+	) {
+		return 'Save Runtime + Migrate';
+	}
+	return 'Save Runtime + Apply Storage';
+}
+
+function quickToggleLabel(enabled: boolean): string {
+	return enabled ? 'On' : 'Off';
+}
+
+function quickToggleClasses(enabled: boolean): string {
+	return enabled
+		? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-700'
+		: 'border-border/80 bg-bg-secondary text-text-secondary';
+}
+
+function settingsNavButtonClasses(active: boolean): string {
+	return active
+		? 'border-accent/40 bg-accent/5 text-text-primary shadow-[0_8px_20px_rgba(15,23,42,0.08)]'
+		: 'border-border/70 bg-bg-primary text-text-secondary';
+}
+
+let activeSettingsSectionId = $state('settings-section-overview');
+
+function getSettingsScrollContainer(): HTMLElement | Window | null {
+	if (typeof document === 'undefined') return null;
+	const main = document.querySelector('main');
+	return main instanceof HTMLElement ? main : window;
+}
+
+function scrollToSettingsSection(sectionId: string) {
+	if (typeof document === 'undefined') return;
+	const section = document.getElementById(sectionId);
+	if (!section) return;
+	const scrollContainer = getSettingsScrollContainer();
+	if (!scrollContainer) return;
+	if (scrollContainer instanceof Window) {
+		const top = window.scrollY + section.getBoundingClientRect().top - 16;
+		window.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+		return;
+	}
+	const top =
+		scrollContainer.scrollTop +
+		section.getBoundingClientRect().top -
+		scrollContainer.getBoundingClientRect().top -
+		16;
+	scrollContainer.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+}
+
+function setActiveSettingsSection(sectionId: string) {
+	activeSettingsSectionId = sectionId;
+	scrollToSettingsSection(sectionId);
+}
+
+const runtimeQuickJumpLinks = [
+	{ id: 'runtime-section-provider', label: 'Provider' },
+	{ id: 'runtime-section-vector', label: 'Vector' },
+	{ id: 'runtime-section-change-reader', label: 'Reader' },
+	{ id: 'runtime-section-storage', label: 'Storage' },
+	{ id: 'runtime-section-summary-batch', label: 'Batch' },
+	{ id: 'runtime-section-lifecycle', label: 'TTL' },
+] as const;
+
+const settingsNavItems = $derived.by(() => {
+	const items = [
+		{
+			id: 'settings-section-overview',
+			label: 'Overview',
+			detail: 'Page summary and account context',
+			visible: true,
+		},
+		{
+			id: 'settings-section-profile',
+			label: 'Profile',
+			detail: 'Identity and linked providers',
+			visible: authApiEnabled && !authRequired,
+		},
+		{
+			id: 'settings-section-api-key',
+			label: 'API Key',
+			detail: 'CLI and automation access',
+			visible: authApiEnabled && !authRequired,
+		},
+		{
+			id: 'settings-section-git-credentials',
+			label: 'Git Auth',
+			detail: 'Private repository credentials',
+			visible: authApiEnabled && !authRequired,
+		},
+		{
+			id: 'settings-section-runtime',
+			label: 'Runtime',
+			detail: 'Desktop summary controls',
+			visible: true,
+		},
+		{
+			id: 'runtime-section-provider',
+			label: 'Provider',
+			detail: 'Summary backend and transport',
+			visible: runtimeSupported,
+		},
+		{
+			id: 'runtime-section-prompt',
+			label: 'Prompt',
+			detail: 'Template and reset controls',
+			visible: runtimeSupported,
+		},
+		{
+			id: 'runtime-section-response',
+			label: 'Response',
+			detail: 'Style, shape, preview',
+			visible: runtimeSupported,
+		},
+		{
+			id: 'runtime-section-vector',
+			label: 'Vector',
+			detail: 'Embeddings and index jobs',
+			visible: runtimeSupported,
+		},
+		{
+			id: 'runtime-section-change-reader',
+			label: 'Reader',
+			detail: 'Text, Q&A, and voice',
+			visible: runtimeSupported,
+		},
+		{
+			id: 'runtime-section-storage',
+			label: 'Storage',
+			detail: 'Persistence backend and trigger',
+			visible: runtimeSupported,
+		},
+		{
+			id: 'runtime-section-summary-batch',
+			label: 'Batch',
+			detail: 'Background summary generation',
+			visible: runtimeSupported,
+		},
+		{
+			id: 'runtime-section-lifecycle',
+			label: 'Lifecycle',
+			detail: 'TTL and cleanup intervals',
+			visible: runtimeSupported,
+		},
+	];
+	return items.filter((item) => item.visible);
+});
 
 const runtimeHelp = {
 	defaultSessionView:
@@ -222,7 +503,7 @@ const runtimeHelp = {
 		'Write-only API key for voice provider. Leave empty to keep the current stored key.',
 	storageTrigger: 'manual runs only when explicitly requested. on_session_save runs automatically on new saves.',
 	storageBackend:
-		'Where summary artifacts persist: hidden_ref (git), local_db (sqlite), none (ephemeral). Switching backends runs explicit summary migration.',
+		'Where summaries are read from and written to after you click Save Runtime. Switching between hidden_ref and local_db copies existing summaries into the selected backend on save. Switching to none does not migrate or delete existing stored summaries.',
 	batchExecution:
 		'manual means run only when clicking Run now. on_app_start runs once automatically at desktop startup.',
 	batchScope:
@@ -339,12 +620,6 @@ function vectorStatusGuidance(): string[] {
 		guidance.push('Vector pipeline is ready.');
 	}
 	return guidance;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		window.setTimeout(resolve, ms);
-	});
 }
 
 async function loadSettings() {
@@ -541,6 +816,122 @@ function buildRuntimeLifecyclePayload() {
 	};
 }
 
+function buildRuntimeDraftSnapshot(): RuntimeDraftSnapshot {
+	return {
+		session_default_view: runtimeSessionDefaultView,
+		summary: buildRuntimeSummaryPayload(),
+		vector_search: buildRuntimeVectorPayload(),
+		change_reader: {
+			...buildRuntimeChangeReaderPayload(),
+			voice: {
+				enabled: runtimeChangeReaderVoiceEnabled,
+				provider: runtimeChangeReaderVoiceProvider,
+				model: runtimeChangeReaderVoiceModel,
+				voice: runtimeChangeReaderVoiceName,
+				api_key_pending: runtimeChangeReaderVoiceApiKey.trim().length > 0,
+			},
+		},
+		lifecycle: buildRuntimeLifecyclePayload(),
+	};
+}
+
+function buildPersistedRuntimeSnapshot(
+	settings: DesktopRuntimeSettingsResponse,
+): RuntimeDraftSnapshot {
+	return {
+		session_default_view:
+			settings.session_default_view === 'compressed' ? 'compressed' : 'full',
+		summary: {
+			provider: {
+				id: settings.summary.provider.id,
+				endpoint: settings.summary.provider.endpoint ?? '',
+				model: settings.summary.provider.model ?? '',
+			},
+			prompt: {
+				template: settings.summary.prompt.template ?? '',
+			},
+			response: {
+				style: settings.summary.response.style ?? 'standard',
+				shape: settings.summary.response.shape ?? 'layered',
+			},
+			storage: {
+				trigger: settings.summary.storage.trigger ?? 'on_session_save',
+				backend: settings.summary.storage.backend ?? 'hidden_ref',
+			},
+			source_mode: settings.summary.source_mode ?? 'session_only',
+			batch: {
+				execution_mode: settings.summary.batch.execution_mode ?? 'on_app_start',
+				scope: settings.summary.batch.scope ?? 'recent_days',
+				recent_days: settings.summary.batch.recent_days ?? 30,
+			},
+		},
+		vector_search: {
+			enabled: settings.vector_search.enabled ?? false,
+			provider: settings.vector_search.provider ?? 'ollama',
+			model: settings.vector_search.model ?? 'bge-m3',
+			endpoint: settings.vector_search.endpoint ?? 'http://127.0.0.1:11434',
+			granularity: settings.vector_search.granularity ?? 'event_line_chunk',
+			chunking_mode: settings.vector_search.chunking_mode ?? 'auto',
+			chunk_size_lines: settings.vector_search.chunk_size_lines ?? 12,
+			chunk_overlap_lines: settings.vector_search.chunk_overlap_lines ?? 3,
+			top_k_chunks: settings.vector_search.top_k_chunks ?? 30,
+			top_k_sessions: settings.vector_search.top_k_sessions ?? 20,
+		},
+		change_reader: {
+			enabled: settings.change_reader?.enabled ?? false,
+			scope: settings.change_reader?.scope ?? 'summary_only',
+			qa_enabled: settings.change_reader?.qa_enabled ?? true,
+			max_context_chars: settings.change_reader?.max_context_chars ?? 12000,
+			voice: {
+				enabled: settings.change_reader?.voice?.enabled ?? false,
+				provider: settings.change_reader?.voice?.provider ?? 'openai',
+				model: settings.change_reader?.voice?.model ?? 'gpt-4o-mini-tts',
+				voice: settings.change_reader?.voice?.voice ?? 'alloy',
+				api_key_pending: false,
+			},
+		},
+		lifecycle: {
+			enabled: settings.lifecycle?.enabled ?? true,
+			session_ttl_days: settings.lifecycle?.session_ttl_days ?? 30,
+			summary_ttl_days: settings.lifecycle?.summary_ttl_days ?? 30,
+			cleanup_interval_secs: settings.lifecycle?.cleanup_interval_secs ?? 3600,
+		},
+	};
+}
+
+function runtimeSnapshotKey(snapshot: RuntimeDraftSnapshot): string {
+	return JSON.stringify(snapshot);
+}
+
+const runtimeDraftDirty = $derived.by(() => {
+	if (!runtimeSettings) return false;
+	return (
+		runtimeSnapshotKey(buildRuntimeDraftSnapshot()) !==
+		runtimeSnapshotKey(buildPersistedRuntimeSnapshot(runtimeSettings))
+	);
+});
+
+const runtimePersistStatus = $derived.by(() => {
+	if (runtimeLoading) {
+		return {
+			title: 'Loading runtime config',
+			detail: 'Fetching the current persisted desktop runtime settings.',
+		};
+	}
+	if (runtimeDraftDirty) {
+		return {
+			title: 'Unsaved runtime changes',
+			detail:
+				'Checkbox, select, and input edits are drafts until you click Save Runtime. Reopening Settings reloads the last persisted values.',
+		};
+	}
+	return {
+		title: 'Runtime config is persisted',
+		detail:
+			'Current values match the saved desktop runtime config. New edits stay local to this page until you save them.',
+	};
+});
+
 function handleRuntimeProviderChange() {
 	runtimeProviderTransport = currentRuntimeProviderTransport();
 	if (runtimeProviderTransport !== 'http') {
@@ -550,6 +941,13 @@ function handleRuntimeProviderChange() {
 
 function handleResetPromptTemplate() {
 	runtimePromptTemplate = runtimePromptDefaultTemplate;
+}
+
+function handleResetRuntimeDraft() {
+	if (!runtimeSettings) return;
+	applyRuntimeSettingsToDraft(runtimeSettings);
+	runtimeError = null;
+	runtimeDetectMessage = 'Discarded unsaved runtime edits.';
 }
 
 async function handleSaveRuntimeSettings() {
@@ -567,7 +965,7 @@ async function handleSaveRuntimeSettings() {
 		runtimeSettings = updated;
 		applyRuntimeSettingsToDraft(updated);
 		await refreshSummaryBatchStatus();
-		runtimeDetectMessage = 'Runtime settings saved.';
+		runtimeDetectMessage = 'Runtime settings saved and will persist when you reopen Settings.';
 	} catch (err) {
 		runtimeError = normalizeError(err, 'Failed to save runtime settings');
 	} finally {
@@ -606,8 +1004,10 @@ async function handleDetectRuntimeProvider() {
 async function refreshSummaryBatchStatus() {
 	try {
 		runtimeSummaryBatchStatus = await getSummaryBatchStatus();
+		runtimeSummaryBatchRunning = isSummaryBatchRunning(runtimeSummaryBatchStatus);
 	} catch (err) {
 		runtimeSummaryBatchStatus = null;
+		runtimeSummaryBatchRunning = false;
 		runtimeError = normalizeError(err, 'Failed to fetch summary batch status');
 	}
 }
@@ -617,23 +1017,17 @@ async function handleRunSummaryBatchNow() {
 	runtimeError = null;
 	try {
 		runtimeSummaryBatchStatus = await runSummaryBatch();
-		for (let attempt = 0; attempt < 300; attempt += 1) {
-			await delay(500);
-			await refreshSummaryBatchStatus();
-			if (runtimeSummaryBatchStatus && runtimeSummaryBatchStatus.state !== 'running') {
-				break;
-			}
-		}
+		runtimeSummaryBatchRunning = isSummaryBatchRunning(runtimeSummaryBatchStatus);
 	} catch (err) {
-		runtimeError = normalizeError(err, 'Failed to run summary batch');
-	} finally {
 		runtimeSummaryBatchRunning = false;
+		runtimeError = normalizeError(err, 'Failed to run summary batch');
 	}
 }
 
 async function refreshVectorPreflight(): Promise<boolean> {
 	try {
 		runtimeVectorPreflight = await vectorPreflight();
+		runtimeVectorInstalling = isVectorInstallRunning(runtimeVectorPreflight);
 		runtimeVectorError = null;
 		if (runtimeVectorPreflight.model_installed && runtimeVectorEnabled) {
 			runtimeDetectMessage = 'Vector model is ready.';
@@ -649,6 +1043,7 @@ async function refreshVectorPreflight(): Promise<boolean> {
 async function refreshVectorIndexStatus(): Promise<boolean> {
 	try {
 		runtimeVectorIndex = await vectorIndexStatus();
+		runtimeVectorReindexing = isVectorIndexRunning(runtimeVectorIndex);
 		if (runtimeVectorIndex.state === 'failed' && runtimeVectorIndex.message) {
 			runtimeVectorError = runtimeVectorIndex.message;
 		}
@@ -667,23 +1062,14 @@ async function handleVectorInstallModel() {
 		const status = await vectorInstallModel(runtimeVectorModel);
 		if (status.state === 'failed') {
 			runtimeVectorError = status.message ?? 'Model installation failed.';
+			runtimeVectorInstalling = false;
 			return;
 		}
-		for (let attempt = 0; attempt < 120; attempt += 1) {
-			await delay(1000);
-			const ok = await refreshVectorPreflight();
-			if (!ok) break;
-			if (runtimeVectorPreflight && runtimeVectorPreflight.install_state !== 'installing') {
-				break;
-			}
-		}
-		if (runtimeVectorPreflight?.install_state === 'failed') {
-			runtimeVectorError = runtimeVectorPreflight.message ?? 'Model installation failed.';
-		}
+		runtimeVectorInstalling = status.state === 'installing';
+		await refreshVectorPreflight();
 	} catch (err) {
-		runtimeVectorError = normalizeVectorError(err, 'Failed to install vector model');
-	} finally {
 		runtimeVectorInstalling = false;
+		runtimeVectorError = normalizeVectorError(err, 'Failed to install vector model');
 	}
 }
 
@@ -706,22 +1092,14 @@ async function handleVectorReindex() {
 	runtimeVectorReindexing = true;
 	runtimeVectorError = null;
 	try {
-		await vectorIndexRebuild();
-		for (let attempt = 0; attempt < 600; attempt += 1) {
-			await delay(500);
-			const ok = await refreshVectorIndexStatus();
-			if (!ok) break;
-			if (runtimeVectorIndex && runtimeVectorIndex.state !== 'running') {
-				break;
-			}
-		}
+		runtimeVectorIndex = await vectorIndexRebuild();
+		runtimeVectorReindexing = isVectorIndexRunning(runtimeVectorIndex);
 		if (runtimeVectorIndex?.state === 'failed') {
 			runtimeVectorError = runtimeVectorIndex.message ?? 'Vector index rebuild failed.';
 		}
 	} catch (err) {
-		runtimeVectorError = normalizeVectorError(err, 'Failed to start vector index rebuild');
-	} finally {
 		runtimeVectorReindexing = false;
+		runtimeVectorError = normalizeVectorError(err, 'Failed to start vector index rebuild');
 	}
 }
 
@@ -793,8 +1171,56 @@ $effect(() => {
 });
 
 $effect(() => {
+	const shouldPoll =
+		runtimeVectorInstalling ||
+		isVectorInstallRunning(runtimeVectorPreflight) ||
+		runtimeVectorReindexing ||
+		isVectorIndexRunning(runtimeVectorIndex) ||
+		runtimeSummaryBatchRunning ||
+		isSummaryBatchRunning(runtimeSummaryBatchStatus);
+	if (!shouldPoll) {
+		return;
+	}
+
+	let cancelled = false;
+	let timer: number | undefined;
+
+	const poll = async () => {
+		if (cancelled) return;
+		if (runtimeVectorInstalling || isVectorInstallRunning(runtimeVectorPreflight)) {
+			await refreshVectorPreflight();
+		}
+		if (runtimeVectorReindexing || isVectorIndexRunning(runtimeVectorIndex)) {
+			await refreshVectorIndexStatus();
+		}
+		if (runtimeSummaryBatchRunning || isSummaryBatchRunning(runtimeSummaryBatchStatus)) {
+			await refreshSummaryBatchStatus();
+		}
+		if (cancelled) return;
+		timer = window.setTimeout(poll, BACKGROUND_JOB_POLL_INTERVAL_MS);
+	};
+
+	timer = window.setTimeout(poll, BACKGROUND_JOB_POLL_INTERVAL_MS);
+
+	return () => {
+		cancelled = true;
+		if (timer != null) {
+			window.clearTimeout(timer);
+		}
+	};
+});
+
+$effect(() => {
 	loadSettings();
 	loadRuntimeSettings();
+});
+
+$effect(() => {
+	const visibleIds = settingsNavItems.map((item) => item.id);
+	if (visibleIds.length === 0) return;
+	if (!visibleIds.includes(activeSettingsSectionId)) {
+		activeSettingsSectionId = visibleIds[0];
+	}
 });
 </script>
 
@@ -802,8 +1228,36 @@ $effect(() => {
 	<title>Settings - opensession.io</title>
 </svelte:head>
 
-<div data-testid="settings-page" class="mx-auto w-full max-w-3xl space-y-4 pb-10">
-	<header class="border border-border bg-bg-secondary px-4 py-3">
+<div data-testid="settings-page" class="mx-auto w-full max-w-7xl pb-10">
+	<div class="grid gap-4 xl:grid-cols-[14rem_minmax(0,1fr)] xl:items-start">
+		<aside
+			class="xl:sticky xl:top-4"
+			data-testid="settings-left-tabs"
+		>
+			<div class="overflow-x-auto border border-border bg-bg-secondary p-3 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
+				<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+					Settings Tabs
+				</p>
+				<div class="mt-3 flex gap-2 xl:flex-col">
+					{#each settingsNavItems as item}
+						<button
+							type="button"
+							data-testid={`settings-nav-${item.id}`}
+							data-state={activeSettingsSectionId === item.id ? 'active' : 'idle'}
+							aria-current={activeSettingsSectionId === item.id ? 'page' : undefined}
+							onclick={() => setActiveSettingsSection(item.id)}
+							class={`min-w-[11rem] border px-3 py-2 text-left transition-colors xl:min-w-0 ${settingsNavButtonClasses(activeSettingsSectionId === item.id)}`}
+						>
+							<p class="text-xs font-semibold">{item.label}</p>
+							<p class="mt-1 text-[11px] text-text-secondary">{item.detail}</p>
+						</button>
+					{/each}
+				</div>
+			</div>
+		</aside>
+
+		<div class="space-y-4">
+	<header id="settings-section-overview" class="scroll-mt-24 border border-border bg-bg-secondary px-4 py-3">
 		<p class="text-[11px] uppercase tracking-[0.12em] text-text-muted">Account</p>
 		<h1 class="mt-1 text-3xl font-semibold tracking-tight text-text-primary">Settings</h1>
 		<p class="mt-1 text-sm text-text-secondary">Personal profile and API access controls.</p>
@@ -813,9 +1267,10 @@ $effect(() => {
 			<div class="border border-border bg-bg-secondary px-4 py-8 text-center text-sm text-text-muted">Loading...</div>
 		{:else if authApiEnabled && authRequired}
 			<section
+				id="settings-section-profile"
 				data-testid="settings-require-auth"
-			class="border border-border bg-bg-secondary px-4 py-6 text-sm text-text-secondary"
-		>
+				class="scroll-mt-24 border border-border bg-bg-secondary px-4 py-6 text-sm text-text-secondary xl:max-w-3xl"
+			>
 			<p class="text-text-primary">Sign in is required to view personal settings.</p>
 			<div class="mt-4">
 				<button
@@ -828,7 +1283,7 @@ $effect(() => {
 			</div>
 		</section>
 	{:else if authApiEnabled}
-		<section class="border border-border bg-bg-secondary p-4">
+		<section id="settings-section-profile" class="scroll-mt-24 border border-border bg-bg-secondary p-4 xl:max-w-3xl">
 			<h2 class="text-sm font-semibold text-text-primary">Profile</h2>
 			{#if settings}
 				<dl class="mt-3 grid gap-2 text-xs text-text-secondary sm:grid-cols-[10rem_1fr]">
@@ -854,7 +1309,7 @@ $effect(() => {
 			{/if}
 		</section>
 
-		<section class="border border-border bg-bg-secondary p-4">
+		<section id="settings-section-api-key" class="scroll-mt-24 border border-border bg-bg-secondary p-4 xl:max-w-3xl">
 			<div class="flex flex-wrap items-center justify-between gap-3">
 				<div>
 					<h2 class="text-sm font-semibold text-text-primary">Personal API Key</h2>
@@ -896,7 +1351,11 @@ $effect(() => {
 			{/if}
 		</section>
 
-		<section class="border border-border bg-bg-secondary p-4" data-testid="git-credential-settings">
+		<section
+			id="settings-section-git-credentials"
+			class="scroll-mt-24 border border-border bg-bg-secondary p-4 xl:max-w-3xl"
+			data-testid="git-credential-settings"
+		>
 			<div class="space-y-1">
 				<h2 class="text-sm font-semibold text-text-primary">Private Git Credentials</h2>
 				<p class="text-xs text-text-secondary">
@@ -1004,7 +1463,11 @@ $effect(() => {
 	{/if}
 	{/if}
 
-	<section class="border border-border bg-bg-secondary p-4" data-testid="runtime-summary-settings">
+	<section
+		id="settings-section-runtime"
+		class="scroll-mt-24 border border-border bg-bg-secondary p-4"
+		data-testid="runtime-summary-settings"
+	>
 		<div class="flex flex-wrap items-center justify-between gap-3">
 			<div>
 				<h2 class="text-sm font-semibold text-text-primary">Runtime Summary (Desktop)</h2>
@@ -1022,15 +1485,15 @@ $effect(() => {
 					>
 						{runtimeDetecting ? 'Detecting...' : 'Detect Provider'}
 					</button>
-					<button
-						type="button"
-						data-testid="runtime-save"
-						onclick={handleSaveRuntimeSettings}
-						disabled={!runtimeSupported || runtimeSaving || runtimeLoading}
-						class="inline-flex h-9 items-center border border-transparent bg-accent px-3 text-xs font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
-					>
-						{runtimeSaving ? 'Saving...' : 'Save Runtime'}
-					</button>
+						<button
+							type="button"
+							data-testid="runtime-save"
+							onclick={handleSaveRuntimeSettings}
+							disabled={!runtimeSupported || runtimeSaving || runtimeLoading}
+							class="inline-flex h-9 items-center border border-transparent bg-accent px-3 text-xs font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
+						>
+							{runtimeSaveLabel()}
+						</button>
 			</div>
 		</div>
 
@@ -1041,7 +1504,20 @@ $effect(() => {
 				Runtime settings are not available in this environment (desktop IPC required).
 			</p>
 		{:else}
-			<div class="mt-4 space-y-4">
+			<div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem] xl:items-start">
+				<div class="order-last space-y-4 xl:order-first">
+				<div
+					class={`rounded border px-3 py-3 text-xs ${
+						runtimeDraftDirty
+							? 'border-accent/40 bg-accent/5 text-text-primary'
+							: 'border-border/60 bg-bg-primary text-text-secondary'
+					}`}
+					data-testid="runtime-persist-note"
+				>
+					<p class="font-semibold text-text-primary">{runtimePersistStatus.title}</p>
+					<p class="mt-1">{runtimePersistStatus.detail}</p>
+				</div>
+
 				<label class="block text-xs text-text-secondary">
 					<FieldHelp
 						label="Default Session View"
@@ -1054,7 +1530,11 @@ $effect(() => {
 					</select>
 				</label>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-provider">
+				<section
+					id="runtime-section-provider"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-provider"
+				>
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Provider</h3>
 					<label class="block text-xs text-text-secondary">
 						<FieldHelp
@@ -1121,7 +1601,11 @@ $effect(() => {
 					{/if}
 				</section>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-prompt">
+				<section
+					id="runtime-section-prompt"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-prompt"
+				>
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Prompt</h3>
 					<label class="block text-xs text-text-secondary">
 						<FieldHelp
@@ -1157,7 +1641,11 @@ $effect(() => {
 					</label>
 				</section>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-response">
+				<section
+					id="runtime-section-response"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-response"
+				>
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Response</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
@@ -1190,11 +1678,15 @@ $effect(() => {
 					</p>
 					<div class="border border-border/70 bg-bg-primary p-2" data-testid="settings-response-preview">
 						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">Response Preview</p>
-						<pre class="overflow-x-auto text-xs text-text-secondary">{responsePreview(runtimeResponseStyle, runtimeOutputShape)}</pre>
+						<pre class="max-w-full whitespace-pre-wrap text-xs text-text-secondary [overflow-wrap:anywhere]">{responsePreview(runtimeResponseStyle, runtimeOutputShape)}</pre>
 					</div>
 				</section>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-vector">
+				<section
+					id="runtime-section-vector"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-vector"
+				>
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Vector Search</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
@@ -1349,9 +1841,34 @@ $effect(() => {
 						{#if runtimeVectorIndex}
 							<p class="mt-1">
 								Index {runtimeVectorIndex.state} · processed {runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
+								{#if progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions) != null}
+									· {progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions)}%
+								{/if}
 							</p>
+							{#if progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions) != null}
+								<div class="mt-2" data-testid="runtime-vector-progress">
+									<div class="flex items-center justify-between text-[11px] text-text-secondary">
+										<span>Embedding progress</span>
+										<span>
+											{runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
+											({progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions)}%)
+										</span>
+									</div>
+									<div class="mt-1 h-2 overflow-hidden rounded bg-border/60">
+										<div
+											class="h-full bg-accent transition-[width] duration-300"
+											style={`width: ${progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions)}%`}
+										></div>
+									</div>
+								</div>
+							{/if}
 							{#if runtimeVectorIndex.message}
 								<p class="mt-1">{runtimeVectorIndex.message}</p>
+							{/if}
+							{#if runtimeVectorIndex.started_at || runtimeVectorIndex.finished_at}
+								<p class="mt-1 text-[11px] text-text-secondary">
+									started: {formatDate(runtimeVectorIndex.started_at)} | finished: {formatDate(runtimeVectorIndex.finished_at)}
+								</p>
 							{/if}
 						{/if}
 						<div class="mt-2 space-y-1 rounded border border-border/50 bg-bg-secondary/50 px-2 py-2 text-[11px] text-text-secondary">
@@ -1371,7 +1888,11 @@ $effect(() => {
 					</div>
 				</section>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-change-reader">
+				<section
+					id="runtime-section-change-reader"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-change-reader"
+				>
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader (Text + Voice)</h3>
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input
@@ -1503,7 +2024,11 @@ $effect(() => {
 					</p>
 				</section>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-storage">
+				<section
+					id="runtime-section-storage"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-storage"
+				>
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Storage</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
@@ -1531,12 +2056,32 @@ $effect(() => {
 						</label>
 					</div>
 					<div class="space-y-1 rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-storage-backend-notice">
-						<p><code>{runtimeStorageBackend}</code> · {storageBackendSummary(runtimeStorageBackend)}</p>
+						<p>
+							Current persisted backend:
+							{#if persistedStorageBackend()}
+								<code>{persistedStorageBackend()}</code> ({persistedStorageBackendLabel()})
+							{:else}
+								unknown
+							{/if}
+						</p>
+						<p>
+							Selected backend:
+							<code>{runtimeStorageBackend}</code> ({storageBackendLabel(runtimeStorageBackend)})
+						</p>
+						<p>{storageBackendSummary(runtimeStorageBackend)}</p>
 						<p>{storageBackendDetails(runtimeStorageBackend)}</p>
+						<p data-testid="runtime-storage-transition-note">{storageBackendTransitionDetail()}</p>
+						{#if hasPendingStorageBackendChange()}
+							<p class="text-text-primary">Apply this change with <strong>{runtimeSaveLabel()}</strong> above.</p>
+						{/if}
 					</div>
 				</section>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-summary-batch">
+				<section
+					id="runtime-section-summary-batch"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-summary-batch"
+				>
 					<div class="flex flex-wrap items-center justify-between gap-2">
 						<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Summary Batch</h3>
 						<button
@@ -1606,7 +2151,11 @@ $effect(() => {
 					</div>
 				</section>
 
-				<section class="space-y-2 border border-border/60 p-3" data-testid="settings-runtime-lifecycle">
+				<section
+					id="runtime-section-lifecycle"
+					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					data-testid="settings-runtime-lifecycle"
+				>
 					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Data Lifecycle</h3>
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input type="checkbox" bind:checked={runtimeLifecycleEnabled} data-testid="runtime-lifecycle-enable" />
@@ -1686,6 +2235,287 @@ $effect(() => {
 						</table>
 					</div>
 				</section>
+
+				</div>
+
+				<aside
+					class="order-first xl:order-last xl:sticky xl:top-4 xl:max-h-[calc(100vh-1.5rem)] xl:overflow-y-auto"
+					data-testid="runtime-quick-menu"
+				>
+					<div class="space-y-4 border border-border bg-bg-secondary p-3 shadow-[0_14px_40px_rgba(15,23,42,0.12)]">
+						<div class="space-y-2">
+							<div class="flex items-start justify-between gap-3">
+								<div>
+									<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+										Quick Runtime Menu
+									</p>
+									<p class="mt-1 text-sm font-semibold text-text-primary">Live draft overview</p>
+								</div>
+								<span
+									class={`inline-flex items-center border px-2 py-1 text-[11px] font-semibold ${
+										runtimeDraftDirty
+											? 'border-accent/40 bg-accent/5 text-accent'
+											: 'border-border/70 bg-bg-primary text-text-secondary'
+									}`}
+									data-testid="runtime-quick-draft-state"
+								>
+									{runtimeDraftDirty ? 'Draft' : 'Saved'}
+								</span>
+							</div>
+							<p class="text-[11px] text-text-secondary">
+								Flip common on/off controls here, then save once.
+							</p>
+							<div class="grid grid-cols-2 gap-2">
+								<button
+									type="button"
+									data-testid="runtime-quick-reset"
+									onclick={handleResetRuntimeDraft}
+									disabled={runtimeSaving || !runtimeDraftDirty}
+									class="inline-flex h-9 items-center justify-center border border-border px-2 text-[11px] font-semibold text-text-secondary hover:text-text-primary disabled:opacity-60"
+								>
+									Reset
+								</button>
+								<button
+									type="button"
+									data-testid="runtime-quick-save"
+									onclick={handleSaveRuntimeSettings}
+									disabled={runtimeSaving || runtimeLoading}
+									class="inline-flex h-9 items-center justify-center border border-transparent bg-accent px-2 text-[11px] font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
+								>
+									{runtimeSaving ? 'Saving...' : 'Save'}
+								</button>
+							</div>
+						</div>
+
+						<div class="space-y-2">
+							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+								Current Modes
+							</p>
+							<label class="block text-[11px] text-text-secondary">
+								<span class="mb-1 block text-text-muted">Provider</span>
+								<select
+									bind:value={runtimeProvider}
+									onchange={handleRuntimeProviderChange}
+									data-testid="runtime-quick-provider"
+									class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary"
+								>
+									<option value="disabled">disabled</option>
+									<option value="ollama">ollama</option>
+									<option value="codex_exec">codex_exec</option>
+									<option value="claude_cli">claude_cli</option>
+								</select>
+							</label>
+							<label class="block text-[11px] text-text-secondary">
+								<span class="mb-1 block text-text-muted">Storage backend</span>
+								<select
+									bind:value={runtimeStorageBackend}
+									data-testid="runtime-quick-storage"
+									class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary"
+								>
+									<option value="hidden_ref">hidden_ref</option>
+									<option value="local_db">local_db</option>
+									<option value="none">none</option>
+								</select>
+							</label>
+							<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-secondary">
+								<p>View {runtimeSessionDefaultView}</p>
+								<p class="mt-1">Transport {currentRuntimeProviderTransport()}</p>
+								<p class="mt-1">Batch scope {runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}</p>
+							</div>
+						</div>
+
+						<div class="space-y-2">
+							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+								Background / Auto
+							</p>
+							<div class="space-y-2">
+								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<p class="text-xs font-semibold text-text-primary">Summary on save</p>
+											<p class="mt-1 text-[11px] text-text-secondary">
+												{runtimeTriggerMode === 'on_session_save' ? 'runs automatically on new saves' : 'manual only'}
+											</p>
+										</div>
+										<button
+											type="button"
+											data-testid="runtime-quick-toggle-summary-trigger"
+											aria-pressed={runtimeTriggerMode === 'on_session_save'}
+											onclick={() => {
+												runtimeTriggerMode =
+													runtimeTriggerMode === 'on_session_save' ? 'manual' : 'on_session_save';
+											}}
+											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeTriggerMode === 'on_session_save')}`}
+										>
+											{quickToggleLabel(runtimeTriggerMode === 'on_session_save')}
+										</button>
+									</div>
+								</div>
+
+								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<p class="text-xs font-semibold text-text-primary">Batch on app start</p>
+											<p class="mt-1 text-[11px] text-text-secondary">
+												scope {runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}
+											</p>
+										</div>
+										<button
+											type="button"
+											data-testid="runtime-quick-toggle-batch"
+											aria-pressed={runtimeBatchExecutionMode === 'on_app_start'}
+											onclick={() => {
+												runtimeBatchExecutionMode =
+													runtimeBatchExecutionMode === 'on_app_start' ? 'manual' : 'on_app_start';
+											}}
+											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeBatchExecutionMode === 'on_app_start')}`}
+										>
+											{quickToggleLabel(runtimeBatchExecutionMode === 'on_app_start')}
+										</button>
+									</div>
+								</div>
+
+								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<p class="text-xs font-semibold text-text-primary">Lifecycle cleanup</p>
+											<p class="mt-1 text-[11px] text-text-secondary">
+												{runtimeSessionTtlDays}d session TTL · every {runtimeCleanupIntervalSecs}s
+											</p>
+										</div>
+										<button
+											type="button"
+											data-testid="runtime-quick-toggle-lifecycle"
+											aria-pressed={runtimeLifecycleEnabled}
+											onclick={() => {
+												runtimeLifecycleEnabled = !runtimeLifecycleEnabled;
+											}}
+											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeLifecycleEnabled)}`}
+										>
+											{quickToggleLabel(runtimeLifecycleEnabled)}
+										</button>
+									</div>
+								</div>
+							</div>
+						</div>
+
+						<div class="space-y-2">
+							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+								Features
+							</p>
+							<div class="space-y-2">
+								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<p class="text-xs font-semibold text-text-primary">Vector search</p>
+											<p class="mt-1 text-[11px] text-text-secondary">
+												{runtimeVectorProvider} · {runtimeVectorModel}
+												{#if runtimeVectorPreflight && !runtimeVectorPreflight.model_installed}
+													· model missing
+												{/if}
+											</p>
+										</div>
+										<button
+											type="button"
+											data-testid="runtime-quick-toggle-vector"
+											aria-pressed={runtimeVectorEnabled}
+											disabled={!runtimeVectorPreflight?.model_installed}
+											onclick={() => {
+												runtimeVectorEnabled = !runtimeVectorEnabled;
+											}}
+											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeVectorEnabled)} disabled:opacity-60`}
+										>
+											{quickToggleLabel(runtimeVectorEnabled)}
+										</button>
+									</div>
+								</div>
+
+								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<p class="text-xs font-semibold text-text-primary">Change reader</p>
+											<p class="mt-1 text-[11px] text-text-secondary">
+												{runtimeChangeReaderScope} · {runtimeChangeReaderMaxContextChars.toLocaleString()} chars
+											</p>
+										</div>
+										<button
+											type="button"
+											data-testid="runtime-quick-toggle-change-reader"
+											aria-pressed={runtimeChangeReaderEnabled}
+											onclick={() => {
+												runtimeChangeReaderEnabled = !runtimeChangeReaderEnabled;
+											}}
+											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeChangeReaderEnabled)}`}
+										>
+											{quickToggleLabel(runtimeChangeReaderEnabled)}
+										</button>
+									</div>
+								</div>
+
+								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<p class="text-xs font-semibold text-text-primary">Change reader Q&amp;A</p>
+											<p class="mt-1 text-[11px] text-text-secondary">
+												follow-up questions inside selected change context
+											</p>
+										</div>
+										<button
+											type="button"
+											data-testid="runtime-quick-toggle-change-reader-qa"
+											aria-pressed={runtimeChangeReaderQaEnabled}
+											onclick={() => {
+												runtimeChangeReaderQaEnabled = !runtimeChangeReaderQaEnabled;
+											}}
+											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeChangeReaderQaEnabled)}`}
+										>
+											{quickToggleLabel(runtimeChangeReaderQaEnabled)}
+										</button>
+									</div>
+								</div>
+
+								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<p class="text-xs font-semibold text-text-primary">Voice TTS</p>
+											<p class="mt-1 text-[11px] text-text-secondary">
+												{runtimeChangeReaderVoiceProvider} · {runtimeChangeReaderVoiceModel}
+											</p>
+										</div>
+										<button
+											type="button"
+											data-testid="runtime-quick-toggle-change-reader-voice"
+											aria-pressed={runtimeChangeReaderVoiceEnabled}
+											onclick={() => {
+												runtimeChangeReaderVoiceEnabled = !runtimeChangeReaderVoiceEnabled;
+											}}
+											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeChangeReaderVoiceEnabled)}`}
+										>
+											{quickToggleLabel(runtimeChangeReaderVoiceEnabled)}
+										</button>
+									</div>
+								</div>
+							</div>
+						</div>
+
+						<div class="space-y-2">
+							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+								Jump To Section
+							</p>
+							<div class="flex flex-wrap gap-2">
+								{#each runtimeQuickJumpLinks as item}
+									<button
+										type="button"
+										onclick={() => setActiveSettingsSection(item.id)}
+										class="inline-flex h-8 items-center border border-border px-2 text-[11px] font-semibold text-text-secondary hover:text-text-primary"
+									>
+										{item.label}
+									</button>
+								{/each}
+							</div>
+						</div>
+					</div>
+				</aside>
 			</div>
 		{/if}
 		{#if runtimeError}
@@ -1694,7 +2524,40 @@ $effect(() => {
 		{#if runtimeDetectMessage}
 			<p class="mt-2 text-xs text-text-secondary">{runtimeDetectMessage}</p>
 		{/if}
+		{#if runtimeDraftDirty || runtimeSaving}
+			<div
+				class="sticky bottom-4 z-20 mt-4 flex flex-wrap items-center justify-between gap-3 border border-border bg-bg-secondary px-3 py-3 shadow-[0_10px_30px_rgba(15,23,42,0.18)]"
+				data-testid="runtime-draft-bar"
+			>
+				<div class="min-w-0 flex-1">
+					<p class="text-xs font-semibold text-text-primary">{runtimePersistStatus.title}</p>
+					<p class="mt-1 text-xs text-text-secondary">{runtimePersistStatus.detail}</p>
+				</div>
+				<div class="flex items-center gap-2">
+					<button
+						type="button"
+						data-testid="runtime-reset-draft"
+						onclick={handleResetRuntimeDraft}
+						disabled={runtimeSaving}
+						class="inline-flex h-9 items-center border border-border px-3 text-xs font-semibold text-text-secondary hover:text-text-primary disabled:opacity-60"
+					>
+						Reset Draft
+					</button>
+					<button
+						type="button"
+						data-testid="runtime-save-sticky"
+						onclick={handleSaveRuntimeSettings}
+						disabled={runtimeSaving || runtimeLoading}
+						class="inline-flex h-9 items-center border border-transparent bg-accent px-3 text-xs font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
+					>
+						{runtimeSaveLabel()}
+					</button>
+				</div>
+			</div>
+		{/if}
 	</section>
+		</div>
+	</div>
 </div>
 
 <FloatingJobStatus jobs={floatingJobs} />

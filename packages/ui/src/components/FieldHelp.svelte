@@ -52,7 +52,7 @@ function hideHelp() {
 				<span
 					id={tooltipId()}
 					role="tooltip"
-					class="absolute left-1/2 top-full z-20 mt-1 w-56 -translate-x-1/2 rounded border border-border bg-bg-secondary px-2 py-1 text-[11px] leading-relaxed text-text-secondary shadow-xl"
+					class="pointer-events-none absolute bottom-full right-0 z-20 mb-1 w-56 rounded border border-border bg-bg-secondary px-2 py-1 text-[11px] leading-relaxed text-text-secondary shadow-xl"
 					>{help}</span
 				>
 			{/if}
@@ -82,7 +82,7 @@ function hideHelp() {
 				<span
 					id={tooltipId()}
 					role="tooltip"
-					class="absolute left-0 top-full z-20 mt-1 w-56 rounded border border-border bg-bg-secondary px-2 py-1 text-[11px] leading-relaxed text-text-secondary shadow-xl"
+					class="pointer-events-none absolute bottom-full right-0 z-20 mb-1 w-56 rounded border border-border bg-bg-secondary px-2 py-1 text-[11px] leading-relaxed text-text-secondary shadow-xl"
 					>{help}</span
 				>
 			{/if}

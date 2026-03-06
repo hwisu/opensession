@@ -788,6 +788,7 @@ mod tests {
             .arg(&installed_hook)
             .arg("origin")
             .arg("https://example.com/repo.git")
+            .stdin(std::process::Stdio::null())
             .current_dir(repo.path())
             .status()
             .expect("run installed pre-push");

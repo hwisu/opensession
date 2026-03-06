@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "codex/effect-srp-refactor",
+    "commits": [
+      "35c7fab10fcde5402d2a080a3bfbed5b2f2f0d37"
+    ],
+    "head": "35c7fab10fcde5402d2a080a3bfbed5b2f2f0d37",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc2f2-b422-7b41-8fa3-41d3ff713045",
+  "session_role": "auxiliary",
+  "stats": {
+    "duration_seconds": 10,
+    "event_count": 4,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 2,
+    "task_count": 1,
+    "tool_call_count": 0,
+    "total_input_tokens": 12584,
+    "total_output_tokens": 322,
+    "user_message_count": 0
+  },
+  "title": null,
+  "tool": "codex"
+}

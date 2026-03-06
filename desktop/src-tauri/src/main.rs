@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app;
+
+use app::session_query::{build_local_filter_with_mode, split_search_mode, SearchMode};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use opensession_api::{
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
@@ -75,12 +78,6 @@ const VECTOR_FTS_CANDIDATE_LIMIT_MULTIPLIER: u32 = 8;
 const CHANGE_READER_MAX_EVENTS: usize = 180;
 const CHANGE_READER_MAX_LINE_CHARS: usize = 220;
 const FORCE_REFRESH_MAX_DISCOVERY_PATHS: usize = 240;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchMode {
-    Keyword,
-    Vector,
-}
 
 #[derive(Debug, Clone)]
 struct VectorInstallRuntimeState {
@@ -191,69 +188,6 @@ fn normalize_non_empty(value: Option<String>) -> Option<String> {
     value
         .map(|raw| raw.trim().to_string())
         .and_then(|trimmed| (!trimmed.is_empty()).then_some(trimmed))
-}
-
-fn split_search_mode(raw: Option<String>) -> (Option<String>, SearchMode) {
-    let normalized = normalize_non_empty(raw);
-    let Some(value) = normalized else {
-        return (None, SearchMode::Keyword);
-    };
-    let lower = value.to_ascii_lowercase();
-    for prefix in ["vector:", "vec:"] {
-        if lower.starts_with(prefix) {
-            let query = value[prefix.len()..].trim().to_string();
-            return ((!query.is_empty()).then_some(query), SearchMode::Vector);
-        }
-    }
-    (Some(value), SearchMode::Keyword)
-}
-
-fn parse_positive_u32(raw: Option<String>, fallback: u32, max: u32) -> u32 {
-    let parsed = raw
-        .and_then(|value| value.parse::<u32>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(fallback);
-    parsed.min(max).max(1)
-}
-
-fn map_sort_order(sort: Option<&str>) -> opensession_local_db::LocalSortOrder {
-    match sort.unwrap_or_default() {
-        "popular" => opensession_local_db::LocalSortOrder::Popular,
-        "longest" => opensession_local_db::LocalSortOrder::Longest,
-        _ => opensession_local_db::LocalSortOrder::Recent,
-    }
-}
-
-fn map_time_range(time_range: Option<&str>) -> opensession_local_db::LocalTimeRange {
-    match time_range.unwrap_or_default() {
-        "24h" => opensession_local_db::LocalTimeRange::Hours24,
-        "7d" => opensession_local_db::LocalTimeRange::Days7,
-        "30d" => opensession_local_db::LocalTimeRange::Days30,
-        _ => opensession_local_db::LocalTimeRange::All,
-    }
-}
-
-fn build_local_filter_with_mode(
-    query: DesktopSessionListQuery,
-) -> (LocalSessionFilter, u32, u32, SearchMode) {
-    let page = parse_positive_u32(query.page, 1, 10_000);
-    let per_page = parse_positive_u32(query.per_page, 20, 200);
-    let offset = (page.saturating_sub(1)).saturating_mul(per_page);
-    let (search_query, search_mode) = split_search_mode(query.search);
-
-    let filter = LocalSessionFilter {
-        search: search_query,
-        tool: normalize_non_empty(query.tool),
-        git_repo_name: normalize_non_empty(query.git_repo_name),
-        exclude_low_signal: true,
-        sort: map_sort_order(query.sort.as_deref()),
-        time_range: map_time_range(query.time_range.as_deref()),
-        limit: Some(per_page),
-        offset: Some(offset),
-        ..Default::default()
-    };
-
-    (filter, page, per_page, search_mode)
 }
 
 fn force_refresh_discovery_tools() -> &'static [&'static str] {
@@ -5497,12 +5431,12 @@ mod tests {
         build_vector_chunks_for_session, canonicalize_summaries, cosine_similarity,
         desktop_ask_session_changes, desktop_change_reader_tts, desktop_get_contract_version,
         desktop_get_runtime_settings, desktop_get_session_detail, desktop_get_session_raw,
-        desktop_list_sessions, desktop_read_session_changes,
-        desktop_share_session_quick, desktop_summary_batch_run, desktop_summary_batch_status,
-        desktop_update_runtime_settings, extract_vector_lines, force_refresh_discovery_tools,
-        map_link_type, normalize_launch_route, normalize_session_body_to_hail_jsonl,
-        parse_cli_quick_share_response, session_summary_from_local_row, split_search_mode,
-        validate_pin_alias, validate_vector_preflight_ready, DesktopSessionListQuery, SearchMode,
+        desktop_list_sessions, desktop_read_session_changes, desktop_share_session_quick,
+        desktop_summary_batch_run, desktop_summary_batch_status, desktop_update_runtime_settings,
+        extract_vector_lines, force_refresh_discovery_tools, map_link_type, normalize_launch_route,
+        normalize_session_body_to_hail_jsonl, parse_cli_quick_share_response,
+        session_summary_from_local_row, split_search_mode, validate_pin_alias,
+        validate_vector_preflight_ready, DesktopSessionListQuery, SearchMode,
     };
     use opensession_api::{
         DesktopChangeQuestionRequest, DesktopChangeReadRequest, DesktopChangeReaderScope,
@@ -6675,7 +6609,10 @@ mod tests {
 
         let lifecycle_status = super::desktop_lifecycle_cleanup_status_from_db(&db)
             .expect("read lifecycle cleanup status");
-        assert_eq!(lifecycle_status.state, DesktopLifecycleCleanupState::Complete);
+        assert_eq!(
+            lifecycle_status.state,
+            DesktopLifecycleCleanupState::Complete
+        );
         assert_eq!(lifecycle_status.deleted_sessions, 1);
         assert_eq!(lifecycle_status.deleted_summaries, 1);
         assert!(

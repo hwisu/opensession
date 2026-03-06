@@ -1,6 +1,10 @@
 <script lang="ts">
 import { onMount } from 'svelte';
 import { listSessionRepos, listSessions } from '../api';
+import {
+	createBrowserSessionListCache,
+	createSessionListModel,
+} from '../models/session-list-model';
 import type { SessionSummary, TimeRange } from '../types';
 import { TOOL_CONFIGS } from '../types';
 import { sessionTitleFallback, stripTags } from '../utils';
@@ -28,7 +32,6 @@ let selectedIndex = $state(0);
 let renderLimit = $state(20);
 let searchInput: HTMLInputElement | undefined = $state();
 let repoFilterInputEl: HTMLInputElement | undefined = $state();
-let fetchRequestId = 0;
 let knownRepos = $state<string[]>([]);
 let copyFeedback = $state<string | null>(null);
 let copyFeedbackTimer: number | null = null;
@@ -36,15 +39,6 @@ let hydratedFromQuery = false;
 let lastResetFingerprint = $state<string | null>(null);
 
 const perPage = 20;
-const listCacheKey = 'opensession_public_list_cache_v1';
-const listCacheTtlMs = 30_000;
-
-type SessionListCacheEntry = {
-	query: string;
-	created_at: number;
-	total: number;
-	sessions: SessionSummary[];
-};
 
 const hasMore = $derived(currentPage * perPage < total);
 const visibleSessions = $derived(sessions.slice(0, renderLimit));
@@ -81,220 +75,143 @@ function sessionIndex(sessionId: string): number {
 	return sessionOrder.get(sessionId) ?? -1;
 }
 
-function currentListQueryFingerprint(page: number): string {
-	return JSON.stringify({
-		search: searchQuery || '',
-		tool: toolFilter || '',
-		git_repo_name: repoFilter,
-		time_range: timeRange,
-		page,
-		per_page: perPage,
-	});
-}
-
-function isDefaultPublicFeedQuery(page: number): boolean {
-	return (
-		page === 1 &&
-		searchQuery.trim().length === 0 &&
-		toolFilter.length === 0 &&
-		repoFilter.length === 0 &&
-		timeRange === 'all'
-	);
-}
-
-function readListCache(fingerprint: string): SessionListCacheEntry | null {
-	if (typeof window === 'undefined') return null;
-	try {
-		const raw = localStorage.getItem(listCacheKey);
-		if (!raw) return null;
-		const parsed = JSON.parse(raw) as SessionListCacheEntry;
-		if (!parsed || parsed.query !== fingerprint) return null;
-		if (Date.now() - parsed.created_at > listCacheTtlMs) return null;
-		if (!Array.isArray(parsed.sessions)) return null;
-		return parsed;
-	} catch {
-		return null;
-	}
-}
-
-function writeListCache(entry: SessionListCacheEntry) {
-	if (typeof window === 'undefined') return;
-	try {
-		localStorage.setItem(listCacheKey, JSON.stringify(entry));
-	} catch {
-		// Ignore storage quota/private mode errors.
-	}
-}
-
-function clearListCache() {
-	if (typeof window === 'undefined') return;
-	try {
-		localStorage.removeItem(listCacheKey);
-	} catch {
-		// Ignore storage failures.
-	}
-}
-
-async function fetchSessions(reset = false, opts: { force?: boolean } = {}) {
-	const forceRefresh = opts.force === true;
-	const requestId = ++fetchRequestId;
-	const targetPage = reset ? 1 : currentPage;
-	const preserveVisibleSessions = reset && forceRefresh && sessions.length > 0;
-	forceRefreshing = forceRefresh;
-
-	let usedWarmCache = false;
-	const fingerprint = currentListQueryFingerprint(targetPage);
-	if (reset && !forceRefresh && lastResetFingerprint === fingerprint && sessions.length > 0) {
-		return;
-	}
-	if (reset) {
-		currentPage = targetPage;
-		if (!preserveVisibleSessions) {
-			sessions = [];
-			selectedIndex = 0;
-			renderLimit = perPage;
-		}
-	}
-	if (reset && !forceRefresh && isDefaultPublicFeedQuery(targetPage)) {
-		const cached = readListCache(fingerprint);
-		if (cached) {
-			sessions = cached.sessions;
-			total = cached.total;
-			renderLimit = Math.max(perPage, Math.min(cached.sessions.length, perPage));
-			mergeKnownRepos(cached.sessions);
-			usedWarmCache = true;
-		}
-	}
-
-	loading = !usedWarmCache && !preserveVisibleSessions;
-	error = null;
-	try {
-		const res = await listSessions({
-			search: searchQuery || undefined,
-			tool: toolFilter || undefined,
-			git_repo_name: repoFilter || undefined,
-			time_range: timeRange !== 'all' ? timeRange : undefined,
-			page: targetPage,
-			per_page: perPage,
-			force_refresh: forceRefresh,
-		});
-		if (requestId !== fetchRequestId) return;
-		if (reset) {
-			sessions = res.sessions;
-			renderLimit = Math.max(perPage, Math.min(res.sessions.length, perPage));
-			lastResetFingerprint = fingerprint;
-		} else {
-			sessions = [...sessions, ...res.sessions];
-		}
-		total = res.total;
-		mergeKnownRepos(res.sessions);
-		if (reset && isDefaultPublicFeedQuery(targetPage)) {
-			writeListCache({
-				query: fingerprint,
-				created_at: Date.now(),
-				total: res.total,
-				sessions: res.sessions,
-			});
-		}
-	} catch (e) {
-		if (requestId !== fetchRequestId) return;
-		error = e instanceof Error ? e.message : 'Failed to load sessions';
-	} finally {
-		if (requestId === fetchRequestId) {
-			loading = false;
-		}
-		if (forceRefresh) {
-			forceRefreshing = false;
-		}
-	}
-}
-
-async function fetchKnownRepos() {
-	try {
-		const response = await listSessionRepos();
-		knownRepos = [...response.repos].sort((a, b) => a.localeCompare(b));
-	} catch {
-		// Keep fallback behavior (derive from list payloads) when repo endpoint is unavailable.
-	}
-}
-
-function handleSearch() {
-	fetchSessions(true);
-}
-
-function forceRefreshSessions() {
-	clearListCache();
-	void fetchKnownRepos();
-	fetchSessions(true, { force: true });
-}
-
-function loadMore() {
-	currentPage += 1;
-	fetchSessions(false);
-}
-
-function renderMore() {
-	renderLimit = Math.min(renderLimit + perPage, sessions.length);
-}
-
 const tools = [
 	{ value: '', label: 'All Tools' },
 	...Object.values(TOOL_CONFIGS).map((t) => ({ value: t.name, label: t.label })),
 ];
 const validTimeRanges = new Set<TimeRange>(['all', '24h', '7d', '30d']);
+const sessionListModel = createSessionListModel(
+	{
+		get sessions() {
+			return sessions;
+		},
+		set sessions(value) {
+			sessions = value;
+		},
+		get total() {
+			return total;
+		},
+		set total(value) {
+			total = value;
+		},
+		get loading() {
+			return loading;
+		},
+		set loading(value) {
+			loading = value;
+		},
+		get forceRefreshing() {
+			return forceRefreshing;
+		},
+		set forceRefreshing(value) {
+			forceRefreshing = value;
+		},
+		get error() {
+			return error;
+		},
+		set error(value) {
+			error = value;
+		},
+		get searchQuery() {
+			return searchQuery;
+		},
+		set searchQuery(value) {
+			searchQuery = value;
+		},
+		get toolFilter() {
+			return toolFilter;
+		},
+		set toolFilter(value) {
+			toolFilter = value;
+		},
+		get repoFilter() {
+			return repoFilter;
+		},
+		set repoFilter(value) {
+			repoFilter = value;
+		},
+		get repoInput() {
+			return repoInput;
+		},
+		set repoInput(value) {
+			repoInput = value;
+		},
+		get timeRange() {
+			return timeRange;
+		},
+		set timeRange(value) {
+			timeRange = value;
+		},
+		get currentPage() {
+			return currentPage;
+		},
+		set currentPage(value) {
+			currentPage = value;
+		},
+		get selectedIndex() {
+			return selectedIndex;
+		},
+		set selectedIndex(value) {
+			selectedIndex = value;
+		},
+		get renderLimit() {
+			return renderLimit;
+		},
+		set renderLimit(value) {
+			renderLimit = value;
+		},
+		get knownRepos() {
+			return knownRepos;
+		},
+		set knownRepos(value) {
+			knownRepos = value;
+		},
+		get hydratedFromQuery() {
+			return hydratedFromQuery;
+		},
+		set hydratedFromQuery(value) {
+			hydratedFromQuery = value;
+		},
+		get lastResetFingerprint() {
+			return lastResetFingerprint;
+		},
+		set lastResetFingerprint(value) {
+			lastResetFingerprint = value;
+		},
+	},
+	{
+		listSessions,
+		listSessionRepos,
+		cache: createBrowserSessionListCache(),
+		getLocationSearch: () => (typeof window === 'undefined' ? '' : window.location.search),
+		validToolValues: tools.map((tool) => tool.value),
+		validTimeRanges,
+		perPage,
+	},
+);
 
-function hydrateFiltersFromQuery() {
-	if (typeof window === 'undefined') return;
-	const params = new URLSearchParams(window.location.search);
-
-	const repoFromQuery = params.get('git_repo_name')?.trim();
-	if (repoFromQuery) {
-		repoFilter = repoFromQuery;
-		repoInput = repoFromQuery;
-	}
-
-	const searchFromQuery = params.get('search')?.trim();
-	if (searchFromQuery) {
-		searchQuery = searchFromQuery;
-	}
-
-	const toolFromQuery = params.get('tool')?.trim();
-	if (toolFromQuery && tools.some((entry) => entry.value === toolFromQuery)) {
-		toolFilter = toolFromQuery;
-	}
-
-	const rangeFromQuery = params.get('time_range')?.trim() as TimeRange | undefined;
-	if (rangeFromQuery && validTimeRanges.has(rangeFromQuery)) {
-		timeRange = rangeFromQuery;
-	}
+function handleSearch() {
+	void sessionListModel.handleSearch();
 }
 
-function extractRepos(items: SessionSummary[]): string[] {
-	const values = new Set<string>();
-	for (const session of items) {
-		const repo = session.git_repo_name?.trim();
-		if (repo) values.add(repo);
-	}
-	return [...values];
+function forceRefreshSessions() {
+	void sessionListModel.forceRefreshSessions();
 }
 
-function mergeKnownRepos(items: SessionSummary[]) {
-	const merged = new Set(knownRepos);
-	for (const repo of extractRepos(items)) {
-		merged.add(repo);
-	}
-	knownRepos = [...merged].sort((a, b) => a.localeCompare(b));
+function loadMore() {
+	void sessionListModel.loadMore();
+}
+
+function renderMore() {
+	sessionListModel.renderMore();
 }
 
 function applyRepoFilter(nextValue: string) {
-	const normalized = nextValue.trim();
-	repoFilter = normalized;
-	repoInput = normalized;
-	fetchSessions(true);
+	void sessionListModel.applyRepoFilter(nextValue);
 }
 
 function clearRepoFilter() {
-	applyRepoFilter('');
+	void sessionListModel.clearRepoFilter();
 }
 
 function cycleFilterValue<T extends string>(current: T, options: readonly T[]): T {
@@ -407,12 +324,7 @@ async function copySelectedSessionTitle() {
 }
 
 onMount(() => {
-	if (!hydratedFromQuery) {
-		hydrateFiltersFromQuery();
-		hydratedFromQuery = true;
-	}
-	void fetchKnownRepos();
-	void fetchSessions(true);
+	void sessionListModel.loadInitial();
 });
 
 $effect(() => {
@@ -466,11 +378,11 @@ function handleKeydown(e: KeyboardEvent) {
 		e.preventDefault();
 		const toolValues = tools.map((t) => t.value);
 		toolFilter = cycleFilterValue(toolFilter, toolValues);
-		fetchSessions(true);
+		void sessionListModel.fetchSessions(true);
 	} else if (e.key === 'r') {
 		e.preventDefault();
 		timeRange = cycleFilterValue(timeRange, rangeCycle);
-		fetchSessions(true);
+		void sessionListModel.fetchSessions(true);
 	} else if (e.key === 'R') {
 		e.preventDefault();
 		forceRefreshSessions();
@@ -503,7 +415,7 @@ function handleSearchInputKeydown(e: KeyboardEvent) {
 		e.preventDefault();
 		if (searchQuery.trim().length > 0) {
 			searchQuery = '';
-			handleSearch();
+			void sessionListModel.handleSearch();
 			return;
 		}
 		searchInput?.blur();
@@ -556,7 +468,7 @@ $effect(() => {
 				<button
 					role="tab"
 					aria-selected={timeRange === tab.value}
-					onclick={() => { timeRange = tab.value; fetchSessions(true); }}
+					onclick={() => { timeRange = tab.value; void sessionListModel.fetchSessions(true); }}
 					class="px-2 py-0.5 text-xs transition-colors
 						{timeRange === tab.value
 						? 'bg-accent text-white'
@@ -582,7 +494,7 @@ $effect(() => {
 
 		<select
 			bind:value={toolFilter}
-			onchange={() => fetchSessions(true)}
+			onchange={() => void sessionListModel.fetchSessions(true)}
 			class="w-full border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent sm:w-auto"
 		>
 			{#each tools as t}

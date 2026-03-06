@@ -55,6 +55,12 @@ export {
 } from './event-helpers';
 // HAIL parser helpers
 export { parseHailInput, parseHailJsonl } from './hail-parse';
+export {
+	buildStateUrl as buildSourceStateUrl,
+	buildRouteBase as buildSourceRouteBase,
+	parseSourceRoute,
+	type SourceRouteState,
+} from './source-route';
 // Highlight & Markdown utilities
 export { highlightCode } from './highlight';
 export { isLongContent, lineCount, renderMarkdown } from './markdown';
@@ -101,3 +107,9 @@ export { formatDuration, formatTimestamp, getToolConfig, TOOL_CONFIGS } from './
 // Shared utilities
 export type { FileStats } from './utils';
 export { computeFileStats, formatFullDate, getDisplayTitle, stripTags } from './utils';
+export {
+	createSourcePreviewModel,
+	createSourcePreviewModelState,
+	type SourcePreviewLocation,
+	type SourcePreviewModelState,
+} from './models/source-preview-model';

@@ -1,6 +1,5 @@
 <script lang="ts">
 import {
-	ApiError,
 	askSessionChanges,
 	changeReaderTextToSpeech,
 	getRuntimeSettings,
@@ -11,6 +10,12 @@ import {
 	regenerateSessionSemanticSummary,
 } from '../api';
 import { prepareTimelineEvents } from '../event-helpers';
+import {
+	askSessionChangesSurface,
+	loadSessionDetailState,
+	readSessionChangesSurface,
+	regenerateSessionSummary,
+} from '../models/session-detail-model';
 import {
 	buildNativeFilterOptions,
 	type SessionViewMode,
@@ -128,13 +133,21 @@ const semanticDiffTree = $derived.by(() => {
 async function regenerateSummary() {
 	summaryRegenerating = true;
 	summaryError = null;
-	try {
-		semanticSummary = await regenerateSessionSemanticSummary(sessionId);
-	} catch (e) {
-		summaryError = e instanceof Error ? e.message : 'Failed to regenerate summary';
-	} finally {
-		summaryRegenerating = false;
-	}
+	const result = await regenerateSessionSummary(
+		{
+			getSession,
+			getSessionDetail,
+			getSessionSemanticSummary,
+			getRuntimeSettings,
+			regenerateSessionSemanticSummary,
+			readSessionChanges,
+			askSessionChanges,
+		},
+		sessionId,
+	);
+	semanticSummary = result.semanticSummary;
+	summaryError = result.summaryError;
+	summaryRegenerating = false;
 }
 
 async function handleReadChanges() {
@@ -143,38 +156,50 @@ async function handleReadChanges() {
 	changeReaderNarrative = null;
 	changeReaderWarning = null;
 	changeReaderCitations = [];
-	try {
-		const payload = await readSessionChanges(sessionId, changeReaderScope);
-		changeReaderNarrative = payload.narrative ?? null;
-		changeReaderCitations = payload.citations ?? [];
-		changeReaderWarning = payload.warning ?? null;
-	} catch (e) {
-		changeReaderReadError = e instanceof Error ? e.message : 'Failed to read session changes';
-	} finally {
-		changeReaderReading = false;
-	}
+	const result = await readSessionChangesSurface(
+		{
+			getSession,
+			getSessionDetail,
+			getSessionSemanticSummary,
+			getRuntimeSettings,
+			regenerateSessionSemanticSummary,
+			readSessionChanges,
+			askSessionChanges,
+		},
+		sessionId,
+		changeReaderScope,
+	);
+	changeReaderNarrative = result.narrative;
+	changeReaderCitations = result.citations;
+	changeReaderWarning = result.warning;
+	changeReaderReadError = result.error;
+	changeReaderReading = false;
 }
 
 async function handleAskChangeQuestion() {
-	const question = changeReaderQuestion.trim();
-	if (!question) {
-		changeReaderAskError = 'Ask a question first.';
-		return;
-	}
 	changeReaderAsking = true;
 	changeReaderAskError = null;
 	changeReaderAnswer = null;
 	changeReaderWarning = null;
-	try {
-		const payload = await askSessionChanges(sessionId, question, changeReaderScope);
-		changeReaderAnswer = payload.answer ?? null;
-		changeReaderCitations = payload.citations ?? [];
-		changeReaderWarning = payload.warning ?? null;
-	} catch (e) {
-		changeReaderAskError = e instanceof Error ? e.message : 'Failed to answer question';
-	} finally {
-		changeReaderAsking = false;
-	}
+	const result = await askSessionChangesSurface(
+		{
+			getSession,
+			getSessionDetail,
+			getSessionSemanticSummary,
+			getRuntimeSettings,
+			regenerateSessionSemanticSummary,
+			readSessionChanges,
+			askSessionChanges,
+		},
+		sessionId,
+		changeReaderQuestion,
+		changeReaderScope,
+	);
+	changeReaderAnswer = result.answer;
+	changeReaderCitations = result.citations;
+	changeReaderWarning = result.warning;
+	changeReaderAskError = result.error;
+	changeReaderAsking = false;
 }
 
 function releaseChangeReaderAudio() {
@@ -265,48 +290,37 @@ $effect(() => {
 	changeReaderVoiceError = null;
 	changeReaderVoiceWarning = null;
 	releaseChangeReaderAudio();
-	Promise.all([getSession(sessionId), getSessionDetail(sessionId)])
-		.then(([loadedSession, loadedDetail]) => {
-			session = loadedSession;
-			detail = loadedDetail;
+	loadSessionDetailState(
+		{
+			getSession,
+			getSessionDetail,
+			getSessionSemanticSummary,
+			getRuntimeSettings,
+			regenerateSessionSemanticSummary,
+			readSessionChanges,
+			askSessionChanges,
+		},
+		sessionId,
+	)
+		.then((result) => {
+			session = result.session;
+			detail = result.detail;
+			error = result.error;
+			errorCode = result.errorCode;
+			semanticSummary = result.semanticSummary;
+			summaryError = result.summaryError;
+			changeReaderSupported = result.changeReaderSupported;
+			changeReaderEnabled = result.changeReaderEnabled;
+			changeReaderQaEnabled = result.changeReaderQaEnabled;
+			changeReaderScope = result.changeReaderScope;
+			changeReaderVoiceEnabled = result.changeReaderVoiceEnabled;
+			changeReaderVoiceConfigured = result.changeReaderVoiceConfigured;
+			changeReaderRuntimeError = result.changeReaderRuntimeError;
 			initializedForSessionId = null;
-		})
-		.catch((e) => {
-			error = e instanceof Error ? e.message : 'Failed to load session';
-			errorCode = e instanceof ApiError ? e.code : null;
 		})
 		.finally(() => {
 			loading = false;
-		});
-
-	getSessionSemanticSummary(sessionId)
-		.then((summary) => {
-			semanticSummary = summary;
-		})
-		.catch((e) => {
-			summaryError = e instanceof Error ? e.message : 'Failed to load semantic summary';
-		})
-		.finally(() => {
 			summaryLoading = false;
-		});
-
-	getRuntimeSettings()
-		.then((runtime) => {
-			changeReaderSupported = true;
-			changeReaderEnabled = runtime.change_reader?.enabled ?? false;
-			changeReaderQaEnabled = runtime.change_reader?.qa_enabled ?? false;
-			changeReaderScope = runtime.change_reader?.scope ?? 'summary_only';
-			changeReaderVoiceEnabled = runtime.change_reader?.voice?.enabled ?? false;
-			changeReaderVoiceConfigured = runtime.change_reader?.voice?.api_key_configured ?? false;
-		})
-		.catch((e) => {
-			changeReaderSupported = false;
-			changeReaderRuntimeError =
-				e instanceof ApiError && e.status === 501
-					? null
-					: e instanceof Error
-						? e.message
-						: 'Failed to load change reader settings';
 		});
 });
 

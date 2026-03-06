@@ -25,10 +25,7 @@ jobs:
       - name: Cache release-plz binary
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/bin/release-plz
-            ~/.cargo/.crates2.json
-            ~/.cargo/.crates.toml
+          path: ~/.cargo/bin/release-plz
           key: release-plz-${{ runner.os }}-${{ env.RELEASE_PLZ_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
@@ -37,15 +34,19 @@ jobs:
       - name: Install release-plz CLI
         run: |
           set -euo pipefail
-          needs_install=1
-          if command -v release-plz >/dev/null 2>&1; then
-            if release-plz --version | grep -q "${RELEASE_PLZ_VERSION}"; then
-              needs_install=0
-            fi
+          if command -v release-plz >/dev/null 2>&1 && release-plz --version | grep -q "${RELEASE_PLZ_VERSION}"; then
+            exit 0
           fi
-          if [ "${needs_install}" -eq 1 ]; then
-            cargo install --locked release-plz --version "${RELEASE_PLZ_VERSION}" --force
-          fi
+          install_dir="${HOME}/.cargo/bin"
+          archive="release-plz-x86_64-unknown-linux-gnu.tar.gz"
+          url="https://github.com/release-plz/release-plz/releases/download/release-plz-v${RELEASE_PLZ_VERSION}/${archive}"
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "${tmpdir}"' EXIT
+          mkdir -p "${install_dir}"
+          curl -fsSL "${url}" -o "${tmpdir}/${archive}"
+          tar -xzf "${tmpdir}/${archive}" -C "${tmpdir}"
+          install -m 0755 "${tmpdir}/release-plz" "${install_dir}/release-plz"
+          release-plz --version | grep -q "${RELEASE_PLZ_VERSION}"
       - name: Run release-plz update
         run: release-plz update --config release-plz.toml
       - name: Sync desktop version with workspace version

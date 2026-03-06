@@ -1,0 +1,34 @@
+{
+  "git": {
+    "branch": "codex/effect-srp-refactor",
+    "commits": [
+      "fdbcd3a6dafc6a9bbaed5901a553ff1021ad2a78",
+      "243287c49459e251cc5b4ef05846e942418e1f4d",
+      "9e8cfa597acc91f15b3207676c6e2db7cb3b5814",
+      "bf7d505805dd45cc54dd2e064757fbab2dec2bd2",
+      "fe6baa7429830d5a389e83a3d6f19bea8156a7a4"
+    ],
+    "head": "fe6baa7429830d5a389e83a3d6f19bea8156a7a4",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc0d7-8481-7271-8314-175963aba95a",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 13537,
+    "event_count": 4128,
+    "files_changed": 17,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 340,
+    "task_count": 21,
+    "tool_call_count": 352,
+    "total_input_tokens": 124506350,
+    "total_output_tokens": 373992,
+    "user_message_count": 21
+  },
+  "title": "Rebuilding vector index\nSession embeddings are being rebuilt in background.\n\n...",
+  "tool": "codex"
+}

@@ -61,6 +61,9 @@ crates/
 ## Code Style
 
 - Follow existing patterns in the codebase.
+- Rust code targets Edition 2024 and the repo pins Rust 1.93.0 via `mise.toml`.
+- New workspace crates should inherit `edition.workspace = true` and `rust-version.workspace = true`.
+- Keep `unsafe` in the smallest possible helper and include a `SAFETY:` comment for each block.
 - Workspace clippy lints apply (see root `Cargo.toml`).
 
 ## License

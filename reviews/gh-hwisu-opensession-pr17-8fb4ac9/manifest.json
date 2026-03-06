@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-03-06T02:03:50.829Z",
+  "repo": "hwisu/opensession",
+  "pr_number": 17,
+  "base_sha": "fdbcd3a6dafc6a9bbaed5901a553ff1021ad2a78",
+  "head_sha": "8fb4ac90c32f8d249bee337fac74f9677dceeefc",
+  "ledger_ref": "refs/opensession/branches/ZGVwZW5kYWJvdC9ucG1fYW5kX3lhcm4vcGFja2FnZXMvdWkvZG9tcHVyaWZ5LTMuMy4y",
+  "review_id": "gh-hwisu-opensession-pr17-8fb4ac9",
+  "branch": "opensession/pr-17-sessions",
+  "artifact_root": "reviews/gh-hwisu-opensession-pr17-8fb4ac9",
+  "commit_count": 1,
+  "session_count": 0,
+  "sessions": []
+}

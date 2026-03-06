@@ -1,0 +1,31 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "fdbcd3a6dafc6a9bbaed5901a553ff1021ad2a78",
+      "131866ded42ae195306ef6c5619094475fe8694a"
+    ],
+    "head": "131866ded42ae195306ef6c5619094475fe8694a",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc0e0-f1cc-7860-a5ec-c0e138c865b3",
+  "session_role": "auxiliary",
+  "stats": {
+    "duration_seconds": 7,
+    "event_count": 6,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 2,
+    "task_count": 1,
+    "tool_call_count": 0,
+    "total_input_tokens": 12584,
+    "total_output_tokens": 246,
+    "user_message_count": 0
+  },
+  "title": null,
+  "tool": "codex"
+}

@@ -2,9 +2,9 @@
   "git": {
     "branch": "main",
     "commits": [
-      "9e8cfa597acc91f15b3207676c6e2db7cb3b5814"
+      "bf7d505805dd45cc54dd2e064757fbab2dec2bd2"
     ],
-    "head": "9e8cfa597acc91f15b3207676c6e2db7cb3b5814",
+    "head": "bf7d505805dd45cc54dd2e064757fbab2dec2bd2",
     "remote": "https://github.com/hwisu/opensession.git",
     "repo_name": "hwisu/opensession"
   },

@@ -2202,6 +2202,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "ts-rs",
+ "url",
+ "urlencoding",
  "uuid",
 ]
 

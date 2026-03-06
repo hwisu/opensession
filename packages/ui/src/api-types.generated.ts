@@ -21,11 +21,7 @@ export interface ChangePasswordRequest { current_password: string, new_password:
 
 export interface VerifyResponse { user_id: string, nickname: string, }
 
-export interface UserSettingsResponse { user_id: string, nickname: string, created_at: string, email: string | null, avatar_url: string | null, 
-/**
- * Linked OAuth providers.
- */
-oauth_providers: Array<LinkedProvider>, }
+export interface UserSettingsResponse { user_id: string, nickname: string, created_at: string, email: string | null, avatar_url: string | null, oauth_providers: Array<LinkedProvider>, }
 
 export interface OkResponse { ok: boolean, }
 
@@ -41,23 +37,11 @@ export interface OAuthLinkResponse { url: string, }
 
 export interface UploadResponse { id: string, url: string, session_score: number, score_plugin: string, }
 
-export interface SessionSummary { id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
-/**
- * Comma-separated tags string
- */
-tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
+export interface SessionSummary { id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
 
 export interface SessionListResponse { sessions: Array<SessionSummary>, total: number, page: number, per_page: number, }
 
-export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, git_repo_name: string | null, 
-/**
- * Sort order (default: recent)
- */
-sort: SortOrder | null, 
-/**
- * Time range filter (default: all)
- */
-time_range: TimeRange | null, }
+export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, git_repo_name: string | null, sort: SortOrder | null, time_range: TimeRange | null, }
 
 export interface DesktopSessionListQuery { page: string | null, per_page: string | null, search: string | null, tool: string | null, git_repo_name: string | null, sort: string | null, time_range: string | null, force_refresh: boolean | null, }
 
@@ -187,19 +171,11 @@ export interface DesktopChangeQuestionResponse { session_id: string, question: s
 
 export interface DesktopApiError { code: string, status: number, message: string, details?: Record<string, any> | null, }
 
-export interface SessionDetail { linked_sessions?: Array<SessionLink>, id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, 
-/**
- * Comma-separated tags string
- */
-tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
+export interface SessionDetail { linked_sessions?: Array<SessionLink>, id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
 
 export interface SessionLink { session_id: string, linked_session_id: string, link_type: LinkType, created_at: string, }
 
-export type ParseSource = { "kind": "git", remote: string, ref: string, path: string, } | { "kind": "github", owner: string, repo: string, ref: string, path: string, } | { "kind": "inline", filename: string, 
-/**
- * Base64-encoded UTF-8 text content.
- */
-content_base64: string, }
+export type ParseSource = { "kind": "git", remote: string, ref: string, path: string, } | { "kind": "github", owner: string, repo: string, ref: string, path: string, } | { "kind": "inline", filename: string, content_base64: string, }
 
 export interface ParseCandidate { id: string, confidence: number, reason: string, }
 

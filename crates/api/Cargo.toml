@@ -44,3 +44,5 @@ chacha20poly1305 = { version = "0.10", optional = true }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 chrono = { workspace = true }
+url = "2"
+urlencoding = "2"

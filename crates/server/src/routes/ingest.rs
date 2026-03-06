@@ -7,10 +7,12 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
 };
+#[cfg(test)]
 use base64::Engine;
 use opensession_api::{
     ParseCandidate as ApiParseCandidate, ParsePreviewErrorResponse, ParsePreviewRequest,
     ParsePreviewResponse, ParseSource, db as dbq,
+    parse_preview_source::{self as preview_source, GitSource, GithubSource},
 };
 use opensession_parsers::ingest::{self as parser_ingest, ParseError as ParserParseError};
 use reqwest::header::CONTENT_TYPE;
@@ -20,21 +22,6 @@ use crate::storage::{Db, sq_execute, sq_query_map, sq_query_row};
 
 const FETCH_TIMEOUT_SECS: u64 = 10;
 const MAX_SOURCE_SIZE_BYTES: usize = 10 * 1024 * 1024;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GithubSource {
-    owner: String,
-    repo: String,
-    r#ref: String,
-    path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitSource {
-    remote: String,
-    r#ref: String,
-    path: String,
-}
 
 #[derive(Debug, Clone)]
 struct ParseInput {
@@ -316,24 +303,8 @@ fn normalize_git_source(
     r#ref: &str,
     path: &str,
 ) -> Result<GitSource, PreviewRouteError> {
-    let remote = decode_and_trim(remote, "remote")?;
-    let url = validate_remote_url(&remote)?;
-    let remote = normalized_remote_origin(&url);
-
-    let r#ref = decode_and_trim(r#ref, "ref")?;
-    if !is_valid_ref(r#ref.as_str()) {
-        return Err(PreviewRouteError::invalid_source(
-            "ref must match [A-Za-z0-9._/-]{1,255} without '..', '~', '^', ':', or '\\'",
-        ));
-    }
-
-    let path = normalize_repo_path(path)?;
-
-    Ok(GitSource {
-        remote,
-        r#ref,
-        path,
-    })
+    preview_source::normalize_git_source(remote, r#ref, path)
+        .map_err(|error| PreviewRouteError::invalid_source(error.message()))
 }
 
 fn normalize_github_source(
@@ -342,157 +313,22 @@ fn normalize_github_source(
     r#ref: &str,
     path: &str,
 ) -> Result<GithubSource, PreviewRouteError> {
-    let owner = decode_and_trim(owner, "owner")?;
-    if !is_valid_owner_repo(owner.as_str()) {
-        return Err(PreviewRouteError::invalid_source(
-            "owner must match [A-Za-z0-9._-]{1,100}",
-        ));
-    }
-
-    let repo = decode_and_trim(repo, "repo")?;
-    if !is_valid_owner_repo(repo.as_str()) {
-        return Err(PreviewRouteError::invalid_source(
-            "repo must match [A-Za-z0-9._-]{1,100}",
-        ));
-    }
-
-    let r#ref = decode_and_trim(r#ref, "ref")?;
-    if !is_valid_ref(r#ref.as_str()) {
-        return Err(PreviewRouteError::invalid_source(
-            "ref must match [A-Za-z0-9._/-]{1,255} without '..', '~', '^', ':', or '\\'",
-        ));
-    }
-
-    let path = normalize_repo_path(path)?;
-    Ok(GithubSource {
-        owner,
-        repo,
-        r#ref,
-        path,
-    })
-}
-
-fn decode_and_trim(value: &str, field: &str) -> Result<String, PreviewRouteError> {
-    urlencoding::decode(value)
-        .map(|decoded| decoded.trim().to_string())
-        .map_err(|_| {
-            PreviewRouteError::invalid_source(format!("{field} contains invalid percent encoding"))
-        })
-}
-
-fn normalize_repo_path(path: &str) -> Result<String, PreviewRouteError> {
-    let decoded = decode_and_trim(path, "path")?;
-    if decoded.is_empty() {
-        return Err(PreviewRouteError::invalid_source("path is required"));
-    }
-    if decoded.starts_with('/') {
-        return Err(PreviewRouteError::invalid_source(
-            "path must be repository-relative",
-        ));
-    }
-
-    let mut normalized_segments = Vec::<String>::new();
-    for segment in decoded.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
-            return Err(PreviewRouteError::invalid_source(
-                "path cannot contain empty, '.' or '..' segments",
-            ));
-        }
-        if segment.contains('\\') {
-            return Err(PreviewRouteError::invalid_source(
-                "path cannot contain backslash characters",
-            ));
-        }
-        normalized_segments.push(segment.to_string());
-    }
-
-    Ok(normalized_segments.join("/"))
+    preview_source::normalize_github_source(owner, repo, r#ref, path)
+        .map_err(|error| PreviewRouteError::invalid_source(error.message()))
 }
 
 fn normalize_filename(filename: &str) -> Result<String, PreviewRouteError> {
-    let decoded = decode_and_trim(filename, "filename")?;
-    let normalized = decoded
-        .replace('\\', "/")
-        .rsplit('/')
-        .next()
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string();
-    if normalized.is_empty() || normalized == "." || normalized == ".." {
-        return Err(PreviewRouteError::invalid_source(
-            "inline filename must be a non-empty filename",
-        ));
-    }
-    if normalized.len() > 255 {
-        return Err(PreviewRouteError::invalid_source(
-            "inline filename is too long (max 255 chars)",
-        ));
-    }
-    Ok(normalized)
+    preview_source::normalize_filename(filename)
+        .map_err(|error| PreviewRouteError::invalid_source(error.message()))
 }
 
 fn decode_inline_content(content_base64: &str) -> Result<Vec<u8>, PreviewRouteError> {
-    let trimmed = content_base64.trim();
-    if trimmed.is_empty() {
-        return Err(PreviewRouteError::invalid_source(
-            "inline content_base64 is required",
-        ));
-    }
-    base64::engine::general_purpose::STANDARD
-        .decode(trimmed)
-        .map_err(|_| {
-            PreviewRouteError::invalid_source("inline content_base64 must be valid base64")
-        })
+    preview_source::decode_inline_content(content_base64)
+        .map_err(|error| PreviewRouteError::invalid_source(error.message()))
 }
 
 fn file_name_from_path(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("session.txt")
-        .to_string()
-}
-
-fn is_valid_owner_repo(value: &str) -> bool {
-    let len = value.len();
-    (1..=100).contains(&len)
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
-}
-
-fn is_valid_ref(value: &str) -> bool {
-    let len = value.len();
-    if !(1..=255).contains(&len) {
-        return false;
-    }
-    if value.contains("..")
-        || value.contains('~')
-        || value.contains('^')
-        || value.contains(':')
-        || value.contains('\\')
-    {
-        return false;
-    }
-    if value.starts_with('/') || value.ends_with('/') || value.contains("//") {
-        return false;
-    }
-
-    value
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-' || b == b'/')
-}
-
-fn encode_segments(value: &str) -> String {
-    value
-        .split('/')
-        .map(|segment| urlencoding::encode(segment).into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn strip_git_suffix(segment: &str) -> &str {
-    segment.strip_suffix(".git").unwrap_or(segment)
+    preview_source::file_name_from_path(path)
 }
 
 fn validate_remote_url(remote: &str) -> Result<reqwest::Url, PreviewRouteError> {
@@ -534,27 +370,6 @@ fn validate_remote_url(remote: &str) -> Result<reqwest::Url, PreviewRouteError> 
     }
 
     Ok(parsed)
-}
-
-fn normalized_remote_origin(url: &reqwest::Url) -> String {
-    let mut normalized = url.clone();
-    normalized.set_query(None);
-    normalized.set_fragment(None);
-    let _ = normalized.set_username("");
-    let _ = normalized.set_password(None);
-
-    let trimmed_path = normalized.path().trim_end_matches('/').to_string();
-    if trimmed_path.is_empty() {
-        normalized.set_path("/");
-    } else {
-        normalized.set_path(&trimmed_path);
-    }
-
-    let mut rendered = normalized.to_string();
-    if rendered.ends_with('/') {
-        rendered.pop();
-    }
-    rendered
 }
 
 fn is_disallowed_remote_host(host: &str) -> bool {
@@ -623,6 +438,18 @@ fn origin_from_url(url: &reqwest::Url) -> Result<String, PreviewRouteError> {
         origin.push_str(&port.to_string());
     }
     Ok(origin)
+}
+
+fn encode_segments(value: &str) -> String {
+    value
+        .split('/')
+        .map(|segment| urlencoding::encode(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn strip_git_suffix(value: &str) -> &str {
+    value.strip_suffix(".git").unwrap_or(value)
 }
 
 fn repo_path_segments(url: &reqwest::Url) -> Result<Vec<String>, PreviewRouteError> {

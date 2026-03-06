@@ -12,11 +12,13 @@ use opensession_summary::provider::generate_text;
 use serde_json::json;
 use std::time::Duration;
 
+use crate::app::runtime_settings::{
+    map_change_reader_scope_from_runtime, map_summary_provider_id_from_runtime,
+};
 use crate::app::session_summary::load_session_summary_for_runtime;
 use crate::{
     CHANGE_READER_MAX_EVENTS, CHANGE_READER_MAX_LINE_CHARS, DesktopApiResult, desktop_error,
-    load_normalized_session_body, load_runtime_config, map_change_reader_scope_from_runtime,
-    map_summary_provider_id_from_runtime, open_local_db,
+    load_normalized_session_body, load_runtime_config, open_local_db,
 };
 
 #[derive(Debug, Clone)]

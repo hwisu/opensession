@@ -13,9 +13,10 @@
       "f7ca30aebf617062ec11d341239e46c797361ff3",
       "21a681d7867b2bc2c00079f2e08bb0489917ea04",
       "dba83dc1d961d141585e3a05924132f9d07a5873",
-      "eaeac8750eb10320a36b80df98b61c82c46b71bc"
+      "eaeac8750eb10320a36b80df98b61c82c46b71bc",
+      "fc49067c4f88e97393c573b6e9824e8e3b397bde"
     ],
-    "head": "eaeac8750eb10320a36b80df98b61c82c46b71bc",
+    "head": "fc49067c4f88e97393c573b6e9824e8e3b397bde",
     "remote": "https://github.com/hwisu/opensession.git",
     "repo_name": "hwisu/opensession"
   },
@@ -24,17 +25,17 @@
   "session_id": "019cc1a4-9605-78d3-8026-0fef97395e92",
   "session_role": "primary",
   "stats": {
-    "duration_seconds": 20758,
-    "event_count": 4501,
+    "duration_seconds": 21117,
+    "event_count": 4712,
     "files_changed": 45,
     "lines_added": 0,
     "lines_removed": 0,
-    "message_count": 354,
-    "task_count": 15,
-    "tool_call_count": 483,
-    "total_input_tokens": 111467515,
-    "total_output_tokens": 521983,
-    "user_message_count": 17
+    "message_count": 370,
+    "task_count": 16,
+    "tool_call_count": 498,
+    "total_input_tokens": 118583655,
+    "total_output_tokens": 530959,
+    "user_message_count": 18
   },
   "title": "코드 전체를 Effect Monad를 기준으로 잘 정렬되도록 코드를 다듬어줘.\nTestable Code를 목표로 적절하게 레이러를 분리하기...",
   "tool": "codex"

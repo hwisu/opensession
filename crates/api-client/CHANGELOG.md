@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.34](https://github.com/hwisu/opensession/compare/opensession-api-client-v0.2.33...opensession-api-client-v0.2.34) - 2026-03-06
+
+### Added
+
+- split local/app setup and add quick-share flow with tests
+
 ## [0.2.15](https://github.com/hwisu/opensession/compare/opensession-api-client-v0.2.14...opensession-api-client-v0.2.15) - 2026-02-19
 
 ### Other

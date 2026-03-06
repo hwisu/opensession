@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.34](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.33...opensession-parsers-v0.2.34) - 2026-03-06
+
+### Added
+
+- migrate desktop vector search to chunk-indexed bge-m3 workflow
+
+### Other
+
+- Fix summary batch missing-source skips and worker-session filtering
+
 ## [0.2.33](https://github.com/hwisu/opensession/compare/opensession-parsers-v0.2.32...opensession-parsers-v0.2.33) - 2026-03-03
 
 ### Added

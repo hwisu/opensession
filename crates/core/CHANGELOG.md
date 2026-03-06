@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.34](https://github.com/hwisu/opensession/compare/opensession-core-v0.2.33...opensession-core-v0.2.34) - 2026-03-06
+
+### Added
+
+- improve app launch flow and local session indexing
+
+### Other
+
+- remove legacy call_id compatibility path
+- redesign app+cli summary pipeline and remove tui
+
 ## [0.2.33](https://github.com/hwisu/opensession/compare/opensession-core-v0.2.32...opensession-core-v0.2.33) - 2026-03-03
 
 ### Added

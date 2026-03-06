@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.34](https://github.com/hwisu/opensession/compare/opensession-runtime-config-v0.2.33...opensession-runtime-config-v0.2.34) - 2026-03-06
+
+### Added
+
+- add summary batch progress/scope and lifecycle TTL controls
+- *(desktop)* add optional change reader with session Q&A
+- migrate desktop vector search to chunk-indexed bge-m3 workflow
+
+### Other
+
+- Improve session/runtime UX and explicit storage migration
+- redesign app+cli summary pipeline and remove tui
+
 ## [0.2.25](https://github.com/hwisu/opensession/compare/opensession-runtime-config-v0.2.24...opensession-runtime-config-v0.2.25) - 2026-02-23
 
 ### Other

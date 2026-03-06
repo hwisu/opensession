@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.34](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.33...opensession-git-native-v0.2.34) - 2026-03-06
+
+### Added
+
+- add summary batch progress/scope and lifecycle TTL controls
+- migrate desktop vector search to chunk-indexed bge-m3 workflow
+
 ## [0.2.24](https://github.com/hwisu/opensession/compare/opensession-git-native-v0.2.23...opensession-git-native-v0.2.24) - 2026-02-23
 
 ### Other

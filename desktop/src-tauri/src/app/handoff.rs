@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::{
-    DesktopApiResult, desktop_error, enum_label, load_normalized_session_body,
-    load_runtime_config, open_local_db,
+    DesktopApiResult, desktop_error, enum_label, load_normalized_session_body, load_runtime_config,
+    open_local_db,
 };
 
 const HANDOFF_RECORD_VERSION: &str = "v1";
@@ -286,14 +286,15 @@ pub(crate) fn build_handoff_artifact_record(
     let canonical_jsonl = canonicalize_summaries(&summaries)?;
     let artifact_hash = sha256_hex(canonical_jsonl.as_bytes());
 
-    let source_object = store_local_object(normalized_session.as_bytes(), cwd).map_err(|error| {
-        desktop_error(
-            "desktop.handoff_store_failed",
-            500,
-            "failed to store canonical source object for handoff",
-            Some(json!({ "cause": error.to_string() })),
-        )
-    })?;
+    let source_object =
+        store_local_object(normalized_session.as_bytes(), cwd).map_err(|error| {
+            desktop_error(
+                "desktop.handoff_store_failed",
+                500,
+                "failed to store canonical source object for handoff",
+                Some(json!({ "cause": error.to_string() })),
+            )
+        })?;
 
     let validation_reports = reports
         .iter()

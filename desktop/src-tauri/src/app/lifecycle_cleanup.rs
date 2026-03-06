@@ -1,8 +1,8 @@
+use crate::app::session_summary::resolve_repo_root_from_session_row;
 use crate::{
     DesktopApiResult, LIFECYCLE_CLEANUP_LOOP_STARTED, desktop_error, load_runtime_config,
     open_local_db, set_lifecycle_cleanup_job_snapshot,
 };
-use crate::app::session_summary::resolve_repo_root_from_session_row;
 use opensession_git_native::{BRANCH_LEDGER_REF_PREFIX, NativeGitStorage, SUMMARY_LEDGER_REF};
 use opensession_local_db::{LifecycleCleanupJobRow, LocalDb, LocalSessionFilter};
 use opensession_runtime_config::{DaemonConfig, GitStorageMethod};

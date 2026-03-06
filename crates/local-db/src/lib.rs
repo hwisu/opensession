@@ -4,14 +4,14 @@ use anyhow::{Context, Result};
 use opensession_api::db::migrations::{LOCAL_MIGRATIONS, MIGRATIONS};
 use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_core::trace::Session;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use git::{normalize_repo_name, GitContext};
+use git::{GitContext, normalize_repo_name};
 
 const SUMMARY_WORKER_TITLE_PREFIX_LOWER: &str =
     "convert a real coding session into semantic compression.";
@@ -2373,10 +2373,11 @@ mod tests {
             &crate::git::GitContext::default(),
         )
         .expect("seed populated row");
-        assert!(db
-            .get_session_by_id("empty-signal-replace")
-            .unwrap()
-            .is_some());
+        assert!(
+            db.get_session_by_id("empty-signal-replace")
+                .unwrap()
+                .is_some()
+        );
 
         let empty = Session::new(
             "empty-signal-replace".to_string(),
@@ -2518,9 +2519,11 @@ mod tests {
         let paths = db
             .list_session_source_paths()
             .expect("list source paths should work");
-        assert!(paths
-            .iter()
-            .any(|(id, path)| id == "source-path-1" && path == "/tmp/source-path-1.jsonl"));
+        assert!(
+            paths
+                .iter()
+                .any(|(id, path)| id == "source-path-1" && path == "/tmp/source-path-1.jsonl")
+        );
         assert!(paths.iter().all(|(id, _)| id != "source-path-2"));
     }
 
@@ -3101,10 +3104,11 @@ mod tests {
         assert_eq!(row.id, "s4");
         let row = db.get_session_by_tool_offset("gemini", 0).unwrap().unwrap();
         assert_eq!(row.id, "s3");
-        assert!(db
-            .get_session_by_tool_offset("gemini", 1)
-            .unwrap()
-            .is_none());
+        assert!(
+            db.get_session_by_tool_offset("gemini", 1)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -3268,14 +3272,16 @@ mod tests {
             .delete_expired_session_summaries(30)
             .expect("delete expired summaries");
         assert_eq!(deleted, 1);
-        assert!(db
-            .get_session_semantic_summary("s1")
-            .expect("query old summary")
-            .is_none());
-        assert!(db
-            .get_session_semantic_summary("s2")
-            .expect("query new summary")
-            .is_some());
+        assert!(
+            db.get_session_semantic_summary("s1")
+                .expect("query old summary")
+                .is_none()
+        );
+        assert!(
+            db.get_session_semantic_summary("s2")
+                .expect("query new summary")
+                .is_some()
+        );
     }
 
     #[test]

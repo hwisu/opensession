@@ -1,13 +1,13 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::HeaderMap,
-    Json,
 };
-use opensession_api::{db, OkResponse, SessionSummary};
+use opensession_api::{OkResponse, SessionSummary, db};
 
-use crate::error::ApiErr;
-use crate::storage::{session_from_row, sq_execute, sq_query_row, Db};
 use crate::AppConfig;
+use crate::error::ApiErr;
+use crate::storage::{Db, session_from_row, sq_execute, sq_query_row};
 
 /// DELETE /api/admin/sessions/:id — delete a session (admin key required).
 pub async fn delete_session(

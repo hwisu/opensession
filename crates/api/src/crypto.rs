@@ -5,10 +5,10 @@
 //!
 //! Uses pure Rust crates (wasm-compatible, no WebCrypto interop needed).
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit},
 };
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
@@ -333,7 +333,7 @@ fn constant_time_eq(lhs: &[u8], rhs: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, CredentialKeyring};
+    use super::{CredentialKeyring, constant_time_eq};
 
     #[test]
     fn credential_keyring_round_trip_encrypt_decrypt() {
@@ -354,9 +354,10 @@ mod tests {
             "k1:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
         )
         .expect_err("missing active key should fail");
-        assert!(err
-            .message()
-            .contains("active credential key id `missing` is missing"));
+        assert!(
+            err.message()
+                .contains("active credential key id `missing` is missing")
+        );
     }
 
     #[test]

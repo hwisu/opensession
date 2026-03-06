@@ -13,7 +13,7 @@
 //! The last line is aggregate stats (optional on write, recomputed on read if missing).
 
 use crate::trace::{Agent, Event, Session, SessionContext, Stats};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::{self, BufRead, Write};
 
 /// A single line in a HAIL JSONL file

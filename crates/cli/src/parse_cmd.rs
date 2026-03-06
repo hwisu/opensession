@@ -2,7 +2,7 @@ use crate::user_guidance::guided_error;
 use anyhow::{Context, Result};
 use clap::Args;
 use opensession_core::validate::validate_session;
-use opensession_parsers::ingest::{preview_parse_bytes, ParseError};
+use opensession_parsers::ingest::{ParseError, preview_parse_bytes};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Args)]

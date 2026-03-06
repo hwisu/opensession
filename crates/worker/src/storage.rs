@@ -261,7 +261,9 @@ pub fn get_r2(env: &Env) -> Result<Bucket> {
 /// Retrieve a raw session body from R2.
 pub async fn get_session_body(env: &Env, key: &str) -> Result<Option<Vec<u8>>> {
     let bucket = get_r2(env)?;
-    match bucket.get(key).execute().await? {
+    let request = bucket.get(key);
+    let object = request.execute().await?;
+    match object {
         Some(object) => {
             let bytes = object.body().unwrap().bytes().await?;
             Ok(Some(bytes))

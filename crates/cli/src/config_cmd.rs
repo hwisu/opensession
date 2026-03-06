@@ -425,7 +425,7 @@ fn normalize_base_url(value: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_base_url, RepoConfig};
+    use super::{RepoConfig, normalize_base_url};
 
     #[test]
     fn default_repo_config_has_base_url() {

@@ -1,5 +1,5 @@
-use crate::common::{attach_semantic_attrs, attach_source_attrs, infer_tool_kind, set_first};
 use crate::SessionParser;
+use crate::common::{attach_semantic_attrs, attach_source_attrs, infer_tool_kind, set_first};
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use opensession_core::trace::{Agent, Content, Event, EventType, Session, SessionContext};
@@ -1260,10 +1260,12 @@ mod tests {
 
         let session =
             parse_opencode_session(&session_dir.join("ses_fallback.json")).expect("parse session");
-        assert!(session
-            .events
-            .iter()
-            .any(|event| matches!(event.event_type, EventType::AgentMessage)));
+        assert!(
+            session
+                .events
+                .iter()
+                .any(|event| matches!(event.event_type, EventType::AgentMessage))
+        );
         assert_eq!(session.agent.provider, "openai");
         assert_eq!(session.agent.model, "gpt-5.2-codex");
         assert_eq!(
@@ -1439,10 +1441,12 @@ mod tests {
         let session = parse_opencode_session(&session_dir.join("ses_patch_summary.json"))
             .expect("parse patch summary session");
 
-        assert!(!session
-            .events
-            .iter()
-            .any(|event| matches!(&event.event_type, EventType::FileEdit { .. })));
+        assert!(
+            !session
+                .events
+                .iter()
+                .any(|event| matches!(&event.event_type, EventType::FileEdit { .. }))
+        );
         assert!(session.events.iter().any(|event| {
             matches!(
                 &event.event_type,

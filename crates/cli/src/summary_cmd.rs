@@ -1,13 +1,13 @@
 use crate::runtime_settings::load_runtime_config;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand};
 use opensession_core::session::working_directory;
 use opensession_git_native::extract_git_context;
 use opensession_local_db::{LocalDb, SessionSemanticSummaryUpsert};
 use opensession_parsers::parse_with_default_parsers;
 use opensession_summary::{
-    summarize_git_commit, summarize_git_working_tree, summarize_session, GitSummaryRequest,
-    SemanticSummaryArtifact,
+    GitSummaryRequest, SemanticSummaryArtifact, summarize_git_commit, summarize_git_working_tree,
+    summarize_session,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};

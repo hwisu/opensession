@@ -1,5 +1,5 @@
 use crate::user_guidance::guided_error;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use opensession_git_native::ops::find_repo_root;
 use serde::{Deserialize, Serialize};

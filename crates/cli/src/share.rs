@@ -1,7 +1,7 @@
 use crate::cleanup_cmd;
 use crate::config_cmd::load_repo_config;
 use crate::user_guidance::guided_error;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use opensession_core::object_store::{find_repo_root, read_local_object_from_uri};
 use opensession_core::source_uri::{SourceSpec, SourceUri};
@@ -708,9 +708,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::linux_clipboard_candidates;
     use super::{
-        classify_share_failure, detect_quick_remote, parse_remote_host_and_path,
-        read_quick_auto_push_consent, resolve_mode, uri_for_remote, validate_rel_path,
-        write_quick_auto_push_consent, ShareMode, QUICK_AUTO_PUSH_CONSENT_GIT_KEY,
+        QUICK_AUTO_PUSH_CONSENT_GIT_KEY, ShareMode, classify_share_failure, detect_quick_remote,
+        parse_remote_host_and_path, read_quick_auto_push_consent, resolve_mode, uri_for_remote,
+        validate_rel_path, write_quick_auto_push_consent,
     };
     use opensession_core::source_uri::SourceSpec;
     use opensession_core::source_uri::SourceUri;

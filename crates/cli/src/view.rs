@@ -1,18 +1,18 @@
 use crate::{
     config_cmd::load_repo_config,
-    open_target::{read_repo_open_target, OpenTarget},
+    open_target::{OpenTarget, read_repo_open_target},
     review, url_opener,
     user_guidance::guided_error,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use opensession_api::{
     LocalReviewBundle, LocalReviewCommit, LocalReviewPrMeta, LocalReviewSession,
 };
 use opensession_core::{
+    Session,
     object_store::read_local_object_from_uri,
     source_uri::{SourceSpec, SourceUri},
-    Session,
 };
 use reqwest::Url;
 use serde::Deserialize;

@@ -3,14 +3,14 @@ pub mod prompt;
 pub mod provider;
 pub mod text;
 pub mod types;
-pub use prompt::{validate_summary_prompt_template, DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2};
+pub use prompt::{DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2, validate_summary_prompt_template};
 
 use crate::git::{GitSummaryContext, GitSummaryService, ShellGitCommandRunner};
 use crate::prompt::{
-    build_summary_prompt, classify_arch_layer, collect_file_changes, collect_timeline_snippets,
-    contains_auth_security_keyword, SummaryPromptConfig,
+    SummaryPromptConfig, build_summary_prompt, classify_arch_layer, collect_file_changes,
+    collect_timeline_snippets, contains_auth_security_keyword,
 };
-use crate::provider::{generate_summary, SemanticSummary};
+use crate::provider::{SemanticSummary, generate_summary};
 use crate::text::compact_summary_snippet;
 use crate::types::HailCompactFileChange;
 use opensession_core::trace::{Agent, ContentBlock, Event, EventType, Session};
@@ -596,9 +596,9 @@ fn parse_diff_hunks(diff: &str) -> Vec<DiffHunkNode> {
 #[cfg(test)]
 mod tests {
     use super::{
+        DiffLayerNode, GitSummaryRequest, SummaryGenerationKind, SummarySourceKind,
         build_diff_tree, default_event_snippet, heuristic_summary, parse_diff_hunks,
-        summarize_session, DiffLayerNode, GitSummaryRequest, SummaryGenerationKind,
-        SummarySourceKind,
+        summarize_session,
     };
     use crate::types::HailCompactFileChange;
     use chrono::Utc;

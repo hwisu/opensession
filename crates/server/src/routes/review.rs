@@ -1,11 +1,11 @@
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use opensession_api::LocalReviewBundle;
 
-use crate::error::ApiErr;
 use crate::AppConfig;
+use crate::error::ApiErr;
 
 /// GET /api/review/local/:review_id — load a local PR review bundle.
 pub async fn get_local_review_bundle(

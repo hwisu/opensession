@@ -2,35 +2,35 @@
 
 mod app;
 
-use app::session_query::{build_local_filter_with_mode, split_search_mode, SearchMode};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use app::session_query::{SearchMode, build_local_filter_with_mode};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use opensession_api::{
-    oauth::{AuthProvidersResponse, OAuthProviderInfo},
-    CapabilitiesResponse, DesktopApiError, DesktopChangeQuestionRequest,
-    DesktopChangeQuestionResponse, DesktopChangeReadRequest, DesktopChangeReadResponse,
-    DesktopChangeReaderScope, DesktopChangeReaderTtsRequest, DesktopChangeReaderTtsResponse,
-    DesktopChangeReaderVoiceProvider, DesktopContractVersionResponse, DesktopHandoffBuildRequest,
-    DesktopHandoffBuildResponse, DesktopLifecycleCleanupState,
-    DesktopLifecycleCleanupStatusResponse, DesktopQuickShareRequest, DesktopQuickShareResponse,
-    DesktopRuntimeChangeReaderSettings, DesktopRuntimeChangeReaderVoiceSettings,
-    DesktopRuntimeLifecycleSettings, DesktopRuntimeSettingsResponse,
-    DesktopRuntimeSettingsUpdateRequest, DesktopRuntimeSummaryBatchSettings,
-    DesktopRuntimeSummaryPromptSettings, DesktopRuntimeSummaryProviderSettings,
-    DesktopRuntimeSummaryResponseSettings, DesktopRuntimeSummarySettings,
-    DesktopRuntimeSummaryStorageSettings, DesktopRuntimeSummaryUiConstraints,
-    DesktopRuntimeVectorSearchSettings, DesktopSessionListQuery, DesktopSessionSummaryResponse,
-    DesktopSummaryBatchExecutionMode, DesktopSummaryBatchScope, DesktopSummaryBatchState,
-    DesktopSummaryBatchStatusResponse, DesktopSummaryOutputShape,
-    DesktopSummaryProviderDetectResponse, DesktopSummaryProviderId,
+    CapabilitiesResponse, DESKTOP_IPC_CONTRACT_VERSION, DesktopApiError,
+    DesktopChangeQuestionRequest, DesktopChangeQuestionResponse, DesktopChangeReadRequest,
+    DesktopChangeReadResponse, DesktopChangeReaderScope, DesktopChangeReaderTtsRequest,
+    DesktopChangeReaderTtsResponse, DesktopChangeReaderVoiceProvider,
+    DesktopContractVersionResponse, DesktopHandoffBuildRequest, DesktopHandoffBuildResponse,
+    DesktopLifecycleCleanupState, DesktopLifecycleCleanupStatusResponse, DesktopQuickShareRequest,
+    DesktopQuickShareResponse, DesktopRuntimeChangeReaderSettings,
+    DesktopRuntimeChangeReaderVoiceSettings, DesktopRuntimeLifecycleSettings,
+    DesktopRuntimeSettingsResponse, DesktopRuntimeSettingsUpdateRequest,
+    DesktopRuntimeSummaryBatchSettings, DesktopRuntimeSummaryPromptSettings,
+    DesktopRuntimeSummaryProviderSettings, DesktopRuntimeSummaryResponseSettings,
+    DesktopRuntimeSummarySettings, DesktopRuntimeSummaryStorageSettings,
+    DesktopRuntimeSummaryUiConstraints, DesktopRuntimeVectorSearchSettings,
+    DesktopSessionListQuery, DesktopSessionSummaryResponse, DesktopSummaryBatchExecutionMode,
+    DesktopSummaryBatchScope, DesktopSummaryBatchState, DesktopSummaryBatchStatusResponse,
+    DesktopSummaryOutputShape, DesktopSummaryProviderDetectResponse, DesktopSummaryProviderId,
     DesktopSummaryProviderTransport, DesktopSummaryResponseStyle, DesktopSummarySourceMode,
     DesktopSummaryStorageBackend, DesktopSummaryTriggerMode, DesktopVectorChunkingMode,
     DesktopVectorIndexState, DesktopVectorIndexStatusResponse, DesktopVectorInstallState,
     DesktopVectorInstallStatusResponse, DesktopVectorPreflightResponse,
     DesktopVectorSearchGranularity, DesktopVectorSearchProvider, DesktopVectorSearchResponse,
     DesktopVectorSessionMatch, LinkType, SessionDetail, SessionLink, SessionListResponse,
-    SessionRepoListResponse, SessionSummary, DESKTOP_IPC_CONTRACT_VERSION,
+    SessionRepoListResponse, SessionSummary,
+    oauth::{AuthProvidersResponse, OAuthProviderInfo},
 };
-use opensession_core::handoff::{validate_handoff_summaries, HandoffSummary};
+use opensession_core::handoff::{HandoffSummary, validate_handoff_summaries};
 use opensession_core::object_store::{
     find_repo_root, global_store_root, sha256_hex, store_local_object,
 };
@@ -38,8 +38,8 @@ use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_core::source_uri::SourceUri;
 use opensession_core::trace::{ContentBlock, EventType, Session as HailSession};
 use opensession_git_native::{
-    extract_git_context, ops::find_repo_root as find_git_repo_root, NativeGitStorage,
-    SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
+    NativeGitStorage, SUMMARY_LEDGER_REF, SessionSummaryLedgerRecord, extract_git_context,
+    ops::find_repo_root as find_git_repo_root,
 };
 use opensession_local_db::{
     LifecycleCleanupJobRow, LocalDb, LocalSessionFilter, LocalSessionLink, LocalSessionRow,
@@ -57,7 +57,7 @@ use opensession_runtime_config::{
     VectorChunkingMode, VectorSearchGranularity, VectorSearchProvider,
 };
 use opensession_summary::{
-    provider::generate_text, summarize_session, validate_summary_prompt_template, GitSummaryRequest,
+    GitSummaryRequest, provider::generate_text, summarize_session, validate_summary_prompt_template,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -5129,7 +5129,8 @@ fn run_desktop_git_retention_once(repo_roots: &BTreeSet<PathBuf>, keep_days: u32
     let storage = NativeGitStorage;
     for repo_root in repo_roots {
         for ref_name in list_branch_ledger_refs(repo_root) {
-            if let Err(error) = storage.prune_by_age_at_ref(repo_root, &ref_name, keep_days) {
+            let prune_result = storage.prune_by_age_at_ref(repo_root, &ref_name, keep_days);
+            if let Err(error) = prune_result {
                 eprintln!(
                     "lifecycle cleanup: failed to prune branch ledger {ref_name} in {}: {error}",
                     repo_root.display()
@@ -5212,7 +5213,9 @@ fn run_desktop_lifecycle_cleanup_once_with_db(
                 )
             })?;
             if let Some(repo_root) = row.as_ref().and_then(resolve_repo_root_from_session_row) {
-                match storage.delete_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, session_id) {
+                let delete_result =
+                    storage.delete_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, session_id);
+                match delete_result {
                     Ok(true) => {
                         deleted_summaries = deleted_summaries.saturating_add(1);
                     }
@@ -5254,11 +5257,12 @@ fn run_desktop_lifecycle_cleanup_once_with_db(
         );
 
         for repo_root in &repo_roots {
-            match storage.prune_summaries_by_age_at_ref(
+            let prune_result = storage.prune_summaries_by_age_at_ref(
                 repo_root,
                 SUMMARY_LEDGER_REF,
                 config.lifecycle.summary_ttl_days,
-            ) {
+            );
+            match prune_result {
                 Ok(stats) => {
                     deleted_summaries =
                         deleted_summaries.saturating_add(stats.expired_sessions as u32);
@@ -5341,24 +5345,26 @@ fn maybe_start_lifecycle_cleanup_loop() {
     *started = true;
     drop(started);
 
-    std::thread::spawn(|| loop {
-        let sleep_for = match load_runtime_config() {
-            Ok(config) => {
-                if let Err(error) = run_desktop_lifecycle_cleanup_once(&config) {
-                    eprintln!("failed to run desktop lifecycle cleanup: {}", error.message);
+    std::thread::spawn(|| {
+        loop {
+            let sleep_for = match load_runtime_config() {
+                Ok(config) => {
+                    if let Err(error) = run_desktop_lifecycle_cleanup_once(&config) {
+                        eprintln!("failed to run desktop lifecycle cleanup: {}", error.message);
+                    }
+                    resolve_desktop_lifecycle_schedule(&config)
+                        .unwrap_or_else(|| Duration::from_secs(60))
                 }
-                resolve_desktop_lifecycle_schedule(&config)
-                    .unwrap_or_else(|| Duration::from_secs(60))
-            }
-            Err(error) => {
-                eprintln!(
-                    "failed to load runtime config for lifecycle cleanup: {}",
-                    error.message
-                );
-                Duration::from_secs(60)
-            }
-        };
-        std::thread::sleep(sleep_for);
+                Err(error) => {
+                    eprintln!(
+                        "failed to load runtime config for lifecycle cleanup: {}",
+                        error.message
+                    );
+                    Duration::from_secs(60)
+                }
+            };
+            std::thread::sleep(sleep_for);
+        }
     });
 }
 
@@ -5427,17 +5433,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_path_for_hash, build_handoff_artifact_record, build_local_filter_with_mode,
-        build_vector_chunks_for_session, canonicalize_summaries, cosine_similarity,
-        desktop_ask_session_changes, desktop_change_reader_tts, desktop_get_contract_version,
-        desktop_get_runtime_settings, desktop_get_session_detail, desktop_get_session_raw,
-        desktop_list_sessions, desktop_read_session_changes, desktop_share_session_quick,
-        desktop_summary_batch_run, desktop_summary_batch_status, desktop_update_runtime_settings,
-        extract_vector_lines, force_refresh_discovery_tools, map_link_type, normalize_launch_route,
-        normalize_session_body_to_hail_jsonl, parse_cli_quick_share_response,
-        session_summary_from_local_row, split_search_mode, validate_pin_alias,
-        validate_vector_preflight_ready, DesktopSessionListQuery, SearchMode,
+        DesktopSessionListQuery, SearchMode, artifact_path_for_hash, build_handoff_artifact_record,
+        build_local_filter_with_mode, build_vector_chunks_for_session, canonicalize_summaries,
+        cosine_similarity, desktop_ask_session_changes, desktop_change_reader_tts,
+        desktop_get_contract_version, desktop_get_runtime_settings, desktop_get_session_detail,
+        desktop_get_session_raw, desktop_list_sessions, desktop_read_session_changes,
+        desktop_share_session_quick, desktop_summary_batch_run, desktop_summary_batch_status,
+        desktop_update_runtime_settings, extract_vector_lines, force_refresh_discovery_tools,
+        map_link_type, normalize_launch_route, normalize_session_body_to_hail_jsonl,
+        parse_cli_quick_share_response, session_summary_from_local_row, validate_pin_alias,
+        validate_vector_preflight_ready,
     };
+    use crate::app::session_query::split_search_mode;
     use opensession_api::{
         DesktopChangeQuestionRequest, DesktopChangeReadRequest, DesktopChangeReaderScope,
         DesktopChangeReaderTtsRequest, DesktopChangeReaderVoiceProvider,
@@ -5455,7 +5462,7 @@ mod tests {
     use opensession_core::handoff::HandoffSummary;
     use opensession_core::trace::{Agent, Content, Event, EventType, Session as HailSession};
     use opensession_git_native::{
-        NativeGitStorage, SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
+        NativeGitStorage, SUMMARY_LEDGER_REF, SessionSummaryLedgerRecord,
     };
     use opensession_local_db::git::GitContext;
     use opensession_local_db::{LocalDb, VectorIndexJobRow};
@@ -5469,6 +5476,18 @@ mod tests {
 
     static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    fn set_env_for_test(key: &str, value: impl AsRef<std::ffi::OsStr>) {
+        // SAFETY: desktop tests mutate process environment only while holding TEST_ENV_LOCK,
+        // which serializes the affected test cases and avoids concurrent environment access.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    fn remove_env_for_test(key: &str) {
+        // SAFETY: desktop tests mutate process environment only while holding TEST_ENV_LOCK,
+        // which serializes the affected test cases and avoids concurrent environment access.
+        unsafe { std::env::remove_var(key) };
+    }
+
     struct EnvVarGuard {
         key: String,
         previous: Option<String>,
@@ -5477,7 +5496,7 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &str, value: impl AsRef<std::ffi::OsStr>) -> Self {
             let previous = std::env::var(key).ok();
-            std::env::set_var(key, value);
+            set_env_for_test(key, value);
             Self {
                 key: key.to_string(),
                 previous,
@@ -5488,9 +5507,9 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(previous) = self.previous.take() {
-                std::env::set_var(&self.key, previous);
+                set_env_for_test(&self.key, previous);
             } else {
-                std::env::remove_var(&self.key);
+                remove_env_for_test(&self.key);
             }
         }
     }
@@ -5910,10 +5929,12 @@ mod tests {
         assert_eq!(snapshot.status, "complete");
         assert_eq!(snapshot.processed_sessions, 2);
         assert_eq!(snapshot.total_sessions, 2);
-        assert!(snapshot
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("2 failed")));
+        assert!(
+            snapshot
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("2 failed"))
+        );
         assert!(
             db.list_recent_vector_chunks_for_model("bge-m3", 10)
                 .expect("list vector chunks")
@@ -6923,10 +6944,12 @@ mod tests {
         assert_eq!(final_state.total_sessions, 1);
         assert_eq!(final_state.processed_sessions, 1);
         assert_eq!(final_state.failed_sessions, 0);
-        assert!(final_state
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("skipped missing sources")));
+        assert!(
+            final_state
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("skipped missing sources"))
+        );
 
         let _ = std::fs::remove_dir_all(&temp_home);
         let _ = std::fs::remove_dir_all(&temp_db);
@@ -7002,10 +7025,12 @@ mod tests {
         assert_eq!(final_state.total_sessions, 0);
         assert_eq!(final_state.processed_sessions, 0);
         assert_eq!(final_state.failed_sessions, 0);
-        assert!(final_state
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("already summarized")));
+        assert!(
+            final_state
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("already summarized"))
+        );
 
         let _ = std::fs::remove_dir_all(&temp_home);
         let _ = std::fs::remove_dir_all(&temp_db);
@@ -7096,10 +7121,12 @@ mod tests {
         assert_eq!(final_state.total_sessions, 0);
         assert_eq!(final_state.processed_sessions, 0);
         assert_eq!(final_state.failed_sessions, 0);
-        assert!(final_state
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("already summarized")));
+        assert!(
+            final_state
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("already summarized"))
+        );
 
         let _ = std::fs::remove_dir_all(&temp_home);
         let _ = std::fs::remove_dir_all(&temp_db);
@@ -7330,12 +7357,15 @@ mod tests {
             response.download_file_name.as_deref(),
             Some(expected_download_file_name.as_str())
         );
-        assert!(response
-            .download_content
-            .as_deref()
-            .is_some_and(|value| value.contains("\"source_session_id\":\"session-handoff-test\"")));
+        assert!(
+            response.download_content.as_deref().is_some_and(
+                |value| value.contains("\"source_session_id\":\"session-handoff-test\"")
+            )
+        );
 
-        let artifact_path = PathBuf::from(repo_root.join(".opensession").join("artifacts"))
+        let artifact_path = repo_root
+            .join(".opensession")
+            .join("artifacts")
             .join("sha256")
             .join(&hash[0..2])
             .join(&hash[2..4])

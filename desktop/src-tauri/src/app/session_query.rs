@@ -78,7 +78,7 @@ pub(crate) fn build_local_filter_with_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_local_filter_with_mode, split_search_mode, SearchMode};
+    use super::{SearchMode, build_local_filter_with_mode, split_search_mode};
     use opensession_api::DesktopSessionListQuery;
     use opensession_local_db::{LocalSortOrder, LocalTimeRange};
 

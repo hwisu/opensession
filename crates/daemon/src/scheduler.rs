@@ -1,18 +1,18 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
-use opensession_core::session::{
-    build_git_storage_meta_json_with_git, interaction_compressed_session, is_auxiliary_session,
-    working_directory, GitMeta,
-};
 use opensession_core::Session;
+use opensession_core::sanitize::{SanitizeConfig, sanitize_session};
+use opensession_core::session::{
+    GitMeta, build_git_storage_meta_json_with_git, interaction_compressed_session,
+    is_auxiliary_session, working_directory,
+};
 use opensession_git_native::{
-    branch_ledger_ref, extract_git_context, resolve_ledger_branch, PruneStats,
-    SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
+    PruneStats, SUMMARY_LEDGER_REF, SessionSummaryLedgerRecord, branch_ledger_ref,
+    extract_git_context, resolve_ledger_branch,
 };
 use opensession_local_db::LocalDb;
 use opensession_parsers::parse_with_default_parsers;
-use opensession_summary::{summarize_session, GitSummaryRequest};
+use opensession_summary::{GitSummaryRequest, summarize_session};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -107,7 +107,8 @@ fn run_git_retention_once(registry: &RepoRegistry, keep_days: u32) -> Result<()>
             continue;
         }
         for ref_name in refs {
-            match storage.prune_by_age_at_ref(&repo_root, &ref_name, keep_days) {
+            let prune_result = storage.prune_by_age_at_ref(&repo_root, &ref_name, keep_days);
+            match prune_result {
                 Ok(PruneStats {
                     scanned_sessions,
                     expired_sessions,
@@ -223,9 +224,9 @@ fn run_lifecycle_cleanup_once(
                 .and_then(|row| row.working_directory.as_deref()),
         );
         if let Some(repo_root) = repo_root {
-            if let Err(e) =
-                storage.delete_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &session_id)
-            {
+            let delete_result =
+                storage.delete_summary_at_ref(&repo_root, SUMMARY_LEDGER_REF, &session_id);
+            if let Err(e) = delete_result {
                 warn!(
                     repo = %repo_root.display(),
                     session_id,
@@ -242,11 +243,12 @@ fn run_lifecycle_cleanup_once(
 
     let repo_roots = collect_lifecycle_repo_roots(db, registry)?;
     for repo_root in repo_roots {
-        match storage.prune_summaries_by_age_at_ref(
+        let prune_result = storage.prune_summaries_by_age_at_ref(
             &repo_root,
             SUMMARY_LEDGER_REF,
             config.lifecycle.summary_ttl_days,
-        ) {
+        );
+        match prune_result {
             Ok(PruneStats {
                 scanned_sessions,
                 expired_sessions,
@@ -465,15 +467,15 @@ pub async fn run_scheduler(
                             path.display()
                         );
                     }
-                    if let Err(e) = process_file(
+                    let process_result = process_file(
                         &path,
                         &config,
                         &db,
                         &mut repo_registry,
                         should_auto_upload(&effective_mode),
                     )
-                    .await
-                    {
+                    .await;
+                    if let Err(e) = process_result {
                         error!("Failed to process {}: {:#}", path.display(), e);
                     }
                 }
@@ -482,7 +484,8 @@ pub async fn run_scheduler(
                     (retention_schedule, next_retention_run)
                 {
                     if now >= next_at {
-                        if let Err(e) = run_git_retention_once(&repo_registry, keep_days) {
+                        let retention_result = run_git_retention_once(&repo_registry, keep_days);
+                        if let Err(e) = retention_result {
                             warn!("Git retention scan failed: {e}");
                         }
                         next_retention_run = Some(now + interval);
@@ -491,7 +494,9 @@ pub async fn run_scheduler(
 
                 if let (Some(interval), Some(next_at)) = (lifecycle_interval, next_lifecycle_run) {
                     if now >= next_at {
-                        if let Err(e) = run_lifecycle_cleanup_once(&config, &db, &repo_registry) {
+                        let cleanup_result =
+                            run_lifecycle_cleanup_once(&config, &db, &repo_registry);
+                        if let Err(e) = cleanup_result {
                             warn!("Lifecycle cleanup failed: {e}");
                         }
                         next_lifecycle_run = Some(now + interval);
@@ -502,7 +507,11 @@ pub async fn run_scheduler(
 
             // Shutdown signal
             _ = shutdown.changed() => {
-                if *shutdown.borrow() {
+                let should_shutdown = {
+                    let borrowed = shutdown.borrow();
+                    *borrowed
+                };
+                if should_shutdown {
                     info!("Scheduler shutting down");
                     break;
                 }
@@ -886,7 +895,7 @@ mod tests {
     use super::*;
     use opensession_core::{Agent, Content, Event, EventType, Session};
     use opensession_git_native::{
-        NativeGitStorage, SessionSummaryLedgerRecord, SUMMARY_LEDGER_REF,
+        NativeGitStorage, SUMMARY_LEDGER_REF, SessionSummaryLedgerRecord,
     };
     use opensession_runtime_config::{SummaryProvider, SummaryStorageBackend, SummaryTriggerMode};
     use serde_json::json;

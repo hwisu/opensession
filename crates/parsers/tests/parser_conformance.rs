@@ -1,7 +1,7 @@
 use opensession_core::trace::{
-    EventType, ATTR_SEMANTIC_CALL_ID, ATTR_SOURCE_RAW_TYPE, ATTR_SOURCE_SCHEMA_VERSION,
+    ATTR_SEMANTIC_CALL_ID, ATTR_SOURCE_RAW_TYPE, ATTR_SOURCE_SCHEMA_VERSION, EventType,
 };
-use opensession_parsers::{all_parsers, SessionParser};
+use opensession_parsers::{SessionParser, all_parsers};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -66,10 +66,12 @@ fn parser_conformance_fixtures_cover_five_tools() {
     let codex_session = codex
         .parse(&fixtures.join("codex/rollout-desktop.jsonl"))
         .expect("parse codex fixture");
-    assert!(codex_session
-        .events
-        .iter()
-        .any(|event| matches!(event.event_type, EventType::Thinking)));
+    assert!(
+        codex_session
+            .events
+            .iter()
+            .any(|event| matches!(event.event_type, EventType::Thinking))
+    );
     assert!(codex_session.events.iter().any(|event| {
         matches!(
             event.event_type,
@@ -163,14 +165,18 @@ fn parser_conformance_fixtures_cover_five_tools() {
     let gemini_session = gemini
         .parse(&fixtures.join("gemini/session-parts.json"))
         .expect("parse gemini fixture");
-    assert!(gemini_session
-        .events
-        .iter()
-        .any(|event| matches!(event.event_type, EventType::UserMessage)));
-    assert!(gemini_session
-        .events
-        .iter()
-        .any(|event| matches!(event.event_type, EventType::AgentMessage)));
+    assert!(
+        gemini_session
+            .events
+            .iter()
+            .any(|event| matches!(event.event_type, EventType::UserMessage))
+    );
+    assert!(
+        gemini_session
+            .events
+            .iter()
+            .any(|event| matches!(event.event_type, EventType::AgentMessage))
+    );
     assert!(gemini_session.events.iter().all(|event| {
         event
             .attributes
@@ -273,10 +279,12 @@ fn parser_conformance_fixtures_cover_five_tools() {
     let cursor_db = build_cursor_fixture_db(&fixtures);
     let cursor = parser_by_name("cursor");
     let cursor_session = cursor.parse(&cursor_db).expect("parse cursor fixture db");
-    assert!(cursor_session
-        .events
-        .iter()
-        .any(|event| matches!(event.event_type, EventType::TaskStart { .. })));
+    assert!(
+        cursor_session
+            .events
+            .iter()
+            .any(|event| matches!(event.event_type, EventType::TaskStart { .. }))
+    );
     assert!(cursor_session.events.iter().any(|event| {
         matches!(
             event.event_type,

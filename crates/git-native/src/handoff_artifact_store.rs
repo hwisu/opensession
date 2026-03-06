@@ -1,12 +1,12 @@
 use std::path::Path;
 use std::process::Command;
 
-use gix::object::tree::EntryKind;
 use gix::ObjectId;
+use gix::object::tree::EntryKind;
 
+use crate::HANDOFF_ARTIFACTS_REF_PREFIX;
 use crate::error::{GitStorageError, Result};
 use crate::ops::{self, gix_err};
-use crate::HANDOFF_ARTIFACTS_REF_PREFIX;
 
 const ARTIFACT_BLOB_PATH: &str = "artifact.json";
 

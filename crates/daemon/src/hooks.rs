@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Git hook types managed by opensession.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,16 +474,18 @@ pub fn scan_for_secrets(content: &str) -> Vec<SecretMatch> {
 
     for (line_number, line) in content.lines().enumerate() {
         for (name, pattern) in &patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if re.is_match(line) {
-                    // Redact the matched portion
-                    let redacted = re.replace_all(line, "[REDACTED]").to_string();
-                    matches.push(SecretMatch {
-                        pattern_name: name.to_string(),
-                        line_number: line_number + 1,
-                        context: redacted,
-                    });
-                }
+            let re = match regex::Regex::new(pattern) {
+                Ok(re) => re,
+                Err(_) => continue,
+            };
+            if re.is_match(line) {
+                // Redact the matched portion
+                let redacted = re.replace_all(line, "[REDACTED]").to_string();
+                matches.push(SecretMatch {
+                    pattern_name: name.to_string(),
+                    line_number: line_number + 1,
+                    context: redacted,
+                });
             }
         }
     }
@@ -681,10 +683,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = install_hooks(dir.path(), HookType::all());
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Not a git repository"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Not a git repository")
+        );
     }
 
     #[test]

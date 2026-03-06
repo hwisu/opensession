@@ -12,16 +12,22 @@ pub struct RegisteredUser {
     pub tokens: AuthTokenResponse,
 }
 
-pub fn test_context_from_env(base_url_env: &str) -> TestContext {
-    let base_url = std::env::var(base_url_env).unwrap_or_else(|_| {
-        panic!(
-            "missing required env var `{base_url_env}`. Set explicit local target URL for this E2E run."
-        )
-    });
+pub fn test_context_from_env(base_url_env: &str) -> Option<TestContext> {
+    let base_url = match std::env::var(base_url_env) {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!(
+                "skipping E2E test: missing required env var `{base_url_env}`. \
+Set explicit local target URL for this E2E run."
+            );
+            return None;
+        }
+    };
     enforce_base_url_policy(base_url_env, &base_url);
-    TestContext::new(base_url)
+    Some(TestContext::new(base_url))
 }
 
+#[allow(dead_code)]
 pub async fn register_user(ctx: &TestContext, prefix: &str, password: &str) -> RegisteredUser {
     let client = reqwest::Client::new();
     let suffix = uuid::Uuid::new_v4().simple().to_string();

@@ -1,18 +1,18 @@
 use crate::cleanup_cmd::{self, CleanupDoctorLevel};
 use crate::hooks::{
-    install_hooks_with_report, list_installed_hooks, plan_hook_install, HookInstallAction, HookType,
+    HookInstallAction, HookType, install_hooks_with_report, list_installed_hooks, plan_hook_install,
 };
-use crate::open_target::{read_repo_open_target, write_repo_open_target, OpenTarget};
-use anyhow::{bail, Context, Result};
+use crate::open_target::{OpenTarget, read_repo_open_target, write_repo_open_target};
+use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use opensession_core::sanitize::{sanitize_session, SanitizeConfig};
-use opensession_core::session::{build_git_storage_meta_json_with_git, working_directory, GitMeta};
 use opensession_core::Session;
+use opensession_core::sanitize::{SanitizeConfig, sanitize_session};
+use opensession_core::session::{GitMeta, build_git_storage_meta_json_with_git, working_directory};
 use opensession_git_native::{
-    branch_ledger_ref, extract_git_context, resolve_ledger_branch, NativeGitStorage,
+    NativeGitStorage, branch_ledger_ref, extract_git_context, resolve_ledger_branch,
 };
 use opensession_parsers::{discover::discover_sessions, parse_with_default_parsers};
-use opensession_runtime_config::{DaemonConfig, CONFIG_FILE_NAME};
+use opensession_runtime_config::{CONFIG_FILE_NAME, DaemonConfig};
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
@@ -390,11 +390,7 @@ fn enforce_apply_mode_requirements(
     if !interactive && fanout_plan.existing.is_none() && fanout_plan.requested.is_none() {
         bail!(
             "fanout mode is not configured for this repository, and setup cannot prompt in non-interactive mode.\nnext: run `{}`",
-            suggested_doctor_command(
-                FanoutMode::HiddenRef,
-                OpenTarget::Web,
-                SetupProfile::Local
-            )
+            suggested_doctor_command(FanoutMode::HiddenRef, OpenTarget::Web, SetupProfile::Local)
         );
     }
     Ok(())
@@ -1564,9 +1560,10 @@ mod tests {
         let (level, summary, hint) = review_readiness_summary(false, false);
         assert_eq!(level, DoctorLevel::Warn);
         assert!(summary.contains("hidden-fanout=missing"));
-        assert!(hint
-            .expect("hint should exist")
-            .contains("opensession doctor --fix"));
+        assert!(
+            hint.expect("hint should exist")
+                .contains("opensession doctor --fix")
+        );
     }
 
     #[test]
@@ -1633,9 +1630,10 @@ mod tests {
             profile: None,
         };
         let err = validate_setup_args(&args).expect_err("validate");
-        assert!(err
-            .to_string()
-            .contains("`--open-target` requires apply mode"));
+        assert!(
+            err.to_string()
+                .contains("`--open-target` requires apply mode")
+        );
     }
 
     #[test]

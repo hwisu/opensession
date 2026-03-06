@@ -1,7 +1,7 @@
 use super::transform::{build_cc_tool_result_content, classify_tool_use, tool_use_content};
 use crate::common::{
-    attach_semantic_attrs, attach_source_attrs, infer_tool_kind, set_first, strip_system_reminders,
-    ToolUseInfo,
+    ToolUseInfo, attach_semantic_attrs, attach_source_attrs, infer_tool_kind, set_first,
+    strip_system_reminders,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -1675,10 +1675,12 @@ mod tests {
         let parsed = parse_lines_impl(&lines);
         assert_eq!(parsed.events.len(), 4);
         assert_eq!(parsed.session_id.as_deref(), Some("s1"));
-        assert!(parsed
-            .events
-            .iter()
-            .all(|event| matches!(event.event_type, EventType::SystemMessage)));
+        assert!(
+            parsed
+                .events
+                .iter()
+                .all(|event| matches!(event.event_type, EventType::SystemMessage))
+        );
 
         let mut seen_raw_types = HashMap::new();
         for event in &parsed.events {
@@ -1820,24 +1822,30 @@ mod tests {
 
         let session = parse_claude_code_jsonl(&parent_path).unwrap();
         assert_eq!(session.events.len(), 4);
-        assert!(session
-            .events
-            .iter()
-            .any(|e| matches!(e.event_type, EventType::TaskStart { .. })));
+        assert!(
+            session
+                .events
+                .iter()
+                .any(|e| matches!(e.event_type, EventType::TaskStart { .. }))
+        );
         assert!(session.events.iter().any(|e| {
             e.attributes
                 .get("merged_subagent")
                 .and_then(|v| v.as_bool())
                 == Some(true)
         }));
-        assert!(session
-            .events
-            .iter()
-            .any(|e| matches!(e.event_type, EventType::AgentMessage)));
-        assert!(session
-            .events
-            .iter()
-            .any(|e| matches!(e.event_type, EventType::TaskEnd { .. })));
+        assert!(
+            session
+                .events
+                .iter()
+                .any(|e| matches!(e.event_type, EventType::AgentMessage))
+        );
+        assert!(
+            session
+                .events
+                .iter()
+                .any(|e| matches!(e.event_type, EventType::TaskEnd { .. }))
+        );
         // message_count includes user+agent messages and TaskEnd summaries.
         assert_eq!(session.stats.message_count, 3);
     }

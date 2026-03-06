@@ -1,12 +1,12 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
-use opensession_core::handoff::{validate_handoff_summaries, HandoffSummary};
+use opensession_core::Session;
+use opensession_core::handoff::{HandoffSummary, validate_handoff_summaries};
 use opensession_core::object_store::{
     find_repo_root, global_store_root, read_local_object_from_uri, sha256_hex, store_local_object,
 };
 use opensession_core::source_uri::SourceUri;
 use opensession_core::validate::validate_session;
-use opensession_core::Session;
 use opensession_local_db::{LocalDb, LocalSessionFilter};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -644,8 +644,8 @@ fn is_hash(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{canonicalize_summaries, is_hash, validate_alias};
-    use opensession_core::testing;
     use opensession_core::Session;
+    use opensession_core::testing;
 
     #[test]
     fn hash_validator_accepts_sha256() {

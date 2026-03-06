@@ -321,9 +321,11 @@ mod tests {
         .unwrap();
 
         // Confirm it exists
-        assert!(find_ref_tip(&repo, "refs/heads/to-delete")
-            .unwrap()
-            .is_some());
+        assert!(
+            find_ref_tip(&repo, "refs/heads/to-delete")
+                .unwrap()
+                .is_some()
+        );
 
         // Delete it
         delete_ref(&repo, "refs/heads/to-delete", commit_id).unwrap();

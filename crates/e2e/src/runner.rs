@@ -61,7 +61,11 @@ pub async fn run_all(ctx: Arc<crate::client::TestContext>, filter: Option<&str>)
     crate::for_each_spec!(spawn_spec);
 
     let mut results = Vec::new();
-    while let Some(result) = set.join_next().await {
+    loop {
+        let next_result = set.join_next().await;
+        let Some(result) = next_result else {
+            break;
+        };
         match result {
             Ok(r) => results.push(r),
             Err(e) => results.push(TestResult {
@@ -70,7 +74,7 @@ pub async fn run_all(ctx: Arc<crate::client::TestContext>, filter: Option<&str>)
                 duration: Duration::ZERO,
                 error: Some(format!("{e:#}")),
             }),
-        }
+        };
     }
 
     results.sort_by(|a, b| a.name.cmp(&b.name));

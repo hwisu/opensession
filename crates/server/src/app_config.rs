@@ -139,6 +139,18 @@ mod tests {
 
     static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    fn set_env_for_test(key: &'static str, value: &str) {
+        // SAFETY: server bootstrap tests guard environment mutation with TEST_ENV_LOCK, so these
+        // mutations are serialized and not concurrent with other environment access in this module.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    fn remove_env_for_test(key: &'static str) {
+        // SAFETY: server bootstrap tests guard environment mutation with TEST_ENV_LOCK, so these
+        // mutations are serialized and not concurrent with other environment access in this module.
+        unsafe { std::env::remove_var(key) };
+    }
+
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
@@ -147,13 +159,13 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
-            std::env::set_var(key, value);
+            set_env_for_test(key, value);
             Self { key, previous }
         }
 
         fn clear(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
-            std::env::remove_var(key);
+            remove_env_for_test(key);
             Self { key, previous }
         }
     }
@@ -161,9 +173,9 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(previous) = self.previous.take() {
-                std::env::set_var(self.key, previous);
+                set_env_for_test(self.key, &previous);
             } else {
-                std::env::remove_var(self.key);
+                remove_env_for_test(self.key);
             }
         }
     }

@@ -1,23 +1,23 @@
 use axum::{
+    Json,
     body::Bytes,
     extract::{FromRef, FromRequestParts, Path, State},
-    http::{header, request::Parts, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use uuid::Uuid;
 
 use opensession_api::{
-    crypto, db as dbq, oauth, service, service::AuthToken, AuthRegisterRequest, AuthTokenResponse,
-    ChangePasswordRequest, CreateGitCredentialRequest, GitCredentialSummary, IssueApiKeyResponse,
-    ListGitCredentialsResponse, LoginRequest, OkResponse, RefreshRequest, UserSettingsResponse,
-    VerifyResponse,
+    AuthRegisterRequest, AuthTokenResponse, ChangePasswordRequest, CreateGitCredentialRequest,
+    GitCredentialSummary, IssueApiKeyResponse, ListGitCredentialsResponse, LoginRequest,
+    OkResponse, RefreshRequest, UserSettingsResponse, VerifyResponse, crypto, db as dbq, oauth,
+    service, service::AuthToken,
 };
 
-use crate::error::ApiErr;
-use crate::storage::{sq_execute, sq_query_map, sq_query_row, Db};
 use crate::AppConfig;
+use crate::error::ApiErr;
+use crate::storage::{Db, sq_execute, sq_query_map, sq_query_row};
 
 const ACCESS_COOKIE_NAME: &str = "opensession_access_token";
 const REFRESH_COOKIE_NAME: &str = "opensession_refresh_token";
@@ -434,7 +434,7 @@ pub async fn login(
         _ => {
             return Err(ApiErr::unauthorized(
                 "this account uses OAuth login, not email/password",
-            ))
+            ));
         }
     };
 
@@ -535,7 +535,7 @@ pub async fn change_password(
         _ => {
             return Err(ApiErr::bad_request(
                 "cannot change password for OAuth-only account",
-            ))
+            ));
         }
     };
 

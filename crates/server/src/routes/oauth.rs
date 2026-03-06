@@ -1,20 +1,19 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue},
-    response::{IntoResponse, Redirect, Response},
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, header},
+    response::{IntoResponse, Redirect, Response},
 };
 use uuid::Uuid;
 
 use opensession_api::{
-    crypto, db as dbq,
+    OAuthLinkResponse, crypto, db as dbq,
     oauth::{self, AuthProvidersResponse, OAuthProviderConfig, OAuthProviderInfo},
-    OAuthLinkResponse,
 };
 
 use super::auth::AuthUser;
 use crate::error::ApiErr;
-use crate::storage::{sq_execute, sq_query_row, Db};
+use crate::storage::{Db, sq_execute, sq_query_row};
 use crate::{AppConfig, AppState};
 
 // ---------------------------------------------------------------------------
@@ -480,7 +479,7 @@ pub async fn link(
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{header, HeaderMap, HeaderValue};
+    use axum::http::{HeaderMap, HeaderValue, header};
 
     use super::resolve_base_url;
 

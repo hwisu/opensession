@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 // Re-export shared runtime config types
 pub use opensession_runtime_config::{
-    DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode, SessionDefaultView,
-    CONFIG_FILE_NAME,
+    CONFIG_FILE_NAME, DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode,
+    SessionDefaultView,
 };
 
 /// Get the config directory path

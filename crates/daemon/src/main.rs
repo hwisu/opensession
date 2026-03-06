@@ -148,7 +148,7 @@ fn cleanup_pid_file() {
 async fn wait_for_shutdown() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM");
         let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT");
         tokio::select! {

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use std::path::Path;
 use std::process::Command;
@@ -71,7 +71,7 @@ pub fn write_repo_open_target(repo_root: &Path, target: OpenTarget) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::{read_repo_open_target, write_repo_open_target, OpenTarget};
+    use super::{OpenTarget, read_repo_open_target, write_repo_open_target};
     use std::process::Command;
 
     #[test]

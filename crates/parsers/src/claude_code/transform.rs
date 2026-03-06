@@ -1,4 +1,4 @@
-use crate::common::{build_tool_result_content, ToolUseInfo};
+use crate::common::{ToolUseInfo, build_tool_result_content};
 use opensession_core::trace::{Content, ContentBlock, EventType};
 
 // ── Content transformation helpers ──────────────────────────────────────────

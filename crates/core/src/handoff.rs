@@ -310,12 +310,12 @@ fn collect_errors(events: &[Event]) -> Vec<String> {
 fn collect_verification(events: &[Event]) -> Verification {
     let mut tool_result_by_call: HashMap<String, (&Event, bool)> = HashMap::new();
     for event in events {
-        if let EventType::ToolResult { is_error, .. } = &event.event_type {
-            if let Some(call_id) = event.semantic_call_id() {
-                tool_result_by_call
-                    .entry(call_id.to_string())
-                    .or_insert((event, *is_error));
-            }
+        if let EventType::ToolResult { is_error, .. } = &event.event_type
+            && let Some(call_id) = event.semantic_call_id()
+        {
+            tool_result_by_call
+                .entry(call_id.to_string())
+                .or_insert((event, *is_error));
         }
     }
 
@@ -407,14 +407,14 @@ fn collect_uncertainty(session: &Session, verification: &Verification) -> Uncert
 
     let mut decision_required = Vec::new();
     for event in &session.events {
-        if let EventType::Custom { kind } = &event.event_type {
-            if kind == "turn_aborted" {
-                let reason = event
-                    .attr_str("reason")
-                    .map(String::from)
-                    .unwrap_or_else(|| "turn aborted".to_string());
-                decision_required.push(format!("Turn aborted: {reason}"));
-            }
+        if let EventType::Custom { kind } = &event.event_type
+            && kind == "turn_aborted"
+        {
+            let reason = event
+                .attr_str("reason")
+                .map(String::from)
+                .unwrap_or_else(|| "turn aborted".to_string());
+            decision_required.push(format!("Turn aborted: {reason}"));
         }
     }
     for missing in &verification.required_checks_missing {
@@ -989,20 +989,19 @@ fn collect_open_questions(events: &[Event]) -> Vec<String> {
             }
         }
 
-        if event.attr_str("source") == Some("interactive") {
-            if let Some(ids) = event
+        if event.attr_str("source") == Some("interactive")
+            && let Some(ids) = event
                 .attributes
                 .get("question_ids")
                 .and_then(|v| v.as_array())
+        {
+            for id in ids
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
             {
-                for id in ids
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                {
-                    answered_ids.insert(id.to_string());
-                }
+                answered_ids.insert(id.to_string());
             }
         }
     }
@@ -1985,10 +1984,10 @@ fn extract_objective(session: &Session) -> String {
         return truncate_str(&collapse_whitespace(&task_summary), 200);
     }
 
-    if let Some(title) = session.context.title.as_deref().map(str::trim) {
-        if !title.is_empty() {
-            return truncate_str(&collapse_whitespace(title), 200);
-        }
+    if let Some(title) = session.context.title.as_deref().map(str::trim)
+        && !title.is_empty()
+    {
+        return truncate_str(&collapse_whitespace(title), 200);
     }
 
     "(objective unavailable)".to_string()
@@ -2031,7 +2030,7 @@ pub fn format_duration(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{testing, Agent};
+    use crate::{Agent, testing};
 
     fn make_agent() -> Agent {
         testing::agent()
@@ -2362,7 +2361,7 @@ mod tests {
         assert!(hail.context.tags.contains(&"handoff".to_string()));
         // FileRead and successful ShellCommand should be filtered out
         assert_eq!(hail.events.len(), 3); // UserMessage, AgentMessage, FileEdit
-                                          // Verify HAIL roundtrip
+        // Verify HAIL roundtrip
         let jsonl = hail.to_jsonl().unwrap();
         let parsed = Session::from_jsonl(&jsonl).unwrap();
         assert_eq!(parsed.session_id, hail.session_id);
@@ -2436,29 +2435,37 @@ mod tests {
         ));
 
         let summary = HandoffSummary::from_session(&session);
-        assert!(summary
-            .verification
-            .checks_failed
-            .contains(&"cargo test".to_string()));
-        assert!(summary
-            .execution_contract
-            .next_actions
-            .iter()
-            .any(|action| action.contains("cargo test")));
+        assert!(
+            summary
+                .verification
+                .checks_failed
+                .contains(&"cargo test".to_string())
+        );
+        assert!(
+            summary
+                .execution_contract
+                .next_actions
+                .iter()
+                .any(|action| action.contains("cargo test"))
+        );
         assert_eq!(
             summary.execution_contract.ordered_commands.first(),
             Some(&"cargo test".to_string())
         );
         assert!(summary.execution_contract.parallel_actions.is_empty());
         assert!(summary.execution_contract.rollback_hint.is_none());
-        assert!(summary
-            .execution_contract
-            .rollback_hint_missing_reason
-            .is_some());
-        assert!(summary
-            .execution_contract
-            .rollback_hint_undefined_reason
-            .is_some());
+        assert!(
+            summary
+                .execution_contract
+                .rollback_hint_missing_reason
+                .is_some()
+        );
+        assert!(
+            summary
+                .execution_contract
+                .rollback_hint_undefined_reason
+                .is_some()
+        );
     }
 
     #[test]
@@ -2466,17 +2473,21 @@ mod tests {
         let session = Session::new("missing-objective".to_string(), make_agent());
         let summary = HandoffSummary::from_session(&session);
         assert!(summary.objective_undefined_reason.is_some());
-        assert!(summary
-            .undefined_fields
-            .iter()
-            .any(|f| f.path == "objective"));
+        assert!(
+            summary
+                .undefined_fields
+                .iter()
+                .any(|f| f.path == "objective")
+        );
         let report = validate_handoff_summary(&summary);
 
         assert!(!report.passed);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.code == "objective_missing"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "objective_missing")
+        );
     }
 
     #[test]
@@ -2516,10 +2527,12 @@ mod tests {
         ];
 
         let report = validate_handoff_summary(&summary);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.code == "work_package_cycle"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "work_package_cycle")
+        );
     }
 
     #[test]
@@ -2538,10 +2551,12 @@ mod tests {
         summary.execution_contract.next_actions.clear();
 
         let report = validate_handoff_summary(&summary);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.code == "next_actions_missing"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "next_actions_missing")
+        );
     }
 
     #[test]
@@ -2560,10 +2575,12 @@ mod tests {
         }];
 
         let report = validate_handoff_summary(&summary);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.code == "objective_evidence_missing"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "objective_evidence_missing")
+        );
     }
 
     #[test]
@@ -2613,16 +2630,20 @@ mod tests {
         session.events.push(b_edit);
 
         let summary = HandoffSummary::from_session(&session);
-        assert!(summary
-            .execution_contract
-            .parallel_actions
-            .iter()
-            .any(|action| action.contains("auth")));
-        assert!(summary
-            .execution_contract
-            .parallel_actions
-            .iter()
-            .any(|action| action.contains("billing")));
+        assert!(
+            summary
+                .execution_contract
+                .parallel_actions
+                .iter()
+                .any(|action| action.contains("auth"))
+        );
+        assert!(
+            summary
+                .execution_contract
+                .parallel_actions
+                .iter()
+                .any(|action| action.contains("billing"))
+        );
         let md = generate_handoff_markdown_v2(&summary);
         assert!(md.contains("Parallelizable Work Packages"));
     }
@@ -2649,21 +2670,27 @@ mod tests {
         ));
 
         let summary = HandoffSummary::from_session(&session);
-        assert!(summary
-            .execution_contract
-            .done_definition
-            .iter()
-            .any(|item| item.contains("Verification passed: `cargo test`")));
-        assert!(summary
-            .execution_contract
-            .done_definition
-            .iter()
-            .any(|item| item.contains("Changed 1 file(s): `src/lib.rs`")));
-        assert!(summary
-            .execution_contract
-            .ordered_steps
-            .iter()
-            .any(|step| step.work_package_id == "main"));
+        assert!(
+            summary
+                .execution_contract
+                .done_definition
+                .iter()
+                .any(|item| item.contains("Verification passed: `cargo test`"))
+        );
+        assert!(
+            summary
+                .execution_contract
+                .done_definition
+                .iter()
+                .any(|item| item.contains("Changed 1 file(s): `src/lib.rs`"))
+        );
+        assert!(
+            summary
+                .execution_contract
+                .ordered_steps
+                .iter()
+                .any(|step| step.work_package_id == "main")
+        );
     }
 
     #[test]
@@ -2717,12 +2744,14 @@ mod tests {
         assert_eq!(steps[0].work_package_id, "task-1");
         assert_eq!(steps[1].work_package_id, "task-2");
         assert!(steps[0].completed_at.is_some());
-        assert!(summary
-            .work_packages
-            .iter()
-            .find(|pkg| pkg.id == "task-1")
-            .and_then(|pkg| pkg.outcome.as_deref())
-            .is_some());
+        assert!(
+            summary
+                .work_packages
+                .iter()
+                .find(|pkg| pkg.id == "task-1")
+                .and_then(|pkg| pkg.outcome.as_deref())
+                .is_some()
+        );
     }
 
     #[test]
@@ -2757,10 +2786,12 @@ mod tests {
         }];
 
         let report = validate_handoff_summary(&summary);
-        assert!(report
-            .findings
-            .iter()
-            .any(|finding| finding.code == "ordered_steps_inconsistent"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ordered_steps_inconsistent")
+        );
     }
 
     #[test]

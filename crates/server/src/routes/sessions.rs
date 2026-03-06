@@ -1,19 +1,19 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::IntoResponse,
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::IntoResponse,
 };
 
 use opensession_api::{
-    db, LinkType, SessionDetail, SessionLink, SessionListQuery, SessionListResponse,
-    SessionRepoListResponse, SessionSummary,
+    LinkType, SessionDetail, SessionLink, SessionListQuery, SessionListResponse,
+    SessionRepoListResponse, SessionSummary, db,
 };
 
+use crate::AppConfig;
 use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::{session_from_row, sq_query_map, sq_query_row, Db};
-use crate::AppConfig;
+use crate::storage::{Db, session_from_row, sq_query_map, sq_query_row};
 
 const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalidate=60";
 
@@ -208,7 +208,7 @@ pub async fn get_session_raw(
 
 #[cfg(test)]
 mod tests {
-    use super::{can_access_session_list, resolve_raw_body_source, RawBodySource};
+    use super::{RawBodySource, can_access_session_list, resolve_raw_body_source};
 
     #[test]
     fn session_list_access_rules_follow_public_feed_flag() {

@@ -570,11 +570,7 @@ fn convert_bubbles_to_events(
             let start = ti.client_start_time.or(ti.start_time)?;
             let end = ti.client_end_time.or(ti.end_time)?;
             let d = end - start;
-            if d > 0.0 {
-                Some(d as u64)
-            } else {
-                None
-            }
+            if d > 0.0 { Some(d as u64) } else { None }
         });
 
         match bubble.bubble_type {
@@ -989,9 +985,11 @@ mod tests {
             event.event_type,
             EventType::ToolCall { .. } | EventType::ShellCommand { .. }
         )));
-        assert!(events
-            .iter()
-            .any(|event| matches!(event.event_type, EventType::ToolResult { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event_type, EventType::ToolResult { .. }))
+        );
     }
 
     #[test]

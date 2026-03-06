@@ -3,8 +3,8 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use opensession_api::db;
 use opensession_api::SessionSummary;
+use opensession_api::db;
 
 /// Shared database state
 #[derive(Clone)]

@@ -356,11 +356,23 @@ mod tests {
     impl Drop for EnvVarRestore {
         fn drop(&mut self) {
             if let Some(ref previous) = self.previous {
-                std::env::set_var(self.key, previous);
+                set_env_for_test(self.key, previous);
             } else {
-                std::env::remove_var(self.key);
+                remove_env_for_test(self.key);
             }
         }
+    }
+
+    fn set_env_for_test(key: &str, value: impl AsRef<std::ffi::OsStr>) {
+        // SAFETY: these tests hold env_test_lock() while mutating process environment, so the
+        // mutation is serialized within the module and not concurrent with other test env access.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    fn remove_env_for_test(key: &str) {
+        // SAFETY: these tests hold env_test_lock() while mutating process environment, so the
+        // mutation is serialized within the module and not concurrent with other test env access.
+        unsafe { std::env::remove_var(key) };
     }
 
     #[test]
@@ -399,21 +411,29 @@ mod tests {
         std::fs::write(sessions_dir.join("summary.jsonl"), "{}\n").expect("summary");
         std::fs::write(sessions_dir.join("notes.jsonl"), "{}\n").expect("notes");
 
-        std::env::set_var("CODEX_HOME", &root);
+        set_env_for_test("CODEX_HOME", &root);
         let found = find_codex_sessions(Path::new("/this/home/path/does/not/exist"));
 
-        assert!(found
-            .iter()
-            .any(|path| path.ends_with(Path::new("rollout-1.jsonl"))));
-        assert!(found
-            .iter()
-            .any(|path| path.ends_with(Path::new("rollout.jsonl"))));
-        assert!(!found
-            .iter()
-            .any(|path| path.ends_with(Path::new("summary.jsonl"))));
-        assert!(!found
-            .iter()
-            .any(|path| path.ends_with(Path::new("notes.jsonl"))));
+        assert!(
+            found
+                .iter()
+                .any(|path| path.ends_with(Path::new("rollout-1.jsonl")))
+        );
+        assert!(
+            found
+                .iter()
+                .any(|path| path.ends_with(Path::new("rollout.jsonl")))
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|path| path.ends_with(Path::new("summary.jsonl")))
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|path| path.ends_with(Path::new("notes.jsonl")))
+        );
 
         std::fs::remove_dir_all(&root).ok();
         drop(restore);

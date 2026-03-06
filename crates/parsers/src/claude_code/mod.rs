@@ -58,7 +58,7 @@ impl ClaudeCodeParser {
 
 // Re-export pub(crate) items needed by incremental.rs
 pub(crate) use parse::{
-    parse_timestamp, process_assistant_entry, process_user_entry, RawConversationEntry, RawEntry,
+    RawConversationEntry, RawEntry, parse_timestamp, process_assistant_entry, process_user_entry,
 };
 
 pub fn is_claude_subagent_path(path: &Path) -> bool {

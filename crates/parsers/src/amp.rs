@@ -1,5 +1,5 @@
-use crate::common::set_first;
 use crate::SessionParser;
+use crate::common::set_first;
 use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 use opensession_core::trace::{

@@ -1,7 +1,8 @@
 [package]
 name = "opensession-worker"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.93"
 license = "MIT"
 description = "Cloudflare Workers backend for opensession.io"
 
@@ -22,8 +23,10 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
-collapsible_if = "warn"
+collapsible_else_if = "allow"
+collapsible_if = "allow"
 empty_line_after_doc_comments = "warn"
+field_reassign_with_default = "allow"
 needless_return = "warn"
 redundant_closure = "warn"
 single_match = "warn"

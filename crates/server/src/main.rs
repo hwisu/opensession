@@ -4,13 +4,13 @@ mod routes;
 mod storage;
 
 use axum::{
+    Router,
     extract::{DefaultBodyLimit, FromRef},
     http::{
-        header::{AUTHORIZATION, CONTENT_TYPE},
         HeaderName, HeaderValue, Method,
+        header::{AUTHORIZATION, CONTENT_TYPE},
     },
     routing::{delete, get, post, put},
-    Router,
 };
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};

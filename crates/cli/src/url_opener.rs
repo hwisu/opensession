@@ -1,5 +1,5 @@
-use crate::open_target::{read_repo_open_target, OpenTarget};
-use anyhow::{anyhow, bail, Context, Result};
+use crate::open_target::{OpenTarget, read_repo_open_target};
+use anyhow::{Context, Result, anyhow, bail};
 use opensession_core::object_store::global_store_root;
 use reqwest::Url;
 use std::fs;

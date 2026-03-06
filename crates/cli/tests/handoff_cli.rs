@@ -463,11 +463,13 @@ fn share_quick_auto_detects_origin_without_push_and_reports_state() {
         payload.get("remote_target").and_then(Value::as_str),
         Some("origin")
     );
-    assert!(payload
-        .get("push_cmd")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .contains("git push origin"));
+    assert!(
+        payload
+            .get("push_cmd")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("git push origin")
+    );
 }
 
 #[test]

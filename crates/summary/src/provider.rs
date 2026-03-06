@@ -507,8 +507,8 @@ fn find_json_object_slice(raw: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_summary_text, parse_ollama_list_output, parse_semantic_summary,
-        parse_semantic_summary_or_fallback, SemanticSummary,
+        SemanticSummary, normalize_summary_text, parse_ollama_list_output, parse_semantic_summary,
+        parse_semantic_summary_or_fallback,
     };
     use opensession_runtime_config::{SummaryOutputShape, SummaryResponseStyle, SummarySettings};
 

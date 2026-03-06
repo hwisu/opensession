@@ -1,11 +1,10 @@
 use opensession_api::{
-    crypto, db as dbq,
+    AuthRegisterRequest, AuthTokenResponse, CreateGitCredentialRequest, GitCredentialSummary,
+    IssueApiKeyResponse, ListGitCredentialsResponse, LoginRequest, LogoutRequest, OkResponse,
+    RefreshRequest, ServiceError, UserSettingsResponse, VerifyResponse, crypto, db as dbq,
     oauth::{self, AuthProvidersResponse, OAuthProviderConfig, OAuthProviderInfo},
     service,
     service::AuthToken,
-    AuthRegisterRequest, AuthTokenResponse, CreateGitCredentialRequest, GitCredentialSummary,
-    IssueApiKeyResponse, ListGitCredentialsResponse, LoginRequest, LogoutRequest, OkResponse,
-    RefreshRequest, ServiceError, UserSettingsResponse, VerifyResponse,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -92,11 +91,7 @@ struct GitCredentialSummaryRow {
 
 fn now_unix() -> u64 {
     let now = chrono::Utc::now().timestamp();
-    if now < 0 {
-        0
-    } else {
-        now as u64
-    }
+    if now < 0 { 0 } else { now as u64 }
 }
 
 fn now_sqlite_datetime() -> String {
@@ -286,9 +281,8 @@ async fn d1_first<T: for<'de> Deserialize<'de>>(
         .prepare(&sql)
         .bind(&values_to_js(&values))
         .map_err(|e| service_internal(context, e))?;
-    stmt.first(None)
-        .await
-        .map_err(|e| service_internal(context, e))
+    let result = stmt.first(None).await;
+    result.map_err(|e| service_internal(context, e))
 }
 
 async fn d1_all<T: for<'de> Deserialize<'de>>(
@@ -536,13 +530,10 @@ async fn fetch_json(
         .map_err(|e| service_internal(context, e))?;
 
     let req = Request::new_with_init(url, &init).map_err(|e| service_internal(context, e))?;
-    let mut resp = Fetch::Request(req)
-        .send()
-        .await
-        .map_err(|e| service_internal(context, e))?;
-    resp.json::<serde_json::Value>()
-        .await
-        .map_err(|e| service_internal(context, e))
+    let response = Fetch::Request(req).send().await;
+    let mut resp = response.map_err(|e| service_internal(context, e))?;
+    let json = resp.json::<serde_json::Value>().await;
+    json.map_err(|e| service_internal(context, e))
 }
 
 pub async fn providers(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -664,7 +655,7 @@ pub async fn login(mut req: Request, ctx: RouteContext<()>) -> Result<Response> 
             _ => {
                 return Err(opensession_api::ServiceError::Unauthorized(
                     "this account uses OAuth login, not email/password".into(),
-                ))
+                ));
             }
         };
 
@@ -836,7 +827,8 @@ pub async fn verify(req: Request, ctx: RouteContext<()>) -> Result<Response> {
         Err(err) => return service_internal("load d1 binding", err).into_err_response(),
     };
 
-    match authenticate(&req, &d1, &config).await {
+    let auth_result = authenticate(&req, &d1, &config).await;
+    match auth_result {
         Ok(user) => json_response(
             &VerifyResponse {
                 user_id: user.user_id,

@@ -8,7 +8,7 @@ use opensession_core::trace::{Agent, Event, SessionContext};
 use std::collections::HashMap;
 
 use crate::claude_code::{
-    parse_timestamp, process_assistant_entry, process_user_entry, RawConversationEntry, RawEntry,
+    RawConversationEntry, RawEntry, parse_timestamp, process_assistant_entry, process_user_entry,
 };
 use crate::common::ToolUseInfo;
 

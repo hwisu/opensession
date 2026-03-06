@@ -4,8 +4,8 @@
 //! into clean, typed ContentBlocks so the frontend can be a dumb renderer.
 
 use opensession_core::trace::{
-    Content, ContentBlock, ATTR_SEMANTIC_CALL_ID, ATTR_SEMANTIC_GROUP_ID, ATTR_SEMANTIC_TOOL_KIND,
-    ATTR_SOURCE_RAW_TYPE, ATTR_SOURCE_SCHEMA_VERSION,
+    ATTR_SEMANTIC_CALL_ID, ATTR_SEMANTIC_GROUP_ID, ATTR_SEMANTIC_TOOL_KIND, ATTR_SOURCE_RAW_TYPE,
+    ATTR_SOURCE_SCHEMA_VERSION, Content, ContentBlock,
 };
 use regex::Regex;
 use serde_json::Value;
@@ -354,8 +354,7 @@ mod tests {
 
     #[test]
     fn test_is_line_numbered_cat_n() {
-        let text =
-            "     1→use std::io;\n     2→\n     3→fn main() {\n     4→    println!(\"hello\");\n     5→}";
+        let text = "     1→use std::io;\n     2→\n     3→fn main() {\n     4→    println!(\"hello\");\n     5→}";
         assert!(is_line_numbered_output(text));
     }
 

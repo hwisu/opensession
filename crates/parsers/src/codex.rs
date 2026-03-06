@@ -1,8 +1,8 @@
-use crate::common::{
-    attach_semantic_attrs, attach_source_attrs, canonical_tool_name, infer_tool_kind, set_first,
-    INTERACTIVE_USER_INPUT_TOOL,
-};
 use crate::SessionParser;
+use crate::common::{
+    INTERACTIVE_USER_INPUT_TOOL, attach_semantic_attrs, attach_source_attrs, canonical_tool_name,
+    infer_tool_kind, set_first,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use opensession_core::session::{ATTR_PARENT_SESSION_ID, ATTR_SESSION_ROLE};

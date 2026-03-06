@@ -1,7 +1,7 @@
+use crate::SessionParser;
 use crate::common::{
     attach_semantic_attrs, attach_source_attrs, infer_tool_kind, normalize_role_label, set_first,
 };
-use crate::SessionParser;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use opensession_core::trace::{
@@ -1228,14 +1228,18 @@ mod tests {
 
         let parsed = parse_json(&path).expect("parse gemini json");
         assert_eq!(parsed.session_id, "parts-123");
-        assert!(parsed
-            .events
-            .iter()
-            .any(|e| matches!(e.event_type, EventType::UserMessage)));
-        assert!(parsed
-            .events
-            .iter()
-            .any(|e| matches!(e.event_type, EventType::AgentMessage)));
+        assert!(
+            parsed
+                .events
+                .iter()
+                .any(|e| matches!(e.event_type, EventType::UserMessage))
+        );
+        assert!(
+            parsed
+                .events
+                .iter()
+                .any(|e| matches!(e.event_type, EventType::AgentMessage))
+        );
         assert!(parsed.events.iter().all(|e| {
             e.attributes
                 .get("source.schema_version")

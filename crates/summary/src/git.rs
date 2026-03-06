@@ -453,8 +453,8 @@ fn diff_preview_lines(raw: &str, max_lines: usize, max_chars: usize) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_git_name_status, parse_git_numstat, GitCommandRunner, GitSummaryContext,
-        GitSummaryService,
+        GitCommandRunner, GitSummaryContext, GitSummaryService, parse_git_name_status,
+        parse_git_numstat,
     };
     use crate::types::HailCompactFileChange;
     use std::collections::HashMap;
@@ -616,7 +616,9 @@ mod tests {
                 ),
                 MockRunner::with(
                     &["status", "--short", "--untracked-files=normal"],
-                    Ok("M src/app.rs\nA new/file.rs\nD old/file.rs\n?? scratch.txt\nline5\nline6\nline7\nline8\n"),
+                    Ok(
+                        "M src/app.rs\nA new/file.rs\nD old/file.rs\n?? scratch.txt\nline5\nline6\nline7\nline8\n",
+                    ),
                 ),
             ]),
         };
@@ -633,14 +635,18 @@ mod tests {
         );
         assert_eq!(context.timeline_signals.len(), 7);
         assert_eq!(context.file_changes.len(), 4);
-        assert!(context
-            .file_changes
-            .iter()
-            .any(|change| change.path == "scratch.txt" && change.operation == "create"));
-        assert!(context
-            .file_changes
-            .iter()
-            .any(|change| change.path == "old/file.rs" && change.operation == "delete"));
+        assert!(
+            context
+                .file_changes
+                .iter()
+                .any(|change| change.path == "scratch.txt" && change.operation == "create")
+        );
+        assert!(
+            context
+                .file_changes
+                .iter()
+                .any(|change| change.path == "old/file.rs" && change.operation == "delete")
+        );
     }
 
     #[test]
@@ -716,9 +722,11 @@ mod tests {
             lines.first().map(String::as_str),
             Some("added.txt [create]")
         );
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("new file mode 100644")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("new file mode 100644"))
+        );
         assert!(lines.iter().any(|line| line.contains("+line-1")));
 
         std::fs::remove_dir_all(&repo_root).ok();

@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "131866ded42ae195306ef6c5619094475fe8694a"
+    ],
+    "head": "131866ded42ae195306ef6c5619094475fe8694a",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc0d8-2382-76c1-8612-113e35595f15",
+  "session_role": "auxiliary",
+  "stats": {
+    "duration_seconds": 149,
+    "event_count": 81,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 6,
+    "task_count": 1,
+    "tool_call_count": 0,
+    "total_input_tokens": 690710,
+    "total_output_tokens": 6915,
+    "user_message_count": 1
+  },
+  "title": "Inspect /Users/hwisookim/opensession for why desktop vector index rebuild tot...",
+  "tool": "codex"
+}

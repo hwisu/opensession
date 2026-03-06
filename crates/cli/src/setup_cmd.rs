@@ -1347,7 +1347,8 @@ fn daemon_status(pid_path: &std::path::Path) -> DaemonStatus {
 
 #[cfg(unix)]
 fn process_running(pid: u32) -> bool {
-    // kill(pid, 0) does not send a signal; it only checks process existence/permission.
+    // SAFETY: kill(pid, 0) does not deliver a signal. It is the standard Unix probe for
+    // process existence and permissions, and we pass the parsed PID value directly to libc.
     let rc = unsafe { libc::kill(pid as i32, 0) };
     if rc == 0 {
         return true;

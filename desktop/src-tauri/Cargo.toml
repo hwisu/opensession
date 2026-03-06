@@ -25,6 +25,9 @@ toml = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 base64 = "0.22"
 
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 collapsible_else_if = "allow"
@@ -34,5 +37,6 @@ field_reassign_with_default = "allow"
 needless_return = "warn"
 redundant_closure = "warn"
 single_match = "warn"
+undocumented_unsafe_blocks = "warn"
 
 [workspace]

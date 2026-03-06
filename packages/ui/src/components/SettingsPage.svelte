@@ -54,6 +54,13 @@ import type {
 	RuntimeQuickJumpLink,
 	SettingsSectionNavItem,
 } from './settings-page/models';
+import {
+	copyTextSurface,
+	loadGitCredentialsState,
+	loadRuntimeSettingsState,
+	loadSettingsPageState,
+	nextSettingsBackgroundPollDelay,
+} from '../models/settings-model';
 
 const {
 	onNavigate = (path: string) => {
@@ -899,59 +906,30 @@ function vectorStatusGuidance(): string[] {
 
 async function loadSettings() {
 	loading = true;
-	error = null;
-	authRequired = false;
-	try {
-		const capabilities = await getApiCapabilities();
-		authApiEnabled = capabilities.auth_enabled;
-	} catch {
-		authApiEnabled = false;
-	}
-
-	if (!authApiEnabled) {
-		settings = null;
-		credentials = [];
-		loading = false;
-		return;
-	}
-
-	if (!isAuthenticated()) {
-		authRequired = true;
-		loading = false;
-		return;
-	}
-
-	try {
-		settings = await getSettings();
-		await loadGitCredentials();
-	} catch (err) {
-		settings = null;
-		if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-			authRequired = true;
-		} else {
-			error = normalizeError(err, 'Failed to load settings');
-		}
-	} finally {
-		loading = false;
-	}
+	const result = await loadSettingsPageState({
+		getApiCapabilities,
+		isAuthenticated,
+		getSettings,
+		listGitCredentials,
+	});
+	authApiEnabled = result.authApiEnabled;
+	authRequired = result.authRequired;
+	settings = result.settings;
+	error = result.error;
+	credentials = result.credentials;
+	credentialsLoading = result.credentialsLoading;
+	credentialsError = result.credentialsError;
+	credentialsSupported = result.credentialsSupported;
+	loading = false;
 }
 
 async function loadGitCredentials() {
 	credentialsLoading = true;
-	credentialsError = null;
-	credentialsSupported = true;
-	try {
-		credentials = await listGitCredentials();
-	} catch (err) {
-		credentials = [];
-		if (err instanceof ApiError && err.status === 404) {
-			credentialsSupported = false;
-			return;
-		}
-		credentialsError = normalizeError(err, 'Failed to load git credentials');
-	} finally {
-		credentialsLoading = false;
-	}
+	const result = await loadGitCredentialsState({ listGitCredentials });
+	credentials = result.credentials;
+	credentialsLoading = result.credentialsLoading;
+	credentialsError = result.credentialsError;
+	credentialsSupported = result.credentialsSupported;
 }
 
 function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
@@ -1002,27 +980,28 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 
 async function loadRuntimeSettings() {
 	runtimeLoading = true;
-	runtimeError = null;
-	runtimeVectorError = null;
-	runtimeSupported = true;
-	try {
-		const settings = await getRuntimeSettings();
-		runtimeSettings = settings;
-		applyRuntimeSettingsToDraft(settings);
-		await refreshLifecycleCleanupStatus();
-		await refreshSummaryBatchStatus();
-		await refreshVectorPreflight();
-		await refreshVectorIndexStatus();
-	} catch (err) {
-		runtimeSettings = null;
-		if (err instanceof ApiError && err.status === 501) {
-			runtimeSupported = false;
-		} else {
-			runtimeError = normalizeError(err, 'Failed to load runtime settings');
-		}
-	} finally {
-		runtimeLoading = false;
+	const result = await loadRuntimeSettingsState({
+		getRuntimeSettings,
+		getLifecycleCleanupStatus,
+		getSummaryBatchStatus,
+		vectorPreflight,
+		vectorIndexStatus,
+	});
+	runtimeSettings = result.runtimeSettings;
+	runtimeSupported = result.runtimeSupported;
+	runtimeError = result.runtimeError;
+	runtimeVectorError = result.runtimeVectorError;
+	runtimeLifecycleStatus = result.runtimeLifecycleStatus;
+	runtimeSummaryBatchStatus = result.runtimeSummaryBatchStatus;
+	runtimeVectorPreflight = result.runtimeVectorPreflight;
+	runtimeVectorIndex = result.runtimeVectorIndex;
+	runtimeVectorInstalling = result.runtimeVectorInstalling;
+	runtimeVectorReindexing = result.runtimeVectorReindexing;
+	runtimeSummaryBatchRunning = result.runtimeSummaryBatchRunning;
+	if (runtimeSettings) {
+		applyRuntimeSettingsToDraft(runtimeSettings);
 	}
+	runtimeLoading = false;
 }
 
 async function refreshLifecycleCleanupStatus(surfaceError: boolean = true): Promise<boolean> {
@@ -1405,13 +1384,31 @@ async function handleIssueApiKey() {
 }
 
 async function copyApiKey() {
-	if (!issuedApiKey) return;
-	try {
-		await navigator.clipboard.writeText(issuedApiKey);
-		copyMessage = 'Copied';
-	} catch {
-		copyMessage = 'Copy failed';
-	}
+	copyMessage = await copyTextSurface(
+		{
+			writeText: async (text) => {
+				if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+					throw new Error('clipboard unavailable');
+				}
+				await navigator.clipboard.writeText(text);
+			},
+		},
+		issuedApiKey,
+	);
+}
+
+function currentBackgroundPollState() {
+	return {
+		runtimeSupported,
+		runtimeLifecycleEnabled,
+		runtimeVectorInstalling,
+		runtimeVectorPreflight,
+		runtimeVectorReindexing,
+		runtimeVectorIndex,
+		runtimeSummaryBatchRunning,
+		runtimeSummaryBatchStatus,
+		runtimeLifecycleStatus,
+	};
 }
 
 async function handleCreateCredential() {
@@ -1458,16 +1455,12 @@ $effect(() => {
 });
 
 $effect(() => {
-	const hasActiveBackgroundJob =
-		runtimeVectorInstalling ||
-		isVectorInstallRunning(runtimeVectorPreflight) ||
-		runtimeVectorReindexing ||
-		isVectorIndexRunning(runtimeVectorIndex) ||
-		runtimeSummaryBatchRunning ||
-		isSummaryBatchRunning(runtimeSummaryBatchStatus) ||
-		isLifecycleCleanupRunning(runtimeLifecycleStatus);
-	const shouldPoll = runtimeSupported && (hasActiveBackgroundJob || runtimeLifecycleEnabled);
-	if (!shouldPoll) {
+	const initialDelay = nextSettingsBackgroundPollDelay(
+		currentBackgroundPollState(),
+		BACKGROUND_JOB_POLL_INTERVAL_MS,
+		BACKGROUND_STATUS_POLL_INTERVAL_MS,
+	);
+	if (initialDelay == null) {
 		return;
 	}
 
@@ -1489,20 +1482,16 @@ $effect(() => {
 			await refreshLifecycleCleanupStatus(false);
 		}
 		if (cancelled) return;
-		timer = window.setTimeout(
-			poll,
-			hasActiveBackgroundJob
-				? BACKGROUND_JOB_POLL_INTERVAL_MS
-				: BACKGROUND_STATUS_POLL_INTERVAL_MS,
+		const nextDelay = nextSettingsBackgroundPollDelay(
+			currentBackgroundPollState(),
+			BACKGROUND_JOB_POLL_INTERVAL_MS,
+			BACKGROUND_STATUS_POLL_INTERVAL_MS,
 		);
+		if (nextDelay == null) return;
+		timer = window.setTimeout(poll, nextDelay);
 	};
 
-	timer = window.setTimeout(
-		poll,
-		hasActiveBackgroundJob
-			? BACKGROUND_JOB_POLL_INTERVAL_MS
-			: BACKGROUND_STATUS_POLL_INTERVAL_MS,
-	);
+	timer = window.setTimeout(poll, initialDelay);
 
 	return () => {
 		cancelled = true;

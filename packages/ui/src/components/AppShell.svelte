@@ -2,13 +2,13 @@
 import type { Snippet } from 'svelte';
 import { tick } from 'svelte';
 import {
-	ApiError,
 	authLogout,
 	getApiCapabilities,
 	getSettings,
 	isAuthenticated,
 	verifyAuth,
 } from '../api';
+import { createShellModel, createShellModelState } from '../models/app-shell-model';
 import type { UserSettings } from '../types';
 import ThemeToggle from './ThemeToggle.svelte';
 
@@ -46,22 +46,16 @@ const {
 	onNavigate?: (path: string) => void;
 } = $props();
 
-let user = $state<UserSettings | null>(null);
-let paletteOpen = $state(false);
-let paletteQuery = $state('');
-let paletteSelectionIndex = $state(0);
+const shellState = $state(createShellModelState());
 let paletteInput: HTMLInputElement | undefined = $state();
-let helpOpen = $state(false);
 let helpDialog: HTMLDivElement | undefined = $state();
-let accountMenuOpen = $state(false);
 let accountMenuRoot: HTMLDivElement | undefined = $state();
-let authEnabled = $state(false);
-let hasLocalAuth = $state(false);
-let desktopRuntime = $state(false);
 
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/sessions');
-const showLoginLink = $derived(!hasLocalAuth && (!desktopRuntime || authEnabled));
+const showLoginLink = $derived(
+	!shellState.hasLocalAuth && (!shellState.desktopRuntime || shellState.authEnabled),
+);
 
 function trimNonEmpty(value: string | null | undefined): string | null {
 	if (typeof value !== 'string') return null;
@@ -118,69 +112,51 @@ function getDesktopInvoke(): DesktopInvoke | null {
 	return typeof invoke === 'function' ? invoke : null;
 }
 
+const shellModel = createShellModel(shellState, {
+	getApiCapabilities,
+	verifyAuth,
+	getSettings,
+	authLogout,
+	isAuthenticated,
+	isDesktopRuntime: () => {
+		if (typeof window === 'undefined') return false;
+		const desktopWindow = window as DesktopWindow;
+		return '__TAURI_INTERNALS__' in desktopWindow || desktopWindow.location.protocol === 'tauri:';
+	},
+	takeLaunchRoute: async () => {
+		const invoke = getDesktopInvoke();
+		if (!invoke) return null;
+		const maybeRoute = await invoke<unknown>('desktop_take_launch_route');
+		return typeof maybeRoute === 'string' ? maybeRoute : null;
+	},
+	getCurrentLocationPath: () => {
+		if (typeof window === 'undefined') return currentPath;
+		return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+	},
+	startInterval: (callback, ms) => window.setInterval(callback, ms),
+	clearInterval: (handle) => {
+		window.clearInterval(handle as number);
+	},
+	navigate: (path) => onNavigate(path),
+});
+
 const navLinks = $derived.by(() => {
 	const links: Array<{ href: string; label: string }> = [{ href: '/sessions', label: 'Sessions' }];
 	links.push({ href: '/docs', label: 'Docs' });
-	if (desktopRuntime || hasLocalAuth) {
+	if (shellState.desktopRuntime || shellState.hasLocalAuth) {
 		links.push({ href: '/settings', label: 'Settings' });
 	}
 	return links;
 });
 
 $effect(() => {
-	let cancelled = false;
-	if (typeof window !== 'undefined') {
-		const desktopWindow = window as DesktopWindow;
-		desktopRuntime =
-			'__TAURI_INTERNALS__' in desktopWindow || desktopWindow.location.protocol === 'tauri:';
-	}
-	getApiCapabilities()
-		.then((capabilities) => {
-			if (cancelled) return;
-			authEnabled = capabilities.auth_enabled;
-		})
-		.catch(() => {
-			if (cancelled) return;
-			authEnabled = false;
-		});
-
-	return () => {
-		cancelled = true;
-	};
+	void shellModel.loadCapabilities();
 });
 
 $effect(() => {
-	if (!desktopRuntime || typeof window === 'undefined') return;
-	const invoke = getDesktopInvoke();
-	if (!invoke) return;
-
-	let cancelled = false;
-	let commandSupported = true;
-
-	const pollLaunchRoute = async () => {
-		if (cancelled || !commandSupported) return;
-		try {
-			const maybeRoute = await invoke<unknown>('desktop_take_launch_route');
-			if (typeof maybeRoute !== 'string' || maybeRoute.trim().length === 0) return;
-			const nextPath = maybeRoute.trim();
-			const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-			if (nextPath === currentPath) return;
-			onNavigate(nextPath);
-		} catch {
-			// Older desktop runtimes may not implement this command yet.
-			commandSupported = false;
-		}
-	};
-
-	void pollLaunchRoute();
-	const timer = window.setInterval(() => {
-		void pollLaunchRoute();
-	}, 1200);
-
-	return () => {
-		cancelled = true;
-		window.clearInterval(timer);
-	};
+	void shellState.desktopRuntime;
+	if (!shellState.desktopRuntime) return;
+	return shellModel.startLaunchRoutePolling();
 });
 
 const shortcutHints = $derived.by(() => {
@@ -204,61 +180,13 @@ const shortcutHints = $derived.by(() => {
 
 $effect(() => {
 	void currentPath;
-	if (!authEnabled) {
-		user = null;
-		hasLocalAuth = false;
-		accountMenuOpen = false;
-		return;
-	}
-
-	if (!isAuthenticated()) {
-		user = null;
-		hasLocalAuth = false;
-		accountMenuOpen = false;
-		return;
-	}
-
-	let cancelled = false;
-	verifyAuth()
-		.then(async (ok) => {
-			if (!ok || cancelled) {
-				user = null;
-				hasLocalAuth = false;
-				accountMenuOpen = false;
-				return;
-			}
-			try {
-				const settings = await getSettings();
-				if (!cancelled) {
-					user = settings;
-					hasLocalAuth = true;
-				}
-			} catch (e) {
-				if (cancelled) return;
-				user = null;
-				hasLocalAuth = false;
-				accountMenuOpen = false;
-				if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-					await authLogout();
-				}
-			}
-		})
-		.catch(() => {
-			if (!cancelled) {
-				user = null;
-				hasLocalAuth = false;
-				accountMenuOpen = false;
-			}
-		});
-
-	return () => {
-		cancelled = true;
-	};
+	void shellState.authEnabled;
+	void shellModel.loadUser();
 });
 
 $effect(() => {
 	void currentPath;
-	accountMenuOpen = false;
+	shellModel.resetMenusForPath();
 });
 
 function createPaletteCommand(
@@ -293,7 +221,7 @@ const allPaletteCommands = $derived.by(() => {
 		),
 	];
 
-	if (!hasLocalAuth && (!desktopRuntime || authEnabled)) {
+	if (!shellState.hasLocalAuth && (!shellState.desktopRuntime || shellState.authEnabled)) {
 		commands.push(
 			createPaletteCommand(
 				'go-login',
@@ -304,7 +232,7 @@ const allPaletteCommands = $derived.by(() => {
 			),
 		);
 	}
-	if (hasLocalAuth || desktopRuntime) {
+	if (shellState.hasLocalAuth || shellState.desktopRuntime) {
 		commands.push(
 			createPaletteCommand(
 				'go-settings',
@@ -343,7 +271,7 @@ const allPaletteCommands = $derived.by(() => {
 	return commands;
 });
 
-const normalizedPaletteQuery = $derived(paletteQuery.trim().toLowerCase());
+const normalizedPaletteQuery = $derived(shellState.paletteQuery.trim().toLowerCase());
 const visiblePaletteCommands = $derived.by(() => {
 	if (!normalizedPaletteQuery) return allPaletteCommands;
 
@@ -357,18 +285,11 @@ const visiblePaletteCommands = $derived.by(() => {
 
 $effect(() => {
 	void normalizedPaletteQuery;
-	paletteSelectionIndex = 0;
+	shellModel.resetPaletteSelection();
 });
 
 $effect(() => {
-	const max = visiblePaletteCommands.length - 1;
-	if (max < 0) {
-		paletteSelectionIndex = 0;
-		return;
-	}
-	if (paletteSelectionIndex > max) {
-		paletteSelectionIndex = max;
-	}
+	shellModel.clampPaletteSelection(visiblePaletteCommands.length - 1);
 });
 
 function isLinkActive(href: string): boolean {
@@ -391,24 +312,21 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 async function openPalette() {
-	paletteOpen = true;
-	paletteQuery = '';
-	paletteSelectionIndex = 0;
+	shellModel.openPalette();
 	await tick();
 	paletteInput?.focus();
 }
 
 function closePalette() {
-	paletteOpen = false;
-	paletteQuery = '';
+	shellModel.closePalette();
 }
 
 function openHelp() {
-	helpOpen = true;
+	shellModel.openHelp();
 }
 
 function closeHelp() {
-	helpOpen = false;
+	shellModel.closeHelp();
 }
 
 function trapHelpFocus(e: KeyboardEvent) {
@@ -436,15 +354,15 @@ function trapHelpFocus(e: KeyboardEvent) {
 }
 
 function closeAccountMenu() {
-	accountMenuOpen = false;
+	shellModel.closeAccountMenu();
 }
 
 function toggleAccountMenu() {
-	accountMenuOpen = !accountMenuOpen;
+	shellModel.toggleAccountMenu();
 }
 
 function handleWindowPointerDown(e: MouseEvent) {
-	if (!accountMenuOpen) return;
+	if (!shellState.accountMenuOpen) return;
 	const target = e.target;
 	if (!(target instanceof Node)) return;
 	if (accountMenuRoot?.contains(target)) return;
@@ -458,9 +376,7 @@ function executePaletteCommand(command: PaletteCommand | undefined) {
 }
 
 function movePaletteSelection(direction: 1 | -1) {
-	const len = visiblePaletteCommands.length;
-	if (len === 0) return;
-	paletteSelectionIndex = (paletteSelectionIndex + direction + len) % len;
+	shellModel.movePaletteSelection(direction, visiblePaletteCommands.length);
 }
 
 function handlePaletteInputKeydown(e: KeyboardEvent) {
@@ -476,7 +392,7 @@ function handlePaletteInputKeydown(e: KeyboardEvent) {
 	}
 	if (e.key === 'Enter') {
 		e.preventDefault();
-		executePaletteCommand(visiblePaletteCommands[paletteSelectionIndex]);
+		executePaletteCommand(visiblePaletteCommands[shellState.paletteSelectionIndex]);
 		return;
 	}
 	if (e.key === 'Escape') {
@@ -486,15 +402,11 @@ function handlePaletteInputKeydown(e: KeyboardEvent) {
 }
 
 async function handleSignOut() {
-	closeAccountMenu();
-	await authLogout();
-	user = null;
-	hasLocalAuth = false;
-	onNavigate('/sessions');
+	await shellModel.signOut();
 }
 
 function handleAccountMenuNavigate(path: string) {
-	closeAccountMenu();
+	shellModel.closeAccountMenu();
 	onNavigate(path);
 }
 
@@ -502,14 +414,14 @@ function handleGlobalKey(e: KeyboardEvent) {
 	if (isHelpShortcut(e)) {
 		if (isEditableTarget(e.target)) return;
 		e.preventDefault();
-		if (helpOpen) closeHelp();
+		if (shellState.helpOpen) closeHelp();
 		else openHelp();
 		return;
 	}
 
 	if (isPaletteShortcut(e)) {
 		e.preventDefault();
-		if (paletteOpen) {
+		if (shellState.paletteOpen) {
 			closePalette();
 		} else {
 			void openPalette();
@@ -517,7 +429,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 		return;
 	}
 
-	if (helpOpen) {
+	if (shellState.helpOpen) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			closeHelp();
@@ -527,13 +439,13 @@ function handleGlobalKey(e: KeyboardEvent) {
 		return;
 	}
 
-	if (accountMenuOpen && e.key === 'Escape') {
+	if (shellState.accountMenuOpen && e.key === 'Escape') {
 		e.preventDefault();
 		closeAccountMenu();
 		return;
 	}
 
-	if (paletteOpen) {
+	if (shellState.paletteOpen) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			closePalette();
@@ -572,20 +484,20 @@ function handleGlobalKey(e: KeyboardEvent) {
 				{/each}
 			</div>
 
-			{#if hasLocalAuth}
+			{#if shellState.hasLocalAuth}
 				<div class="relative shrink-0" bind:this={accountMenuRoot}>
 					<button
 						type="button"
 						data-testid="account-menu-trigger"
-						aria-expanded={accountMenuOpen}
+						aria-expanded={shellState.accountMenuOpen}
 						aria-haspopup="menu"
 						onclick={toggleAccountMenu}
 						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
 					>
-						[{navAccountHandle(user)}]
+						[{navAccountHandle(shellState.user)}]
 					</button>
 
-						{#if accountMenuOpen}
+						{#if shellState.accountMenuOpen}
 							<div
 								role="menu"
 								aria-label="Account menu"
@@ -594,14 +506,14 @@ function handleGlobalKey(e: KeyboardEvent) {
 							>
 							<div class="border-b border-border px-3 py-2">
 								<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">Account</p>
-								<p class="mt-1 text-sm font-medium text-text-primary">{user?.nickname}</p>
-								<p class="text-xs text-text-secondary">{user?.email ?? 'email not linked'}</p>
+								<p class="mt-1 text-sm font-medium text-text-primary">{shellState.user?.nickname}</p>
+								<p class="text-xs text-text-secondary">{shellState.user?.email ?? 'email not linked'}</p>
 							</div>
 
 							<div class="border-b border-border px-3 py-2 text-xs text-text-secondary">
-								<p>User ID: <span class="text-text-primary">{user?.user_id}</span></p>
-								<p>Joined: <span class="text-text-primary">{shortDate(user?.created_at)}</span></p>
-								<p>Providers: <span class="text-text-primary">{linkedProvidersLabel(user)}</span></p>
+								<p>User ID: <span class="text-text-primary">{shellState.user?.user_id}</span></p>
+								<p>Joined: <span class="text-text-primary">{shortDate(shellState.user?.created_at)}</span></p>
+								<p>Providers: <span class="text-text-primary">{linkedProvidersLabel(shellState.user)}</span></p>
 							</div>
 
 								<div class="border-b border-border px-2 py-1">
@@ -687,7 +599,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 	</footer>
 </div>
 
-{#if paletteOpen}
+{#if shellState.paletteOpen}
 	<div class="fixed inset-0 z-50 p-4">
 		<button
 			type="button"
@@ -706,7 +618,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 			<div class="border-b border-border px-3 py-2">
 				<input
 					bind:this={paletteInput}
-					bind:value={paletteQuery}
+					bind:value={shellState.paletteQuery}
 					onkeydown={handlePaletteInputKeydown}
 					data-testid="command-palette-input"
 					type="text"
@@ -722,8 +634,8 @@ function handleGlobalKey(e: KeyboardEvent) {
 						<button
 							type="button"
 							class="flex w-full items-start justify-between gap-3 border-b border-border/60 px-3 py-2 text-left"
-							class:bg-bg-secondary={idx === paletteSelectionIndex}
-							class:hover:bg-bg-secondary={idx !== paletteSelectionIndex}
+							class:bg-bg-secondary={idx === shellState.paletteSelectionIndex}
+							class:hover:bg-bg-secondary={idx !== shellState.paletteSelectionIndex}
 							onclick={() => executePaletteCommand(command)}
 						>
 							<span>
@@ -743,7 +655,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 	</div>
 {/if}
 
-{#if helpOpen}
+{#if shellState.helpOpen}
 	<div class="fixed inset-0 z-50 p-4">
 		<button
 			type="button"

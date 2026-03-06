@@ -108,8 +108,22 @@ export { formatDuration, formatTimestamp, getToolConfig, TOOL_CONFIGS } from './
 export type { FileStats } from './utils';
 export { computeFileStats, formatFullDate, getDisplayTitle, stripTags } from './utils';
 export {
+	createShellModel,
+	createShellModelState,
+	type ShellModelState,
+} from './models/app-shell-model';
+export {
 	createSourcePreviewModel,
 	createSourcePreviewModelState,
 	type SourcePreviewLocation,
 	type SourcePreviewModelState,
 } from './models/source-preview-model';
+export {
+	copyTextSurface,
+	loadGitCredentialsState,
+	loadRuntimeSettingsState,
+	loadSettingsPageState,
+	nextSettingsBackgroundPollDelay,
+	type RuntimeSettingsLoadResult,
+	type SettingsPageLoadResult,
+} from './models/settings-model';

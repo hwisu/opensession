@@ -4,9 +4,10 @@
     "commits": [
       "fdbcd3a6dafc6a9bbaed5901a553ff1021ad2a78",
       "243287c49459e251cc5b4ef05846e942418e1f4d",
-      "9e8cfa597acc91f15b3207676c6e2db7cb3b5814"
+      "9e8cfa597acc91f15b3207676c6e2db7cb3b5814",
+      "bf7d505805dd45cc54dd2e064757fbab2dec2bd2"
     ],
-    "head": "9e8cfa597acc91f15b3207676c6e2db7cb3b5814",
+    "head": "bf7d505805dd45cc54dd2e064757fbab2dec2bd2",
     "remote": "https://github.com/hwisu/opensession.git",
     "repo_name": "hwisu/opensession"
   },
@@ -15,17 +16,17 @@
   "session_id": "019cc0d7-8481-7271-8314-175963aba95a",
   "session_role": "primary",
   "stats": {
-    "duration_seconds": 9122,
-    "event_count": 2139,
-    "files_changed": 5,
+    "duration_seconds": 13519,
+    "event_count": 4117,
+    "files_changed": 17,
     "lines_added": 0,
     "lines_removed": 0,
-    "message_count": 181,
-    "task_count": 13,
-    "tool_call_count": 215,
-    "total_input_tokens": 67850219,
-    "total_output_tokens": 187863,
-    "user_message_count": 13
+    "message_count": 339,
+    "task_count": 21,
+    "tool_call_count": 351,
+    "total_input_tokens": 124155581,
+    "total_output_tokens": 373684,
+    "user_message_count": 21
   },
   "title": "Rebuilding vector index\nSession embeddings are being rebuilt in background.\n\n...",
   "tool": "codex"

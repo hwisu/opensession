@@ -2,9 +2,9 @@
   "git": {
     "branch": "codex/effect-srp-refactor",
     "commits": [
-      "dba83dc1d961d141585e3a05924132f9d07a5873"
+      "eaeac8750eb10320a36b80df98b61c82c46b71bc"
     ],
-    "head": "dba83dc1d961d141585e3a05924132f9d07a5873",
+    "head": "eaeac8750eb10320a36b80df98b61c82c46b71bc",
     "remote": "https://github.com/hwisu/opensession.git",
     "repo_name": "hwisu/opensession"
   },

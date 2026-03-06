@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "codex/effect-srp-refactor",
+    "commits": [
+      "fe6baa7429830d5a389e83a3d6f19bea8156a7a4"
+    ],
+    "head": "fe6baa7429830d5a389e83a3d6f19bea8156a7a4",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc1ff-3b91-74e1-a038-f439d4f8e498",
+  "session_role": "auxiliary",
+  "stats": {
+    "duration_seconds": 201,
+    "event_count": 119,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 7,
+    "task_count": 1,
+    "tool_call_count": 0,
+    "total_input_tokens": 855570,
+    "total_output_tokens": 10034,
+    "user_message_count": 1
+  },
+  "title": "In /Users/hwisookim/opensession, summarize the current product/runtime concep...",
+  "tool": "codex"
+}

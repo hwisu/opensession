@@ -438,6 +438,7 @@ function isLowSignalStandaloneEvent(event: Event): boolean {
 		typeName !== 'UserMessage' &&
 		typeName !== 'AgentMessage' &&
 		typeName !== 'Thinking' &&
+		typeName !== 'ToolCall' &&
 		typeName !== 'ToolResult' &&
 		typeName !== 'SystemMessage' &&
 		typeName !== 'Custom'

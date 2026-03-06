@@ -876,6 +876,32 @@ pub struct DesktopRuntimeLifecycleSettingsUpdate {
     pub cleanup_interval_secs: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub enum DesktopLifecycleCleanupState {
+    Idle,
+    Running,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct DesktopLifecycleCleanupStatusResponse {
+    pub state: DesktopLifecycleCleanupState,
+    pub deleted_sessions: u32,
+    pub deleted_summaries: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export))]
@@ -1841,6 +1867,8 @@ mod tests {
             DesktopRuntimeChangeReaderSettingsUpdate,
             DesktopRuntimeLifecycleSettings,
             DesktopRuntimeLifecycleSettingsUpdate,
+            DesktopLifecycleCleanupState,
+            DesktopLifecycleCleanupStatusResponse,
             DesktopVectorPreflightResponse,
             DesktopVectorInstallStatusResponse,
             DesktopVectorIndexStatusResponse,

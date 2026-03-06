@@ -145,6 +145,17 @@ pub struct SummaryBatchJobRow {
     pub finished_at: Option<String>,
 }
 
+/// Lifecycle cleanup progress/status snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleCleanupJobRow {
+    pub status: String,
+    pub deleted_sessions: u32,
+    pub deleted_summaries: u32,
+    pub message: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
 fn infer_tool_from_source_path(source_path: Option<&str>) -> Option<&'static str> {
     let source_path = source_path.map(|path| path.to_ascii_lowercase())?;
 
@@ -1436,6 +1447,53 @@ impl LocalDb {
         Ok(row)
     }
 
+    pub fn set_lifecycle_cleanup_job(&self, payload: &LifecycleCleanupJobRow) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO lifecycle_cleanup_jobs \
+             (id, status, deleted_sessions, deleted_summaries, message, started_at, finished_at, updated_at) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, datetime('now')) \
+             ON CONFLICT(id) DO UPDATE SET \
+             status=excluded.status, \
+             deleted_sessions=excluded.deleted_sessions, \
+             deleted_summaries=excluded.deleted_summaries, \
+             message=excluded.message, \
+             started_at=excluded.started_at, \
+             finished_at=excluded.finished_at, \
+             updated_at=datetime('now')",
+            params![
+                payload.status,
+                payload.deleted_sessions as i64,
+                payload.deleted_summaries as i64,
+                payload.message,
+                payload.started_at,
+                payload.finished_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_lifecycle_cleanup_job(&self) -> Result<Option<LifecycleCleanupJobRow>> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT status, deleted_sessions, deleted_summaries, message, started_at, finished_at \
+                 FROM lifecycle_cleanup_jobs WHERE id = 1 LIMIT 1",
+                [],
+                |row| {
+                    Ok(LifecycleCleanupJobRow {
+                        status: row.get(0)?,
+                        deleted_sessions: row.get::<_, i64>(1)?.max(0) as u32,
+                        deleted_summaries: row.get::<_, i64>(2)?.max(0) as u32,
+                        message: row.get(3)?,
+                        started_at: row.get(4)?,
+                        finished_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     // ── Sync cursor ────────────────────────────────────────────────────
 
     pub fn get_sync_cursor(&self, team_id: &str) -> Result<Option<String>> {
@@ -2538,10 +2596,14 @@ mod tests {
             migration_names.contains(&"local_0004_summary_batch_status"),
             "expected local_0004_summary_batch_status migration from opensession-api"
         );
+        assert!(
+            migration_names.contains(&"local_0005_lifecycle_cleanup_status"),
+            "expected local_0005_lifecycle_cleanup_status migration from opensession-api"
+        );
         assert_eq!(
             migration_names.len(),
-            4,
-            "local schema should include baseline + summary cache + vector index + summary batch status steps"
+            5,
+            "local schema should include baseline + summary cache + vector index + summary batch status + lifecycle cleanup status steps"
         );
 
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -3425,6 +3487,30 @@ mod tests {
         assert_eq!(loaded.total_sessions, 12);
         assert_eq!(loaded.failed_sessions, 1);
         assert_eq!(loaded.message.as_deref(), Some("processing summaries"));
+    }
+
+    #[test]
+    fn test_lifecycle_cleanup_job_round_trip() {
+        let db = test_db();
+        let payload = LifecycleCleanupJobRow {
+            status: "complete".to_string(),
+            deleted_sessions: 3,
+            deleted_summaries: 7,
+            message: Some("cleanup complete".to_string()),
+            started_at: Some("2026-03-06T01:00:00Z".to_string()),
+            finished_at: Some("2026-03-06T01:00:04Z".to_string()),
+        };
+        db.set_lifecycle_cleanup_job(&payload)
+            .expect("set lifecycle cleanup job snapshot");
+
+        let loaded = db
+            .get_lifecycle_cleanup_job()
+            .expect("read lifecycle cleanup job snapshot")
+            .expect("lifecycle cleanup row should exist");
+        assert_eq!(loaded.status, "complete");
+        assert_eq!(loaded.deleted_sessions, 3);
+        assert_eq!(loaded.deleted_summaries, 7);
+        assert_eq!(loaded.message.as_deref(), Some("cleanup complete"));
     }
 
     #[test]

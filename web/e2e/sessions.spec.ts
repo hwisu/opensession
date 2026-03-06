@@ -525,6 +525,100 @@ test.describe('Sessions', () => {
 		await expect(page.locator('[data-timeline-idx]')).toHaveCount(1);
 	});
 
+	test('session detail native view hides low-signal tool call dot rows', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Native Dot Filter ${crypto.randomUUID().slice(0, 8)}`,
+			tool: 'codex',
+			provider: 'openai',
+			model: 'gpt-5',
+		});
+		const now = new Date().toISOString();
+		const rawJsonl = [
+			JSON.stringify({
+				type: 'header',
+				version: 'hail-1.0.0',
+				session_id: fixture.id,
+				agent: {
+					provider: 'openai',
+					model: 'gpt-5',
+					tool: 'codex',
+				},
+				context: {
+					title: fixture.title,
+					description: 'native dot filter regression',
+					tags: ['e2e', 'codex'],
+					created_at: now,
+					updated_at: now,
+					related_session_ids: [],
+					attributes: {},
+				},
+			}),
+			JSON.stringify({
+				type: 'event',
+				event_id: crypto.randomUUID(),
+				timestamp: now,
+				event_type: { type: 'ShellCommand', data: { command: 'pwd' } },
+				task_id: null,
+				content: {
+					blocks: [
+						{ type: 'Text', text: 'Run pwd' },
+						{ type: 'Code', code: 'pwd', language: 'bash' },
+					],
+				},
+				duration_ms: null,
+				attributes: {},
+			}),
+			JSON.stringify({
+				type: 'event',
+				event_id: crypto.randomUUID(),
+				timestamp: new Date(Date.now() + 1000).toISOString(),
+				event_type: { type: 'ToolCall', data: { name: 'unknown_tool' } },
+				task_id: null,
+				content: { blocks: [{ type: 'Text', text: '.' }] },
+				duration_ms: null,
+				attributes: {},
+			}),
+			JSON.stringify({
+				type: 'event',
+				event_id: crypto.randomUUID(),
+				timestamp: new Date(Date.now() + 2000).toISOString(),
+				event_type: {
+					type: 'ToolResult',
+					data: { name: 'exec_command', is_error: false, call_id: 'call-1' },
+				},
+				task_id: null,
+				content: { blocks: [{ type: 'Text', text: 'Chunk ID: 6978d4' }] },
+				duration_ms: null,
+				attributes: {},
+			}),
+			JSON.stringify({
+				type: 'stats',
+				event_count: 3,
+				message_count: 0,
+				tool_call_count: 2,
+				task_count: 0,
+				duration_seconds: 2,
+				total_input_tokens: 0,
+				total_output_tokens: 0,
+				user_message_count: 0,
+				files_changed: 0,
+				lines_added: 0,
+				lines_removed: 0,
+			}),
+		].join('\n');
+
+		await mockSessionApis(page, {
+			...fixture,
+			raw_jsonl: `${rawJsonl}\n`,
+		});
+
+		await page.goto(`/session/${fixture.id}`);
+		await page.getByRole('tab', { name: 'Native (codex)' }).click();
+		await expect(page.getByText('Chunk ID: 6978d4')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByText('.', { exact: true })).toHaveCount(0);
+		await expect(page.locator('[data-timeline-idx]')).toHaveCount(2);
+	});
+
 	test('desktop runtime handoff build uses invoke bridge and shows artifact uri', async ({
 		page,
 	}) => {

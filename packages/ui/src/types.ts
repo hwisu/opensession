@@ -109,6 +109,8 @@ export type {
 	DesktopContractVersionResponse,
 	DesktopHandoffBuildRequest,
 	DesktopHandoffBuildResponse,
+	DesktopLifecycleCleanupState,
+	DesktopLifecycleCleanupStatusResponse,
 	DesktopQuickShareRequest,
 	DesktopQuickShareResponse,
 	DesktopRuntimeChangeReaderVoiceSettings,

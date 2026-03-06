@@ -203,6 +203,33 @@ test('prepareTimelineEvents filters low-signal tool result dot events in code bl
 	);
 });
 
+test('prepareTimelineEvents filters low-signal tool call dot events', () => {
+	const events: Event[] = [
+		textEvent({
+			id: 'call-dot',
+			type: {
+				type: 'ToolCall',
+				data: { name: 'unknown_tool' },
+			},
+			text: '.',
+		}),
+		textEvent({
+			id: 'result-ok',
+			type: {
+				type: 'ToolResult',
+				data: { name: 'exec_command', is_error: false, call_id: 'call-1' },
+			},
+			text: 'Chunk ID: 6978d4',
+		}),
+	];
+
+	const prepared = prepareTimelineEvents(events);
+	assert.deepEqual(
+		prepared.map((event) => event.event_id),
+		['result-ok'],
+	);
+});
+
 test('prepareTimelineEvents keeps tool result code blocks when they include meaningful lines', () => {
 	const events: Event[] = [
 		{

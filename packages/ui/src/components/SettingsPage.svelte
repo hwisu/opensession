@@ -5,6 +5,7 @@ import {
 	deleteGitCredential,
 	detectSummaryProvider,
 	getApiCapabilities,
+	getLifecycleCleanupStatus,
 	getRuntimeSettings,
 	getSummaryBatchStatus,
 	getSettings,
@@ -21,6 +22,7 @@ import {
 import type {
 	DesktopChangeReaderScope,
 	DesktopChangeReaderVoiceProvider,
+	DesktopLifecycleCleanupStatusResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopSummaryBatchExecutionMode,
 	DesktopSummaryBatchScope,
@@ -43,6 +45,15 @@ import type {
 } from '../types';
 import FieldHelp from './FieldHelp.svelte';
 import FloatingJobStatus from './FloatingJobStatus.svelte';
+import RuntimeActivityPanel from './settings-page/RuntimeActivityPanel.svelte';
+import RuntimeQuickMenu from './settings-page/RuntimeQuickMenu.svelte';
+import SettingsSectionNav from './settings-page/SettingsSectionNav.svelte';
+import type {
+	RuntimeActivityCard,
+	RuntimeActivityTone,
+	RuntimeQuickJumpLink,
+	SettingsSectionNavItem,
+} from './settings-page/models';
 
 const {
 	onNavigate = (path: string) => {
@@ -120,7 +131,9 @@ let runtimeVectorReindexing = $state(false);
 let runtimeVectorError = $state<string | null>(null);
 let runtimeSummaryBatchStatus = $state<DesktopSummaryBatchStatusResponse | null>(null);
 let runtimeSummaryBatchRunning = $state(false);
+let runtimeLifecycleStatus = $state<DesktopLifecycleCleanupStatusResponse | null>(null);
 const BACKGROUND_JOB_POLL_INTERVAL_MS = 1000;
+const BACKGROUND_STATUS_POLL_INTERVAL_MS = 5000;
 
 type RuntimeDraftSnapshot = {
 	session_default_view: 'full' | 'compressed';
@@ -193,6 +206,12 @@ function isSummaryBatchRunning(status: DesktopSummaryBatchStatusResponse | null)
 	return status?.state === 'running';
 }
 
+function isLifecycleCleanupRunning(
+	status: DesktopLifecycleCleanupStatusResponse | null,
+): boolean {
+	return status?.state === 'running';
+}
+
 function progressPercent(processed: number, total: number): number | null {
 	if (total <= 0) return null;
 	return Math.min(100, Math.max(0, Math.round((processed / total) * 100)));
@@ -204,6 +223,94 @@ function vectorIndexProgressLabel(status: DesktopVectorIndexStatusResponse | nul
 	if (pct == null) return null;
 	return `${status.processed_sessions}/${status.total_sessions} sessions (${pct}%)`;
 }
+
+function summaryBatchProgressLabel(
+	status: DesktopSummaryBatchStatusResponse | null,
+): string | null {
+	if (!status) return null;
+	if (status.total_sessions <= 0) {
+		return status.failed_sessions > 0 ? `failed ${status.failed_sessions}` : 'no queued sessions';
+	}
+	return `${status.processed_sessions}/${status.total_sessions} sessions · failed ${status.failed_sessions}`;
+}
+
+function formatIntervalSeconds(seconds: number): string {
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+	if (seconds % 3600 === 0) return `${Math.floor(seconds / 3600)}h`;
+	return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function lifecycleResultLabel(status: DesktopLifecycleCleanupStatusResponse | null): string {
+	if (!status) return 'No lifecycle cleanup runs recorded yet.';
+	return `${status.deleted_sessions} sessions deleted · ${status.deleted_summaries} summaries removed`;
+}
+
+function lifecycleNextRunLabel(): string {
+	if (!runtimeLifecycleEnabled) return 'paused';
+	if (isLifecycleCleanupRunning(runtimeLifecycleStatus)) return 'running now';
+	const anchor = runtimeLifecycleStatus?.finished_at ?? runtimeLifecycleStatus?.started_at;
+	if (!anchor) {
+		return `after app start, then every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`;
+	}
+	const next = new Date(new Date(anchor).getTime() + runtimeCleanupIntervalSecs * 1000);
+	if (Number.isNaN(next.getTime())) {
+		return `every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`;
+	}
+	return formatDate(next.toISOString());
+}
+
+function activityStateTone(state: string | null | undefined): RuntimeActivityTone {
+	if (state === 'running') return 'running';
+	if (state === 'failed') return 'failed';
+	if (state === 'complete') return 'complete';
+	return 'disabled';
+}
+
+const runtimeChangeReaderQaToggleDisabled = $derived.by(
+	() => !runtimeChangeReaderQaEnabled && !runtimeChangeReaderEnabled,
+);
+
+const runtimeChangeReaderVoiceApiKeyReady = $derived.by(
+	() => runtimeChangeReaderVoiceApiKeyConfigured || runtimeChangeReaderVoiceApiKey.trim().length > 0,
+);
+
+const runtimeChangeReaderVoiceToggleDisabled = $derived.by(() => {
+	if (runtimeChangeReaderVoiceEnabled) return false;
+	if (!runtimeChangeReaderEnabled) return true;
+	return !runtimeChangeReaderVoiceApiKeyReady;
+});
+
+const runtimeChangeReaderVoiceBlockedReason = $derived.by(() => {
+	if (runtimeChangeReaderVoiceEnabled) return null;
+	if (!runtimeChangeReaderEnabled) return 'Enable Change Reader first.';
+	if (!runtimeChangeReaderVoiceApiKeyReady) return 'Add a Voice API key first.';
+	return null;
+});
+
+const runtimeChangeReaderVoiceKeyStatusLabel = $derived.by(() => {
+	if (runtimeChangeReaderVoiceApiKey.trim().length > 0) {
+		return 'Voice API key: pending save';
+	}
+	return runtimeChangeReaderVoiceApiKeyConfigured
+		? 'Voice API key: configured'
+		: 'Voice API key: missing';
+});
+
+const runtimeChangeReaderVoiceHint = $derived.by(() => {
+	if (runtimeChangeReaderVoiceBlockedReason) {
+		return `${runtimeChangeReaderVoiceBlockedReason} Voice playback only reads the change reader output aloud.`;
+	}
+	return 'Voice playback reads the same change reader output aloud. It does not change summaries or follow-up Q&A.';
+});
+
+const runtimeChangeReaderVoiceSummary = $derived.by(() => {
+	const base = `${runtimeChangeReaderVoiceProvider} · ${runtimeChangeReaderVoiceModel}`;
+	if (!runtimeChangeReaderVoiceApiKeyReady) {
+		return `${base} · API key required`;
+	}
+	return base;
+});
 
 const floatingJobs = $derived.by(() => {
 	const jobs: Array<{ id: string; label: string; detail: string }> = [];
@@ -232,10 +339,20 @@ const floatingJobs = $derived.by(() => {
 		});
 	}
 	if (runtimeSummaryBatchRunning) {
+		const progress = summaryBatchProgressLabel(runtimeSummaryBatchStatus);
 		jobs.push({
 			id: 'summary-batch',
 			label: 'Running summary batch',
-			detail: 'Generating summaries in background.',
+			detail: progress
+				? `Generating summaries in background. ${progress}.`
+				: 'Generating summaries in background.',
+		});
+	}
+	if (isLifecycleCleanupRunning(runtimeLifecycleStatus)) {
+		jobs.push({
+			id: 'lifecycle-cleanup',
+			label: 'Running lifecycle cleanup',
+			detail: runtimeLifecycleStatus?.message ?? 'Removing expired sessions and summaries.',
 		});
 	}
 	return jobs;
@@ -324,22 +441,6 @@ function runtimeSaveLabel(): string {
 	return 'Save Runtime + Apply Storage';
 }
 
-function quickToggleLabel(enabled: boolean): string {
-	return enabled ? 'On' : 'Off';
-}
-
-function quickToggleClasses(enabled: boolean): string {
-	return enabled
-		? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-700'
-		: 'border-border/80 bg-bg-secondary text-text-secondary';
-}
-
-function settingsNavButtonClasses(active: boolean): string {
-	return active
-		? 'border-accent/40 bg-accent/5 text-text-primary shadow-[0_8px_20px_rgba(15,23,42,0.08)]'
-		: 'border-border/70 bg-bg-primary text-text-secondary';
-}
-
 let activeSettingsSectionId = $state('settings-section-overview');
 
 function getSettingsScrollContainer(): HTMLElement | Window | null {
@@ -372,7 +473,46 @@ function setActiveSettingsSection(sectionId: string) {
 	scrollToSettingsSection(sectionId);
 }
 
-const runtimeQuickJumpLinks = [
+function updateRuntimeProvider(provider: DesktopSummaryProviderId) {
+	runtimeProvider = provider;
+	handleRuntimeProviderChange();
+}
+
+function updateRuntimeStorageBackend(backend: DesktopSummaryStorageBackend) {
+	runtimeStorageBackend = backend;
+}
+
+function toggleRuntimeSummaryTrigger() {
+	runtimeTriggerMode = runtimeTriggerMode === 'on_session_save' ? 'manual' : 'on_session_save';
+}
+
+function toggleRuntimeBatchExecution() {
+	runtimeBatchExecutionMode =
+		runtimeBatchExecutionMode === 'on_app_start' ? 'manual' : 'on_app_start';
+}
+
+function toggleRuntimeLifecycle() {
+	runtimeLifecycleEnabled = !runtimeLifecycleEnabled;
+}
+
+function toggleRuntimeVector() {
+	runtimeVectorEnabled = !runtimeVectorEnabled;
+}
+
+function toggleRuntimeChangeReader() {
+	runtimeChangeReaderEnabled = !runtimeChangeReaderEnabled;
+}
+
+function toggleRuntimeChangeReaderQa() {
+	runtimeChangeReaderQaEnabled = !runtimeChangeReaderQaEnabled;
+}
+
+function toggleRuntimeChangeReaderVoice() {
+	runtimeChangeReaderVoiceEnabled = !runtimeChangeReaderVoiceEnabled;
+}
+
+const runtimeQuickJumpLinks: RuntimeQuickJumpLink[] = [
+	{ id: 'runtime-section-activity', label: 'Activity' },
 	{ id: 'runtime-section-provider', label: 'Provider' },
 	{ id: 'runtime-section-vector', label: 'Vector' },
 	{ id: 'runtime-section-change-reader', label: 'Reader' },
@@ -381,7 +521,7 @@ const runtimeQuickJumpLinks = [
 	{ id: 'runtime-section-lifecycle', label: 'TTL' },
 ] as const;
 
-const settingsNavItems = $derived.by(() => {
+const settingsNavItems = $derived.by((): SettingsSectionNavItem[] => {
 	const items = [
 		{
 			id: 'settings-section-overview',
@@ -412,6 +552,12 @@ const settingsNavItems = $derived.by(() => {
 			label: 'Runtime',
 			detail: 'Desktop summary controls',
 			visible: true,
+		},
+		{
+			id: 'runtime-section-activity',
+			label: 'Activity',
+			detail: 'Live job and cleanup status',
+			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-provider',
@@ -465,6 +611,116 @@ const settingsNavItems = $derived.by(() => {
 	return items.filter((item) => item.visible);
 });
 
+const runtimeQuickBatchScopeLabel = $derived.by(() =>
+	runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`,
+);
+
+const runtimeActivityCards = $derived.by((): RuntimeActivityCard[] => {
+	const filterLines = (lines: Array<string | null | undefined>): string[] =>
+		lines.filter((line): line is string => typeof line === 'string' && line.length > 0);
+
+	return [
+		{
+			testId: 'runtime-activity-vector',
+			title: 'Vector index',
+			subtitle: `${runtimeVectorProvider} · ${runtimeVectorModel}`,
+			badges: [
+				{
+					label: runtimeVectorEnabled ? 'On' : 'Off',
+					tone: runtimeVectorEnabled ? 'enabled' : 'disabled',
+				},
+				{
+					label: runtimeVectorIndex?.state ?? 'idle',
+					tone: activityStateTone(runtimeVectorIndex?.state),
+				},
+			],
+			lines: filterLines([
+				`Provider reachable ${runtimeVectorPreflight?.ollama_reachable ? 'yes' : 'no'} · model installed ${runtimeVectorPreflight?.model_installed ? 'yes' : 'no'}`,
+				vectorIndexProgressLabel(runtimeVectorIndex) ?? 'No rebuild progress recorded yet.',
+				runtimeVectorIndex?.message,
+			]),
+			timestampLine: `started ${formatDate(runtimeVectorIndex?.started_at)} · finished ${formatDate(runtimeVectorIndex?.finished_at)}`,
+		},
+		{
+			testId: 'runtime-activity-summary-batch',
+			title: 'Summary batch',
+			subtitle: runtimeBatchExecutionMode === 'on_app_start' ? 'auto on app start' : 'manual only',
+			badges: [
+				{
+					label: runtimeBatchExecutionMode === 'on_app_start' ? 'Auto' : 'Manual',
+					tone: runtimeBatchExecutionMode === 'on_app_start' ? 'enabled' : 'disabled',
+				},
+				{
+					label: runtimeSummaryBatchStatus?.state ?? 'idle',
+					tone: activityStateTone(runtimeSummaryBatchStatus?.state),
+				},
+			],
+			lines: filterLines([
+				`scope ${runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}`,
+				summaryBatchProgressLabel(runtimeSummaryBatchStatus) ?? 'No batch runs recorded yet.',
+				runtimeSummaryBatchStatus?.message,
+			]),
+			timestampLine: `started ${formatDate(runtimeSummaryBatchStatus?.started_at)} · finished ${formatDate(runtimeSummaryBatchStatus?.finished_at)}`,
+		},
+		{
+			testId: 'runtime-activity-lifecycle',
+			title: 'Lifecycle cleanup',
+			subtitle: `${runtimeSessionTtlDays}d session TTL · ${runtimeSummaryTtlDays}d summary TTL`,
+			badges: [
+				{
+					label: runtimeLifecycleEnabled ? 'On' : 'Off',
+					tone: runtimeLifecycleEnabled ? 'enabled' : 'disabled',
+				},
+				{
+					label: runtimeLifecycleStatus?.state ?? 'idle',
+					tone: activityStateTone(runtimeLifecycleStatus?.state),
+				},
+			],
+			lines: filterLines([
+				`interval ${formatIntervalSeconds(runtimeCleanupIntervalSecs)} · next ${lifecycleNextRunLabel()}`,
+				lifecycleResultLabel(runtimeLifecycleStatus),
+				runtimeLifecycleStatus?.message,
+			]),
+			timestampLine: `started ${formatDate(runtimeLifecycleStatus?.started_at)} · finished ${formatDate(runtimeLifecycleStatus?.finished_at)}`,
+		},
+	];
+});
+
+const runtimeQuickSummaryTriggerDetail = $derived.by(() =>
+	runtimeTriggerMode === 'on_session_save' ? 'runs automatically on new saves' : 'manual only',
+);
+
+const runtimeQuickBatchDetail = $derived.by(
+	() => `scope ${runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}`,
+);
+
+const runtimeQuickBatchStatusDetail = $derived.by(
+	() => summaryBatchProgressLabel(runtimeSummaryBatchStatus) ?? 'No batch runs yet.',
+);
+
+const runtimeQuickLifecycleDetail = $derived.by(
+	() => `${runtimeSessionTtlDays}d session TTL · every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`,
+);
+
+const runtimeQuickLifecycleNextDetail = $derived.by(() => `next ${lifecycleNextRunLabel()}`);
+
+const runtimeQuickVectorDetail = $derived.by(() => {
+	const base = `${runtimeVectorProvider} · ${runtimeVectorModel}`;
+	if (runtimeVectorPreflight && !runtimeVectorPreflight.model_installed) {
+		return `${base} · model missing`;
+	}
+	return base;
+});
+
+const runtimeQuickVectorStatusDetail = $derived.by(
+	() => vectorIndexProgressLabel(runtimeVectorIndex) ?? `index ${runtimeVectorIndex?.state ?? 'idle'}`,
+);
+
+const runtimeQuickChangeReaderDetail = $derived.by(
+	() =>
+		`text reader · ${runtimeChangeReaderScope} · ${runtimeChangeReaderMaxContextChars.toLocaleString()} chars`,
+);
+
 const runtimeHelp = {
 	defaultSessionView:
 		'full shows the complete raw session. compressed prioritizes semantic summary + condensed context.',
@@ -489,18 +745,19 @@ const runtimeHelp = {
 	vectorEnable:
 		'Turns on semantic retrieval in search and change analysis. Requires model install and index build.',
 	changeReaderEnable:
-		'Shows notebook-style change reading to inspect why/what changed across a session.',
+		'Turns on the text-based change reader so you can inspect what changed and why across a session.',
 	changeReaderScope:
 		'summary_only reads compressed context. full_context expands to broader session context when needed.',
 	changeReaderMaxContext: 'Upper bound of context text loaded for change reading.',
 	changeReaderQa:
-		'Allows follow-up Q&A over the selected change context when the reader is enabled.',
-	changeReaderVoiceEnable: 'Enable voice playback for change reader output using TTS.',
+		'Adds follow-up text Q&A on top of the selected change reader context when the reader is enabled.',
+	changeReaderVoiceEnable:
+		'Reads the current change reader output aloud with TTS. Requires a Voice API key and does not change summaries or Q&A.',
 	changeReaderVoiceProvider: 'Voice provider for TTS playback.',
 	changeReaderVoiceModel: 'TTS model used when generating speech audio.',
 	changeReaderVoiceName: 'Voice preset name used by the provider.',
 	changeReaderVoiceApiKey:
-		'Write-only API key for voice provider. Leave empty to keep the current stored key.',
+		'Write-only API key for voice playback. Required before voice playback can be enabled. Leave empty to keep the current stored key.',
 	storageTrigger: 'manual runs only when explicitly requested. on_session_save runs automatically on new saves.',
 	storageBackend:
 		'Where summaries are read from and written to after you click Save Runtime. Switching between hidden_ref and local_db copies existing summaries into the selected backend on save. Switching to none does not migrate or delete existing stored summaries.',
@@ -584,16 +841,34 @@ function apiDetailString(
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function apiDetailNumber(
+	details: Record<string, unknown> | null | undefined,
+	key: string,
+): number | null {
+	const value = details?.[key];
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function normalizeVectorError(err: unknown, fallback: string): string {
 	if (err instanceof ApiError) {
 		const message = err.message || fallback;
 		const hint = apiDetailString(err.details, 'hint');
 		const endpoint = apiDetailString(err.details, 'endpoint');
+		const reason = apiDetailString(err.details, 'reason');
 		const model = apiDetailString(err.details, 'model');
+		const status = apiDetailNumber(err.details, 'status');
+		const batchReason = apiDetailString(err.details, 'batch_reason');
+		const batchEndpoint = apiDetailString(err.details, 'batch_endpoint');
+		const batchStatus = apiDetailNumber(err.details, 'batch_status');
 		const lines = [message];
+		if (reason) lines.push(`Reason: ${reason}`);
+		if (status != null) lines.push(`HTTP: ${status}`);
+		if (batchReason) lines.push(`Batch reason: ${batchReason}`);
+		if (batchStatus != null) lines.push(`Batch HTTP: ${batchStatus}`);
 		if (hint) lines.push(`Action: ${hint}`);
 		if (model) lines.push(`Model: ${model}`);
 		if (endpoint) lines.push(`Endpoint: ${endpoint}`);
+		if (batchEndpoint) lines.push(`Batch endpoint: ${batchEndpoint}`);
 		return lines.join('\n');
 	}
 	return normalizeError(err, fallback);
@@ -734,6 +1009,7 @@ async function loadRuntimeSettings() {
 		const settings = await getRuntimeSettings();
 		runtimeSettings = settings;
 		applyRuntimeSettingsToDraft(settings);
+		await refreshLifecycleCleanupStatus();
 		await refreshSummaryBatchStatus();
 		await refreshVectorPreflight();
 		await refreshVectorIndexStatus();
@@ -746,6 +1022,19 @@ async function loadRuntimeSettings() {
 		}
 	} finally {
 		runtimeLoading = false;
+	}
+}
+
+async function refreshLifecycleCleanupStatus(surfaceError: boolean = true): Promise<boolean> {
+	try {
+		runtimeLifecycleStatus = await getLifecycleCleanupStatus();
+		return true;
+	} catch (err) {
+		runtimeLifecycleStatus = null;
+		if (surfaceError) {
+			runtimeError = normalizeError(err, 'Failed to fetch lifecycle cleanup status');
+		}
+		return false;
 	}
 }
 
@@ -964,6 +1253,7 @@ async function handleSaveRuntimeSettings() {
 		});
 		runtimeSettings = updated;
 		applyRuntimeSettingsToDraft(updated);
+		await refreshLifecycleCleanupStatus(false);
 		await refreshSummaryBatchStatus();
 		runtimeDetectMessage = 'Runtime settings saved and will persist when you reopen Settings.';
 	} catch (err) {
@@ -1044,9 +1334,6 @@ async function refreshVectorIndexStatus(): Promise<boolean> {
 	try {
 		runtimeVectorIndex = await vectorIndexStatus();
 		runtimeVectorReindexing = isVectorIndexRunning(runtimeVectorIndex);
-		if (runtimeVectorIndex.state === 'failed' && runtimeVectorIndex.message) {
-			runtimeVectorError = runtimeVectorIndex.message;
-		}
 		return true;
 	} catch (err) {
 		runtimeVectorIndex = null;
@@ -1171,13 +1458,15 @@ $effect(() => {
 });
 
 $effect(() => {
-	const shouldPoll =
+	const hasActiveBackgroundJob =
 		runtimeVectorInstalling ||
 		isVectorInstallRunning(runtimeVectorPreflight) ||
 		runtimeVectorReindexing ||
 		isVectorIndexRunning(runtimeVectorIndex) ||
 		runtimeSummaryBatchRunning ||
-		isSummaryBatchRunning(runtimeSummaryBatchStatus);
+		isSummaryBatchRunning(runtimeSummaryBatchStatus) ||
+		isLifecycleCleanupRunning(runtimeLifecycleStatus);
+	const shouldPoll = runtimeSupported && (hasActiveBackgroundJob || runtimeLifecycleEnabled);
 	if (!shouldPoll) {
 		return;
 	}
@@ -1196,11 +1485,24 @@ $effect(() => {
 		if (runtimeSummaryBatchRunning || isSummaryBatchRunning(runtimeSummaryBatchStatus)) {
 			await refreshSummaryBatchStatus();
 		}
+		if (runtimeLifecycleEnabled || isLifecycleCleanupRunning(runtimeLifecycleStatus)) {
+			await refreshLifecycleCleanupStatus(false);
+		}
 		if (cancelled) return;
-		timer = window.setTimeout(poll, BACKGROUND_JOB_POLL_INTERVAL_MS);
+		timer = window.setTimeout(
+			poll,
+			hasActiveBackgroundJob
+				? BACKGROUND_JOB_POLL_INTERVAL_MS
+				: BACKGROUND_STATUS_POLL_INTERVAL_MS,
+		);
 	};
 
-	timer = window.setTimeout(poll, BACKGROUND_JOB_POLL_INTERVAL_MS);
+	timer = window.setTimeout(
+		poll,
+		hasActiveBackgroundJob
+			? BACKGROUND_JOB_POLL_INTERVAL_MS
+			: BACKGROUND_STATUS_POLL_INTERVAL_MS,
+	);
 
 	return () => {
 		cancelled = true;
@@ -1230,31 +1532,11 @@ $effect(() => {
 
 <div data-testid="settings-page" class="mx-auto w-full max-w-7xl pb-10">
 	<div class="grid gap-4 xl:grid-cols-[14rem_minmax(0,1fr)] xl:items-start">
-		<aside
-			class="xl:sticky xl:top-4"
-			data-testid="settings-left-tabs"
-		>
-			<div class="overflow-x-auto border border-border bg-bg-secondary p-3 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
-				<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-					Settings Tabs
-				</p>
-				<div class="mt-3 flex gap-2 xl:flex-col">
-					{#each settingsNavItems as item}
-						<button
-							type="button"
-							data-testid={`settings-nav-${item.id}`}
-							data-state={activeSettingsSectionId === item.id ? 'active' : 'idle'}
-							aria-current={activeSettingsSectionId === item.id ? 'page' : undefined}
-							onclick={() => setActiveSettingsSection(item.id)}
-							class={`min-w-[11rem] border px-3 py-2 text-left transition-colors xl:min-w-0 ${settingsNavButtonClasses(activeSettingsSectionId === item.id)}`}
-						>
-							<p class="text-xs font-semibold">{item.label}</p>
-							<p class="mt-1 text-[11px] text-text-secondary">{item.detail}</p>
-						</button>
-					{/each}
-				</div>
-			</div>
-		</aside>
+		<SettingsSectionNav
+			items={settingsNavItems}
+			activeId={activeSettingsSectionId}
+			onSelect={setActiveSettingsSection}
+		/>
 
 		<div class="space-y-4">
 	<header id="settings-section-overview" class="scroll-mt-24 border border-border bg-bg-secondary px-4 py-3">
@@ -1517,6 +1799,8 @@ $effect(() => {
 					<p class="font-semibold text-text-primary">{runtimePersistStatus.title}</p>
 					<p class="mt-1">{runtimePersistStatus.detail}</p>
 				</div>
+
+				<RuntimeActivityPanel cards={runtimeActivityCards} />
 
 				<label class="block text-xs text-text-secondary">
 					<FieldHelp
@@ -1863,7 +2147,16 @@ $effect(() => {
 								</div>
 							{/if}
 							{#if runtimeVectorIndex.message}
-								<p class="mt-1">{runtimeVectorIndex.message}</p>
+								<p class="mt-1 whitespace-pre-line">
+									{runtimeVectorIndex.state === 'failed'
+										? `Last rebuild failure:\n${runtimeVectorIndex.message}`
+										: runtimeVectorIndex.message}
+								</p>
+								{#if runtimeVectorIndex.state === 'failed' && runtimeVectorPreflight?.ollama_reachable && runtimeVectorPreflight?.model_installed}
+									<p class="mt-1 text-[11px] text-text-secondary">
+										Provider looks reachable now. Click <strong>Rebuild index</strong> to retry with the current endpoint.
+									</p>
+								{/if}
 							{/if}
 							{#if runtimeVectorIndex.started_at || runtimeVectorIndex.finished_at}
 								<p class="mt-1 text-[11px] text-text-secondary">
@@ -1893,7 +2186,15 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-change-reader"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader (Text + Voice)</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader</h3>
+					<div
+						class="space-y-1 rounded border border-border/60 bg-bg-primary px-3 py-2 text-[11px] text-text-secondary"
+						data-testid="runtime-change-reader-mode-guide"
+					>
+						<p><span class="font-semibold text-text-primary">Reader</span>: text view of the selected change context.</p>
+						<p><span class="font-semibold text-text-primary">Follow-up Q&amp;A</span>: ask extra text questions about that same change context.</p>
+						<p><span class="font-semibold text-text-primary">Voice playback</span>: read the change reader output aloud with TTS. Requires a Voice API key.</p>
+					</div>
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input
 							type="checkbox"
@@ -1938,25 +2239,30 @@ $effect(() => {
 						<input
 							type="checkbox"
 							bind:checked={runtimeChangeReaderQaEnabled}
+							disabled={runtimeChangeReaderQaToggleDisabled}
 							data-testid="runtime-change-reader-qa"
 						/>
 						<FieldHelp
 							inline
-							label="Allow Q&A about change details"
+							label="Enable Follow-up Q&A"
 							help={runtimeHelp.changeReaderQa}
 							testId="runtime-help-change-reader-qa"
 						/>
 					</label>
 					<div class="space-y-2 rounded border border-border/60 bg-bg-primary px-2 py-2">
+						<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">Voice Playback</p>
+						<p class="text-[11px] text-text-secondary">{runtimeChangeReaderVoiceHint}</p>
 						<label class="flex items-center gap-2 text-xs text-text-secondary">
 							<input
 								type="checkbox"
 								bind:checked={runtimeChangeReaderVoiceEnabled}
+								disabled={runtimeChangeReaderVoiceToggleDisabled}
+								title={runtimeChangeReaderVoiceBlockedReason ?? undefined}
 								data-testid="runtime-change-reader-voice-enable"
 							/>
 							<FieldHelp
 								inline
-								label="Enable Voice TTS"
+								label="Enable Voice Playback (TTS)"
 								help={runtimeHelp.changeReaderVoiceEnable}
 								testId="runtime-help-change-reader-voice-enable"
 							/>
@@ -2016,7 +2322,10 @@ $effect(() => {
 							/>
 						</label>
 						<p class="text-[11px] text-text-muted" data-testid="runtime-change-reader-voice-key-status">
-							api_key_configured: {runtimeChangeReaderVoiceApiKeyConfigured ? 'yes' : 'no'}
+							{runtimeChangeReaderVoiceKeyStatusLabel}
+						</p>
+						<p class="text-[11px] text-text-muted" data-testid="runtime-change-reader-voice-requirement">
+							{runtimeChangeReaderVoiceHint}
 						</p>
 					</div>
 					<p class="text-[11px] text-text-muted">
@@ -2136,9 +2445,25 @@ $effect(() => {
 					<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-summary-batch-status">
 						{#if runtimeSummaryBatchStatus}
 							<p>
-								state: {runtimeSummaryBatchStatus.state} | processed: {runtimeSummaryBatchStatus.processed_sessions}/
-								{runtimeSummaryBatchStatus.total_sessions} | failed: {runtimeSummaryBatchStatus.failed_sessions}
+								state: {runtimeSummaryBatchStatus.state} | {summaryBatchProgressLabel(runtimeSummaryBatchStatus)}
 							</p>
+							{#if progressPercent(runtimeSummaryBatchStatus.processed_sessions, runtimeSummaryBatchStatus.total_sessions) != null}
+								<div class="mt-2" data-testid="runtime-summary-batch-progress">
+									<div class="flex items-center justify-between text-[11px] text-text-secondary">
+										<span>Batch progress</span>
+										<span>
+											{runtimeSummaryBatchStatus.processed_sessions}/{runtimeSummaryBatchStatus.total_sessions}
+											({progressPercent(runtimeSummaryBatchStatus.processed_sessions, runtimeSummaryBatchStatus.total_sessions)}%)
+										</span>
+									</div>
+									<div class="mt-1 h-2 overflow-hidden rounded bg-border/60">
+										<div
+											class="h-full bg-accent transition-[width] duration-300"
+											style={`width: ${progressPercent(runtimeSummaryBatchStatus.processed_sessions, runtimeSummaryBatchStatus.total_sessions)}%`}
+										></div>
+									</div>
+								</div>
+							{/if}
 							{#if runtimeSummaryBatchStatus.message}
 								<p class="mt-1">{runtimeSummaryBatchStatus.message}</p>
 							{/if}
@@ -2210,6 +2535,28 @@ $effect(() => {
 							/>
 						</label>
 					</div>
+					<div
+						class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted"
+						data-testid="runtime-lifecycle-status"
+					>
+						{#if runtimeLifecycleStatus}
+							<p>
+								state: {runtimeLifecycleStatus.state} | deleted: {runtimeLifecycleStatus.deleted_sessions} sessions /
+								{runtimeLifecycleStatus.deleted_summaries} summaries
+							</p>
+							<p class="mt-1">
+								next run: {lifecycleNextRunLabel()} | interval: {formatIntervalSeconds(runtimeCleanupIntervalSecs)}
+							</p>
+							{#if runtimeLifecycleStatus.message}
+								<p class="mt-1">{runtimeLifecycleStatus.message}</p>
+							{/if}
+							<p class="mt-1">
+								started: {formatDate(runtimeLifecycleStatus.started_at)} | finished: {formatDate(runtimeLifecycleStatus.finished_at)}
+							</p>
+						{:else}
+							<p>No lifecycle cleanup runs recorded yet.</p>
+						{/if}
+					</div>
 					<div class="overflow-x-auto border border-border/70 bg-bg-primary p-2">
 						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">Root / Dependent Cleanup</p>
 						<table class="w-full text-left text-[11px] text-text-secondary">
@@ -2238,284 +2585,51 @@ $effect(() => {
 
 				</div>
 
-				<aside
-					class="order-first xl:order-last xl:sticky xl:top-4 xl:max-h-[calc(100vh-1.5rem)] xl:overflow-y-auto"
-					data-testid="runtime-quick-menu"
-				>
-					<div class="space-y-4 border border-border bg-bg-secondary p-3 shadow-[0_14px_40px_rgba(15,23,42,0.12)]">
-						<div class="space-y-2">
-							<div class="flex items-start justify-between gap-3">
-								<div>
-									<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-										Quick Runtime Menu
-									</p>
-									<p class="mt-1 text-sm font-semibold text-text-primary">Live draft overview</p>
-								</div>
-								<span
-									class={`inline-flex items-center border px-2 py-1 text-[11px] font-semibold ${
-										runtimeDraftDirty
-											? 'border-accent/40 bg-accent/5 text-accent'
-											: 'border-border/70 bg-bg-primary text-text-secondary'
-									}`}
-									data-testid="runtime-quick-draft-state"
-								>
-									{runtimeDraftDirty ? 'Draft' : 'Saved'}
-								</span>
-							</div>
-							<p class="text-[11px] text-text-secondary">
-								Flip common on/off controls here, then save once.
-							</p>
-							<div class="grid grid-cols-2 gap-2">
-								<button
-									type="button"
-									data-testid="runtime-quick-reset"
-									onclick={handleResetRuntimeDraft}
-									disabled={runtimeSaving || !runtimeDraftDirty}
-									class="inline-flex h-9 items-center justify-center border border-border px-2 text-[11px] font-semibold text-text-secondary hover:text-text-primary disabled:opacity-60"
-								>
-									Reset
-								</button>
-								<button
-									type="button"
-									data-testid="runtime-quick-save"
-									onclick={handleSaveRuntimeSettings}
-									disabled={runtimeSaving || runtimeLoading}
-									class="inline-flex h-9 items-center justify-center border border-transparent bg-accent px-2 text-[11px] font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
-								>
-									{runtimeSaving ? 'Saving...' : 'Save'}
-								</button>
-							</div>
-						</div>
-
-						<div class="space-y-2">
-							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-								Current Modes
-							</p>
-							<label class="block text-[11px] text-text-secondary">
-								<span class="mb-1 block text-text-muted">Provider</span>
-								<select
-									bind:value={runtimeProvider}
-									onchange={handleRuntimeProviderChange}
-									data-testid="runtime-quick-provider"
-									class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary"
-								>
-									<option value="disabled">disabled</option>
-									<option value="ollama">ollama</option>
-									<option value="codex_exec">codex_exec</option>
-									<option value="claude_cli">claude_cli</option>
-								</select>
-							</label>
-							<label class="block text-[11px] text-text-secondary">
-								<span class="mb-1 block text-text-muted">Storage backend</span>
-								<select
-									bind:value={runtimeStorageBackend}
-									data-testid="runtime-quick-storage"
-									class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary"
-								>
-									<option value="hidden_ref">hidden_ref</option>
-									<option value="local_db">local_db</option>
-									<option value="none">none</option>
-								</select>
-							</label>
-							<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-secondary">
-								<p>View {runtimeSessionDefaultView}</p>
-								<p class="mt-1">Transport {currentRuntimeProviderTransport()}</p>
-								<p class="mt-1">Batch scope {runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}</p>
-							</div>
-						</div>
-
-						<div class="space-y-2">
-							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-								Background / Auto
-							</p>
-							<div class="space-y-2">
-								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<p class="text-xs font-semibold text-text-primary">Summary on save</p>
-											<p class="mt-1 text-[11px] text-text-secondary">
-												{runtimeTriggerMode === 'on_session_save' ? 'runs automatically on new saves' : 'manual only'}
-											</p>
-										</div>
-										<button
-											type="button"
-											data-testid="runtime-quick-toggle-summary-trigger"
-											aria-pressed={runtimeTriggerMode === 'on_session_save'}
-											onclick={() => {
-												runtimeTriggerMode =
-													runtimeTriggerMode === 'on_session_save' ? 'manual' : 'on_session_save';
-											}}
-											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeTriggerMode === 'on_session_save')}`}
-										>
-											{quickToggleLabel(runtimeTriggerMode === 'on_session_save')}
-										</button>
-									</div>
-								</div>
-
-								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<p class="text-xs font-semibold text-text-primary">Batch on app start</p>
-											<p class="mt-1 text-[11px] text-text-secondary">
-												scope {runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}
-											</p>
-										</div>
-										<button
-											type="button"
-											data-testid="runtime-quick-toggle-batch"
-											aria-pressed={runtimeBatchExecutionMode === 'on_app_start'}
-											onclick={() => {
-												runtimeBatchExecutionMode =
-													runtimeBatchExecutionMode === 'on_app_start' ? 'manual' : 'on_app_start';
-											}}
-											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeBatchExecutionMode === 'on_app_start')}`}
-										>
-											{quickToggleLabel(runtimeBatchExecutionMode === 'on_app_start')}
-										</button>
-									</div>
-								</div>
-
-								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<p class="text-xs font-semibold text-text-primary">Lifecycle cleanup</p>
-											<p class="mt-1 text-[11px] text-text-secondary">
-												{runtimeSessionTtlDays}d session TTL · every {runtimeCleanupIntervalSecs}s
-											</p>
-										</div>
-										<button
-											type="button"
-											data-testid="runtime-quick-toggle-lifecycle"
-											aria-pressed={runtimeLifecycleEnabled}
-											onclick={() => {
-												runtimeLifecycleEnabled = !runtimeLifecycleEnabled;
-											}}
-											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeLifecycleEnabled)}`}
-										>
-											{quickToggleLabel(runtimeLifecycleEnabled)}
-										</button>
-									</div>
-								</div>
-							</div>
-						</div>
-
-						<div class="space-y-2">
-							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-								Features
-							</p>
-							<div class="space-y-2">
-								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<p class="text-xs font-semibold text-text-primary">Vector search</p>
-											<p class="mt-1 text-[11px] text-text-secondary">
-												{runtimeVectorProvider} · {runtimeVectorModel}
-												{#if runtimeVectorPreflight && !runtimeVectorPreflight.model_installed}
-													· model missing
-												{/if}
-											</p>
-										</div>
-										<button
-											type="button"
-											data-testid="runtime-quick-toggle-vector"
-											aria-pressed={runtimeVectorEnabled}
-											disabled={!runtimeVectorPreflight?.model_installed}
-											onclick={() => {
-												runtimeVectorEnabled = !runtimeVectorEnabled;
-											}}
-											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeVectorEnabled)} disabled:opacity-60`}
-										>
-											{quickToggleLabel(runtimeVectorEnabled)}
-										</button>
-									</div>
-								</div>
-
-								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<p class="text-xs font-semibold text-text-primary">Change reader</p>
-											<p class="mt-1 text-[11px] text-text-secondary">
-												{runtimeChangeReaderScope} · {runtimeChangeReaderMaxContextChars.toLocaleString()} chars
-											</p>
-										</div>
-										<button
-											type="button"
-											data-testid="runtime-quick-toggle-change-reader"
-											aria-pressed={runtimeChangeReaderEnabled}
-											onclick={() => {
-												runtimeChangeReaderEnabled = !runtimeChangeReaderEnabled;
-											}}
-											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeChangeReaderEnabled)}`}
-										>
-											{quickToggleLabel(runtimeChangeReaderEnabled)}
-										</button>
-									</div>
-								</div>
-
-								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<p class="text-xs font-semibold text-text-primary">Change reader Q&amp;A</p>
-											<p class="mt-1 text-[11px] text-text-secondary">
-												follow-up questions inside selected change context
-											</p>
-										</div>
-										<button
-											type="button"
-											data-testid="runtime-quick-toggle-change-reader-qa"
-											aria-pressed={runtimeChangeReaderQaEnabled}
-											onclick={() => {
-												runtimeChangeReaderQaEnabled = !runtimeChangeReaderQaEnabled;
-											}}
-											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeChangeReaderQaEnabled)}`}
-										>
-											{quickToggleLabel(runtimeChangeReaderQaEnabled)}
-										</button>
-									</div>
-								</div>
-
-								<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<p class="text-xs font-semibold text-text-primary">Voice TTS</p>
-											<p class="mt-1 text-[11px] text-text-secondary">
-												{runtimeChangeReaderVoiceProvider} · {runtimeChangeReaderVoiceModel}
-											</p>
-										</div>
-										<button
-											type="button"
-											data-testid="runtime-quick-toggle-change-reader-voice"
-											aria-pressed={runtimeChangeReaderVoiceEnabled}
-											onclick={() => {
-												runtimeChangeReaderVoiceEnabled = !runtimeChangeReaderVoiceEnabled;
-											}}
-											class={`inline-flex min-w-[3.5rem] items-center justify-center border px-2 py-1 text-[11px] font-semibold ${quickToggleClasses(runtimeChangeReaderVoiceEnabled)}`}
-										>
-											{quickToggleLabel(runtimeChangeReaderVoiceEnabled)}
-										</button>
-									</div>
-								</div>
-							</div>
-						</div>
-
-						<div class="space-y-2">
-							<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-								Jump To Section
-							</p>
-							<div class="flex flex-wrap gap-2">
-								{#each runtimeQuickJumpLinks as item}
-									<button
-										type="button"
-										onclick={() => setActiveSettingsSection(item.id)}
-										class="inline-flex h-8 items-center border border-border px-2 text-[11px] font-semibold text-text-secondary hover:text-text-primary"
-									>
-										{item.label}
-									</button>
-								{/each}
-							</div>
-						</div>
-					</div>
-				</aside>
+				<RuntimeQuickMenu
+					draftDirty={runtimeDraftDirty}
+					runtimeSaving={runtimeSaving}
+					runtimeLoading={runtimeLoading}
+					saveLabel={runtimeSaveLabel()}
+					provider={runtimeProvider}
+					storageBackend={runtimeStorageBackend}
+					sessionDefaultView={runtimeSessionDefaultView}
+					providerTransport={currentRuntimeProviderTransport()}
+					batchScopeLabel={runtimeQuickBatchScopeLabel}
+					summaryTriggerAuto={runtimeTriggerMode === 'on_session_save'}
+					summaryTriggerDetail={runtimeQuickSummaryTriggerDetail}
+					batchAuto={runtimeBatchExecutionMode === 'on_app_start'}
+					batchDetail={runtimeQuickBatchDetail}
+					batchStatusDetail={runtimeQuickBatchStatusDetail}
+					lifecycleEnabled={runtimeLifecycleEnabled}
+					lifecycleDetail={runtimeQuickLifecycleDetail}
+					lifecycleResultDetail={lifecycleResultLabel(runtimeLifecycleStatus)}
+					lifecycleNextDetail={runtimeQuickLifecycleNextDetail}
+					vectorEnabled={runtimeVectorEnabled}
+					vectorToggleDisabled={!runtimeVectorPreflight?.model_installed}
+					vectorDetail={runtimeQuickVectorDetail}
+					vectorStatusDetail={runtimeQuickVectorStatusDetail}
+					changeReaderEnabled={runtimeChangeReaderEnabled}
+					changeReaderDetail={runtimeQuickChangeReaderDetail}
+					changeReaderQaEnabled={runtimeChangeReaderQaEnabled}
+					changeReaderQaDisabled={runtimeChangeReaderQaToggleDisabled}
+					changeReaderVoiceEnabled={runtimeChangeReaderVoiceEnabled}
+					changeReaderVoiceDisabled={runtimeChangeReaderVoiceToggleDisabled}
+					changeReaderVoiceBlockedReason={runtimeChangeReaderVoiceBlockedReason}
+					changeReaderVoiceSummary={runtimeChangeReaderVoiceSummary}
+					jumpLinks={runtimeQuickJumpLinks}
+					onReset={handleResetRuntimeDraft}
+					onSave={handleSaveRuntimeSettings}
+					onProviderChange={updateRuntimeProvider}
+					onStorageBackendChange={updateRuntimeStorageBackend}
+					onToggleSummaryTrigger={toggleRuntimeSummaryTrigger}
+					onToggleBatch={toggleRuntimeBatchExecution}
+					onToggleLifecycle={toggleRuntimeLifecycle}
+					onToggleVector={toggleRuntimeVector}
+					onToggleChangeReader={toggleRuntimeChangeReader}
+					onToggleChangeReaderQa={toggleRuntimeChangeReaderQa}
+					onToggleChangeReaderVoice={toggleRuntimeChangeReaderVoice}
+					onJumpToSection={setActiveSettingsSection}
+				/>
 			</div>
 		{/if}
 		{#if runtimeError}

@@ -9,6 +9,7 @@ import type {
 	DesktopContractVersionResponse,
 	DesktopHandoffBuildRequest,
 	DesktopHandoffBuildResponse,
+	DesktopLifecycleCleanupStatusResponse,
 	DesktopQuickShareRequest,
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
@@ -81,6 +82,7 @@ export interface SessionReadAdapter {
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
 	): Promise<DesktopRuntimeSettingsResponse>;
+	lifecycleCleanupStatus(): Promise<DesktopLifecycleCleanupStatusResponse>;
 	summaryBatchRun(): Promise<DesktopSummaryBatchStatusResponse>;
 	summaryBatchStatus(): Promise<DesktopSummaryBatchStatusResponse>;
 	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
@@ -345,6 +347,16 @@ export function createWebSessionReadAdapter(args: {
 				}),
 			);
 		},
+		async lifecycleCleanupStatus() {
+			throw new SessionAdapterError(
+				'desktop_lifecycle_cleanup_unsupported',
+				501,
+				serializeErrorBody({
+					code: 'desktop_lifecycle_cleanup_unsupported',
+					message: 'Lifecycle cleanup status is available only in desktop runtime.',
+				}),
+			);
+		},
 		async summaryBatchRun() {
 			throw new SessionAdapterError(
 				'desktop_summary_batch_unsupported',
@@ -587,6 +599,11 @@ export function createDesktopSessionReadAdapter(invoke: DesktopInvoke): SessionR
 				{ request },
 			);
 		},
+		async lifecycleCleanupStatus() {
+			return invokeAfterContractCheck<DesktopLifecycleCleanupStatusResponse>(
+				'desktop_lifecycle_cleanup_status',
+			);
+		},
 		async summaryBatchRun() {
 			return invokeAfterContractCheck<DesktopSummaryBatchStatusResponse>(
 				'desktop_summary_batch_run',
@@ -678,6 +695,9 @@ export function createUnavailableDesktopSessionReadAdapter(): SessionReadAdapter
 			throw desktopBridgeUnavailableError();
 		},
 		async updateRuntimeSettings() {
+			throw desktopBridgeUnavailableError();
+		},
+		async lifecycleCleanupStatus() {
 			throw desktopBridgeUnavailableError();
 		},
 		async summaryBatchRun() {

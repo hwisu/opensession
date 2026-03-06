@@ -147,6 +147,10 @@ export interface DesktopRuntimeLifecycleSettings { enabled: boolean, session_ttl
 
 export interface DesktopRuntimeLifecycleSettingsUpdate { enabled: boolean, session_ttl_days: number, summary_ttl_days: number, cleanup_interval_secs: number, }
 
+export type DesktopLifecycleCleanupState = "idle" | "running" | "complete" | "failed"
+
+export interface DesktopLifecycleCleanupStatusResponse { state: DesktopLifecycleCleanupState, deleted_sessions: number, deleted_summaries: number, message?: string | null, started_at?: string | null, finished_at?: string | null, }
+
 export interface DesktopVectorPreflightResponse { provider: DesktopVectorSearchProvider, endpoint: string, model: string, ollama_reachable: boolean, model_installed: boolean, install_state: DesktopVectorInstallState, progress_pct: number, message?: string | null, }
 
 export interface DesktopVectorInstallStatusResponse { state: DesktopVectorInstallState, model: string, progress_pct: number, message?: string | null, }

@@ -3165,7 +3165,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "opensession-api"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-core"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-desktop"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3220,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-git-native"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3234,7 +3234,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-local-db"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3248,7 +3248,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-parsers"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-runtime-config"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "serde",
  "toml 0.8.2",
@@ -3275,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "opensession-summary"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "hex",
  "opensession-core",

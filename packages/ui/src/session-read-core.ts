@@ -10,6 +10,7 @@ import type {
 	DesktopChangeReadResponse,
 	DesktopChangeReaderTtsResponse,
 	DesktopHandoffBuildResponse,
+	DesktopLifecycleCleanupStatusResponse,
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
@@ -95,6 +96,7 @@ export interface SessionReadCore {
 	updateRuntimeSettings(
 		request: DesktopRuntimeSettingsUpdateRequest,
 	): Promise<DesktopRuntimeSettingsResponse>;
+	lifecycleCleanupStatus(): Promise<DesktopLifecycleCleanupStatusResponse>;
 	summaryBatchRun(): Promise<DesktopSummaryBatchStatusResponse>;
 	summaryBatchStatus(): Promise<DesktopSummaryBatchStatusResponse>;
 	detectSummaryProvider(): Promise<DesktopSummaryProviderDetectResponse>;
@@ -233,6 +235,13 @@ export function createSessionReadCore(adapter: SessionReadAdapter): SessionReadC
 		): Promise<DesktopRuntimeSettingsResponse> {
 			try {
 				return await adapter.updateRuntimeSettings(request);
+			} catch (error) {
+				throw SessionReadCoreError.fromUnknown(error);
+			}
+		},
+		async lifecycleCleanupStatus(): Promise<DesktopLifecycleCleanupStatusResponse> {
+			try {
+				return await adapter.lifecycleCleanupStatus();
 			} catch (error) {
 				throw SessionReadCoreError.fromUnknown(error);
 			}

@@ -162,6 +162,14 @@ test.describe('Settings', () => {
 			started_at: null as string | null,
 			finished_at: null as string | null,
 		};
+		let lifecycleCleanupStatus = {
+			state: 'complete' as 'idle' | 'running' | 'complete' | 'failed',
+			deleted_sessions: 3,
+			deleted_summaries: 9,
+			message: 'Lifecycle cleanup complete. Deleted 3 sessions and removed 9 summaries.',
+			started_at: '2026-03-05T01:00:00Z',
+			finished_at: '2026-03-05T01:00:03Z',
+		};
 
 			(
 				window as Window & {
@@ -185,6 +193,7 @@ test.describe('Settings', () => {
 							return { email_password: false, oauth: [] };
 						}
 						if (cmd === 'desktop_get_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_lifecycle_cleanup_status') return lifecycleCleanupStatus;
 						if (cmd === 'desktop_vector_preflight') {
 							return {
 								provider: 'ollama',
@@ -405,10 +414,27 @@ test.describe('Settings', () => {
 			.toBeLessThan(lifecycleBeforeJumpY - 400);
 		await expect(page.locator('[data-testid="runtime-quick-menu"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-quick-draft-state"]')).toHaveText('Saved');
+		await expect(page.locator('[data-testid="settings-nav-runtime-section-activity"]')).toBeVisible();
+		await expect(page.locator('[data-testid="runtime-activity-lifecycle"]')).toContainText(
+			'3 sessions deleted',
+		);
+		await expect(page.locator('[data-testid="runtime-activity-lifecycle"]')).toContainText(
+			'9 summaries removed',
+		);
+		await expect(page.locator('[data-testid="runtime-lifecycle-status"]')).toContainText(
+			'state: complete',
+		);
+		await expect(page.locator('[data-testid="runtime-lifecycle-status"]')).toContainText(
+			'deleted: 3 sessions / 9 summaries',
+		);
+		await expect(page.locator('[data-testid="runtime-quick-toggle-change-reader-voice"]')).toBeDisabled();
 		await page.locator('[data-testid="runtime-quick-toggle-lifecycle"]').click();
 		await expect(page.locator('[data-testid="runtime-lifecycle-enable"]')).not.toBeChecked();
 		await expect(page.locator('[data-testid="runtime-quick-draft-state"]')).toHaveText('Draft');
 		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toBeVisible();
+		await page.locator('[data-testid="runtime-quick-toggle-change-reader"]').click();
+		await expect(page.locator('[data-testid="runtime-change-reader-enable"]')).toBeChecked();
+		await expect(page.locator('[data-testid="runtime-quick-toggle-change-reader-voice"]')).toBeDisabled();
 		await page.locator('[data-testid="runtime-quick-toggle-vector"]').click();
 		await expect(page.locator('[data-testid="runtime-vector-enable"]')).toBeChecked();
 		await page.locator('[data-testid="runtime-quick-reset"]').click();
@@ -478,8 +504,22 @@ test.describe('Settings', () => {
 		).toBeLessThanOrEqual(4);
 		await expect(page.locator('[data-testid="settings-runtime-change-reader"]')).toBeVisible();
 		await page.locator('[data-testid="runtime-help-change-reader-enable"]').hover();
-		await expect(page.getByRole('tooltip')).toContainText('notebook-style change reading');
+		await expect(page.getByRole('tooltip')).toContainText('text-based change reader');
+		await expect(page.locator('[data-testid="runtime-change-reader-mode-guide"]')).toContainText(
+			'Reader',
+		);
+		await expect(page.locator('[data-testid="runtime-change-reader-mode-guide"]')).toContainText(
+			'Voice playback',
+		);
+		await expect(page.locator('[data-testid="runtime-change-reader-voice-enable"]')).toBeDisabled();
+		await expect(
+			page.locator('[data-testid="runtime-change-reader-voice-requirement"]'),
+		).toContainText('Enable Change Reader first');
 		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
+		await expect(page.locator('[data-testid="runtime-change-reader-voice-enable"]')).toBeDisabled();
+		await expect(
+			page.locator('[data-testid="runtime-change-reader-voice-requirement"]'),
+		).toContainText('Add a Voice API key first');
 		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toContainText(
 			'Checkbox, select, and input edits are drafts until you click Save Runtime',
@@ -493,7 +533,6 @@ test.describe('Settings', () => {
 			.first()
 			.selectOption('full_context');
 		await page.locator('[data-testid="runtime-change-reader-max-context"]').fill('18000');
-		await page.locator('[data-testid="runtime-change-reader-voice-enable"]').check();
 		await expect(page.locator('[data-testid="runtime-change-reader-voice-provider"]')).toHaveValue(
 			'openai',
 		);
@@ -504,7 +543,12 @@ test.describe('Settings', () => {
 		);
 		await expect(
 			page.locator('[data-testid="runtime-change-reader-voice-key-status"]'),
-		).toContainText('api_key_configured: no');
+		).toContainText('Voice API key: pending save');
+		await expect(page.locator('[data-testid="runtime-change-reader-voice-enable"]')).toBeEnabled();
+		await page.locator('[data-testid="runtime-change-reader-voice-enable"]').check();
+		await expect(
+			page.locator('[data-testid="runtime-change-reader-voice-requirement"]'),
+		).toContainText('reads the same change reader output aloud');
 
 		await expect(page.locator('[data-testid="settings-runtime-storage"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
@@ -559,7 +603,7 @@ test.describe('Settings', () => {
 		);
 		await expect(
 			page.locator('[data-testid="runtime-change-reader-voice-key-status"]'),
-		).toContainText('api_key_configured: yes');
+		).toContainText('Voice API key: configured');
 		await page.evaluate(() => {
 			const active = document.activeElement as HTMLElement | null;
 			active?.blur?.();
@@ -706,6 +750,16 @@ test.describe('Settings', () => {
 							return { email_password: false, oauth: [] };
 						}
 						if (cmd === 'desktop_get_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_lifecycle_cleanup_status') {
+							return {
+								state: 'idle',
+								deleted_sessions: 0,
+								deleted_summaries: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
 						if (cmd === 'desktop_summary_batch_status') {
 							return {
 								state: 'idle',
@@ -767,6 +821,156 @@ test.describe('Settings', () => {
 		);
 		await expect(page.locator('[data-testid="floating-job-vector-reindex"]')).toHaveCount(0);
 		await expect(page.locator('[data-testid="runtime-vector-reindex"]')).toBeEnabled();
+	});
+
+	test('historical vector failure is shown as last rebuild failure when provider is healthy', async ({
+		page,
+	}) => {
+		await page.addInitScript(() => {
+			const runtimeState = {
+				session_default_view: 'full' as 'full' | 'compressed',
+				summary: {
+					provider: {
+						id: 'disabled' as 'disabled' | 'ollama' | 'codex_exec' | 'claude_cli',
+						transport: 'none' as 'none' | 'http' | 'cli',
+						endpoint: '',
+						model: '',
+					},
+					prompt: {
+						template: 'template',
+						default_template: 'template',
+					},
+					response: {
+						style: 'standard' as 'compact' | 'standard' | 'detailed',
+						shape: 'layered' as 'layered' | 'file_list' | 'security_first',
+					},
+					storage: {
+						trigger: 'manual' as 'manual' | 'on_session_save',
+						backend: 'hidden_ref' as 'hidden_ref' | 'local_db' | 'none',
+					},
+					source_mode: 'session_only' as 'session_only' | 'session_or_git_changes',
+					batch: {
+						execution_mode: 'manual' as 'manual' | 'on_app_start',
+						scope: 'recent_days' as 'recent_days' | 'all',
+						recent_days: 30,
+					},
+				},
+				vector_search: {
+					enabled: true,
+					provider: 'ollama' as 'ollama',
+					model: 'bge-m3',
+					endpoint: 'http://127.0.0.1:11434',
+					granularity: 'event_line_chunk' as 'event_line_chunk',
+					chunking_mode: 'auto' as 'auto' | 'manual',
+					chunk_size_lines: 12,
+					chunk_overlap_lines: 3,
+					top_k_chunks: 30,
+					top_k_sessions: 20,
+				},
+				change_reader: {
+					enabled: false,
+					scope: 'summary_only' as 'summary_only' | 'full_context',
+					qa_enabled: true,
+					max_context_chars: 12000,
+					voice: {
+						enabled: false,
+						provider: 'openai' as 'openai',
+						model: 'gpt-4o-mini-tts',
+						voice: 'alloy',
+						api_key_configured: false,
+					},
+				},
+				lifecycle: {
+					enabled: true,
+					session_ttl_days: 30,
+					summary_ttl_days: 30,
+					cleanup_interval_secs: 3600,
+				},
+				ui_constraints: {
+					source_mode_locked: true,
+					source_mode_locked_value: 'session_only' as 'session_only',
+				},
+			};
+
+			(
+				window as Window & {
+					__TAURI_INTERNALS__?: Record<string, never>;
+					__TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } };
+				}
+			).__TAURI_INTERNALS__ = {};
+			(window as Window & { __TAURI__?: unknown }).__TAURI__ = {
+				core: {
+					invoke: async (cmd: string) => {
+						if (cmd === 'desktop_get_contract_version') return { version: 'desktop-ipc-v6' };
+						if (cmd === 'desktop_get_capabilities') {
+							return {
+								auth_enabled: false,
+								parse_preview_enabled: false,
+								register_targets: [],
+								share_modes: [],
+							};
+						}
+						if (cmd === 'desktop_get_auth_providers') {
+							return { email_password: false, oauth: [] };
+						}
+						if (cmd === 'desktop_get_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_lifecycle_cleanup_status') {
+							return {
+								state: 'idle',
+								deleted_sessions: 0,
+								deleted_summaries: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
+						if (cmd === 'desktop_summary_batch_status') {
+							return {
+								state: 'idle',
+								processed_sessions: 0,
+								total_sessions: 0,
+								failed_sessions: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
+						if (cmd === 'desktop_vector_preflight') {
+							return {
+								provider: 'ollama',
+								endpoint: runtimeState.vector_search.endpoint,
+								model: runtimeState.vector_search.model,
+								ollama_reachable: true,
+								model_installed: true,
+								install_state: 'ready',
+								progress_pct: 100,
+								message: 'model is installed and ready',
+							};
+						}
+						if (cmd === 'desktop_vector_index_status') {
+							return {
+								state: 'failed',
+								processed_sessions: 7,
+								total_sessions: 42,
+								message:
+									"vector search endpoint returned HTTP 404\nReason: model 'bge-m3' not found\nHTTP: 404\nEndpoint: http://127.0.0.1:11434/api/embeddings\nModel: bge-m3\nAction: verify embedding model exists in local ollama",
+								started_at: '2026-03-05T00:00:00Z',
+								finished_at: '2026-03-05T00:00:10Z',
+							};
+						}
+						throw new Error(`unexpected command: ${cmd}`);
+					},
+				},
+			};
+		});
+
+		await page.goto('/settings');
+		const vectorStatus = page.locator('[data-testid="runtime-vector-status"]');
+		await expect(vectorStatus).toContainText('Index failed · processed 7/42 · 17%');
+		await expect(vectorStatus).toContainText('Last rebuild failure:');
+		await expect(vectorStatus).toContainText("Reason: model 'bge-m3' not found");
+		await expect(vectorStatus).toContainText('Provider looks reachable now. Click Rebuild index to retry');
+		await expect(page.locator('[data-testid="runtime-vector-error"]')).toHaveCount(0);
 	});
 
 	test('can issue personal api key from settings page', async ({ page }) => {
@@ -1033,6 +1237,16 @@ test.describe('Settings', () => {
 							return { email_password: false, oauth: [] };
 						}
 						if (cmd === 'desktop_get_runtime_settings') return runtimeState;
+						if (cmd === 'desktop_lifecycle_cleanup_status') {
+							return {
+								state: 'idle',
+								deleted_sessions: 0,
+								deleted_summaries: 0,
+								message: null,
+								started_at: null,
+								finished_at: null,
+							};
+						}
 						if (cmd === 'desktop_summary_batch_status') {
 							return {
 								state: 'idle',

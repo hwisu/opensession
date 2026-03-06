@@ -31,6 +31,10 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
         "local_0004_summary_batch_status",
         include_str!("../../migrations/local_0004_summary_batch_status.sql"),
     ),
+    (
+        "local_0005_lifecycle_cleanup_status",
+        include_str!("../../migrations/local_0005_lifecycle_cleanup_status.sql"),
+    ),
 ];
 
 #[cfg(test)]
@@ -41,11 +45,12 @@ mod tests {
     fn schema_migration_set_is_minimal() {
         assert_eq!(MIGRATIONS.len(), 1);
         assert_eq!(MIGRATIONS[0].0, "0001_schema");
-        assert_eq!(LOCAL_MIGRATIONS.len(), 4);
+        assert_eq!(LOCAL_MIGRATIONS.len(), 5);
         assert_eq!(LOCAL_MIGRATIONS[0].0, "local_0001_schema");
         assert_eq!(LOCAL_MIGRATIONS[1].0, "local_0002_session_summaries");
         assert_eq!(LOCAL_MIGRATIONS[2].0, "local_0003_vector_index");
         assert_eq!(LOCAL_MIGRATIONS[3].0, "local_0004_summary_batch_status");
+        assert_eq!(LOCAL_MIGRATIONS[4].0, "local_0005_lifecycle_cleanup_status");
     }
 
     #[test]

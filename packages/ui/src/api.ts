@@ -15,6 +15,7 @@ import type {
 	DesktopChangeReadResponse,
 	DesktopChangeReaderTtsResponse,
 	DesktopHandoffBuildResponse,
+	DesktopLifecycleCleanupStatusResponse,
 	DesktopQuickShareResponse,
 	DesktopRuntimeSettingsResponse,
 	DesktopRuntimeSettingsUpdateRequest,
@@ -422,6 +423,14 @@ export async function updateRuntimeSettings(
 ): Promise<DesktopRuntimeSettingsResponse> {
 	try {
 		return await getSessionReadCore().updateRuntimeSettings(request);
+	} catch (error) {
+		throw normalizeSessionAdapterError(error);
+	}
+}
+
+export async function getLifecycleCleanupStatus(): Promise<DesktopLifecycleCleanupStatusResponse> {
+	try {
+		return await getSessionReadCore().lifecycleCleanupStatus();
 	} catch (error) {
 		throw normalizeSessionAdapterError(error);
 	}

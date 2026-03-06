@@ -4,9 +4,9 @@
     "commits": [
       "647b7eb32337e25c6b6b46af5b7d160fb5973866",
       "f7ca30aebf617062ec11d341239e46c797361ff3",
-      "21a681d7867b2bc2c00079f2e08bb0489917ea04"
+      "dba83dc1d961d141585e3a05924132f9d07a5873"
     ],
-    "head": "21a681d7867b2bc2c00079f2e08bb0489917ea04",
+    "head": "dba83dc1d961d141585e3a05924132f9d07a5873",
     "remote": "https://github.com/hwisu/opensession.git",
     "repo_name": "hwisu/opensession"
   },

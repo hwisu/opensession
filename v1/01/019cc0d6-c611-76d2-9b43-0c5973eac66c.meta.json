@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "131866ded42ae195306ef6c5619094475fe8694a"
+    ],
+    "head": "131866ded42ae195306ef6c5619094475fe8694a",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc0d6-c611-76d2-9b43-0c5973eac66c",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 375,
+    "event_count": 253,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 17,
+    "task_count": 1,
+    "tool_call_count": 9,
+    "total_input_tokens": 4744987,
+    "total_output_tokens": 18978,
+    "user_message_count": 1
+  },
+  "title": "세션 페이지 \n1.\n[vector:query for open-model search] 라든가  (vector: sematic query)\n...",
+  "tool": "codex"
+}

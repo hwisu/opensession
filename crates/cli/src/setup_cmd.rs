@@ -19,41 +19,14 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "setup_cmd/doctor.rs"]
+mod doctor;
+use doctor::{DoctorLevel, DoctorSummary};
+
 const FANOUT_MODE_GIT_CONFIG_KEY: &str = "opensession.fanout-mode";
 const SYNC_MAX_CANDIDATES: usize = 128;
 const SYNC_BRANCH_COMMITS_MAX: usize = 4096;
 const COMMIT_HINT_GRACE_SECONDS: i64 = 6 * 60 * 60;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DoctorLevel {
-    Ok,
-    Info,
-    Warn,
-    Fail,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct DoctorSummary {
-    ok: usize,
-    info: usize,
-    warn: usize,
-    fail: usize,
-}
-
-impl DoctorSummary {
-    fn record(&mut self, level: DoctorLevel) {
-        match level {
-            DoctorLevel::Ok => self.ok += 1,
-            DoctorLevel::Info => self.info += 1,
-            DoctorLevel::Warn => self.warn += 1,
-            DoctorLevel::Fail => self.fail += 1,
-        }
-    }
-
-    fn issue_categories(&self) -> usize {
-        self.warn + self.fail
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FanoutMode {
@@ -367,12 +340,7 @@ fn run_install(
 }
 
 fn suggested_doctor_command(mode: FanoutMode, target: OpenTarget, profile: SetupProfile) -> String {
-    format!(
-        "opensession doctor --fix --yes --profile {} --fanout-mode {} --open-target {}",
-        profile.as_str(),
-        mode.as_str(),
-        target.as_str(),
-    )
+    doctor::suggested_doctor_command(mode, target, profile)
 }
 
 fn enforce_apply_mode_requirements(
@@ -1066,39 +1034,15 @@ fn run_check(repo_root: &PathBuf) -> Result<()> {
 }
 
 fn doctor_colors_enabled() -> bool {
-    io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-}
-
-fn doctor_tag(level: DoctorLevel, colors: bool) -> String {
-    let plain = match level {
-        DoctorLevel::Ok => "[ OK ]",
-        DoctorLevel::Info => "[INFO]",
-        DoctorLevel::Warn => "[WARN]",
-        DoctorLevel::Fail => "[FAIL]",
-    };
-    if !colors {
-        return plain.to_string();
-    }
-    let code = match level {
-        DoctorLevel::Ok => "32",
-        DoctorLevel::Info => "36",
-        DoctorLevel::Warn => "33",
-        DoctorLevel::Fail => "31",
-    };
-    format!("\x1b[1;{code}m{plain}\x1b[0m")
+    doctor::doctor_colors_enabled()
 }
 
 fn print_doctor_item(colors: bool, level: DoctorLevel, label: &str, detail: &str) {
-    println!(
-        "{} {:<18} {}",
-        doctor_tag(level, colors),
-        format!("{label}:"),
-        detail
-    );
+    doctor::print_doctor_item(colors, level, label, detail);
 }
 
 fn print_doctor_hint(detail: &str) {
-    println!("       hint: {detail}");
+    doctor::print_doctor_hint(detail);
 }
 
 fn ensure_fanout_mode(
@@ -1577,10 +1521,10 @@ mod tests {
 
     #[test]
     fn doctor_tag_plain_is_ascii_stable() {
-        assert_eq!(doctor_tag(DoctorLevel::Ok, false), "[ OK ]");
-        assert_eq!(doctor_tag(DoctorLevel::Info, false), "[INFO]");
-        assert_eq!(doctor_tag(DoctorLevel::Warn, false), "[WARN]");
-        assert_eq!(doctor_tag(DoctorLevel::Fail, false), "[FAIL]");
+        assert_eq!(doctor::doctor_tag(DoctorLevel::Ok, false), "[ OK ]");
+        assert_eq!(doctor::doctor_tag(DoctorLevel::Info, false), "[INFO]");
+        assert_eq!(doctor::doctor_tag(DoctorLevel::Warn, false), "[WARN]");
+        assert_eq!(doctor::doctor_tag(DoctorLevel::Fail, false), "[FAIL]");
     }
 
     #[test]

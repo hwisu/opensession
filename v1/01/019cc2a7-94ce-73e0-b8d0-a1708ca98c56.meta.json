@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "codex/effect-srp-refactor",
+    "commits": [
+      "21a681d7867b2bc2c00079f2e08bb0489917ea04"
+    ],
+    "head": "21a681d7867b2bc2c00079f2e08bb0489917ea04",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc2a7-94ce-73e0-b8d0-a1708ca98c56",
+  "session_role": "auxiliary",
+  "stats": {
+    "duration_seconds": 402,
+    "event_count": 3643,
+    "files_changed": 43,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 321,
+    "task_count": 14,
+    "tool_call_count": 406,
+    "total_input_tokens": 91771780,
+    "total_output_tokens": 477074,
+    "user_message_count": 16
+  },
+  "title": "코드 전체를 Effect Monad를 기준으로 잘 정렬되도록 코드를 다듬어줘.\nTestable Code를 목표로 적절하게 레이러를 분리하기...",
+  "tool": "codex"
+}

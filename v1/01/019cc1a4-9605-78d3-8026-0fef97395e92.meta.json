@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "bf7d505805dd45cc54dd2e064757fbab2dec2bd2"
+    ],
+    "head": "bf7d505805dd45cc54dd2e064757fbab2dec2bd2",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc1a4-9605-78d3-8026-0fef97395e92",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 39,
+    "event_count": 44,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 5,
+    "task_count": 1,
+    "tool_call_count": 0,
+    "total_input_tokens": 194236,
+    "total_output_tokens": 1944,
+    "user_message_count": 1
+  },
+  "title": "코드 전체를 Effect Monad를 기준으로 잘 정렬되도록 코드를 다듬어줘.\nTestable Code를 목표로 적절하게 레이러를 분리하기...",
+  "tool": "codex"
+}

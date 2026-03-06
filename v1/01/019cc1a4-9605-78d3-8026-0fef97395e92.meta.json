@@ -1,0 +1,35 @@
+{
+  "git": {
+    "branch": "codex/effect-srp-refactor",
+    "commits": [
+      "0b6ee41bcba929f0a05446ccc79a36fa2790355c",
+      "84eb39272c79f7e3f3f0e1394e822d25a1e08949",
+      "f885cb740a905da39569bc3125f0abb09fd3c0f0",
+      "6fb22d6b8e66bb0460e23dd33af21149cf5ba4cc",
+      "3f0ed8b69fba974a7b14115ce286196bcd7f1498",
+      "fe6baa7429830d5a389e83a3d6f19bea8156a7a4"
+    ],
+    "head": "fe6baa7429830d5a389e83a3d6f19bea8156a7a4",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cc1a4-9605-78d3-8026-0fef97395e92",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 11376,
+    "event_count": 2686,
+    "files_changed": 36,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 244,
+    "task_count": 11,
+    "tool_call_count": 305,
+    "total_input_tokens": 65817814,
+    "total_output_tokens": 354935,
+    "user_message_count": 13
+  },
+  "title": "코드 전체를 Effect Monad를 기준으로 잘 정렬되도록 코드를 다듬어줘.\nTestable Code를 목표로 적절하게 레이러를 분리하기...",
+  "tool": "codex"
+}

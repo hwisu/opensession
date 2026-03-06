@@ -1,8 +1,9 @@
 use crate::app::session_summary::resolve_repo_root_from_session_row;
 use crate::{
     DesktopApiResult, LIFECYCLE_CLEANUP_LOOP_STARTED, desktop_error, load_runtime_config,
-    open_local_db, set_lifecycle_cleanup_job_snapshot,
+    open_local_db,
 };
+use opensession_api::{DesktopLifecycleCleanupState, DesktopLifecycleCleanupStatusResponse};
 use opensession_git_native::{BRANCH_LEDGER_REF_PREFIX, NativeGitStorage, SUMMARY_LEDGER_REF};
 use opensession_local_db::{LifecycleCleanupJobRow, LocalDb, LocalSessionFilter};
 use opensession_runtime_config::{DaemonConfig, GitStorageMethod};
@@ -110,6 +111,62 @@ fn run_desktop_git_retention_once(repo_roots: &BTreeSet<PathBuf>, keep_days: u32
             }
         }
     }
+}
+
+fn map_lifecycle_cleanup_state(raw: &str) -> DesktopLifecycleCleanupState {
+    match raw {
+        "running" => DesktopLifecycleCleanupState::Running,
+        "complete" => DesktopLifecycleCleanupState::Complete,
+        "failed" => DesktopLifecycleCleanupState::Failed,
+        _ => DesktopLifecycleCleanupState::Idle,
+    }
+}
+
+pub(crate) fn desktop_lifecycle_cleanup_status_from_db(
+    db: &LocalDb,
+) -> DesktopApiResult<DesktopLifecycleCleanupStatusResponse> {
+    let row = db.get_lifecycle_cleanup_job().map_err(|error| {
+        desktop_error(
+            "desktop.lifecycle_cleanup_status_failed",
+            500,
+            "failed to read lifecycle cleanup status",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })?;
+
+    let Some(row) = row else {
+        return Ok(DesktopLifecycleCleanupStatusResponse {
+            state: DesktopLifecycleCleanupState::Idle,
+            deleted_sessions: 0,
+            deleted_summaries: 0,
+            message: None,
+            started_at: None,
+            finished_at: None,
+        });
+    };
+
+    Ok(DesktopLifecycleCleanupStatusResponse {
+        state: map_lifecycle_cleanup_state(&row.status),
+        deleted_sessions: row.deleted_sessions,
+        deleted_summaries: row.deleted_summaries,
+        message: row.message,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+    })
+}
+
+pub(crate) fn set_lifecycle_cleanup_job_snapshot(
+    db: &LocalDb,
+    payload: LifecycleCleanupJobRow,
+) -> DesktopApiResult<()> {
+    db.set_lifecycle_cleanup_job(&payload).map_err(|error| {
+        desktop_error(
+            "desktop.lifecycle_cleanup_status_failed",
+            500,
+            "failed to persist lifecycle cleanup status",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })
 }
 
 pub(crate) fn run_desktop_lifecycle_cleanup_once_with_db(
@@ -338,4 +395,11 @@ pub(crate) fn maybe_start_lifecycle_cleanup_loop() {
             std::thread::sleep(sleep_for);
         }
     });
+}
+
+#[tauri::command]
+pub(crate) fn desktop_lifecycle_cleanup_status()
+-> DesktopApiResult<DesktopLifecycleCleanupStatusResponse> {
+    let db = open_local_db()?;
+    desktop_lifecycle_cleanup_status_from_db(&db)
 }

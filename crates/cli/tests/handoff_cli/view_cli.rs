@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 
 #[test]

@@ -160,7 +160,7 @@ opensession doctor --fix --yes --profile local --fanout-mode hidden_ref --open-t
 - `remote.<name>.push`는 수정하지 않습니다.
 - hook fanout push는 best-effort이며 경고만 출력합니다.
 - fanout helper가 없거나 fanout push가 실패하면 push를 실패시키려면 `OPENSESSION_STRICT=1`을 사용하세요.
-- PR 자동화는 현재 same-repo PR만 지원합니다.
+- PR 자동화는 현재 same-repo 비봇 PR만 지원합니다.
 - merge/branch delete cleanup은 ledger ref를 즉시 제거하고, 실제 object 제거는 remote GC 정책을 따릅니다.
 
 `share --web` 규칙:

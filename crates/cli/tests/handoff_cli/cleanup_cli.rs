@@ -125,6 +125,7 @@ fn cleanup_init_persists_session_archive_branch_setting() {
     .expect("read review workflow");
     assert!(workflow_body.contains("session_archive_branch"));
     assert!(workflow_body.contains("Delete ephemeral artifact branch"));
+    assert!(workflow_body.contains("github.event.pull_request.user.type != 'Bot'"));
 }
 
 #[test]

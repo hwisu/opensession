@@ -160,7 +160,7 @@ opensession doctor --fix --yes --profile local --fanout-mode hidden_ref --open-t
 - Does **not** modify `remote.<name>.push`.
 - Hook fanout push is best-effort and warning-only.
 - Set `OPENSESSION_STRICT=1` to fail push when fanout helper is unavailable or fanout push fails.
-- PR automation currently targets same-repo PRs only.
+- PR automation currently targets same-repo non-bot PRs only.
 - Merge/branch-delete cleanup removes ledger refs immediately; physical object removal follows remote GC policy.
 
 `share --web` rules:

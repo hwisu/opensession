@@ -149,6 +149,9 @@ function main() {
   if (!workflow.includes('Resolve artifact storage')) {
     fail('workflow must resolve artifact storage from cleanup config.');
   }
+  if (!workflow.includes("github.event.pull_request.user.type != 'Bot'")) {
+    fail('workflow must skip session review automation for bot-authored PRs.');
+  }
   if (!workflow.includes('session_archive_branch')) {
     fail('workflow must support repo-local session_archive_branch setting.');
   }

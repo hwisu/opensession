@@ -2,6 +2,8 @@
 /target/
 /target-*/
 /crates/worker/target/
+/crates/worker/build/
+/build/
 
 # Local cargo overrides (dev only)
 .cargo/config.toml

@@ -12,6 +12,9 @@ keywords = ["ai", "session", "daemon", "opensession"]
 categories = ["command-line-utilities", "development-tools"]
 include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 

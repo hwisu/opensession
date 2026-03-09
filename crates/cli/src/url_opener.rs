@@ -133,7 +133,15 @@ impl UrlAdapter for SystemBrowserAdapter {
             }
         }
 
-        bail!("failed to open browser automatically")
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            bail!("failed to open browser automatically");
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            bail!("failed to open browser automatically");
+        }
     }
 }
 

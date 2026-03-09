@@ -6,6 +6,7 @@ use opensession_api::{
     LocalReviewReviewerDigest, LocalReviewReviewerQa, LocalReviewSemanticSummary,
     LocalReviewSession,
 };
+use opensession_core::session::is_auxiliary_session;
 use opensession_core::{ContentBlock, EventType, Session};
 use opensession_runtime_config::SummarySettings;
 use opensession_summary::SemanticSummaryArtifact;
@@ -772,6 +773,9 @@ async fn build_review_bundle(input: BuildReviewBundleInput<'_>) -> Result<LocalR
                             index_entry.hail_path
                         )
                     })?;
+                    if is_auxiliary_session(&session) {
+                        continue;
+                    }
                     session_rows.push(LocalReviewSession {
                         session_id: index_entry.session_id.clone(),
                         ledger_ref: ledger_ref.clone(),

@@ -329,3 +329,56 @@ fn setup_sync_branch_session_maps_single_session_to_multiple_commits() {
         ],
     );
 }
+
+#[test]
+fn setup_sync_branch_session_skips_auxiliary_sessions() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let head_sha = first_non_empty_line(&run_git(&repo, &["rev-parse", "HEAD"]).stdout);
+    let session_path = tmp
+        .path()
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("02")
+        .join("26")
+        .join("rollout-2026-02-26T00-00-00-sync-session-aux.jsonl");
+    write_file(
+        &session_path,
+        &make_auxiliary_hail_jsonl_with_cwd("sync-session-aux", &repo, "parent-session"),
+    );
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &[
+            "setup",
+            "--sync-branch-session",
+            "main",
+            "--sync-branch-commit",
+            &head_sha,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "sync branch session failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let ledger_ref = opensession_git_native::branch_ledger_ref("main");
+    let verify = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .arg("show-ref")
+        .arg("--verify")
+        .arg("--quiet")
+        .arg(&ledger_ref)
+        .output()
+        .expect("verify ledger ref absence");
+    assert!(
+        !verify.status.success(),
+        "auxiliary sessions should not create a hidden ledger ref"
+    );
+}

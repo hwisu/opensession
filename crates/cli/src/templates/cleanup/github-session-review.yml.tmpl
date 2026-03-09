@@ -70,17 +70,22 @@ PY
             const lines = [
               marker,
               '### OpenSession Session Artifact',
-              `- Ledger ref: \`${ledgerRef}\``,
-              `- Artifact branch: \`${artifactBranch}\``,
-              `- Artifact branch link: [open](${branchUrl})`,
+              '',
+              '| Metric | Value |',
+              '| --- | --- |',
+              `| Ledger ref | \`${ledgerRef}\` |`,
+              `| Artifact branch | [\`${artifactBranch}\`](${branchUrl}) |`,
             ];
 
             if (!hasLedger) {
-              lines.push('- Status: hidden ledger ref not found yet (no tracked sessions pushed).');
+              lines.push('| Status | waiting for first tracked session push |');
+              lines.push('| Next action | Push at least one tracked session, then rerun the session-review workflow. |');
             } else if (!pushOk) {
-              lines.push('- Status: ledger found, but failed to push artifact branch (check workflow write permissions).');
+              lines.push('| Status | ledger found, but artifact publish failed |');
+              lines.push('| Next action | Check workflow write permissions for `contents: write`. |');
             } else {
-              lines.push('- Status: artifact branch updated.');
+              lines.push('| Status | artifact branch updated |');
+              lines.push('| Next action | Open the artifact branch or run the full session-review workflow for digest output. |');
             }
 
             const body = `${lines.join('\n')}\n`;

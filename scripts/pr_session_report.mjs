@@ -4,6 +4,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const DEFAULT_MAX_BUFFER = 128 * 1024 * 1024;
 
@@ -33,6 +34,15 @@ function tryRunRaw(cmd, options = {}) {
     return runRaw(cmd, options);
   } catch {
     return '';
+  }
+}
+
+function gitCommandSucceeds(cmd, options = {}) {
+  try {
+    runRaw(cmd, options);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -163,6 +173,25 @@ function collectCommitRange(base, head) {
   return out.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
+function parseJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function readJsonAtRef(ledgerRef, relPath) {
+  if (!ledgerRef || !relPath) return null;
+  const raw = tryRunRaw(`git show ${ledgerRef}:${relPath}`);
+  if (!raw) return null;
+  return parseJson(raw);
+}
+
+function normalizeSessionTitle(value, maxLen = 96) {
+  return normalizeDigestText(value, maxLen);
+}
+
 function collectIndexedSessions(ledgerRef, commits) {
   const bySession = new Map();
   for (const sha of commits) {
@@ -173,25 +202,38 @@ function collectIndexedSessions(ledgerRef, commits) {
     for (const relPath of listing.split('\n').map((line) => line.trim()).filter(Boolean)) {
       const raw = tryRun(`git show ${ledgerRef}:${relPath}`);
       if (!raw) continue;
-      let payload = null;
-      try {
-        payload = JSON.parse(raw);
-      } catch {
-        continue;
-      }
+      const payload = parseJson(raw);
+      if (!payload) continue;
       const sessionId = payload.session_id;
       if (!sessionId) continue;
+      const meta = readJsonAtRef(ledgerRef, payload.meta_path);
+      const sessionRole = String(meta?.session_role ?? '').trim().toLowerCase();
+      if (sessionRole === 'auxiliary') continue;
       const existing = bySession.get(sessionId) ?? {
         session_id: sessionId,
         commits: [],
         hail_path: payload.hail_path,
         meta_path: payload.meta_path,
+        tool: String(meta?.tool ?? '').trim(),
+        session_role: sessionRole || 'primary',
+        title: normalizeSessionTitle(meta?.title),
+        files_changed: Number.isFinite(meta?.stats?.files_changed) ? meta.stats.files_changed : 0,
       };
       existing.commits = unique([...existing.commits, sha]);
+      if (!existing.tool && meta?.tool) existing.tool = String(meta.tool).trim();
+      if ((!existing.title || existing.title === '-') && meta?.title) {
+        existing.title = normalizeSessionTitle(meta.title);
+      }
+      if (!existing.files_changed && Number.isFinite(meta?.stats?.files_changed)) {
+        existing.files_changed = meta.stats.files_changed;
+      }
       bySession.set(sessionId, existing);
     }
   }
-  return Array.from(bySession.values()).sort((a, b) => a.session_id.localeCompare(b.session_id));
+  return Array.from(bySession.values()).sort((a, b) =>
+    (b.files_changed - a.files_changed)
+      || (b.commits.length - a.commits.length)
+      || a.session_id.localeCompare(b.session_id));
 }
 
 function isTestFilePath(filePath) {
@@ -288,8 +330,10 @@ function collectEventsFromSessionRaw(raw) {
 function collectQaDigestFromSessions(ledgerRef, sessions) {
   const pairs = [];
   const pendingQuestions = [];
+  const seenPairs = new Set();
 
   for (const session of sessions) {
+    if (pairs.length >= 6) break;
     if (!session.hail_path) continue;
     const raw = tryRunRaw(`git show ${ledgerRef}:${session.hail_path}`);
     if (!raw) continue;
@@ -298,25 +342,92 @@ function collectQaDigestFromSessions(ledgerRef, sessions) {
       const source = String(event?.attributes?.source ?? '').trim().toLowerCase();
       if (source === 'interactive_question') {
         const question = extractTextFromEventContent(event.content);
-        if (question) pendingQuestions.push(question);
+        if (question) {
+          pendingQuestions.push({
+            question,
+            session_id: session.session_id,
+            commit: session.commits[0] ?? '',
+          });
+        }
         continue;
       }
       if (source === 'interactive') {
         const answer = extractTextFromEventContent(event.content);
         if (!answer) continue;
-        const question = pendingQuestions.shift() ?? '(interactive question missing)';
-        pairs.push({ question, answer });
+        const queued = pendingQuestions.shift() ?? {
+          question: '(interactive question missing)',
+          session_id: session.session_id,
+          commit: session.commits[0] ?? '',
+        };
+        const pair = {
+          question: queued.question,
+          answer,
+          session_id: session.session_id,
+          commit: queued.commit || session.commits[0] || '',
+        };
+        const pairKey = `${pair.question}\n${pair.answer}`;
+        if (!seenPairs.has(pairKey)) {
+          seenPairs.add(pairKey);
+          pairs.push(pair);
+        }
+        if (pairs.length >= 6) break;
       }
     }
   }
 
-  for (const question of pendingQuestions) {
-    pairs.push({ question, answer: null });
+  for (const pending of pendingQuestions) {
+    if (pairs.length >= 6) break;
+    const pair = {
+      question: pending.question,
+      answer: null,
+      session_id: pending.session_id,
+      commit: pending.commit,
+    };
+    const pairKey = `${pair.question}\n`;
+    if (!seenPairs.has(pairKey)) {
+      seenPairs.add(pairKey);
+      pairs.push(pair);
+    }
   }
 
   return {
     pairs: pairs.slice(0, 6),
   };
+}
+
+function collectAreaSummary(changedFiles) {
+  const counts = new Map();
+  for (const rawPath of changedFiles) {
+    const normalized = String(rawPath ?? '').trim().replace(/\\/g, '/');
+    if (!normalized) continue;
+    const [head] = normalized.split('/');
+    const area = normalized.includes('/') ? head : '(root)';
+    counts.set(area, (counts.get(area) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([area, count]) => ({ area, count }))
+    .sort((a, b) => (b.count - a.count) || a.area.localeCompare(b.area));
+}
+
+function escapeTableCell(value) {
+  return String(value ?? '-')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, '<br>');
+}
+
+function pushDetailsList(lines, summary, items, formatter, limit = 12) {
+  if (!items.length) return;
+  lines.push('<details>');
+  lines.push(`<summary>${summary}</summary>`);
+  lines.push('');
+  for (const item of items.slice(0, limit)) {
+    lines.push(`- ${formatter(item)}`);
+  }
+  if (items.length > limit) {
+    lines.push(`- ...and ${items.length - limit} more`);
+  }
+  lines.push('</details>');
+  lines.push('');
 }
 
 function writeFileAt(worktreeDir, relPath, body) {
@@ -495,89 +606,61 @@ function renderReport({
     ? 'OpenSession Review (final snapshot)'
     : 'OpenSession Review';
   const lines = [];
+  const areaSummary = collectAreaSummary(changedFiles);
+  const qas = qaDigest?.pairs ?? [];
+  const reviewId = buildReviewId(repoFullName, prNumber, head);
+  const prLinks = pullRequestLinks(repoFullName, prNumber, base, head);
+  const sessionsPerCommit = commits.length > 0
+    ? (sessions.length / commits.length).toFixed(1)
+    : '0.0';
+
   lines.push(marker);
   lines.push(`### ${title}`);
   lines.push('');
-  lines.push(`- Ledger ref: \`${ledgerRef}\``);
-  if (base) lines.push(`- Base: \`${base}\``);
-  if (head) lines.push(`- Head: \`${head}\``);
-  lines.push(`- Updated at (UTC): ${generatedAt}`);
-  lines.push(`- Commit range size: ${commits.length}`);
-  lines.push(`- Linked sessions: ${sessions.length}`);
-  const prLinks = pullRequestLinks(repoFullName, prNumber, base, head);
-  const reviewId = buildReviewId(repoFullName, prNumber, head);
+  lines.push('| Metric | Value |');
+  lines.push('| --- | --- |');
+  lines.push(`| Ledger ref | \`${ledgerRef}\` |`);
+  if (base && head) {
+    lines.push(`| Base -> Head | \`${base}\` -> \`${head}\` |`);
+  } else if (head) {
+    lines.push(`| Head | \`${head}\` |`);
+  }
+  lines.push(`| Updated at (UTC) | ${generatedAt} |`);
+  lines.push(`| Commit range size | ${commits.length} |`);
+  lines.push(`| Primary linked sessions | ${sessions.length} |`);
+  lines.push(`| Modified files | ${changedFiles.length} |`);
+  lines.push(`| Added/updated test files | ${testFiles.length} |`);
+  lines.push(`| Session scope | primary only (auxiliary filtered) |`);
   if (prLinks) {
-    lines.push(
-      `- Quick links: [Files changed](${prLinks.files}) · [Commits](${prLinks.commits})${prLinks.compare ? ` · [Compare](${prLinks.compare})` : ''}`,
-    );
+    lines.push(`| Quick links | [Files changed](${prLinks.files}) · [Commits](${prLinks.commits})${prLinks.compare ? ` · [Compare](${prLinks.compare})` : ''} |`);
   }
   if (reviewId && prLinks) {
-    lines.push(`- Local review: [Open in UI](${localReviewLink(reviewId)})`);
-    lines.push(`- CLI: \`ops review ${prLinks.files.replace('/files', '')}\``);
+    lines.push(`| Local review | [Open in UI](${localReviewLink(reviewId)}) · \`ops review ${prLinks.files.replace('/files', '')}\` |`);
   }
   if (artifact?.enabled && artifact?.branchName && artifact?.treeLink) {
-    lines.push(`- Artifact branch: [\`${artifact.branchName}\`](${artifact.treeLink})`);
-  }
-  if (artifact?.enabled && artifact?.manifestPath && artifact?.branchName) {
-    const manifestLink = githubBlobLink(
-      repoFullName,
-      artifact.branchName,
-      artifact.manifestPath,
-    );
-    if (manifestLink) {
-      lines.push(`- Artifact manifest: [manifest.json](${manifestLink})`);
-    }
+    const manifestLink = artifact?.manifestPath && artifact?.branchName
+      ? githubBlobLink(repoFullName, artifact.branchName, artifact.manifestPath)
+      : null;
+    lines.push(`| Artifact branch | [\`${artifact.branchName}\`](${artifact.treeLink})${manifestLink ? ` · [manifest.json](${manifestLink})` : ''} |`);
   }
   if (artifact?.enabled && artifact?.error) {
-    lines.push(`- Artifact publish: failed (\`${artifact.error}\`)`);
+    lines.push(`| Artifact publish | failed (\`${artifact.error}\`) |`);
   }
-  if (missingLedgerRef) {
-    lines.push(`- Ledger status: missing (\`${ledgerRef}\`)`);
-  }
+  lines.push(`| Ledger status | ${missingLedgerRef ? `missing (\`${ledgerRef}\`)` : 'available'} |`);
   lines.push('');
 
   lines.push('#### Reviewer Quick Digest');
-  if ((qaDigest?.pairs?.length ?? 0) > 0) {
-    lines.push(`- Q&A excerpts: ${qaDigest.pairs.length}`);
-    lines.push('| Question | Answer |');
-    lines.push('| --- | --- |');
-    for (const pair of qaDigest.pairs) {
-      const question = String(pair.question ?? '').replace(/\|/g, '\\|');
-      const answer = String(pair.answer ?? '-').replace(/\|/g, '\\|');
-      lines.push(`| ${question} | ${answer} |`);
-    }
-  } else {
-    lines.push('- Q&A excerpts: none captured');
-  }
-  lines.push(`- Modified files: ${changedFiles.length}`);
-  lines.push(`- Added/updated test files: ${testFiles.length}`);
-  if (changedFiles.length > 0) {
-    lines.push('- Key modified files:');
-    for (const filePath of changedFiles.slice(0, 12)) {
-      lines.push(`  - \`${filePath}\``);
-    }
-    if (changedFiles.length > 12) {
-      lines.push(`  - ...and ${changedFiles.length - 12} more`);
-    }
-  }
-  if (testFiles.length > 0) {
-    lines.push('- Added/updated tests:');
-    for (const filePath of testFiles.slice(0, 12)) {
-      lines.push(`  - \`${filePath}\``);
-    }
-    if (testFiles.length > 12) {
-      lines.push(`  - ...and ${testFiles.length - 12} more`);
-    }
-  }
+  lines.push('| Q&A | Areas | Files | Tests | Sessions / Commit |');
+  lines.push('| ---: | ---: | ---: | ---: | ---: |');
+  lines.push(`| ${qas.length} | ${areaSummary.length} | ${changedFiles.length} | ${testFiles.length} | ${sessionsPerCommit} |`);
   lines.push('');
 
-  if (commits.length > 0) {
-    lines.push('#### Commit trail');
-    for (const sha of commits.slice(0, 20)) {
-      lines.push(`- ${commitLink(repoFullName, sha)}`);
-    }
-    if (commits.length > 20) {
-      lines.push(`- ...and ${commits.length - 20} more`);
+  if (areaSummary.length > 0) {
+    lines.push('#### Area Summary');
+    lines.push('| Area | Files changed |');
+    lines.push('| --- | ---: |');
+    for (const item of areaSummary.slice(0, 8)) {
+      lines.push(`| ${escapeTableCell(item.area)} | ${item.count} |`);
     }
     lines.push('');
   }
@@ -587,21 +670,53 @@ function renderReport({
     return lines.join('\n');
   }
 
+  if (qas.length > 0) {
+    lines.push('#### Interactive Q&A');
+    lines.push('| Session | Commit | Question | Answer |');
+    lines.push('| --- | --- | --- | --- |');
+    for (const pair of qas) {
+      lines.push(
+        `| \`${escapeTableCell(pair.session_id ?? '-')}\` | ${pair.commit ? commitLink(repoFullName, pair.commit) : '-'} | ${escapeTableCell(pair.question)} | ${escapeTableCell(pair.answer ?? '-')} |`,
+      );
+    }
+    lines.push('');
+  } else {
+    lines.push('#### Interactive Q&A');
+    lines.push('No interactive Q&A excerpts were captured from primary sessions.');
+    lines.push('');
+  }
+
+  pushDetailsList(lines, `Changed paths (${changedFiles.length})`, changedFiles, (filePath) => `\`${filePath}\``);
+  pushDetailsList(lines, `Added/updated tests (${testFiles.length})`, testFiles, (filePath) => `\`${filePath}\``);
+
+  if (commits.length > 0) {
+    pushDetailsList(
+      lines,
+      `Commit trail (${commits.length})`,
+      commits,
+      (sha) => commitLink(repoFullName, sha),
+      20,
+    );
+  }
+
   if (sessions.length === 0) {
     lines.push('No indexed sessions matched this commit range.');
     return lines.join('\n');
   }
 
-  lines.push('| Session ID | Commits | Open | OpenSession | JSONL | Meta |');
-  lines.push('| --- | ---: | --- | --- | --- | --- |');
+  lines.push('<details>');
+  lines.push(`<summary>Linked sessions (${sessions.length})</summary>`);
+  lines.push('');
+  lines.push('| Session ID | Tool | Files | Commits | Open | OpenSession | JSONL | Meta | Title |');
+  lines.push('| --- | --- | ---: | --- | --- | --- | --- | --- | --- |');
   for (const session of sessions.slice(0, 50)) {
     const commitCell = session.commits.length > 0
       ? session.commits
-          .slice(0, 4)
+          .slice(0, 3)
           .map((sha) => commitLink(repoFullName, sha))
           .join(', ')
       : String(session.commits.length);
-    const suffix = session.commits.length > 4 ? ` +${session.commits.length - 4}` : '';
+    const suffix = session.commits.length > 3 ? ` +${session.commits.length - 3}` : '';
     const primaryCommit = session.commits[0] ?? '';
     const openLink = localReviewLink(reviewId, session.session_id, primaryCommit);
     const webLink =
@@ -629,13 +744,13 @@ function renderReport({
           )
         : null;
     lines.push(
-      `| \`${session.session_id}\` | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${webLink ? `[web](${webLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} |`,
+      `| \`${session.session_id}\` | ${escapeTableCell(session.tool || '-')} | ${session.files_changed ?? 0} | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${webLink ? `[web](${webLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} | ${escapeTableCell(session.title || '-')} |`,
     );
   }
   if (sessions.length > 50) {
-    lines.push('');
-    lines.push(`...and ${sessions.length - 50} more sessions.`);
+    lines.push(`| ... | ... | ... | ... | ... | ... | ... | ... | ...and ${sessions.length - 50} more sessions. |`);
   }
+  lines.push('</details>');
   return lines.join('\n');
 }
 
@@ -659,7 +774,7 @@ function main() {
     return;
   }
 
-  const refExists = tryRun(`git show-ref ${ledgerRef}`);
+  const refExists = gitCommandSucceeds(`git show-ref --verify --quiet ${ledgerRef}`);
   const commits = collectCommitRange(base, head);
   const sessions = refExists ? collectIndexedSessions(ledgerRef, commits) : [];
   const changedFiles = collectChangedFiles(base, head);
@@ -700,4 +815,25 @@ function main() {
   console.log(report);
 }
 
-main();
+const isMainModule = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isMainModule) {
+  main();
+}
+
+export {
+  buildArtifactBranchName,
+  buildArtifactRoot,
+  buildReviewId,
+  collectAreaSummary,
+  collectChangedFiles,
+  collectCommitRange,
+  collectIndexedSessions,
+  collectQaDigestFromSessions,
+  isTestFilePath,
+  localReviewLink,
+  normalizeDigestText,
+  renderReport,
+};

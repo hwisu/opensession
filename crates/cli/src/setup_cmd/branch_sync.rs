@@ -2,7 +2,9 @@ use super::{COMMIT_HINT_GRACE_SECONDS, SYNC_BRANCH_COMMITS_MAX, SYNC_MAX_CANDIDA
 use anyhow::{Context, Result};
 use opensession_core::Session;
 use opensession_core::sanitize::{SanitizeConfig, sanitize_session};
-use opensession_core::session::{GitMeta, build_git_storage_meta_json_with_git, working_directory};
+use opensession_core::session::{
+    GitMeta, build_git_storage_meta_json_with_git, is_auxiliary_session, working_directory,
+};
 use opensession_git_native::{NativeGitStorage, extract_git_context};
 use opensession_parser_discovery::discover_sessions;
 use opensession_parsers::ParserRegistry;
@@ -250,6 +252,9 @@ pub(super) fn sync_branch_session_to_hidden_ledger(
             continue;
         };
         if !same_repo_root(repo_root, &session_repo) {
+            continue;
+        }
+        if is_auxiliary_session(&session) {
             continue;
         }
 

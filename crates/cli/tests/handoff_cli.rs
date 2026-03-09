@@ -103,6 +103,42 @@ fn make_hail_jsonl_with_cwd(session_id: &str, cwd: &Path) -> String {
     session.to_jsonl().expect("to jsonl")
 }
 
+fn make_auxiliary_hail_jsonl_with_cwd(session_id: &str, cwd: &Path, parent_id: &str) -> String {
+    let mut session = Session::new(
+        session_id.to_string(),
+        Agent {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            tool: "codex".to_string(),
+            tool_version: None,
+        },
+    );
+    session.context.title = Some("auxiliary helper".to_string());
+    session
+        .context
+        .related_session_ids
+        .push(parent_id.to_string());
+    session
+        .context
+        .attributes
+        .insert("cwd".to_string(), Value::String(cwd.display().to_string()));
+    session.context.attributes.insert(
+        "session_role".to_string(),
+        Value::String("auxiliary".to_string()),
+    );
+    session.events.push(Event {
+        event_id: "e1".to_string(),
+        timestamp: chrono::Utc::now(),
+        event_type: EventType::AgentMessage,
+        task_id: None,
+        content: Content::text("helper output"),
+        duration_ms: None,
+        attributes: Default::default(),
+    });
+    session.recompute_stats();
+    session.to_jsonl().expect("to jsonl")
+}
+
 fn make_hail_jsonl_with_cwd_and_window(
     session_id: &str,
     cwd: &Path,
@@ -145,9 +181,10 @@ fn first_non_empty_line(output: &[u8]) -> String {
         .to_string()
 }
 
-fn setup_review_fixture(
+fn setup_review_fixture_with_options(
     tmp: &tempfile::TempDir,
     fetch_hidden_refs: bool,
+    include_auxiliary: bool,
 ) -> (std::path::PathBuf, String) {
     let author = tmp.path().join("author");
     let reviewer = tmp.path().join("reviewer");
@@ -194,6 +231,30 @@ fn setup_review_fixture(
             std::slice::from_ref(&feature_sha),
         )
         .expect("store session in hidden ledger");
+    if include_auxiliary {
+        let auxiliary_body =
+            make_auxiliary_hail_jsonl_with_cwd("s-review-aux", &author, "s-review");
+        let auxiliary_meta = serde_json::json!({
+            "schema_version": 2,
+            "session_id": "s-review-aux",
+            "session_role": "auxiliary",
+            "title": "auxiliary helper",
+            "tool": "codex",
+            "stats": { "files_changed": 0 },
+            "git": { "commits": [feature_sha.clone()] }
+        })
+        .to_string();
+        storage
+            .store_session_at_ref(
+                &author,
+                &ledger_ref,
+                "s-review-aux",
+                auxiliary_body.as_bytes(),
+                auxiliary_meta.as_bytes(),
+                std::slice::from_ref(&feature_sha),
+            )
+            .expect("store auxiliary session in hidden ledger");
+    }
 
     run_git(
         &author,
@@ -245,6 +306,20 @@ fn setup_review_fixture(
         reviewer,
         "https://github.com/acme/private-repo/pull/7".to_string(),
     )
+}
+
+fn setup_review_fixture(
+    tmp: &tempfile::TempDir,
+    fetch_hidden_refs: bool,
+) -> (std::path::PathBuf, String) {
+    setup_review_fixture_with_options(tmp, fetch_hidden_refs, false)
+}
+
+fn setup_review_fixture_with_auxiliary(
+    tmp: &tempfile::TempDir,
+    fetch_hidden_refs: bool,
+) -> (std::path::PathBuf, String) {
+    setup_review_fixture_with_options(tmp, fetch_hidden_refs, true)
 }
 
 #[path = "handoff_cli/cleanup_cli.rs"]

@@ -35,20 +35,24 @@ PY
 
       body="<!-- opensession-auto-session-review -->
 ### OpenSession Session Artifact
-- Ledger ref: \\`${ledger_ref}\\`
-- Artifact branch: \\`${artifact_branch}\\`
-- Artifact branch link: ${CI_PROJECT_URL}/-/tree/${artifact_branch}
+| Metric | Value |
+| --- | --- |
+| Ledger ref | \\`${ledger_ref}\\` |
+| Artifact branch | ${CI_PROJECT_URL}/-/tree/${artifact_branch} |
 "
 
       if [ "$has_ledger" -ne 1 ]; then
         body="${body}
-- Status: hidden ledger ref not found yet (no tracked sessions pushed)."
+| Status | waiting for first tracked session push |
+| Next action | Push at least one tracked session, then rerun the session-review pipeline. |"
       elif [ "$push_ok" -ne 1 ]; then
         body="${body}
-- Status: ledger found, but failed to push artifact branch (check runner push permissions)."
+| Status | ledger found, but artifact publish failed |
+| Next action | Check runner push permissions for artifact branch updates. |"
       else
         body="${body}
-- Status: artifact branch updated."
+| Status | artifact branch updated |
+| Next action | Open the artifact branch or run the full session-review pipeline for digest output. |"
       fi
 
       notes_api="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes"

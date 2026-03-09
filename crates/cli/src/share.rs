@@ -675,7 +675,15 @@ fn try_copy_to_clipboard(value: &str) -> Result<()> {
         }
     }
 
-    bail!("clipboard copy is unavailable on this platform")
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        bail!("clipboard copy is unavailable on this platform");
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        bail!("clipboard copy is unavailable on this platform");
+    }
 }
 
 fn try_clipboard_command(program: &str, args: &[&str], value: &str) -> Result<bool> {

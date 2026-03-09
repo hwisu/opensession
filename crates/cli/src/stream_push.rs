@@ -4,7 +4,7 @@
 //! (< 2s). Parses the full session file and upserts it into the local DB.
 //! The daemon handles uploading to the server via debounced file watching.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_git_native::extract_git_context;
 use opensession_local_db::LocalDb;
@@ -24,12 +24,8 @@ struct StreamState {
 }
 
 fn state_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("Could not determine home directory")?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("opensession")
+    Ok(opensession_paths::config_dir()
+        .context("Could not determine home directory")?
         .join("stream-state"))
 }
 
@@ -74,16 +70,14 @@ fn resolve_session_file(agent: &str) -> Result<PathBuf> {
 /// Claude Code stores sessions under `~/.claude/projects/<project-dir>/`.
 /// The project directory name is the CWD with `/` replaced by `-`.
 fn resolve_claude_code_session() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("Could not determine home directory")?;
+    let home = opensession_paths::home_dir().context("Could not determine home directory")?;
 
     let cwd = std::env::current_dir().context("Could not determine current directory")?;
     let cwd_str = cwd.to_string_lossy();
 
     // Claude Code project dir: CWD with '/' replaced by '-'
     let project_dir_name = cwd_str.replace('/', "-");
-    let projects_dir = PathBuf::from(&home).join(".claude").join("projects");
+    let projects_dir = home.join(".claude").join("projects");
     let project_dir = projects_dir.join(&project_dir_name);
 
     if !project_dir.is_dir() {
@@ -148,7 +142,9 @@ pub fn run_stream_push(agent: &str) -> Result<()> {
     }
 
     // Extract git context from session's working directory
-    let git = working_directory(&session).map(extract_git_context).unwrap_or_default();
+    let git = working_directory(&session)
+        .map(extract_git_context)
+        .unwrap_or_default();
     let local_git = opensession_local_db::git::GitContext {
         remote: git.remote.clone(),
         branch: git.branch.clone(),
@@ -178,10 +174,8 @@ pub fn enable_stream_write(agent: &str) -> Result<()> {
 }
 
 fn claude_settings_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("Could not determine home directory")?;
-    Ok(PathBuf::from(home).join(".claude").join("settings.json"))
+    let home = opensession_paths::home_dir().context("Could not determine home directory")?;
+    Ok(home.join(".claude").join("settings.json"))
 }
 
 const HOOK_MATCHER: &str = "Edit|Write|Bash|NotebookEdit";

@@ -19,7 +19,6 @@ opensession-core = { workspace = true }
 opensession-runtime-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { workspace = true }
 sha2 = { workspace = true }
 hex = "0.4"
 

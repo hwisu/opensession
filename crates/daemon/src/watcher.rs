@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use opensession_parsers::discover;
+use opensession_parser_discovery::discover_sessions;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -22,7 +22,7 @@ pub fn seed_existing_session_files(
         return 0;
     }
 
-    let discovered_paths = discover::discover_sessions()
+    let discovered_paths = discover_sessions()
         .into_iter()
         .flat_map(|location| location.paths);
     enqueue_discovered_paths(watch_roots, discovered_paths, tx)

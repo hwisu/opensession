@@ -37,8 +37,9 @@ pub async fn preview(
     headers: HeaderMap,
     Json(req): Json<ParsePreviewRequest>,
 ) -> Result<Json<ParsePreviewResponse>, (StatusCode, Json<ParsePreviewErrorResponse>)> {
-    let user_id =
-        resolve_optional_user_id(&headers, &db, &config).map_err(PreviewRouteError::into_http)?;
+    let user_id = resolve_optional_user_id(&headers, &db, &config)
+        .await
+        .map_err(PreviewRouteError::into_http)?;
     let input =
         prepare_parse_input_with_ctx(req.source, Some(&db), Some(&config), user_id.as_deref())
             .await

@@ -6,9 +6,9 @@ use opensession_git_native::extract_git_context;
 use opensession_local_db::{LocalDb, SessionSemanticSummaryUpsert};
 use opensession_local_store::find_repo_root;
 use opensession_parsers::ParserRegistry;
-use opensession_summary::{
-    GitSummaryRequest, SemanticSummaryArtifact, summarize_git_commit, summarize_git_working_tree,
-    summarize_session,
+use opensession_summary::{GitSummaryRequest, SemanticSummaryArtifact};
+use opensession_summary_runtime::{
+    summarize_git_commit, summarize_git_working_tree, summarize_session,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};

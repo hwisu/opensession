@@ -51,12 +51,8 @@ pub(super) fn shim_action_label(action: ShimInstallAction) -> &'static str {
 }
 
 pub(super) fn shim_path(name: &str) -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .context("HOME environment variable is not set; cannot resolve shim path")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("opensession")
+    Ok(opensession_paths::data_dir()
+        .context("Could not determine shim base directory")?
         .join("bin")
         .join(name))
 }

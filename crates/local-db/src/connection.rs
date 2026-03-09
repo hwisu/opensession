@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use opensession_paths::local_db_path;
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -17,7 +18,7 @@ pub struct LocalDb {
 
 impl LocalDb {
     /// Open (or create) the local database at the default path.
-    /// `~/.local/share/opensession/local.db`
+    /// `~/.local/share/opensession/local.db` or `OPENSESSION_LOCAL_DB_PATH` when set.
     pub fn open() -> Result<Self> {
         let path = default_db_path()?;
         Self::open_path(&path)
@@ -57,12 +58,63 @@ fn open_connection_with_latest_schema(path: &PathBuf) -> Result<Connection> {
 }
 
 fn default_db_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("Could not determine home directory")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("opensession")
-        .join("local.db"))
+    local_db_path().context("Could not determine local db path")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_db_path;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests serialize environment mutation with `env_test_lock`, so process
+            // environment updates do not race with other tests in this module.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                // SAFETY: tests serialize environment mutation with `env_test_lock`.
+                unsafe { std::env::set_var(self.key, value) };
+            } else {
+                // SAFETY: tests serialize environment mutation with `env_test_lock`.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    #[test]
+    fn default_db_path_uses_centralized_location() {
+        let _lock = env_test_lock().lock().expect("env lock");
+        let _guard = EnvVarGuard::set("OPENSESSION_LOCAL_DB_PATH", "");
+        let path = default_db_path().expect("default db path");
+        assert!(path.ends_with(PathBuf::from(".local/share/opensession/local.db")));
+    }
+
+    #[test]
+    fn default_db_path_honors_env_override() {
+        let _lock = env_test_lock().lock().expect("env lock");
+        let _guard = EnvVarGuard::set("OPENSESSION_LOCAL_DB_PATH", "/tmp/custom-local.db");
+        assert_eq!(
+            default_db_path().expect("default db path"),
+            PathBuf::from("/tmp/custom-local.db")
+        );
+    }
 }

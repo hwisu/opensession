@@ -53,6 +53,21 @@ static VECTOR_INSTALL_STATE: LazyLock<Mutex<VectorInstallRuntimeState>> = LazyLo
 
 static VECTOR_INDEX_REBUILD_RUNNING: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
 
+fn run_vector_blocking_task<T, F>(task: F) -> DesktopApiResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> DesktopApiResult<T> + Send + 'static,
+{
+    std::thread::spawn(task).join().map_err(|_| {
+        desktop_error(
+            "desktop.vector_runtime_join_failed",
+            500,
+            "vector task terminated unexpectedly",
+            None,
+        )
+    })?
+}
+
 pub(crate) fn vector_embed_endpoint(runtime: &DaemonConfig) -> String {
     let configured = runtime.vector_search.endpoint.trim();
     if !configured.is_empty() {
@@ -1308,7 +1323,7 @@ fn install_status_response_from_state(
 #[tauri::command]
 pub(crate) fn desktop_vector_preflight() -> DesktopApiResult<DesktopVectorPreflightResponse> {
     let runtime = load_runtime_config()?;
-    Ok(vector_preflight_for_runtime(&runtime))
+    run_vector_blocking_task(move || Ok(vector_preflight_for_runtime(&runtime)))
 }
 
 #[tauri::command]
@@ -1412,7 +1427,9 @@ pub(crate) fn desktop_search_sessions_vector(
     cursor: Option<String>,
     limit: Option<u32>,
 ) -> DesktopApiResult<DesktopVectorSearchResponse> {
-    let db = open_local_db()?;
-    let runtime = load_runtime_config()?;
-    search_sessions_vector_internal(&db, &runtime, &query, cursor, limit, None)
+    run_vector_blocking_task(move || {
+        let db = open_local_db()?;
+        let runtime = load_runtime_config()?;
+        search_sessions_vector_internal(&db, &runtime, &query, cursor, limit, None)
+    })
 }

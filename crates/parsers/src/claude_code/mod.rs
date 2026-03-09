@@ -1,4 +1,6 @@
 mod parse;
+mod raw;
+mod subagent;
 mod transform;
 
 use crate::SessionParser;
@@ -57,9 +59,8 @@ impl ClaudeCodeParser {
 }
 
 // Re-export pub(crate) items needed by incremental.rs
-pub(crate) use parse::{
-    RawConversationEntry, RawEntry, parse_timestamp, process_assistant_entry, process_user_entry,
-};
+pub(crate) use parse::{parse_timestamp, process_assistant_entry, process_user_entry};
+pub(crate) use raw::{RawConversationEntry, RawEntry};
 
 pub fn is_claude_subagent_path(path: &Path) -> bool {
     let path_text = path.to_string_lossy();

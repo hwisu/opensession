@@ -17,9 +17,12 @@ workspace = true
 
 [dependencies]
 opensession-core = { workspace = true }
+opensession-paths = { workspace = true }
 opensession-runtime-config = { workspace = true }
 opensession-summary = { workspace = true }
+opensession-summary-runtime = { workspace = true }
 opensession-parsers = { workspace = true }
+opensession-parser-discovery = { workspace = true }
 opensession-api = { workspace = true, default-features = false }
 opensession-api-client = { workspace = true }
 opensession-local-db = { workspace = true }

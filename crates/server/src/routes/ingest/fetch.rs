@@ -4,7 +4,7 @@ use opensession_api::parse_preview_source::GitSource;
 use reqwest::header::CONTENT_TYPE;
 
 use crate::AppConfig;
-use crate::storage::{Db, sq_execute};
+use crate::storage::Db;
 
 use super::auth::{GitCredentialSource, GitFetchAuthHeader, resolve_fetch_auth_header};
 use super::errors::PreviewRouteError;
@@ -23,7 +23,7 @@ pub(super) async fn fetch_git_source(
     ensure_remote_resolves_public(&remote).await?;
     let gitlab_hosts = configured_gitlab_hosts(config);
     let url = build_git_raw_url(source, &gitlab_hosts)?;
-    let fetch_auth = resolve_fetch_auth_header(source, db, config, user_id)?;
+    let fetch_auth = resolve_fetch_auth_header(source, db, config, user_id).await?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
@@ -114,14 +114,9 @@ pub(super) async fn fetch_git_source(
         ..
     }) = fetch_auth
     {
-        let conn = db.conn();
-        let _ = sq_execute(
-            &conn,
-            opensession_api::db::git_credentials::touch_last_used(
-                credential_id.as_str(),
-                user_id.as_str(),
-            ),
-        );
+        let _ = db
+            .touch_git_credential_last_used(credential_id.as_str(), user_id.as_str())
+            .await;
     }
 
     Ok(body.to_vec())

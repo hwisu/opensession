@@ -3,11 +3,11 @@ use axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use opensession_api::{OkResponse, SessionSummary, db};
+use opensession_api::OkResponse;
 
 use crate::AppConfig;
 use crate::error::ApiErr;
-use crate::storage::{Db, session_from_row, sq_execute, sq_query_row};
+use crate::storage::Db;
 
 /// DELETE /api/admin/sessions/:id — delete a session (admin key required).
 pub async fn delete_session(
@@ -26,14 +26,12 @@ pub async fn delete_session(
         return Err(ApiErr::unauthorized("invalid admin key"));
     }
 
-    let conn = db.conn();
-    let _summary: SessionSummary =
-        sq_query_row(&conn, db::sessions::get_by_id(&id), session_from_row)
-            .map_err(|_| ApiErr::not_found("session not found"))?;
-
-    sq_execute(&conn, db::sessions::delete_links(&id)).map_err(ApiErr::from_db("delete links"))?;
-    sq_execute(&conn, db::sessions::delete(&id)).map_err(ApiErr::from_db("delete session"))?;
-
-    let _ = sq_execute(&conn, db::sessions::delete_fts(&id));
+    let deleted = db
+        .delete_session(&id)
+        .await
+        .map_err(ApiErr::from_db("delete session"))?;
+    if !deleted {
+        return Err(ApiErr::not_found("session not found"));
+    }
     Ok(Json(OkResponse { ok: true }))
 }

@@ -18,7 +18,7 @@ use opensession_git_native::{
     store_handoff_artifact,
 };
 use opensession_parsers::ParserRegistry;
-use opensession_parsers::discover::discover_sessions;
+use opensession_parser_discovery::discover_sessions;
 use std::io::{IsTerminal, Write};
 use std::time::UNIX_EPOCH;
 

@@ -1,0 +1,25 @@
+[package]
+name = "opensession-summary-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Runtime adapters for OpenSession semantic summaries"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+opensession-summary = { workspace = true }
+opensession-runtime-config = { workspace = true }
+opensession-core = { workspace = true }
+serde = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

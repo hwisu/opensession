@@ -4,8 +4,9 @@ use opensession_core::Session;
 use opensession_core::sanitize::{SanitizeConfig, sanitize_session};
 use opensession_core::session::{GitMeta, build_git_storage_meta_json_with_git, working_directory};
 use opensession_git_native::{NativeGitStorage, extract_git_context};
-use opensession_parsers::{ParserRegistry, discover::discover_sessions};
-use opensession_runtime_config::{CONFIG_FILE_NAME, DaemonConfig};
+use opensession_parser_discovery::discover_sessions;
+use opensession_parsers::ParserRegistry;
+use opensession_runtime_config::DaemonConfig;
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -209,17 +210,11 @@ fn session_commit_links(
 }
 
 fn load_daemon_config() -> DaemonConfig {
-    let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        Ok(home) => home,
-        Err(_) => return DaemonConfig::default(),
+    let Ok(path) = opensession_paths::runtime_config_path() else {
+        return DaemonConfig::default();
     };
-    let path = PathBuf::from(home)
-        .join(".config")
-        .join("opensession")
-        .join(CONFIG_FILE_NAME);
-    let content = match std::fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(_) => return DaemonConfig::default(),
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return DaemonConfig::default();
     };
     toml::from_str(&content).unwrap_or_default()
 }

@@ -1,16 +1,10 @@
 use anyhow::{Context, Result};
 use opensession_runtime_config::DaemonConfig;
-use opensession_summary::provider::LocalSummaryProfile;
+use opensession_summary_runtime::LocalSummaryProfile;
 use std::path::PathBuf;
 
 pub fn runtime_config_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("Could not determine home directory")?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("opensession")
-        .join(opensession_runtime_config::CONFIG_FILE_NAME))
+    opensession_paths::runtime_config_path().context("Could not determine home directory")
 }
 
 pub fn load_runtime_config() -> Result<DaemonConfig> {
@@ -37,7 +31,7 @@ pub fn save_runtime_config(config: &DaemonConfig) -> Result<PathBuf> {
 }
 
 pub fn detect_local_summary_profile() -> Option<LocalSummaryProfile> {
-    opensession_summary::detect_summary_provider()
+    opensession_summary_runtime::detect_local_summary_profile()
 }
 
 pub fn apply_summary_profile(config: &mut DaemonConfig, profile: &LocalSummaryProfile) {

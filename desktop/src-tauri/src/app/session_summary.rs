@@ -14,7 +14,8 @@ use opensession_local_db::{LocalDb, LocalSessionFilter, LocalSessionRow, Summary
 use opensession_runtime_config::{
     DaemonConfig, SummaryBatchScope as RuntimeSummaryBatchScope, SummaryStorageBackend,
 };
-use opensession_summary::{GitSummaryRequest, SemanticSummaryArtifact, summarize_session};
+use opensession_summary::{GitSummaryRequest, SemanticSummaryArtifact};
+use opensession_summary_runtime::summarize_session;
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

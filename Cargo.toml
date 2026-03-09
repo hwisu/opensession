@@ -2,10 +2,13 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/paths",
     "crates/local-store",
     "crates/runtime-config",
     "crates/summary",
+    "crates/summary-runtime",
     "crates/parsers",
+    "crates/parser-discovery",
     "crates/api",
     "crates/api-client",
     "crates/local-db",
@@ -17,10 +20,13 @@ members = [
 ]
 default-members = [
     "crates/core",
+    "crates/paths",
     "crates/local-store",
     "crates/runtime-config",
     "crates/summary",
+    "crates/summary-runtime",
     "crates/parsers",
+    "crates/parser-discovery",
     "crates/api",
     "crates/api-client",
     "crates/local-db",
@@ -56,10 +62,13 @@ authors = ["opensession.io contributors"]
 
 [workspace.dependencies]
 opensession-core = { version = "0.2.34", path = "crates/core" }
+opensession-paths = { version = "0.2.34", path = "crates/paths" }
 opensession-local-store = { version = "0.2.34", path = "crates/local-store" }
 opensession-runtime-config = { version = "0.2.34", path = "crates/runtime-config" }
 opensession-summary = { version = "0.2.34", path = "crates/summary" }
+opensession-summary-runtime = { version = "0.2.34", path = "crates/summary-runtime" }
 opensession-parsers = { version = "0.2.34", path = "crates/parsers" }
+opensession-parser-discovery = { version = "0.2.34", path = "crates/parser-discovery" }
 opensession-api = { version = "0.2.34", path = "crates/api", default-features = false }
 opensession-api-client = { version = "0.2.34", path = "crates/api-client" }
 opensession-local-db = { version = "0.2.34", path = "crates/local-db" }
@@ -92,6 +101,7 @@ urlencoding = "2"
 tempfile = "3"
 gix = "0.79"
 sea-query = { version = "0.32", features = ["backend-sqlite", "derive"] }
+directories = "5"
 
 [profile.dev.package."*"]
 opt-level = 1

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use opensession_runtime_config::{DaemonConfig, CONFIG_FILE_NAME};
+use opensession_runtime_config::DaemonConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -60,15 +60,12 @@ impl Default for DaemonRefConfig {
 
 /// Get the config directory path (~/.config/opensession/)
 pub fn config_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("Could not determine home directory")?;
-    Ok(PathBuf::from(home).join(".config").join("opensession"))
+    opensession_paths::config_dir().context("Could not determine home directory")
 }
 
 /// Canonical config file path.
 pub fn config_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join(CONFIG_FILE_NAME))
+    opensession_paths::runtime_config_path().context("Could not determine config file path")
 }
 
 fn read_config_doc(path: &Path) -> Result<toml::Value> {
@@ -255,7 +252,7 @@ pub fn set_daemon_watch_paths(repos: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::load_runtime_config_from_doc;
+    use super::{config_dir, config_path, load_runtime_config_from_doc};
 
     #[test]
     fn runtime_config_loads_server_table() {
@@ -271,5 +268,21 @@ api_key = "k"
         let cfg = load_runtime_config_from_doc(&doc);
         assert_eq!(cfg.server.url, "https://opensession.io");
         assert_eq!(cfg.server.api_key, "k");
+    }
+
+    #[test]
+    fn cli_config_dir_uses_centralized_path() {
+        assert_eq!(
+            config_dir().expect("config dir"),
+            opensession_paths::config_dir().expect("central config dir")
+        );
+    }
+
+    #[test]
+    fn cli_config_path_uses_centralized_runtime_path() {
+        assert_eq!(
+            config_path().expect("config path"),
+            opensession_paths::runtime_config_path().expect("central runtime config path")
+        );
     }
 }

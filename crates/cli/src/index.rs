@@ -2,7 +2,7 @@ use anyhow::Result;
 use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_git_native::extract_git_context;
 use opensession_local_db::LocalDb;
-use opensession_parsers::discover::discover_sessions;
+use opensession_parser_discovery::discover_sessions;
 use opensession_parsers::ParserRegistry;
 use std::path::Path;
 

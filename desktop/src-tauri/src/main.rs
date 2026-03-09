@@ -113,20 +113,14 @@ fn open_local_db() -> DesktopApiResult<LocalDb> {
 }
 
 fn runtime_config_path() -> DesktopApiResult<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|error| {
-            desktop_error(
-                "desktop.runtime_config_home_unavailable",
-                500,
-                "failed to resolve home directory for runtime config",
-                Some(json!({ "cause": error.to_string() })),
-            )
-        })?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("opensession")
-        .join(opensession_runtime_config::CONFIG_FILE_NAME))
+    opensession_paths::runtime_config_path().map_err(|error| {
+        desktop_error(
+            "desktop.runtime_config_home_unavailable",
+            500,
+            "failed to resolve home directory for runtime config",
+            Some(json!({ "cause": error.to_string() })),
+        )
+    })
 }
 
 fn load_runtime_config() -> DesktopApiResult<DaemonConfig> {

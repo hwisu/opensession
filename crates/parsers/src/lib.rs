@@ -1,5 +1,4 @@
 pub mod claude_code;
-pub mod discover;
 pub mod incremental;
 
 mod amp;

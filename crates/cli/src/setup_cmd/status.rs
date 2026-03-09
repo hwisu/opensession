@@ -263,12 +263,8 @@ pub(super) fn daemon_status_summary(
 }
 
 fn daemon_pid_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("HOME/USERPROFILE is not set; cannot resolve daemon pid path")?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("opensession")
+    Ok(opensession_paths::config_dir()
+        .context("Could not determine daemon pid path")?
         .join("daemon.pid"))
 }
 

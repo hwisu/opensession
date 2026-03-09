@@ -9,7 +9,8 @@ use opensession_git_native::{
 use opensession_local_db::LocalDb;
 use opensession_parsers::ParserRegistry;
 use opensession_runtime_config::SummaryStorageBackend;
-use opensession_summary::{GitSummaryRequest, summarize_session};
+use opensession_summary::GitSummaryRequest;
+use opensession_summary_runtime::summarize_session;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 

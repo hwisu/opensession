@@ -1,161 +1,18 @@
+use super::time::parse_timestamp;
 use super::transform::{
     classify_cursor_tool, extract_model_from_signature, infer_provider, parse_tool_result,
     resolve_tool_name, tool_call_content,
 };
+use super::types::{RawBubble, RawComposerData, RawComposerIndex, RawComposerMeta};
+#[cfg(test)]
+use super::types::{RawBubbleHeader, RawThinking, RawToolFormerData};
 use crate::common::{attach_semantic_attrs, attach_source_attrs, infer_tool_kind};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use opensession_core::trace::{Agent, Content, Event, EventType, Session, SessionContext};
 use rusqlite::Connection;
-use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-
-// ── Raw deserialization types for Cursor's composerData JSON ────────────────
-
-/// Serde helper: deserialize a value that may be a JSON string or number into an Option<String>.
-/// Cursor stores timestamps as integers in some versions and strings in others.
-mod string_or_number {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum StringOrNumber {
-            String(String),
-            Integer(i64),
-            Float(f64),
-        }
-
-        match Option::<StringOrNumber>::deserialize(deserializer)? {
-            Some(StringOrNumber::String(s)) => Ok(Some(s)),
-            Some(StringOrNumber::Integer(n)) => Ok(Some(n.to_string())),
-            Some(StringOrNumber::Float(n)) => Ok(Some(n.to_string())),
-            None => Ok(None),
-        }
-    }
-}
-
-/// Top-level composerData JSON stored in cursorDiskKV
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawComposerData {
-    composer_id: String,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default, deserialize_with = "string_or_number::deserialize")]
-    created_at: Option<String>,
-    #[serde(default, deserialize_with = "string_or_number::deserialize")]
-    last_updated_at: Option<String>,
-    #[serde(default)]
-    conversation: Vec<RawBubble>,
-    #[serde(default)]
-    is_agentic: Option<bool>,
-    /// Cursor v3: version field for format detection
-    #[serde(default, rename = "_v")]
-    version: Option<u64>,
-    /// Cursor v3: bubble headers (conversation stored separately in bubbleId:* keys)
-    #[serde(default)]
-    full_conversation_headers_only: Option<Vec<RawBubbleHeader>>,
-}
-
-/// Cursor modern workspace index: `composer.composerData` (metadata-only list).
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawComposerIndex {
-    #[serde(default)]
-    all_composers: Vec<RawComposerMeta>,
-}
-
-/// Metadata-only composer entry referenced by modern Cursor workspace DBs.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawComposerMeta {
-    composer_id: String,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default, deserialize_with = "string_or_number::deserialize")]
-    created_at: Option<String>,
-    #[serde(default, deserialize_with = "string_or_number::deserialize")]
-    last_updated_at: Option<String>,
-}
-
-/// Cursor v3: header reference to a separately-stored bubble
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawBubbleHeader {
-    bubble_id: String,
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    bubble_type: u8,
-}
-
-/// A single "bubble" in the conversation array
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct RawBubble {
-    /// 1 = user, 2 = assistant
-    #[serde(rename = "type")]
-    bubble_type: u8,
-    #[serde(default)]
-    bubble_id: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    thinking: Option<RawThinking>,
-    #[serde(default)]
-    tool_former_data: Option<RawToolFormerData>,
-    #[serde(default)]
-    timing_info: Option<RawTimingInfo>,
-    #[serde(default)]
-    model_type: Option<String>,
-    #[serde(default)]
-    checkpoint: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawThinking {
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    signature: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawToolFormerData {
-    /// Numeric tool ID (e.g., 7 = edit_file)
-    #[serde(default)]
-    tool: Option<u32>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    raw_args: Option<String>,
-    #[serde(default)]
-    result: Option<String>,
-    #[serde(default)]
-    user_decision: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawTimingInfo {
-    #[serde(default)]
-    start_time: Option<f64>,
-    #[serde(default)]
-    end_time: Option<f64>,
-    #[serde(default)]
-    client_start_time: Option<f64>,
-    #[serde(default)]
-    client_end_time: Option<f64>,
-}
 
 // ── Core parsing logic ─────────────────────────────────────────────────────
 
@@ -830,25 +687,6 @@ fn convert_bubbles_to_events(
 }
 
 // ── Timestamp parsing ──────────────────────────────────────────────────────
-
-fn parse_timestamp(ts: &str) -> Result<DateTime<Utc>> {
-    // ISO 8601 format: "2025-10-03T12:34:56.789Z"
-    DateTime::parse_from_rfc3339(ts)
-        .map(|dt| dt.with_timezone(&Utc))
-        .or_else(|_| {
-            // Try without timezone
-            chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%.f")
-                .map(|ndt| ndt.and_utc())
-        })
-        .or_else(|_| {
-            // Try as epoch milliseconds (sometimes Cursor uses numeric timestamps as strings)
-            ts.parse::<f64>()
-                .ok()
-                .and_then(|ms| DateTime::from_timestamp_millis(ms as i64))
-                .ok_or_else(|| anyhow::anyhow!("Not a timestamp"))
-        })
-        .with_context(|| format!("Failed to parse Cursor timestamp: {}", ts))
-}
 
 #[cfg(test)]
 mod tests {

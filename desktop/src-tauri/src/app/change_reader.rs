@@ -8,7 +8,7 @@ use opensession_api::{
 use opensession_core::trace::{ContentBlock, Event, EventType, Session as HailSession};
 use opensession_local_db::LocalDb;
 use opensession_runtime_config::{ChangeReaderVoiceProvider, DaemonConfig, SummaryProvider};
-use opensession_summary::provider::generate_text;
+use opensession_summary_runtime::generate_text;
 use serde_json::json;
 use std::time::Duration;
 

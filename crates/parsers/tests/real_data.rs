@@ -5,7 +5,7 @@
 #[ignore = "requires real Codex session files"]
 fn parse_real_codex_session() {
     let registry = opensession_parsers::ParserRegistry::default();
-    let paths = opensession_parsers::discover::discover_for_tool("codex");
+    let paths = opensession_parser_discovery::discover_for_tool("codex");
     assert!(!paths.is_empty(), "No Codex session files found");
 
     for path in &paths {
@@ -38,7 +38,7 @@ fn parse_real_codex_session() {
 #[ignore = "requires real Gemini session files"]
 fn parse_real_gemini_session() {
     let registry = opensession_parsers::ParserRegistry::default();
-    let paths = opensession_parsers::discover::discover_for_tool("gemini");
+    let paths = opensession_parser_discovery::discover_for_tool("gemini");
     assert!(!paths.is_empty(), "No Gemini session files found");
 
     for path in &paths {
@@ -70,7 +70,7 @@ fn parse_real_gemini_session() {
 #[ignore = "requires real OpenCode session files"]
 fn parse_real_opencode_session() {
     let registry = opensession_parsers::ParserRegistry::default();
-    let paths = opensession_parsers::discover::discover_for_tool("opencode");
+    let paths = opensession_parser_discovery::discover_for_tool("opencode");
     assert!(!paths.is_empty(), "No OpenCode session files found");
 
     for path in &paths {

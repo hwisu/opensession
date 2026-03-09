@@ -610,7 +610,7 @@ pub(crate) fn desktop_update_runtime_settings(
 
 #[tauri::command]
 pub(crate) fn desktop_detect_summary_provider() -> DesktopSummaryProviderDetectResponse {
-    if let Some(profile) = opensession_summary::detect_summary_provider() {
+    if let Some(profile) = opensession_summary_runtime::detect_local_summary_profile() {
         return DesktopSummaryProviderDetectResponse {
             detected: true,
             provider: Some(map_summary_provider_id_from_runtime(&profile.provider)),

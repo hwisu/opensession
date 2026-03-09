@@ -1,4 +1,5 @@
 use opensession_core::source_uri::{SourceSpec, SourceUri, SourceUriError};
+use opensession_paths::local_store_root;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -96,15 +97,7 @@ fn default_store_root(cwd: &Path) -> Result<PathBuf, LocalStoreError> {
 }
 
 pub fn global_store_root() -> Result<PathBuf, LocalStoreError> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .map_err(|_| LocalStoreError::HomeUnavailable)?;
-    Ok(home
-        .join(".local")
-        .join("share")
-        .join("opensession")
-        .join("objects"))
+    local_store_root().map_err(|_| LocalStoreError::HomeUnavailable)
 }
 
 fn object_path(root: &Path, hash: &str) -> Result<PathBuf, LocalStoreError> {
@@ -153,8 +146,10 @@ fn validate_hash(hash: &str) -> Result<(), LocalStoreError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalStoreError, find_repo_root, read_local_object, sha256_hex, store_local_object,
+        LocalStoreError, find_repo_root, global_store_root, read_local_object, sha256_hex,
+        store_local_object,
     };
+    use opensession_paths::local_store_root;
     use tempfile::tempdir;
 
     #[test]
@@ -167,8 +162,8 @@ mod tests {
 
     #[test]
     fn global_store_root_uses_standard_home_fallback() {
-        let root = super::global_store_root().expect("global store root");
-        assert!(root.ends_with("opensession/objects"));
+        let root = global_store_root().expect("global store root");
+        assert_eq!(root, local_store_root().expect("centralized store root"));
     }
 
     #[test]

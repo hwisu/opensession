@@ -11,13 +11,13 @@ use uuid::Uuid;
 use opensession_api::{
     AuthRegisterRequest, AuthTokenResponse, ChangePasswordRequest, CreateGitCredentialRequest,
     GitCredentialSummary, IssueApiKeyResponse, ListGitCredentialsResponse, LoginRequest,
-    OkResponse, RefreshRequest, UserSettingsResponse, VerifyResponse, crypto, db as dbq, oauth,
-    service, service::AuthToken,
+    OkResponse, RefreshRequest, UserSettingsResponse, VerifyResponse, crypto, service,
+    service::AuthToken,
 };
 
 use crate::AppConfig;
 use crate::error::ApiErr;
-use crate::storage::{Db, sq_execute, sq_query_map, sq_query_row};
+use crate::storage::{Db, NewGitCredentialRecord};
 
 const ACCESS_COOKIE_NAME: &str = "opensession_access_token";
 const REFRESH_COOKIE_NAME: &str = "opensession_refresh_token";
@@ -41,7 +41,7 @@ pub struct AuthUser {
     pub email: Option<String>,
 }
 
-fn resolve_auth_user(
+async fn resolve_auth_user(
     token: &str,
     db: &Db,
     config: &AppConfig,
@@ -51,33 +51,32 @@ fn resolve_auth_user(
     let resolved = service::resolve_auth_token(token, &config.jwt_secret, now)
         .map_err(|e| ApiErr::unauthorized(e.message()))?;
 
-    let conn = db.conn();
     match resolved {
         AuthToken::ApiKey(key) => {
             let key_hash = service::hash_api_key(&key);
-            sq_query_row(
-                &conn,
-                dbq::api_keys::get_user_by_valid_key_hash(&key_hash),
-                |row| {
-                    Ok(AuthUser {
-                        user_id: row.get(0)?,
-                        nickname: row.get(1)?,
-                        auth_via_cookie,
-                        email: row.get(2)?,
-                    })
-                },
-            )
-            .map_err(|_| ApiErr::unauthorized("invalid API key"))
-        }
-        AuthToken::Jwt(user_id) => sq_query_row(&conn, dbq::users::get_by_id(&user_id), |row| {
+            let user = db
+                .get_auth_user_by_api_key_hash(&key_hash)
+                .await
+                .map_err(|_| ApiErr::unauthorized("invalid API key"))?;
             Ok(AuthUser {
-                user_id: row.get(0)?,
-                nickname: row.get(1)?,
+                user_id: user.user_id,
+                nickname: user.nickname,
                 auth_via_cookie,
-                email: row.get(2)?,
+                email: user.email,
             })
-        })
-        .map_err(|_| ApiErr::unauthorized("user not found")),
+        }
+        AuthToken::Jwt(user_id) => {
+            let user = db
+                .get_auth_user_by_id(&user_id)
+                .await
+                .map_err(|_| ApiErr::unauthorized("user not found"))?;
+            Ok(AuthUser {
+                user_id: user.user_id,
+                nickname: user.nickname,
+                auth_via_cookie,
+                email: user.email,
+            })
+        }
     }
 }
 
@@ -107,16 +106,16 @@ fn header_bearer_token(headers: &HeaderMap) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub fn try_auth_from_headers(
+pub async fn try_auth_from_headers(
     headers: &HeaderMap,
     db: &Db,
     config: &AppConfig,
 ) -> Result<Option<AuthUser>, ApiErr> {
     if let Some(token) = header_bearer_token(headers) {
-        return resolve_auth_user(&token, db, config, false).map(Some);
+        return resolve_auth_user(&token, db, config, false).await.map(Some);
     }
     if let Some(token) = parse_cookie_value(headers, ACCESS_COOKIE_NAME) {
-        return resolve_auth_user(&token, db, config, true).map(Some);
+        return resolve_auth_user(&token, db, config, true).await.map(Some);
     }
     Ok(None)
 }
@@ -133,9 +132,11 @@ where
         let db = Db::from_ref(state);
         let config = AppConfig::from_ref(state);
 
-        try_auth_from_headers(&parts.headers, &db, &config)?.ok_or(ApiErr::unauthorized(
-            "missing or invalid authentication token",
-        ))
+        try_auth_from_headers(&parts.headers, &db, &config)
+            .await?
+            .ok_or(ApiErr::unauthorized(
+                "missing or invalid authentication token",
+            ))
     }
 }
 
@@ -283,16 +284,16 @@ pub(crate) fn enforce_csrf_if_cookie_auth(
 }
 
 /// Public wrapper for oauth module to issue tokens.
-pub fn issue_tokens_pub(
+pub async fn issue_tokens_pub(
     db: &Db,
     jwt_secret: &str,
     user_id: &str,
     nickname: &str,
 ) -> Result<AuthTokenResponse, ApiErr> {
-    issue_tokens(db, jwt_secret, user_id, nickname)
+    issue_tokens(db, jwt_secret, user_id, nickname).await
 }
 
-fn issue_tokens(
+async fn issue_tokens(
     db: &Db,
     jwt_secret: &str,
     user_id: &str,
@@ -302,16 +303,13 @@ fn issue_tokens(
     let bundle =
         service::prepare_token_bundle(jwt_secret, user_id, nickname, now).map_err(ApiErr::from)?;
 
-    let conn = db.conn();
-    sq_execute(
-        &conn,
-        dbq::users::insert_refresh_token(
-            &bundle.token_id,
-            user_id,
-            &bundle.token_hash,
-            &bundle.expires_at,
-        ),
+    db.insert_refresh_token(
+        &bundle.token_id,
+        user_id,
+        &bundle.token_hash,
+        &bundle.expires_at,
     )
+    .await
     .map_err(ApiErr::from_db("issue_tokens"))?;
 
     Ok(bundle.response)
@@ -361,9 +359,7 @@ pub async fn auth_register(
 
     // Check email uniqueness
     {
-        let conn = db.conn();
-        let exists: bool = sq_query_row(&conn, dbq::users::email_exists(&email), |row| row.get(0))
-            .unwrap_or(false);
+        let exists = db.email_exists(&email).await.unwrap_or(false);
         if exists {
             return Err(ApiErr::conflict("email already registered"));
         }
@@ -374,32 +370,19 @@ pub async fn auth_register(
         crypto::hash_password(&req.password).map_err(ApiErr::from)?;
 
     {
-        let conn = db.conn();
-        let result = sq_execute(
-            &conn,
-            dbq::users::insert_with_email(
-                &user_id,
-                &nickname,
-                &email,
-                &password_hash,
-                &password_salt,
-            ),
-        );
-        match result {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(err, _))
-                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
+        if let Err(err) = db
+            .insert_user_with_email(&user_id, &nickname, &email, &password_hash, &password_salt)
+            .await
+        {
+            if err.is_constraint_violation() {
                 return Err(ApiErr::conflict("nickname already taken"));
             }
-            Err(e) => {
-                tracing::error!("auth_register error: {e}");
-                return Err(ApiErr::internal("internal server error"));
-            }
+            tracing::error!("auth_register error: {err}");
+            return Err(ApiErr::internal("internal server error"));
         }
     }
 
-    let tokens = issue_tokens(&db, &config.jwt_secret, &user_id, &nickname)?;
+    let tokens = issue_tokens(&db, &config.jwt_secret, &user_id, &nickname).await?;
     let cookies = set_cookie_headers_for_auth(&tokens, &headers, &config)?;
     response_with_cookies(StatusCode::CREATED, &tokens, &cookies)
 }
@@ -417,19 +400,12 @@ pub async fn login(
 
     let email = service::validate_email(&req.email).map_err(ApiErr::from)?;
 
-    let conn = db.conn();
-    let user = sq_query_row(&conn, dbq::users::get_by_email_for_login(&email), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, Option<String>>(3)?,
-        ))
-    })
-    .map_err(|_| ApiErr::unauthorized("invalid email or password"))?;
+    let user = db
+        .get_login_user(&email)
+        .await
+        .map_err(|_| ApiErr::unauthorized("invalid email or password"))?;
 
-    let (user_id, nickname, hash, salt) = user;
-    let (hash, salt) = match (hash, salt) {
+    let (hash, salt) = match (user.password_hash, user.password_salt) {
         (Some(h), Some(s)) => (h, s),
         _ => {
             return Err(ApiErr::unauthorized(
@@ -441,9 +417,8 @@ pub async fn login(
     if !crypto::verify_password(&req.password, &hash, &salt) {
         return Err(ApiErr::unauthorized("invalid email or password"));
     }
-    drop(conn);
 
-    let tokens = issue_tokens(&db, &config.jwt_secret, &user_id, &nickname)?;
+    let tokens = issue_tokens(&db, &config.jwt_secret, &user.user_id, &user.nickname).await?;
     let cookies = set_cookie_headers_for_auth(&tokens, &headers, &config)?;
     response_with_cookies(StatusCode::OK, &tokens, &cookies)
 }
@@ -463,34 +438,21 @@ pub async fn refresh(
     enforce_csrf_if_cookie_auth(&headers, &config, using_cookie_refresh)?;
     let token_hash = crypto::hash_token(&refresh_token);
 
-    let conn = db.conn();
-    let row = sq_query_row(
-        &conn,
-        dbq::users::lookup_refresh_token(&token_hash),
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        },
-    )
-    .map_err(|_| ApiErr::unauthorized("invalid refresh token"))?;
-
-    let (rt_id, user_id, expires_at, nickname) = row;
+    let row = db
+        .lookup_refresh_token(&token_hash)
+        .await
+        .map_err(|_| ApiErr::unauthorized("invalid refresh token"))?;
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    if expires_at < now {
-        sq_execute(&conn, dbq::users::delete_refresh_token_by_id(&rt_id)).ok();
+    if row.expires_at < now {
+        db.delete_refresh_token_by_id(&row.token_id).await.ok();
         return Err(ApiErr::unauthorized("refresh token expired"));
     }
 
     // Rotate: delete old, issue new
-    sq_execute(&conn, dbq::users::delete_refresh_token(&token_hash)).ok();
-    drop(conn);
+    db.delete_refresh_token(&token_hash).await.ok();
 
-    let tokens = issue_tokens(&db, &config.jwt_secret, &user_id, &nickname)?;
+    let tokens = issue_tokens(&db, &config.jwt_secret, &row.user_id, &row.nickname).await?;
     let cookies = set_cookie_headers_for_auth(&tokens, &headers, &config)?;
     response_with_cookies(StatusCode::OK, &tokens, &cookies)
 }
@@ -505,8 +467,7 @@ pub async fn logout(
     if let Ok((refresh_token, using_cookie_refresh)) = resolve_refresh_token(&headers, &body) {
         enforce_csrf_if_cookie_auth(&headers, &config, using_cookie_refresh)?;
         let token_hash = crypto::hash_token(&refresh_token);
-        let conn = db.conn();
-        sq_execute(&conn, dbq::users::delete_refresh_token(&token_hash)).ok();
+        db.delete_refresh_token(&token_hash).await.ok();
     }
     let payload = OkResponse { ok: true };
     let cookies = clear_cookie_headers(&headers, &config);
@@ -522,15 +483,12 @@ pub async fn change_password(
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<OkResponse>, ApiErr> {
     enforce_csrf_if_cookie_auth(&headers, &config, user.auth_via_cookie)?;
-    let conn = db.conn();
-    let (hash, salt): (Option<String>, Option<String>) = sq_query_row(
-        &conn,
-        dbq::users::get_password_fields(&user.user_id),
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .map_err(ApiErr::from_db("change_password lookup"))?;
+    let fields = db
+        .get_password_fields(&user.user_id)
+        .await
+        .map_err(ApiErr::from_db("change_password lookup"))?;
 
-    let (hash, salt) = match (hash, salt) {
+    let (hash, salt) = match (fields.password_hash, fields.password_salt) {
         (Some(h), Some(s)) => (h, s),
         _ => {
             return Err(ApiErr::bad_request(
@@ -546,11 +504,9 @@ pub async fn change_password(
     service::validate_password(&req.new_password).map_err(ApiErr::from)?;
     let (new_hash, new_salt) = crypto::hash_password(&req.new_password).map_err(ApiErr::from)?;
 
-    sq_execute(
-        &conn,
-        dbq::users::update_password(&user.user_id, &new_hash, &new_salt),
-    )
-    .map_err(ApiErr::from_db("change_password update"))?;
+    db.update_password(&user.user_id, &new_hash, &new_salt)
+        .await
+        .map_err(ApiErr::from_db("change_password update"))?;
 
     Ok(Json(OkResponse { ok: true }))
 }
@@ -576,42 +532,18 @@ pub async fn me(
     State(db): State<Db>,
     user: AuthUser,
 ) -> Result<Json<UserSettingsResponse>, ApiErr> {
-    let conn = db.conn();
-    let (email, avatar_url): (Option<String>, Option<String>) =
-        sq_query_row(&conn, dbq::users::get_email_avatar(&user.user_id), |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
+    let settings = db
+        .get_user_settings_data(&user.user_id)
+        .await
         .map_err(ApiErr::from_db("me error"))?;
-
-    // Load linked OAuth providers
-    let providers: Vec<oauth::LinkedProvider> =
-        sq_query_map(&conn, dbq::oauth::find_by_user(&user.user_id), |row| {
-            Ok(oauth::LinkedProvider {
-                provider: row.get(1)?,
-                provider_username: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                display_name: match row.get::<_, String>(1)?.as_str() {
-                    "github" => "GitHub".to_string(),
-                    "gitlab" => "GitLab".to_string(),
-                    other => other.to_string(),
-                },
-            })
-        })
-        .map_err(ApiErr::from_db("me query oauth"))?;
-
-    let created_at: String = sq_query_row(
-        &conn,
-        dbq::users::get_settings_fields(&user.user_id),
-        |row| row.get(0),
-    )
-    .unwrap_or_default();
 
     Ok(Json(UserSettingsResponse {
         user_id: user.user_id,
         nickname: user.nickname,
-        created_at,
-        email,
-        avatar_url,
-        oauth_providers: providers,
+        created_at: settings.created_at,
+        email: settings.email,
+        avatar_url: settings.avatar_url,
+        oauth_providers: settings.oauth_providers,
     }))
 }
 
@@ -637,17 +569,12 @@ pub async fn issue_api_key(
     let key_prefix = service::key_prefix(&new_key);
     let key_id = Uuid::new_v4().to_string();
 
-    let conn = db.conn();
-    sq_execute(
-        &conn,
-        dbq::api_keys::move_active_to_grace(&user.user_id, &grace_until),
-    )
-    .map_err(ApiErr::from_db("issue api key move old keys"))?;
-    sq_execute(
-        &conn,
-        dbq::api_keys::insert_active(&key_id, &user.user_id, &key_hash, &key_prefix),
-    )
-    .map_err(ApiErr::from_db("issue api key insert"))?;
+    db.move_active_api_keys_to_grace(&user.user_id, &grace_until)
+        .await
+        .map_err(ApiErr::from_db("issue api key move old keys"))?;
+    db.insert_active_api_key(&key_id, &user.user_id, &key_hash, &key_prefix)
+        .await
+        .map_err(ApiErr::from_db("issue api key insert"))?;
 
     Ok(Json(IssueApiKeyResponse { api_key: new_key }))
 }
@@ -741,24 +668,10 @@ pub async fn list_git_credentials(
     State(db): State<Db>,
     user: AuthUser,
 ) -> Result<Json<ListGitCredentialsResponse>, ApiErr> {
-    let conn = db.conn();
-    let credentials = sq_query_map(
-        &conn,
-        dbq::git_credentials::list_by_user(&user.user_id),
-        |row| {
-            Ok(GitCredentialSummary {
-                id: row.get(0)?,
-                label: row.get(1)?,
-                host: row.get(2)?,
-                path_prefix: row.get(3)?,
-                header_name: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                last_used_at: row.get(7)?,
-            })
-        },
-    )
-    .map_err(ApiErr::from_db("list git credentials"))?;
+    let credentials = db
+        .list_git_credentials(&user.user_id)
+        .await
+        .map_err(ApiErr::from_db("list git credentials"))?;
 
     Ok(Json(ListGitCredentialsResponse { credentials }))
 }
@@ -794,39 +707,22 @@ pub async fn create_git_credential(
     let header_value_enc = keyring.encrypt(header_value).map_err(ApiErr::from)?;
 
     let id = Uuid::new_v4().to_string();
-    let conn = db.conn();
-    sq_execute(
-        &conn,
-        dbq::git_credentials::insert(
-            &id,
-            &user.user_id,
-            &label,
-            &host,
-            &path_prefix,
-            &header_name,
-            &header_value_enc,
-        ),
-    )
+    db.insert_git_credential(NewGitCredentialRecord {
+        id: id.clone(),
+        user_id: user.user_id.clone(),
+        label,
+        host,
+        path_prefix,
+        header_name,
+        header_value_enc,
+    })
+    .await
     .map_err(ApiErr::from_db("create git credential"))?;
 
-    let created = sq_query_row(
-        &conn,
-        dbq::git_credentials::get_by_id_and_user(&id, &user.user_id),
-        |row| {
-            let current_id: String = row.get(0)?;
-            Ok(GitCredentialSummary {
-                id: current_id,
-                label: row.get(1)?,
-                host: row.get(2)?,
-                path_prefix: row.get(3)?,
-                header_name: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                last_used_at: row.get(7)?,
-            })
-        },
-    )
-    .map_err(ApiErr::from_db("reload git credential"))?;
+    let created = db
+        .get_git_credential_by_id_and_user(&id, &user.user_id)
+        .await
+        .map_err(ApiErr::from_db("reload git credential"))?;
 
     Ok((StatusCode::CREATED, Json(created)))
 }
@@ -840,12 +736,10 @@ pub async fn delete_git_credential(
     user: AuthUser,
 ) -> Result<Json<OkResponse>, ApiErr> {
     enforce_csrf_if_cookie_auth(&headers, &config, user.auth_via_cookie)?;
-    let conn = db.conn();
-    let affected = sq_execute(
-        &conn,
-        dbq::git_credentials::delete_by_id_and_user(id.as_str(), &user.user_id),
-    )
-    .map_err(ApiErr::from_db("delete git credential"))?;
+    let affected = db
+        .delete_git_credential_by_id_and_user(id.as_str(), &user.user_id)
+        .await
+        .map_err(ApiErr::from_db("delete git credential"))?;
 
     if affected == 0 {
         return Err(ApiErr::not_found("credential not found"));

@@ -8,7 +8,8 @@ use opensession_api::{
 };
 use opensession_core::{ContentBlock, EventType, Session};
 use opensession_runtime_config::SummarySettings;
-use opensession_summary::{SemanticSummaryArtifact, summarize_git_commit};
+use opensession_summary::SemanticSummaryArtifact;
+use opensession_summary_runtime::summarize_git_commit;
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};

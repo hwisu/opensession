@@ -115,23 +115,32 @@ Desktop E2E:
 
 ## CI Required Gates
 
-`.github/workflows/ci.yml` runs required jobs on both `ubuntu-latest` and `macos-latest`:
+Lean PR/main CI lives in `.github/workflows/ci.yml`:
 
+- release surface + version sync contract
+- content/workflow/doc guardrails
+- `cargo fmt --all -- --check`
 - workspace `clippy`
 - workspace tests (`opensession-e2e` excluded in unit/integration stage)
 - worker wasm clippy
 - frontend checks
+
+Deep GitHub-hosted validation lives in `.github/workflows/ci-deep.yml` and runs on schedule/manual trigger:
+
+- dependency audit
 - API E2E server suite
 - worker API + web live Playwright E2E
 - desktop E2E
 - desktop bundle verify (Linux + macOS universal build + smoke + diagnostics)
 
-Failure artifacts (Playwright report/trace and runtime logs) are uploaded on failing E2E jobs.
+Failure artifacts (Playwright report/trace and runtime logs) are uploaded on failing deep E2E jobs.
+This split keeps PR checks small and pushes long-running validation toward local hooks/runtime runs first, with GitHub deep runs used for scheduled or explicit verification.
 
 Desktop dry-run reliability workflow:
 
 - `.github/workflows/desktop-dryrun.yml` runs on schedule/manual trigger.
 - Performs Linux/macOS no-sign bundle builds and smoke checks.
+- Uses rust-cache to avoid rebuilding the desktop workspace from scratch on every run.
 - Uploads diagnostics (`.ci-logs`, `.ci-diagnostics`) and metrics summary artifacts.
 
 ## Session Review Automation Output

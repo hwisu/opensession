@@ -350,6 +350,8 @@ opensession share os://src/local/<sha256> --quick
 ./.githooks/pre-push
 ```
 
+PR CI is intentionally lean: `.github/workflows/ci.yml` keeps only fast baseline gates, while heavy GitHub-hosted E2E/desktop validation lives in `.github/workflows/ci-deep.yml` and should be exercised locally first.
+
 ```bash
 # Runtime web validation (after starting wrangler + opensession-server)
 cd web

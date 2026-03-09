@@ -230,9 +230,14 @@ Quick local gate commands:
 ./.githooks/pre-push
 ```
 
+GitHub CI split:
+
+- `.github/workflows/ci.yml` keeps fast PR/main gates only.
+- `.github/workflows/ci-deep.yml` owns long-running audit/E2E/desktop validation on schedule or manual trigger.
+
 Desktop build policy:
 
-- Linux desktop bundle build verification is required in CI (`desktop-bundle-verify`).
+- Linux desktop bundle build verification is required in deep CI (`desktop-bundle-verify`).
 - macOS desktop release target is `universal-apple-darwin` only.
 - Universal architecture is validated by `lipo -archs` and must include both `x86_64` and `arm64`.
 - A scheduled/manual `Desktop Dry Run` workflow validates no-sign desktop bundling and uploads diagnostics/metrics artifacts.

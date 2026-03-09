@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "30 2 * * *"
 
+concurrency:
+  group: desktop-dryrun-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -20,6 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop-dryrun-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22

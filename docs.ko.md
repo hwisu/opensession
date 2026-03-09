@@ -231,9 +231,14 @@ opensession cleanup init --provider auto --session-archive-branch pr/sessions --
 ./.githooks/pre-push
 ```
 
+GitHub CI 분리 정책:
+
+- `.github/workflows/ci.yml`은 빠른 PR/main 게이트만 유지합니다.
+- `.github/workflows/ci-deep.yml`이 장시간 audit/E2E/desktop 검증을 정기/수동 트리거로 담당합니다.
+
 데스크톱 빌드 정책:
 
-- CI에서 Linux 데스크톱 번들 빌드 검증(`desktop-bundle-verify`)을 필수로 수행합니다.
+- deep CI에서 Linux 데스크톱 번들 빌드 검증(`desktop-bundle-verify`)을 필수로 수행합니다.
 - macOS 데스크톱 릴리즈 타깃은 `universal-apple-darwin`만 허용합니다.
 - universal 아키텍처는 `lipo -archs`로 검증하며 반드시 `x86_64`와 `arm64`를 모두 포함해야 합니다.
 - 정기/수동 `Desktop Dry Run` 워크플로는 no-sign 데스크톱 번들을 검증하고 diagnostics/metrics artifact를 업로드합니다.

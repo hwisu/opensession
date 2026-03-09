@@ -66,9 +66,10 @@ fi
 
 run_node_check "desktop build preflight" scripts/validate/desktop-build-preflight.mjs --mode local
 run_node_check "content contract check" scripts/verify-content-contract.mjs --check
+run_node_check "CI workflow check" scripts/check-ci-workflow.mjs
 run_node_check "session-review workflow check" scripts/check-session-review-workflow.mjs
-echo "Running session-review report unit tests..."
-run_mise node --test scripts/tests/pr-session-report.test.mjs
+echo "Running workflow/report unit tests..."
+run_mise node --test scripts/tests/*.test.mjs
 run_node_check "publishable dependency check" scripts/check-publishable-deps.mjs
 run_node_check "rust artifact guardrail check" scripts/check-rust-artifact-guardrails.mjs
 run_node_check "validation hook guardrail check" scripts/check-validation-hooks.mjs

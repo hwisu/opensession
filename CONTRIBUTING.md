@@ -18,6 +18,8 @@
 4. For web/runtime-web changes, validate at least one real user path with `wrangler dev` + Playwright live suite.
 5. API route changes: update the endpoint table in README.
 
+PR CI is intentionally lean; heavy E2E/desktop jobs are reserved for local validation first and the scheduled/manual `.github/workflows/ci-deep.yml` workflow.
+
 Validation details (local + CI parity) live in `docs/development-validation-flow.md`.
 
 ## Project Structure

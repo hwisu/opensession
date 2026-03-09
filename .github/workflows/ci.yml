@@ -3,10 +3,13 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * *"
-  workflow_call:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -50,9 +53,11 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/verify-content-contract.mjs --check
+      - run: node scripts/check-ci-workflow.mjs
       - run: node scripts/check-session-review-workflow.mjs
       - run: node scripts/check-validation-hooks.mjs
       - run: node scripts/check-doc-portability.mjs
+      - run: node --test scripts/tests/*.test.mjs
 
   fmt:
     name: Format
@@ -70,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0
@@ -88,7 +93,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0
@@ -98,23 +103,13 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --exclude opensession-e2e --quiet
 
-  audit:
-    name: Audit
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
   wasm-check:
     name: Worker (wasm) (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0
@@ -133,7 +128,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -153,386 +148,3 @@ jobs:
         working-directory: web
       - run: npm run check
         working-directory: web
-
-  api-e2e-server:
-    name: API E2E Server (${{ matrix.os }})
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: api-e2e-server-${{ matrix.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Start opensession-server
-        run: |
-          mkdir -p .ci-logs .ci-data/server
-          PORT=3000 \
-          BASE_URL=http://127.0.0.1:3000 \
-          JWT_SECRET=ci-jwt-secret \
-          OPENSESSION_ADMIN_KEY=ci-admin-key \
-          OPENSESSION_DATA_DIR="$PWD/.ci-data/server" \
-          cargo run -p opensession-server > .ci-logs/server.log 2>&1 &
-          echo $! > .ci-logs/server.pid
-      - name: Wait for server health endpoint
-        run: |
-          for i in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "server did not start in time"
-          cat .ci-logs/server.log || true
-          exit 1
-      - name: Run server API E2E suite
-        env:
-          OPENSESSION_E2E_SERVER_BASE_URL: http://127.0.0.1:3000
-          OPENSESSION_E2E_ALLOW_REMOTE: "0"
-        run: cargo test -p opensession-e2e --test server -- --nocapture
-      - name: Stop opensession-server
-        if: always()
-        run: |
-          if [ -f .ci-logs/server.pid ]; then
-            kill "$(cat .ci-logs/server.pid)" || true
-          fi
-      - name: Upload server E2E logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: api-e2e-server-logs-${{ matrix.os }}
-          path: .ci-logs/server.log
-          if-no-files-found: ignore
-
-  worker-web-live-e2e:
-    name: Worker + Web Live E2E (${{ matrix.os }})
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            packages/ui/package-lock.json
-      - name: Install UI deps
-        run: npm ci --prefer-offline --no-audit --no-fund --silent
-        working-directory: packages/ui
-      - name: Install web deps
-        run: npm ci --prefer-offline --no-audit --no-fund --silent
-        working-directory: web
-      - name: Install Playwright browser (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: npx playwright install --with-deps chromium
-        working-directory: web
-      - name: Install Playwright browser (macOS)
-        if: matrix.os == 'macos-latest'
-        run: npx playwright install chromium
-        working-directory: web
-      - name: Start wrangler dev (local)
-        run: |
-          mkdir -p .ci-logs
-          npx --yes wrangler@4 dev \
-            --ip 127.0.0.1 \
-            --port 8788 \
-            --persist-to .wrangler/state \
-            --show-interactive-dev-session=false \
-            --log-level=warn \
-            --var BASE_URL:http://127.0.0.1:8788 \
-            --var OPENSESSION_BASE_URL:http://127.0.0.1:8788 \
-            --var JWT_SECRET:ci-jwt-secret \
-            --var OPENSESSION_ADMIN_KEY:ci-admin-key \
-            --var GITHUB_CLIENT_ID:ci-github-client \
-            --var GITHUB_CLIENT_SECRET:ci-github-secret \
-            > .ci-logs/wrangler.log 2>&1 &
-          echo $! > .ci-logs/wrangler.pid
-      - name: Wait for worker health endpoint
-        run: |
-          for i in $(seq 1 360); do
-            api_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8788/api/health || true)"
-            root_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8788/ || true)"
-            if [ "$api_code" = "200" ] && [ "$root_code" = "200" ]; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "wrangler dev did not start in time (api=$api_code root=$root_code)"
-          cat .ci-logs/wrangler.log || true
-          exit 1
-      - name: Start opensession-server for web live API
-        run: |
-          mkdir -p .ci-logs .ci-data/server
-          PORT=3000 \
-          BASE_URL=http://127.0.0.1:3000 \
-          JWT_SECRET=ci-jwt-secret \
-          OPENSESSION_ADMIN_KEY=ci-admin-key \
-          OPENSESSION_DATA_DIR="$PWD/.ci-data/server" \
-          OPENSESSION_LOCAL_REVIEW_ROOT="$PWD/web/e2e-live/fixtures/local-review" \
-          OPENSESSION_ALLOWED_ORIGINS=http://127.0.0.1:8788 \
-          cargo run -p opensession-server > .ci-logs/server.log 2>&1 &
-          echo $! > .ci-logs/server.pid
-      - name: Wait for server health endpoint
-        run: |
-          for i in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "opensession-server did not start in time"
-          cat .ci-logs/server.log || true
-          exit 1
-      - name: Run worker API E2E suite
-        env:
-          OPENSESSION_E2E_WORKER_BASE_URL: http://127.0.0.1:8788
-          OPENSESSION_E2E_ALLOW_REMOTE: "0"
-        run: cargo test -p opensession-e2e --test worker -- --nocapture
-      - name: Run web live Playwright suite
-        env:
-          OPENSESSION_E2E_WORKER_BASE_URL: http://127.0.0.1:8788
-          OPENSESSION_E2E_SERVER_BASE_URL: http://127.0.0.1:3000
-          OPENSESSION_E2E_ALLOW_REMOTE: "0"
-          CI: "1"
-        run: npm run test:e2e:live -- --reporter=list,junit --output=e2e-live-results
-        working-directory: web
-      - name: Stop opensession-server
-        if: always()
-        run: |
-          if [ -f .ci-logs/server.pid ]; then
-            kill "$(cat .ci-logs/server.pid)" || true
-          fi
-      - name: Stop wrangler dev
-        if: always()
-        run: |
-          if [ -f .ci-logs/wrangler.pid ]; then
-            kill "$(cat .ci-logs/wrangler.pid)" || true
-          fi
-      - name: Upload worker/web live E2E artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: worker-web-live-e2e-${{ matrix.os }}
-          path: |
-            .ci-logs/wrangler.log
-            .ci-logs/server.log
-            web/e2e-live-results
-            web/test-results
-            web/playwright-report
-          if-no-files-found: ignore
-
-  desktop-e2e:
-    name: Desktop E2E (${{ matrix.os }})
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - name: Install Linux desktop test dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            xvfb \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev
-      - name: Run desktop test suite (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          OPENSESSION_E2E_DESKTOP: "1"
-        run: xvfb-run -a cargo test --manifest-path desktop/src-tauri/Cargo.toml --quiet
-      - name: Run desktop test suite (macOS)
-        if: matrix.os == 'macos-latest'
-        env:
-          OPENSESSION_E2E_DESKTOP: "1"
-        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --quiet
-
-  desktop-bundle-verify:
-    name: Desktop Bundle Verify (${{ matrix.os }})
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            desktop/package-lock.json
-            web/package-lock.json
-            packages/ui/package-lock.json
-      - name: Install universal Rust targets (macOS)
-        if: matrix.os == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - name: Install Linux desktop build dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            xvfb \
-            patchelf \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev
-      - name: Run desktop build preflight (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: node scripts/validate/desktop-build-preflight.mjs --mode ci --os linux
-      - name: Run desktop build preflight (macOS)
-        if: matrix.os == 'macos-latest'
-        run: node scripts/validate/desktop-build-preflight.mjs --mode ci --os macos
-      - name: Install UI deps
-        run: npm ci --prefer-offline --no-audit --no-fund --silent
-        working-directory: packages/ui
-      - name: Install web deps
-        run: npm ci --prefer-offline --no-audit --no-fund --silent
-        working-directory: web
-      - name: Install desktop deps
-        run: npm ci --prefer-offline --no-audit --no-fund --silent
-        working-directory: desktop
-      - name: Link @opensession/ui
-        run: |
-          mkdir -p node_modules/@opensession
-          rm -f node_modules/@opensession/ui
-          ln -sf "${{ github.workspace }}/packages/ui" node_modules/@opensession/ui
-        working-directory: web
-      - name: Build desktop bundle (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        id: build_linux
-        run: |
-          set -euo pipefail
-          mkdir -p .ci-logs
-          start="$(date +%s)"
-          npm --prefix desktop run tauri:build -- --no-sign --ci 2>&1 | tee .ci-logs/desktop-build.log
-          end="$(date +%s)"
-          echo "build_seconds=$((end - start))" >> "$GITHUB_OUTPUT"
-      - name: Build desktop bundle (macOS universal)
-        if: matrix.os == 'macos-latest'
-        id: build_macos
-        run: |
-          set -euo pipefail
-          mkdir -p .ci-logs
-          start="$(date +%s)"
-          npm --prefix desktop run tauri:build -- --target universal-apple-darwin --bundles app --no-sign --ci 2>&1 | tee .ci-logs/desktop-build.log
-          end="$(date +%s)"
-          echo "build_seconds=$((end - start))" >> "$GITHUB_OUTPUT"
-      - name: Verify desktop bundle (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          mkdir -p .ci-logs
-          BUNDLE_DIR="desktop/src-tauri/target/release/bundle"
-          APP_BIN="desktop/src-tauri/target/release/opensession-desktop"
-          if [ ! -d "$BUNDLE_DIR" ]; then
-            echo "missing bundle dir: $BUNDLE_DIR"
-            exit 1
-          fi
-          if ! find "$BUNDLE_DIR" -type f | grep -q .; then
-            echo "bundle dir has no files: $BUNDLE_DIR"
-            exit 1
-          fi
-          if [ ! -f "$APP_BIN" ]; then
-            echo "missing desktop binary: $APP_BIN"
-            exit 1
-          fi
-          xvfb-run -a sh -c '
-            "$1" > "$2" 2>&1 &
-            pid=$!
-            sleep 5
-            if ! kill -0 "$pid" 2>/dev/null; then
-              echo "desktop process exited before smoke timeout"
-              cat "$2" || true
-              exit 1
-            fi
-            kill "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-          ' sh "$APP_BIN" ".ci-logs/desktop-smoke.log"
-      - name: Verify desktop bundle (macOS universal)
-        if: matrix.os == 'macos-latest'
-        run: |
-          set -euo pipefail
-          mkdir -p .ci-logs
-          BUNDLE_DIR="desktop/src-tauri/target/universal-apple-darwin/release/bundle"
-          APP_PATH="$(find "${BUNDLE_DIR}/macos" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
-          if [ -z "$APP_PATH" ]; then
-            echo "missing .app bundle in ${BUNDLE_DIR}/macos"
-            exit 1
-          fi
-          APP_BIN="${APP_PATH}/Contents/MacOS/opensession-desktop"
-          if [ ! -f "$APP_BIN" ]; then
-            echo "missing app executable: $APP_BIN"
-            exit 1
-          fi
-          archs="$(lipo -archs "$APP_BIN" | xargs)"
-          if [ "$archs" != "x86_64 arm64" ] && [ "$archs" != "arm64 x86_64" ]; then
-            echo "unexpected universal archs: $archs"
-            exit 1
-          fi
-          "$APP_BIN" > .ci-logs/desktop-smoke.log 2>&1 &
-          app_pid=$!
-          sleep 5
-          if ! kill -0 "$app_pid" 2>/dev/null; then
-            echo "desktop process exited before smoke timeout"
-            cat .ci-logs/desktop-smoke.log || true
-            exit 1
-          fi
-          kill "$app_pid" 2>/dev/null || true
-          wait "$app_pid" 2>/dev/null || true
-      - name: Collect desktop diagnostics
-        if: always()
-        env:
-          BUILD_SECONDS: ${{ steps.build_linux.outputs.build_seconds || steps.build_macos.outputs.build_seconds || '0' }}
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            BUNDLE_DIR="desktop/src-tauri/target/universal-apple-darwin/release/bundle"
-            APP_BIN="desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OpenSession Desktop.app/Contents/MacOS/opensession-desktop"
-            OS_LABEL="macos"
-          else
-            BUNDLE_DIR="desktop/src-tauri/target/release/bundle"
-            APP_BIN="desktop/src-tauri/target/release/opensession-desktop"
-            OS_LABEL="linux"
-          fi
-          scripts/ci/collect-desktop-diagnostics.sh \
-            --out-dir ".ci-diagnostics/desktop-bundle-${{ matrix.os }}" \
-            --os "$OS_LABEL" \
-            --bundle-dir "$BUNDLE_DIR" \
-            --app-bin "$APP_BIN" \
-            --build-seconds "${BUILD_SECONDS}" \
-            --smoke-log ".ci-logs/desktop-smoke.log"
-      - name: Upload desktop bundle diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-bundle-verify-${{ matrix.os }}
-          path: |
-            .ci-logs
-            .ci-diagnostics/desktop-bundle-${{ matrix.os }}
-          if-no-files-found: ignore

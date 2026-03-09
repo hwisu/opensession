@@ -352,6 +352,8 @@ opensession share os://src/local/<sha256> --quick
 ./.githooks/pre-push
 ```
 
+PR CI는 의도적으로 가볍게 유지합니다. `.github/workflows/ci.yml`에는 빠른 기본 게이트만 남기고, 무거운 GitHub-hosted E2E/desktop 검증은 `.github/workflows/ci-deep.yml`로 분리해 로컬에서 먼저 검증하는 흐름을 기준으로 둡니다.
+
 ```bash
 # 웹 런타임 검증 (wrangler + opensession-server 기동 이후)
 cd web

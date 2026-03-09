@@ -2,12 +2,12 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use opensession_core::Session;
 use opensession_core::handoff::{HandoffSummary, validate_handoff_summaries};
-use opensession_core::object_store::{
-    find_repo_root, global_store_root, read_local_object_from_uri, sha256_hex, store_local_object,
-};
 use opensession_core::source_uri::SourceUri;
 use opensession_core::validate::validate_session;
 use opensession_local_db::{LocalDb, LocalSessionFilter};
+use opensession_local_store::{
+    find_repo_root, global_store_root, read_local_object_from_uri, sha256_hex, store_local_object,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -390,7 +390,8 @@ fn parse_session_input(path: &Path) -> Result<Session> {
         return Ok(session);
     }
 
-    if let Some(session) = opensession_parsers::parse_with_default_parsers(path)
+    if let Some(session) = opensession_parsers::ParserRegistry::default()
+        .parse_path(path)
         .with_context(|| format!("parse {}", path.display()))?
     {
         return Ok(session);

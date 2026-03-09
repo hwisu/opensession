@@ -11,9 +11,9 @@ use opensession_api::{
 };
 use opensession_core::{
     Session,
-    object_store::read_local_object_from_uri,
     source_uri::{SourceSpec, SourceUri},
 };
+use opensession_local_store::read_local_object_from_uri;
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};

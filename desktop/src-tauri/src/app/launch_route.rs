@@ -1,5 +1,5 @@
 use crate::{DesktopApiResult, desktop_error};
-use opensession_core::object_store::global_store_root;
+use opensession_local_store::global_store_root;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;

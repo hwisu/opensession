@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/local-store",
     "crates/runtime-config",
     "crates/summary",
     "crates/parsers",
@@ -16,6 +17,7 @@ members = [
 ]
 default-members = [
     "crates/core",
+    "crates/local-store",
     "crates/runtime-config",
     "crates/summary",
     "crates/parsers",
@@ -54,6 +56,7 @@ authors = ["opensession.io contributors"]
 
 [workspace.dependencies]
 opensession-core = { version = "0.2.34", path = "crates/core" }
+opensession-local-store = { version = "0.2.34", path = "crates/local-store" }
 opensession-runtime-config = { version = "0.2.34", path = "crates/runtime-config" }
 opensession-summary = { version = "0.2.34", path = "crates/summary" }
 opensession-parsers = { version = "0.2.34", path = "crates/parsers" }

@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 opensession-api = { path = "../../crates/api" }
 opensession-local-db = { path = "../../crates/local-db" }
+opensession-local-store = { path = "../../crates/local-store" }
 opensession-core = { path = "../../crates/core" }
 opensession-parsers = { path = "../../crates/parsers" }
 opensession-runtime-config = { path = "../../crates/runtime-config" }

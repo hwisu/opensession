@@ -3193,7 +3193,6 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 2.0.18",
  "urlencoding",
  "uuid",
@@ -3209,6 +3208,7 @@ dependencies = [
  "opensession-core",
  "opensession-git-native",
  "opensession-local-db",
+ "opensession-local-store",
  "opensession-parsers",
  "opensession-runtime-config",
  "opensession-summary",
@@ -3246,6 +3246,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "opensession-local-store"
+version = "0.2.34"
+dependencies = [
+ "opensession-core",
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

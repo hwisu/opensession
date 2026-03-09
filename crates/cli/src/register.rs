@@ -2,7 +2,7 @@ use crate::user_guidance::{guided_error, guided_error_with_doc};
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use opensession_core::Session;
-use opensession_core::object_store::store_local_object;
+use opensession_local_store::store_local_object;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Args)]

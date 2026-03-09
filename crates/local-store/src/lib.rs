@@ -1,4 +1,4 @@
-use crate::source_uri::{SourceSpec, SourceUri, SourceUriError};
+use opensession_core::source_uri::{SourceSpec, SourceUri, SourceUriError};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ pub struct StoredObject {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ObjectStoreError {
+pub enum LocalStoreError {
     #[error("could not determine home directory")]
     HomeUnavailable,
     #[error("invalid hash: {0}")]
@@ -35,7 +35,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-pub fn store_local_object(bytes: &[u8], cwd: &Path) -> Result<StoredObject, ObjectStoreError> {
+pub fn store_local_object(bytes: &[u8], cwd: &Path) -> Result<StoredObject, LocalStoreError> {
     let sha256 = sha256_hex(bytes);
     validate_hash(&sha256)?;
     let root = default_store_root(cwd)?;
@@ -59,7 +59,7 @@ pub fn store_local_object(bytes: &[u8], cwd: &Path) -> Result<StoredObject, Obje
 pub fn read_local_object(
     hash: &str,
     cwd: &Path,
-) -> Result<(SourceUri, PathBuf, Vec<u8>), ObjectStoreError> {
+) -> Result<(SourceUri, PathBuf, Vec<u8>), LocalStoreError> {
     validate_hash(hash)?;
     for root in candidate_roots(cwd)? {
         let path = object_path(&root, hash)?;
@@ -74,32 +74,32 @@ pub fn read_local_object(
             ));
         }
     }
-    Err(ObjectStoreError::NotFound(hash.to_string()))
+    Err(LocalStoreError::NotFound(hash.to_string()))
 }
 
 pub fn read_local_object_from_uri(
     uri: &SourceUri,
     cwd: &Path,
-) -> Result<(PathBuf, Vec<u8>), ObjectStoreError> {
-    let hash = uri.as_local_hash().ok_or_else(|| {
-        ObjectStoreError::NotFound("uri is not a local source object".to_string())
-    })?;
+) -> Result<(PathBuf, Vec<u8>), LocalStoreError> {
+    let hash = uri
+        .as_local_hash()
+        .ok_or_else(|| LocalStoreError::NotFound("uri is not a local source object".to_string()))?;
     let (_uri, path, bytes) = read_local_object(hash, cwd)?;
     Ok((path, bytes))
 }
 
-pub fn default_store_root(cwd: &Path) -> Result<PathBuf, ObjectStoreError> {
+fn default_store_root(cwd: &Path) -> Result<PathBuf, LocalStoreError> {
     if let Some(repo_root) = find_repo_root(cwd) {
         return Ok(repo_root.join(".opensession").join("objects"));
     }
     global_store_root()
 }
 
-pub fn global_store_root() -> Result<PathBuf, ObjectStoreError> {
+pub fn global_store_root() -> Result<PathBuf, LocalStoreError> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
-        .map_err(|_| ObjectStoreError::HomeUnavailable)?;
+        .map_err(|_| LocalStoreError::HomeUnavailable)?;
     Ok(home
         .join(".local")
         .join("share")
@@ -107,7 +107,7 @@ pub fn global_store_root() -> Result<PathBuf, ObjectStoreError> {
         .join("objects"))
 }
 
-pub fn object_path(root: &Path, hash: &str) -> Result<PathBuf, ObjectStoreError> {
+fn object_path(root: &Path, hash: &str) -> Result<PathBuf, LocalStoreError> {
     validate_hash(hash)?;
     Ok(root
         .join("sha256")
@@ -116,7 +116,7 @@ pub fn object_path(root: &Path, hash: &str) -> Result<PathBuf, ObjectStoreError>
         .join(format!("{hash}.jsonl")))
 }
 
-pub fn candidate_roots(cwd: &Path) -> Result<Vec<PathBuf>, ObjectStoreError> {
+pub fn candidate_roots(cwd: &Path) -> Result<Vec<PathBuf>, LocalStoreError> {
     let mut roots = Vec::new();
     if let Some(repo_root) = find_repo_root(cwd) {
         roots.push(repo_root.join(".opensession").join("objects"));
@@ -141,18 +141,20 @@ pub fn find_repo_root(from: &Path) -> Option<PathBuf> {
     }
 }
 
-fn validate_hash(hash: &str) -> Result<(), ObjectStoreError> {
+fn validate_hash(hash: &str) -> Result<(), LocalStoreError> {
     let is_valid = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
     if is_valid {
         Ok(())
     } else {
-        Err(ObjectStoreError::InvalidHash(hash.to_string()))
+        Err(LocalStoreError::InvalidHash(hash.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{find_repo_root, object_path, read_local_object, sha256_hex, store_local_object};
+    use super::{
+        LocalStoreError, find_repo_root, read_local_object, sha256_hex, store_local_object,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -164,13 +166,9 @@ mod tests {
     }
 
     #[test]
-    fn object_path_layout_matches_spec() {
-        let hash = "a".repeat(64);
-        let path = object_path(std::path::Path::new("/tmp/objects"), &hash).expect("path");
-        assert_eq!(
-            path,
-            std::path::PathBuf::from(format!("/tmp/objects/sha256/aa/aa/{hash}.jsonl"))
-        );
+    fn global_store_root_uses_standard_home_fallback() {
+        let root = super::global_store_root().expect("global store root");
+        assert!(root.ends_with("opensession/objects"));
     }
 
     #[test]
@@ -187,6 +185,23 @@ mod tests {
         assert_eq!(uri.to_string(), stored.uri.to_string());
         assert_eq!(path, stored.path);
         assert_eq!(bytes, b"{\"type\":\"header\"}\n");
+        assert!(
+            stored
+                .path
+                .to_string_lossy()
+                .contains("/.opensession/objects/")
+        );
+    }
+
+    #[test]
+    fn read_local_object_returns_not_found_for_missing_hash() {
+        let tmp = tempdir().expect("tempdir");
+        let error = read_local_object(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            tmp.path(),
+        )
+        .expect_err("missing object");
+        assert!(matches!(error, LocalStoreError::NotFound(_)));
     }
 
     #[test]

@@ -4,9 +4,9 @@ use opensession_api::{
     DesktopVectorSearchProvider, DesktopVectorSearchResponse, DesktopVectorSessionMatch,
     SessionListResponse, SessionSummary,
 };
-use opensession_core::object_store::sha256_hex;
 use opensession_core::trace::Session as HailSession;
 use opensession_local_db::{LocalDb, LocalSessionFilter, VectorChunkUpsert, VectorIndexJobRow};
+use opensession_local_store::sha256_hex;
 use opensession_runtime_config::{DaemonConfig, VectorChunkingMode};
 use serde_json::json;
 use std::collections::HashMap;

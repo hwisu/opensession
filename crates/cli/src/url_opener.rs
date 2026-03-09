@@ -1,6 +1,6 @@
 use crate::open_target::{OpenTarget, read_repo_open_target};
 use anyhow::{Context, Result, anyhow, bail};
-use opensession_core::object_store::global_store_root;
+use opensession_local_store::global_store_root;
 use reqwest::Url;
 use std::fs;
 use std::path::{Path, PathBuf};

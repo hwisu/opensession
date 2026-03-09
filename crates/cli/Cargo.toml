@@ -27,6 +27,7 @@ workspace = true
 
 [dependencies]
 opensession-core = { workspace = true }
+opensession-local-store = { workspace = true }
 opensession-runtime-config = { workspace = true }
 opensession-summary = { workspace = true }
 opensession-parsers = { workspace = true }

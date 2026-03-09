@@ -4,12 +4,10 @@ use opensession_api::{
     DesktopQuickShareResponse,
 };
 use opensession_core::handoff::{HandoffSummary, validate_handoff_summaries};
-use opensession_core::object_store::{
-    find_repo_root, global_store_root, sha256_hex, store_local_object,
-};
 use opensession_core::session::working_directory;
 use opensession_core::source_uri::SourceUri;
 use opensession_core::trace::Session as HailSession;
+use opensession_local_store::{find_repo_root, global_store_root, sha256_hex, store_local_object};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeSet;

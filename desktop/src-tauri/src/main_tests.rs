@@ -228,3 +228,15 @@ fn wait_for_summary_batch_completion(
     }
     final_state
 }
+
+#[test]
+fn desktop_docs_markdown_selects_korean_variant() {
+    let selected = super::desktop_docs_markdown(Some("ko-KR"));
+    assert!(selected.starts_with("# 문서"));
+}
+
+#[test]
+fn desktop_docs_markdown_defaults_to_english_variant() {
+    let selected = super::desktop_docs_markdown(Some("en-US"));
+    assert!(selected.starts_with("# Documentation"));
+}

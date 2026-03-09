@@ -1,4 +1,5 @@
 <script lang="ts">
+import { appLocale } from '../../i18n';
 import type { SettingsSectionNavItem } from './models';
 
 const {
@@ -10,6 +11,8 @@ const {
 	activeId: string;
 	onSelect: (sectionId: string) => void;
 } = $props();
+
+const isKorean = $derived($appLocale === 'ko');
 
 function settingsNavButtonClasses(active: boolean): string {
 	return active
@@ -24,7 +27,7 @@ function settingsNavButtonClasses(active: boolean): string {
 >
 	<div class="overflow-x-auto border border-border bg-bg-secondary p-3 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
 		<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-			Settings Tabs
+			{isKorean ? '설정 탭' : 'Settings Tabs'}
 		</p>
 		<div class="mt-3 flex gap-2 xl:flex-col">
 			{#each items as item}

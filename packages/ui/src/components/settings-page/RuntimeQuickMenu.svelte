@@ -4,6 +4,7 @@ import type {
 	DesktopSummaryProviderTransport,
 	DesktopSummaryStorageBackend,
 } from '../../types';
+import { appLocale } from '../../i18n';
 import type { RuntimeQuickJumpLink } from './models';
 
 const {
@@ -96,8 +97,14 @@ const {
 	onJumpToSection: (sectionId: string) => void;
 } = $props();
 
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
+
 function quickToggleLabel(enabled: boolean): string {
-	return enabled ? 'On' : 'Off';
+	return enabled ? localize('On', '켜짐') : localize('Off', '꺼짐');
 }
 
 function quickToggleClasses(enabled: boolean): string {
@@ -126,9 +133,11 @@ function handleStorageBackendChange(event: Event) {
 			<div class="flex items-start justify-between gap-3">
 				<div>
 					<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-						Quick Runtime Menu
+						{localize('Quick Runtime Menu', '빠른 런타임 메뉴')}
 					</p>
-					<p class="mt-1 text-sm font-semibold text-text-primary">Live draft overview</p>
+					<p class="mt-1 text-sm font-semibold text-text-primary">
+						{localize('Live draft overview', '실시간 초안 개요')}
+					</p>
 				</div>
 				<span
 					class={`inline-flex items-center border px-2 py-1 text-[11px] font-semibold ${
@@ -138,11 +147,14 @@ function handleStorageBackendChange(event: Event) {
 					}`}
 					data-testid="runtime-quick-draft-state"
 				>
-					{draftDirty ? 'Draft' : 'Saved'}
+					{draftDirty ? localize('Draft', '초안') : localize('Saved', '저장됨')}
 				</span>
 			</div>
 			<p class="text-[11px] text-text-secondary">
-				Flip common on/off controls here, then save once.
+				{localize(
+					'Flip common on/off controls here, then save once.',
+					'자주 쓰는 켜기/끄기 설정을 여기서 바꾸고 한 번만 저장하세요.',
+				)}
 			</p>
 			<div class="grid grid-cols-2 gap-2">
 				<button
@@ -152,7 +164,7 @@ function handleStorageBackendChange(event: Event) {
 					disabled={runtimeSaving || !draftDirty}
 					class="inline-flex h-9 items-center justify-center border border-border px-2 text-[11px] font-semibold text-text-secondary hover:text-text-primary disabled:opacity-60"
 				>
-					Reset
+					{localize('Reset', '초기화')}
 				</button>
 				<button
 					type="button"
@@ -161,31 +173,31 @@ function handleStorageBackendChange(event: Event) {
 					disabled={runtimeSaving || runtimeLoading}
 					class="inline-flex h-9 items-center justify-center border border-transparent bg-accent px-2 text-[11px] font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
 				>
-					{runtimeSaving ? 'Saving...' : saveLabel}
+					{runtimeSaving ? localize('Saving...', '저장 중...') : saveLabel}
 				</button>
 			</div>
 		</div>
 
 		<div class="space-y-2">
 			<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-				Current Modes
+				{localize('Current Modes', '현재 모드')}
 			</p>
 			<label class="block text-[11px] text-text-secondary">
-				<span class="mb-1 block text-text-muted">Provider</span>
+				<span class="mb-1 block text-text-muted">{localize('Provider', '프로바이더')}</span>
 				<select
 					value={provider}
 					onchange={handleProviderChange}
 					data-testid="runtime-quick-provider"
 					class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary"
 				>
-					<option value="disabled">disabled</option>
+					<option value="disabled">{localize('disabled', '사용 안 함')}</option>
 					<option value="ollama">ollama</option>
 					<option value="codex_exec">codex_exec</option>
 					<option value="claude_cli">claude_cli</option>
 				</select>
 			</label>
 			<label class="block text-[11px] text-text-secondary">
-				<span class="mb-1 block text-text-muted">Storage backend</span>
+				<span class="mb-1 block text-text-muted">{localize('Storage backend', '저장소 백엔드')}</span>
 				<select
 					value={storageBackend}
 					onchange={handleStorageBackendChange}
@@ -194,25 +206,25 @@ function handleStorageBackendChange(event: Event) {
 				>
 					<option value="hidden_ref">hidden_ref</option>
 					<option value="local_db">local_db</option>
-					<option value="none">none</option>
+					<option value="none">{localize('none', '없음')}</option>
 				</select>
 			</label>
 			<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-secondary">
-				<p>View {sessionDefaultView}</p>
-				<p class="mt-1">Transport {providerTransport}</p>
-				<p class="mt-1">Batch scope {batchScopeLabel}</p>
+				<p>{localize('View', '보기')} {sessionDefaultView}</p>
+				<p class="mt-1">{localize('Transport', '전달 방식')} {providerTransport}</p>
+				<p class="mt-1">{localize('Batch scope', '배치 범위')} {batchScopeLabel}</p>
 			</div>
 		</div>
 
 		<div class="space-y-2">
 			<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-				Background / Auto
+				{localize('Background / Auto', '백그라운드 / 자동')}
 			</p>
 			<div class="space-y-2">
 				<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
 					<div class="flex items-start justify-between gap-3">
 						<div class="min-w-0">
-							<p class="text-xs font-semibold text-text-primary">Summary on save</p>
+							<p class="text-xs font-semibold text-text-primary">{localize('Summary on save', '저장 시 요약')}</p>
 							<p class="mt-1 text-[11px] text-text-secondary">{summaryTriggerDetail}</p>
 						</div>
 						<button
@@ -230,7 +242,7 @@ function handleStorageBackendChange(event: Event) {
 				<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
 					<div class="flex items-start justify-between gap-3">
 						<div class="min-w-0">
-							<p class="text-xs font-semibold text-text-primary">Batch on app start</p>
+							<p class="text-xs font-semibold text-text-primary">{localize('Batch on app start', '앱 시작 시 배치 실행')}</p>
 							<p class="mt-1 text-[11px] text-text-secondary">{batchDetail}</p>
 							<p class="mt-1 text-[11px] text-text-muted">{batchStatusDetail}</p>
 						</div>
@@ -249,7 +261,7 @@ function handleStorageBackendChange(event: Event) {
 				<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
 					<div class="flex items-start justify-between gap-3">
 						<div class="min-w-0">
-							<p class="text-xs font-semibold text-text-primary">Lifecycle cleanup</p>
+							<p class="text-xs font-semibold text-text-primary">{localize('Lifecycle cleanup', '수명주기 정리')}</p>
 							<p class="mt-1 text-[11px] text-text-secondary">{lifecycleDetail}</p>
 							<p class="mt-1 text-[11px] text-text-muted">{lifecycleResultDetail}</p>
 							<p class="mt-1 text-[11px] text-text-muted">{lifecycleNextDetail}</p>
@@ -270,13 +282,13 @@ function handleStorageBackendChange(event: Event) {
 
 		<div class="space-y-2">
 			<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-				Features
+				{localize('Features', '기능')}
 			</p>
 			<div class="space-y-2">
 				<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
 					<div class="flex items-start justify-between gap-3">
 						<div class="min-w-0">
-							<p class="text-xs font-semibold text-text-primary">Vector search</p>
+							<p class="text-xs font-semibold text-text-primary">{localize('Vector search', '벡터 검색')}</p>
 							<p class="mt-1 text-[11px] text-text-secondary">{vectorDetail}</p>
 							<p class="mt-1 text-[11px] text-text-muted">{vectorStatusDetail}</p>
 						</div>
@@ -296,7 +308,7 @@ function handleStorageBackendChange(event: Event) {
 				<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
 					<div class="flex items-start justify-between gap-3">
 						<div class="min-w-0">
-							<p class="text-xs font-semibold text-text-primary">Change reader</p>
+							<p class="text-xs font-semibold text-text-primary">{localize('Change reader', '변경 리더')}</p>
 							<p class="mt-1 text-[11px] text-text-secondary">{changeReaderDetail}</p>
 						</div>
 						<button
@@ -313,17 +325,20 @@ function handleStorageBackendChange(event: Event) {
 
 				<div class="rounded border border-border/60 bg-bg-primary px-3 py-2">
 					<div class="min-w-0">
-						<p class="text-xs font-semibold text-text-primary">Change reader modes</p>
+						<p class="text-xs font-semibold text-text-primary">{localize('Change reader modes', '변경 리더 모드')}</p>
 						<p class="mt-1 text-[11px] text-text-secondary">
-							Optional subfeatures on top of the text reader.
+							{localize(
+								'Optional subfeatures on top of the text reader.',
+								'텍스트 리더 위에 추가로 켤 수 있는 부가 기능입니다.',
+							)}
 						</p>
 					</div>
 					<div class="mt-2 space-y-2">
 						<div class="flex items-start justify-between gap-3 rounded border border-border/60 px-2 py-2">
 							<div class="min-w-0">
-								<p class="text-xs font-semibold text-text-primary">Follow-up Q&amp;A</p>
+								<p class="text-xs font-semibold text-text-primary">{localize('Follow-up questions', '후속 질문')}</p>
 								<p class="mt-1 text-[11px] text-text-secondary">
-									text questions about the current change context
+									{localize('text questions about the current change context', '현재 변경 맥락에 대해 텍스트로 추가 질문')}
 								</p>
 							</div>
 							<button
@@ -340,7 +355,7 @@ function handleStorageBackendChange(event: Event) {
 
 						<div class="flex items-start justify-between gap-3 rounded border border-border/60 px-2 py-2">
 							<div class="min-w-0">
-								<p class="text-xs font-semibold text-text-primary">Voice playback</p>
+								<p class="text-xs font-semibold text-text-primary">{localize('Voice playback', '음성 재생')}</p>
 								<p class="mt-1 text-[11px] text-text-secondary">{changeReaderVoiceSummary}</p>
 							</div>
 							<button
@@ -362,7 +377,7 @@ function handleStorageBackendChange(event: Event) {
 
 		<div class="space-y-2">
 			<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-				Jump To Section
+				{localize('Jump To Section', '섹션 바로가기')}
 			</p>
 			<div class="flex flex-wrap gap-2">
 				{#each jumpLinks as item}

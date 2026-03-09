@@ -1,14 +1,13 @@
-use clap::Parser;
-
 use crate::{
     cat_cmd, cleanup_cmd,
-    cli_args::{Cli, Commands},
-    config_cmd, docs_cmd, doctor_cmd, handoff_v1, inspect, parse_cmd, register, review, setup_cmd,
-    share, summary_cmd, view,
+    cli_args::{Commands, parse_cli},
+    config_cmd, docs_cmd, doctor_cmd, handoff_v1, inspect,
+    locale::localize,
+    parse_cmd, register, review, setup_cmd, share, summary_cmd, view,
 };
 
 pub(crate) async fn run_process() {
-    let cli = Cli::parse();
+    let cli = parse_cli();
 
     let result = match cli.command {
         Commands::Register(args) => register::run(args),
@@ -29,9 +28,9 @@ pub(crate) async fn run_process() {
 
     if let Err(error) = result {
         if debug_errors_enabled() {
-            eprintln!("Error: {error:#}");
+            eprintln!("{} {error:#}", localize("Error:", "오류:"));
         } else {
-            eprintln!("Error: {error}");
+            eprintln!("{} {error}", localize("Error:", "오류:"));
         }
         std::process::exit(1);
     }

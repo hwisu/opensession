@@ -10,6 +10,7 @@ import {
 	regenerateSessionSemanticSummary,
 } from '../api';
 import { prepareTimelineEvents } from '../event-helpers';
+import { appLocale } from '../i18n';
 import {
 	askSessionChangesSurface,
 	loadSessionDetailState,
@@ -69,6 +70,11 @@ let branchFilters = $state(new Set<string>());
 let nativeFilters = $state(new Set<string>());
 let initializedForSessionId = $state<string | null>(null);
 const ALL_FILTER_KEY = 'all';
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 
 function toggleUnifiedFilter(key: string) {
 	unifiedFilters = toggleAllBackedFilter(unifiedFilters, key, ALL_FILTER_KEY);
@@ -226,7 +232,10 @@ function decodeBase64Audio(base64: string): Uint8Array {
 async function handlePlayChangeReaderVoice() {
 	const source = (changeReaderAnswer ?? changeReaderNarrative ?? '').trim();
 	if (!source) {
-		changeReaderVoiceError = '먼저 Read Changes 또는 Ask를 실행해 주세요.';
+		changeReaderVoiceError = localize(
+			'Run Read summary or Ask first.',
+			'먼저 변경 내용 읽기 또는 질문을 실행하세요.',
+		);
 		return;
 	}
 	changeReaderVoicePending = true;
@@ -247,7 +256,7 @@ async function handlePlayChangeReaderVoice() {
 		};
 		audio.onerror = () => {
 			changeReaderVoicePlaying = false;
-			changeReaderVoiceError = '음성 재생에 실패했습니다.';
+			changeReaderVoiceError = localize('Voice playback failed.', '음성 재생에 실패했습니다.');
 		};
 		changeReaderVoicePlaying = true;
 		await audio.play();
@@ -255,7 +264,7 @@ async function handlePlayChangeReaderVoice() {
 			changeReaderVoiceWarning = payload.warning;
 		}
 	} catch (e) {
-		changeReaderVoiceError = e instanceof Error ? e.message : 'Failed to synthesize voice';
+		changeReaderVoiceError = e instanceof Error ? e.message : localize('Failed to synthesize voice.', '음성 합성에 실패했습니다.');
 		changeReaderVoicePlaying = false;
 	} finally {
 		changeReaderVoicePending = false;
@@ -339,21 +348,35 @@ $effect(() => {
 </script>
 
 {#if loading}
-	<div class="py-16 text-center text-xs text-text-muted">Loading session...</div>
+	<div class="py-16 text-center text-xs text-text-muted">{localize('Loading session...', '세션을 불러오는 중...')}</div>
 {:else if error}
 	<div class="py-16 text-center">
 		{#if errorCode === 'desktop_contract_mismatch'}
-			<p class="text-xs text-error">Desktop runtime and UI bundle contract versions do not match.</p>
-			<p class="mt-1 text-xs text-text-muted">Update desktop app/runtime and reopen this session.</p>
+			<p class="text-xs text-error">
+				{localize(
+					'Desktop runtime and UI bundle contract versions do not match.',
+					'데스크톱 런타임과 UI 번들 계약 버전이 일치하지 않습니다.',
+				)}
+			</p>
+			<p class="mt-1 text-xs text-text-muted">
+				{localize(
+					'Update desktop app/runtime and reopen this session.',
+					'데스크톱 앱/런타임을 업데이트한 뒤 이 세션을 다시 열어 주세요.',
+				)}
+			</p>
 		{:else}
 			<p class="text-xs text-error">{error}</p>
 		{/if}
-		<a href="/sessions" class="mt-2 inline-block text-xs text-accent hover:underline">Back to feed</a>
+		<a href="/sessions" class="mt-2 inline-block text-xs text-accent hover:underline">
+			{localize('Back to sessions', '세션 목록으로 돌아가기')}
+		</a>
 	</div>
 {:else if session}
 	<section class="mb-3 rounded border border-border bg-bg-secondary p-3" data-testid="session-detail-view-switch">
 		<div class="flex flex-wrap items-center gap-2">
-			<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">View</p>
+			<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">
+				{localize('View', '보기')}
+			</p>
 			<div class="inline-flex rounded border border-border bg-bg-primary p-0.5">
 				<button
 					type="button"
@@ -362,7 +385,7 @@ $effect(() => {
 					data-testid="session-detail-view-summary"
 					onclick={() => (detailView = 'summary')}
 				>
-					요약
+					{localize('Summary', '요약')}
 				</button>
 				<button
 					type="button"
@@ -371,7 +394,7 @@ $effect(() => {
 					data-testid="session-detail-view-full"
 					onclick={() => (detailView = 'full')}
 				>
-					전체
+					{localize('Full', '전체')}
 				</button>
 			</div>
 		</div>
@@ -381,9 +404,16 @@ $effect(() => {
 		<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="semantic-summary-card">
 			<div class="flex flex-wrap items-center justify-between gap-3">
 				<div>
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Semantic Summary</p>
+					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">
+						{localize('Semantic Summary', '시맨틱 요약')}
+					</p>
 					{#if semanticSummary?.generation_kind === 'heuristic_fallback'}
-						<p class="mt-1 text-xs text-warning">Heuristic fallback · 변경 신호가 제한되어 간략 요약을 표시합니다.</p>
+						<p class="mt-1 text-xs text-warning">
+							{localize(
+								'Heuristic fallback · limited change signals produced a compact summary.',
+								'휴리스틱 대체 · 변경 신호가 제한되어 간략 요약을 표시합니다.',
+							)}
+						</p>
 					{:else if semanticSummary?.source_kind}
 						<p class="mt-1 text-xs text-text-secondary">
 							source={semanticSummary.source_kind}
@@ -399,32 +429,32 @@ $effect(() => {
 					onclick={regenerateSummary}
 					disabled={summaryRegenerating}
 				>
-					{summaryRegenerating ? 'Regenerating…' : 'Regenerate'}
+					{summaryRegenerating ? localize('Regenerating…', '다시 생성하는 중...') : localize('Regenerate', '다시 생성')}
 				</button>
 			</div>
 
 			{#if summaryLoading}
-				<p class="text-xs text-text-muted">Loading semantic summary...</p>
+				<p class="text-xs text-text-muted">{localize('Loading semantic summary...', '시맨틱 요약을 불러오는 중...')}</p>
 			{:else if summaryError}
 				<p class="text-xs text-error">{summaryError}</p>
 			{:else if semanticPayload}
 				<div class="grid gap-3 md:grid-cols-2">
 					<div>
-						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Changes</p>
-						<p class="mt-1 text-xs text-text-primary">{semanticPayload.changes ?? '(none)'}</p>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Changes', '변경 사항')}</p>
+						<p class="mt-1 text-xs text-text-primary">{semanticPayload.changes ?? localize('(none)', '(없음)')}</p>
 					</div>
 					<div>
-						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Auth/Security</p>
-						<p class="mt-1 text-xs text-text-primary">{semanticPayload.auth_security ?? '(none)'}</p>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Auth/Security', '인증/보안')}</p>
+						<p class="mt-1 text-xs text-text-primary">{semanticPayload.auth_security ?? localize('(none)', '(없음)')}</p>
 					</div>
 				</div>
 				<div>
-					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Layer/File Changes</p>
+					<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Layer/File Changes', '레이어/파일 변경')}</p>
 					{#if semanticPayload.layer_file_changes?.length}
 						<div class="mt-2 space-y-2">
 							{#each semanticPayload.layer_file_changes as item}
 								<div class="rounded border border-border/70 p-2">
-									<div class="text-xs font-medium text-text-primary">{item.layer ?? '(unknown layer)'}</div>
+									<div class="text-xs font-medium text-text-primary">{item.layer ?? localize('(unknown layer)', '(알 수 없는 레이어)')}</div>
 									<div class="mt-1 text-xs text-text-secondary">{item.summary ?? ''}</div>
 									{#if item.files?.length}
 										<div class="mt-1 text-[11px] text-text-muted">{item.files.join(', ')}</div>
@@ -433,37 +463,44 @@ $effect(() => {
 							{/each}
 						</div>
 					{:else}
-						<p class="mt-1 text-xs text-text-muted">변경 신호가 부족해 레이어/파일 요약을 만들지 못했습니다.</p>
+						<p class="mt-1 text-xs text-text-muted">
+							{localize(
+								'Not enough change signals were available to build a layer/file summary.',
+								'변경 신호가 부족해 레이어/파일 요약을 만들지 못했습니다.',
+							)}
+						</p>
 					{/if}
 				</div>
 				{#if semanticDiffTree.length}
 					<div>
-						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Diff Tree</p>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Diff Tree', 'Diff 트리')}</p>
 						<div class="mt-2 space-y-2">
 							{#each semanticDiffTree as layer}
 								<details class="rounded border border-border/70 p-2" open={layer.file_count != null && layer.file_count <= 5}>
 									<summary class="cursor-pointer text-xs text-text-primary">
-										{layer.layer ?? '(layer)'} · files={layer.file_count ?? 0} · +{layer.lines_added ?? 0}/-{layer.lines_removed ?? 0}
+										{layer.layer ?? localize('(layer)', '(레이어)')} · {localize('files', '파일')}={layer.file_count ?? 0} · +{layer.lines_added ?? 0}/-{layer.lines_removed ?? 0}
 									</summary>
 									<div class="mt-2 space-y-2">
 										{#each layer.files ?? [] as file}
 											<details class="rounded border border-border/60 p-2" open={!file.is_large}>
 												<summary class="cursor-pointer text-[11px] text-text-secondary">
-													{file.path ?? '(file)'} [{file.operation ?? 'edit'}] +{file.lines_added ?? 0}/-{file.lines_removed ?? 0}
+													{file.path ?? localize('(file)', '(파일)')} [{file.operation ?? localize('edit', '수정')}] +{file.lines_added ?? 0}/-{file.lines_removed ?? 0}
 													{#if file.is_large}
-														· large
+														· {localize('large', '대형')}
 													{/if}
 												</summary>
 												{#if file.hunks?.length}
 													<div class="mt-2 space-y-1">
 														{#each file.hunks as hunk}
 															<div class="rounded border border-border/50 bg-bg-primary p-2">
-																<div class="text-[11px] font-mono text-text-muted">{hunk.header ?? '(hunk)'}</div>
+																<div class="text-[11px] font-mono text-text-muted">{hunk.header ?? localize('(hunk)', '(청크)')}</div>
 																{#if hunk.lines?.length}
 																	<pre class="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] text-text-secondary">{hunk.lines.join('\n')}</pre>
 																{/if}
 																{#if (hunk.omitted_lines ?? 0) > 0}
-																	<div class="mt-1 text-[11px] text-text-muted">… {hunk.omitted_lines} lines omitted</div>
+																	<div class="mt-1 text-[11px] text-text-muted">
+																		{isKorean ? `… ${hunk.omitted_lines}줄 생략` : `… ${hunk.omitted_lines} lines omitted`}
+																	</div>
 																{/if}
 															</div>
 														{/each}
@@ -478,10 +515,10 @@ $effect(() => {
 					</div>
 				{/if}
 				{#if semanticSummary?.error && semanticSummary.error !== 'no usable summary signals found'}
-					<p class="text-xs text-warning">generation note: {semanticSummary.error}</p>
+					<p class="text-xs text-warning">{localize('generation note:', '생성 메모:')} {semanticSummary.error}</p>
 				{/if}
 			{:else}
-				<p class="text-xs text-text-muted">No semantic summary generated yet.</p>
+				<p class="text-xs text-text-muted">{localize('No semantic summary generated yet.', '아직 시맨틱 요약이 생성되지 않았습니다.')}</p>
 			{/if}
 		</section>
 
@@ -489,14 +526,19 @@ $effect(() => {
 			<section class="mb-3 space-y-3 rounded border border-border bg-bg-secondary p-3" data-testid="change-reader-card">
 				<div class="flex flex-wrap items-center justify-between gap-2">
 					<div>
-						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Change Reader (Text + Voice)</p>
-						<p class="mt-1 text-xs text-text-secondary">Read session changes, ask questions, and play voice narration from local context.</p>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Change Reader (Text + Voice)', '변경 리더 (텍스트 + 음성)')}</p>
+						<p class="mt-1 text-xs text-text-secondary">
+							{localize(
+								'Read session changes, ask questions, and play voice narration from local context.',
+								'로컬 컨텍스트에서 세션 변경을 읽고, 질문하고, 음성 내레이션을 재생합니다.',
+							)}
+						</p>
 					</div>
 					<label class="text-xs text-text-secondary">
-						<span class="mr-2">Scope</span>
+						<span class="mr-2">{localize('Scope', '범위')}</span>
 						<select bind:value={changeReaderScope} class="border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary">
-							<option value="summary_only">summary_only</option>
-							<option value="full_context">full_context</option>
+							<option value="summary_only">{localize('Summary only', '요약만')}</option>
+							<option value="full_context">{localize('Full context', '전체 컨텍스트')}</option>
 						</select>
 					</label>
 				</div>
@@ -509,7 +551,7 @@ $effect(() => {
 						data-testid="change-reader-read"
 						class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 					>
-						{changeReaderReading ? 'Reading…' : 'Read Changes'}
+						{changeReaderReading ? localize('Reading…', '읽는 중...') : localize('Read summary', '변경 내용 읽기')}
 					</button>
 					{#if changeReaderVoiceEnabled && changeReaderVoiceConfigured}
 						<button
@@ -519,7 +561,11 @@ $effect(() => {
 							data-testid="change-reader-play-voice"
 							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 						>
-							{changeReaderVoicePending ? 'Synthesizing…' : changeReaderVoicePlaying ? 'Replay Voice' : 'Play Voice'}
+							{changeReaderVoicePending
+								? localize('Synthesizing…', '합성 중...')
+								: changeReaderVoicePlaying
+									? localize('Replay Voice', '음성 다시 재생')
+									: localize('Play Voice', '음성 재생')}
 						</button>
 						<button
 							type="button"
@@ -528,7 +574,7 @@ $effect(() => {
 							data-testid="change-reader-stop-voice"
 							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 						>
-							Stop Voice
+							{localize('Stop Voice', '음성 중지')}
 						</button>
 					{/if}
 				</div>
@@ -536,9 +582,14 @@ $effect(() => {
 					<p class="text-xs text-error">{changeReaderReadError}</p>
 				{/if}
 				{#if !changeReaderVoiceEnabled}
-					<p class="text-xs text-text-muted">Voice is disabled in runtime settings.</p>
+					<p class="text-xs text-text-muted">{localize('Voice is disabled in runtime settings.', '런타임 설정에서 음성이 비활성화되어 있습니다.')}</p>
 				{:else if !changeReaderVoiceConfigured}
-					<p class="text-xs text-text-muted">Set Change Reader Voice API key in Settings to enable playback.</p>
+					<p class="text-xs text-text-muted">
+						{localize(
+							'Set Change Reader Voice API key in Settings to enable playback.',
+							'설정에서 Change Reader Voice API 키를 입력하면 재생을 사용할 수 있습니다.',
+						)}
+					</p>
 				{/if}
 				{#if changeReaderVoiceError}
 					<p class="text-xs text-error" data-testid="change-reader-voice-error">{changeReaderVoiceError}</p>
@@ -552,12 +603,14 @@ $effect(() => {
 
 				{#if changeReaderQaEnabled}
 					<div class="space-y-2 border-t border-border/60 pt-2">
-						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Q&A</p>
+						<p class="text-[11px] uppercase tracking-[0.08em] text-text-muted">
+							{localize('Questions', '질문')}
+						</p>
 						<div class="flex flex-wrap items-center gap-2">
 							<input
 								bind:value={changeReaderQuestion}
 								data-testid="change-reader-question-input"
-								placeholder="Ask about this change..."
+								placeholder={localize('Ask about this change...', '이 변경에 대해 질문하세요...')}
 								class="min-w-[220px] flex-1 border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
 							/>
 							<button
@@ -567,7 +620,7 @@ $effect(() => {
 								data-testid="change-reader-ask"
 								class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 							>
-								{changeReaderAsking ? 'Asking…' : 'Ask'}
+								{changeReaderAsking ? localize('Asking…', '질문 중...') : localize('Ask', '질문하기')}
 							</button>
 						</div>
 						{#if changeReaderAskError}
@@ -578,12 +631,17 @@ $effect(() => {
 						{/if}
 					</div>
 				{:else}
-					<p class="text-xs text-text-muted">Q&A is disabled in runtime settings.</p>
+					<p class="text-xs text-text-muted">
+						{localize(
+							'Questions are disabled in runtime settings.',
+							'런타임 설정에서 질문 기능이 비활성화되어 있습니다.',
+						)}
+					</p>
 				{/if}
 
 				{#if changeReaderCitations.length}
 					<p class="text-[11px] text-text-muted" data-testid="change-reader-citations">
-						citations: {changeReaderCitations.join(', ')}
+						{localize('citations:', '인용:')} {changeReaderCitations.join(', ')}
 					</p>
 				{/if}
 				{#if changeReaderWarning}

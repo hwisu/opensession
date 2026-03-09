@@ -1,12 +1,11 @@
-use clap::CommandFactory;
 use std::path::Path;
 
-use crate::{cli_args::Cli, setup_cmd};
+use crate::{cli_args::command, locale::localize, setup_cmd};
 
 pub(crate) fn run_docs(action: crate::cli_args::DocsAction) -> anyhow::Result<()> {
     match action {
         crate::cli_args::DocsAction::Completion { shell } => {
-            let mut cmd = <Cli as CommandFactory>::command();
+            let mut cmd = command();
             clap_complete::generate(shell, &mut cmd, "opensession", &mut std::io::stdout());
             Ok(())
         }
@@ -30,9 +29,18 @@ fn print_quickstart(
     out: &Path,
     remote: &str,
 ) {
-    println!("# OpenSession 5-minute first-user flow");
+    println!(
+        "{}",
+        localize(
+            "# OpenSession 5-minute first-user flow",
+            "# OpenSession 5분 첫 사용자 흐름",
+        )
+    );
     println!();
-    println!("# 1) Diagnose and apply setup");
+    println!(
+        "{}",
+        localize("# 1) Diagnose and apply setup", "# 1) 설정을 진단하고 적용")
+    );
     println!("opensession doctor");
     println!(
         "opensession doctor --fix --profile {}",
@@ -42,7 +50,13 @@ fn print_quickstart(
         println!("opensession doctor --fix --profile app --open-target app");
     }
     println!();
-    println!("# 2) Parse raw logs into canonical HAIL JSONL");
+    println!(
+        "{}",
+        localize(
+            "# 2) Parse raw logs into canonical HAIL JSONL",
+            "# 2) raw 로그를 canonical HAIL JSONL로 변환",
+        )
+    );
     println!(
         "opensession parse --profile {} {} --out {}",
         profile,
@@ -50,17 +64,35 @@ fn print_quickstart(
         out.display()
     );
     println!();
-    println!("# 3) Register canonical session locally");
+    println!(
+        "{}",
+        localize(
+            "# 3) Register canonical session locally",
+            "# 3) canonical 세션을 로컬에 등록",
+        )
+    );
     println!("opensession register {}", out.display());
     println!("# -> os://src/local/<sha256>");
     println!();
-    println!("# 4) Share local source URI via quick git flow");
+    println!(
+        "{}",
+        localize(
+            "# 4) Share local source URI via quick git flow",
+            "# 4) quick git 흐름으로 로컬 source URI 공유",
+        )
+    );
     println!(
         "opensession share os://src/local/<sha256> --quick --remote {}",
         remote
     );
     println!();
-    println!("# 5) Optional: convert a remote URI to web URL");
+    println!(
+        "{}",
+        localize(
+            "# 5) Optional: convert a remote URI to web URL",
+            "# 5) 선택: remote URI를 웹 URL로 변환",
+        )
+    );
     println!("opensession config init --base-url https://opensession.io");
     println!("opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web");
 }

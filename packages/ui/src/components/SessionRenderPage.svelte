@@ -2,9 +2,10 @@
 import { ApiError, buildSessionHandoff, quickShareSession } from '../api';
 import { SCROLL_STEP_PX } from '../constants';
 import { prepareTimelineEvents } from '../event-helpers';
+import { appLocale } from '../i18n';
 import { isNativeAdapterSupported, type SessionViewMode } from '../session-filters';
 import type { ContentBlock, Event, Session, SessionDetail } from '../types';
-import { formatDuration, formatTimestamp, getToolConfig } from '../types';
+import { formatClockTime, formatDuration, formatTimestamp, getToolConfig } from '../types';
 import { computeFileStats, getDisplayTitle } from '../utils';
 import SessionSidebar from './SessionSidebar.svelte';
 import TimelineView from './TimelineView.svelte';
@@ -57,9 +58,14 @@ let quickShareRemote = $state('');
 let quickShareUri = $state<string | null>(null);
 let quickShareFeedback = $state<string | null>(null);
 let quickShareFeedbackLevel = $state<'success' | 'error' | null>(null);
+const isKorean = $derived($appLocale === 'ko');
 
 type FlowKind = 'user' | 'agent' | 'tool' | 'system';
 type FlowSegment = { kind: FlowKind; width: number; tooltip: string };
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 
 function eventFlowKind(event: Event): FlowKind {
 	const type = event.event_type.type;
@@ -153,17 +159,29 @@ const flowSegments = $derived.by((): FlowSegment[] => {
 		return {
 			kind,
 			width,
-			tooltip: `${index + 1}. ${event.event_type.type}`,
+			tooltip: `${index + 1}. ${
+				isKorean
+					? event.event_type.type
+							.replace('UserMessage', '사용자 메시지')
+							.replace('AgentMessage', '에이전트 메시지')
+							.replace('SystemMessage', '시스템 메시지')
+							.replace('ToolCall', '도구 호출')
+							.replace('ToolResult', '도구 결과')
+							.replace('Thinking', '사고')
+							.replace('TaskStart', '작업 시작')
+							.replace('TaskEnd', '작업 종료')
+					: event.event_type.type
+			}`,
 		};
 	});
 });
 
 const flowLegend = $derived.by(() => {
 	return [
-		{ kind: 'user' as const, label: 'User', count: flowCounts.user },
-		{ kind: 'agent' as const, label: 'Agent', count: flowCounts.agent },
-		{ kind: 'tool' as const, label: 'Tool', count: flowCounts.tool },
-		{ kind: 'system' as const, label: 'System', count: flowCounts.system },
+		{ kind: 'user' as const, label: localize('User', '사용자'), count: flowCounts.user },
+		{ kind: 'agent' as const, label: localize('Agent', '에이전트'), count: flowCounts.agent },
+		{ kind: 'tool' as const, label: localize('Tool', '도구'), count: flowCounts.tool },
+		{ kind: 'system' as const, label: localize('System', '시스템'), count: flowCounts.system },
 	];
 });
 
@@ -355,15 +373,19 @@ async function handleBuildHandoff() {
 		setHandoffFeedback(
 			response.pinned_alias
 				? downloaded
-					? `Handoff artifact built, pinned as ${response.pinned_alias}, and downloaded.`
-					: `Handoff artifact built and pinned as ${response.pinned_alias}.`
+					? isKorean
+						? `핸드오프 아티팩트를 만들고 ${response.pinned_alias}로 고정한 뒤 다운로드했습니다.`
+						: `Handoff artifact built, pinned as ${response.pinned_alias}, and downloaded.`
+					: isKorean
+						? `핸드오프 아티팩트를 만들고 ${response.pinned_alias}로 고정했습니다.`
+						: `Handoff artifact built and pinned as ${response.pinned_alias}.`
 				: downloaded
-					? 'Handoff artifact built and downloaded.'
-					: 'Handoff artifact built.',
+					? localize('Handoff artifact built and downloaded.', '핸드오프 아티팩트를 만들고 다운로드했습니다.')
+					: localize('Handoff artifact built.', '핸드오프 아티팩트를 만들었습니다.'),
 			'success',
 		);
 	} catch (error) {
-		const message = error instanceof ApiError ? error.message : 'Failed to build handoff artifact.';
+		const message = error instanceof ApiError ? error.message : localize('Failed to build handoff artifact.', '핸드오프 아티팩트를 만들지 못했습니다.');
 		setHandoffFeedback(message, 'error');
 	} finally {
 		handoffPending = false;
@@ -374,7 +396,9 @@ async function handleCopyHandoffUri() {
 	if (!handoffArtifactUri) return;
 	const copied = await writeClipboardText(handoffArtifactUri);
 	setHandoffFeedback(
-		copied ? 'Artifact URI copied.' : 'Failed to copy artifact URI.',
+		copied
+			? localize('Copied the artifact link.', '아티팩트 링크를 복사했습니다.')
+			: localize('Failed to copy the artifact link.', '아티팩트 링크를 복사하지 못했습니다.'),
 		copied ? 'success' : 'error',
 	);
 }
@@ -388,12 +412,24 @@ async function handleQuickShare() {
 		quickShareUri = response.shared_uri;
 		setQuickShareFeedback(
 			response.pushed
-				? 'Shared and pushed successfully.'
-				: 'Shared locally. Confirm first push once to enable auto push in quick mode.',
+				? localize(
+						'Created a share link and pushed it successfully.',
+						'공유 링크를 만들고 푸시했습니다.',
+					)
+				: localize(
+						'Created a local share link. Confirm the first push once to enable auto-push in quick mode.',
+						'로컬 공유 링크를 만들었습니다. 빠른 모드에서 자동 푸시를 쓰려면 첫 푸시를 한 번 확인해 주세요.',
+					),
 			'success',
 		);
 	} catch (error) {
-		const message = error instanceof ApiError ? error.message : 'Failed to quick share session.';
+		const message =
+			error instanceof ApiError
+				? error.message
+				: localize(
+						'Failed to create a share link for this session.',
+						'이 세션의 공유 링크를 만들지 못했습니다.',
+					);
 		setQuickShareFeedback(message, 'error');
 	} finally {
 		quickSharePending = false;
@@ -404,7 +440,9 @@ async function handleCopyQuickShareUri() {
 	if (!quickShareUri) return;
 	const copied = await writeClipboardText(quickShareUri);
 	setQuickShareFeedback(
-		copied ? 'Shared URI copied.' : 'Failed to copy shared URI.',
+		copied
+			? localize('Copied the share link.', '공유 링크를 복사했습니다.')
+			: localize('Failed to copy the share link.', '공유 링크를 복사하지 못했습니다.'),
 		copied ? 'success' : 'error',
 	);
 }
@@ -433,8 +471,10 @@ function handleDownloadHandoffFile() {
 	const downloaded = downloadTextFile(handoffDownloadFileName, handoffDownloadContent);
 	setHandoffFeedback(
 		downloaded
-			? `Downloaded ${handoffDownloadFileName}.`
-			: 'Failed to download handoff artifact file.',
+			? isKorean
+				? `${handoffDownloadFileName} 파일을 다운로드했습니다.`
+				: `Downloaded ${handoffDownloadFileName}.`
+			: localize('Failed to download handoff artifact file.', '핸드오프 아티팩트 파일을 다운로드하지 못했습니다.'),
 		downloaded ? 'success' : 'error',
 	);
 }
@@ -571,11 +611,11 @@ $effect(() => {
 					{formatDuration(session.stats.duration_seconds)}
 				</span>
 				<span class="rounded border border-border bg-bg-primary/65 px-2 py-0.5">
-					{session.stats.message_count} msgs
+					{isKorean ? `${session.stats.message_count}개 메시지` : `${session.stats.message_count} msgs`}
 				</span>
 				{#if fileStats.filesChanged > 0}
 					<span class="rounded border border-border bg-bg-primary/65 px-2 py-0.5">
-						{fileStats.filesChanged} files
+						{isKorean ? `${fileStats.filesChanged}개 파일` : `${fileStats.filesChanged} files`}
 						(<span class="text-success">+{fileStats.linesAdded}</span>
 						<span class="text-error">-{fileStats.linesRemoved}</span>)
 					</span>
@@ -587,13 +627,13 @@ $effect(() => {
 
 			<div class="mt-3 rounded border border-border/80 bg-bg-secondary/55 p-2.5" data-testid="session-flow-bar">
 				<div class="flex items-center justify-between text-[11px] text-text-muted">
-					<span class="font-medium text-text-secondary">Session Flow</span>
-					<span>{flowEvents.length} events</span>
+					<span class="font-medium text-text-secondary">{localize('Session Flow', '세션 흐름')}</span>
+					<span>{isKorean ? `${flowEvents.length}개 이벤트` : `${flowEvents.length} events`}</span>
 				</div>
 				{#if flowSegments.length > 0}
 					<button
 						type="button"
-						aria-label="Drag to scrub session timeline"
+						aria-label={localize('Drag to scrub session timeline', '드래그해 세션 타임라인을 훑어보기')}
 						bind:this={flowTrackEl}
 						data-testid="session-flow-track"
 						class="mt-2 flex h-2 overflow-hidden rounded-sm border bg-bg-tertiary/80 select-none touch-none cursor-ew-resize {flowDragging ? 'border-accent/70' : 'border-border/70'}"
@@ -635,7 +675,7 @@ $effect(() => {
 					bind:this={searchInput}
 					bind:value={searchQuery}
 					onkeydown={handleSearchInputKeydown}
-					placeholder="search in this session..."
+					placeholder={localize('search in this session...', '이 세션에서 검색...')}
 					class="min-w-[220px] flex-1 border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
 				/>
 				{#if normalizedSearchQuery}
@@ -644,7 +684,7 @@ $effect(() => {
 						class:text-warning={searchMatchCount === 0}
 						class:text-text-muted={searchMatchCount > 0}
 					>
-						{searchMatchCount} matches
+						{isKorean ? `${searchMatchCount}개 일치` : `${searchMatchCount} matches`}
 					</span>
 				{/if}
 			</div>
@@ -656,12 +696,15 @@ $effect(() => {
 				>
 					<div class="mb-3 rounded border border-border/60 bg-bg-primary/35 p-2">
 						<div class="flex flex-wrap items-center justify-between gap-2">
-							<div class="text-xs text-text-secondary">Public Share</div>
+							<div class="text-xs text-text-secondary">{localize('Public Link', '공개 링크')}</div>
 							<div class="flex flex-wrap items-center gap-2">
 								<input
 									type="text"
 									bind:value={quickShareRemote}
-									placeholder="remote (optional, auto-detect by default)"
+									placeholder={localize(
+										'Remote name (optional; auto-detected by default)',
+										'원격 저장소 이름(선택, 기본값은 자동 감지)',
+									)}
 									class="w-[260px] border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
 								/>
 								<button
@@ -671,7 +714,7 @@ $effect(() => {
 									disabled={quickSharePending}
 									class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:opacity-60"
 								>
-									{quickSharePending ? 'Sharing...' : 'Quick Share'}
+									{quickSharePending ? localize('Creating link...', '링크 생성 중...') : localize('Create link', '링크 만들기')}
 								</button>
 								{#if quickShareUri}
 									<button
@@ -680,7 +723,7 @@ $effect(() => {
 										onclick={handleCopyQuickShareUri}
 										class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
 									>
-										Copy URI
+										{localize('Copy link', '링크 복사')}
 									</button>
 								{/if}
 							</div>
@@ -707,7 +750,7 @@ $effect(() => {
 					</div>
 
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<div class="text-xs text-text-secondary">Handoff Artifact</div>
+						<div class="text-xs text-text-secondary">{localize('Handoff Artifact', '핸드오프 아티팩트')}</div>
 						<div class="flex items-center gap-2">
 							<button
 								type="button"
@@ -716,7 +759,7 @@ $effect(() => {
 								disabled={handoffPending}
 								class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:opacity-60"
 							>
-								{handoffPending ? 'Building...' : 'Build (pin latest)'}
+								{handoffPending ? localize('Building...', '생성 중...') : localize('Build (pin latest)', '생성 (latest 고정)')}
 							</button>
 							{#if handoffArtifactUri}
 								<button
@@ -725,7 +768,7 @@ $effect(() => {
 									onclick={handleCopyHandoffUri}
 									class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
 								>
-									Copy URI
+									{localize('Copy link', '링크 복사')}
 								</button>
 							{/if}
 							{#if handoffDownloadFileName && handoffDownloadContent}
@@ -735,7 +778,7 @@ $effect(() => {
 									onclick={handleDownloadHandoffFile}
 									class="rounded border border-border bg-bg-primary px-2 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
 								>
-									Download file
+									{localize('Download file', '파일 다운로드')}
 								</button>
 							{/if}
 						</div>
@@ -766,7 +809,10 @@ $effect(() => {
 
 	{#if viewMode === 'native' && !nativeEnabled}
 		<div class="border-b border-border bg-bg-secondary px-3 py-2 text-xs text-text-muted">
-			Native view is unavailable for this parser. Falling back to unified view.
+			{localize(
+				'Native view is unavailable for this parser. Falling back to unified view.',
+				'이 파서에서는 네이티브 보기를 사용할 수 없습니다. 통합 보기로 전환합니다.',
+			)}
 		</div>
 	{/if}
 
@@ -778,7 +824,7 @@ $effect(() => {
 		>
 			{#if normalizedSearchQuery && searchMatchCount === 0}
 				<div class="mb-2 border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-					No matching events for "{searchQuery}".
+					{isKorean ? `"${searchQuery}"와 일치하는 이벤트가 없습니다.` : `No matching events for "${searchQuery}".`}
 				</div>
 			{/if}
 			<TimelineView

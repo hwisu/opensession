@@ -1,4 +1,5 @@
 <script lang="ts">
+import { appLocale } from '../i18n';
 import { isToolError, pairToolCallResults } from '../event-helpers';
 import {
 	buildBranchpointFilterOptions,
@@ -52,6 +53,15 @@ const activeOptions = $derived.by(() => {
 	if (viewMode === 'branch') return branchOptions;
 	return unifiedOptions;
 });
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
+
+function roleLabel(role: 'user' | 'agent'): string {
+	return role === 'user' ? localize('User', '사용자') : localize('Agent', '에이전트');
+}
 
 function isFilterEnabled(optionKey: string): boolean {
 	if (viewMode === 'native') return nativeFilters.has(optionKey);
@@ -159,7 +169,9 @@ const groupedCounts = $derived.by(() => {
 	<div class="my-1 pl-7 sm:my-5">
 		<div class="flex items-center gap-3">
 			<div class="h-px flex-1 bg-border/50"></div>
-			<span class="text-[10px] font-medium uppercase tracking-wider text-text-muted">{currentRole}</span>
+			<span class="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+				{roleLabel(currentRole as 'user' | 'agent')}
+			</span>
 			<div class="h-px flex-1 bg-border/50"></div>
 		</div>
 	</div>
@@ -170,13 +182,17 @@ const groupedCounts = $derived.by(() => {
 <div>
 	<div class="mb-4 rounded border border-border/80 bg-bg-secondary/55 p-2.5">
 		<div class="flex flex-wrap items-center justify-between gap-2">
-			<div class="flex items-center gap-1" role="tablist" aria-label="Session view mode">
+			<div class="flex items-center gap-1" role="tablist" aria-label={localize('Session view mode', '세션 보기 모드')}>
 				{#each [
-					{ mode: 'unified', label: 'Unified', enabled: true },
-					{ mode: 'branch', label: 'Branchpoints', enabled: true },
+					{ mode: 'unified', label: localize('Unified', '통합'), enabled: true },
+					{ mode: 'branch', label: localize('Branchpoints', '분기점'), enabled: true },
 					{
 						mode: 'native',
-						label: nativeAdapter ? `Native (${nativeAdapter})` : 'Native',
+						label: nativeAdapter
+							? isKorean
+								? `네이티브 (${nativeAdapter})`
+								: `Native (${nativeAdapter})`
+							: localize('Native', '네이티브'),
 						enabled: nativeEnabled
 					}
 				] as btn}
@@ -197,7 +213,7 @@ const groupedCounts = $derived.by(() => {
 
 			<div class="flex flex-wrap items-center gap-1 text-[10px] text-text-muted">
 				<span class="rounded border border-border bg-bg-primary px-1.5 py-0.5 text-text-secondary">
-					{timeline.length} items
+					{isKorean ? `${timeline.length}개 항목` : `${timeline.length} items`}
 				</span>
 				<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-primary px-1.5 py-0.5">
 					<span class="h-2 w-2 rounded-full bg-emerald-400"></span>
@@ -220,7 +236,7 @@ const groupedCounts = $derived.by(() => {
 			</div>
 		</div>
 
-		<div class="mt-2 flex flex-wrap items-center gap-1" role="group" aria-label="Event filters">
+		<div class="mt-2 flex flex-wrap items-center gap-1" role="group" aria-label={localize('Event filters', '이벤트 필터')}>
 			{#each activeOptions as option, i}
 				<button
 					data-filter-key={option.key}
@@ -239,7 +255,7 @@ const groupedCounts = $derived.by(() => {
 
 	{#if timeline.length === 0}
 		<div class="border border-border bg-bg-secondary px-3 py-2 text-xs text-text-muted">
-			No events match the selected filters.
+			{localize('No events match the selected filters.', '선택한 필터와 일치하는 이벤트가 없습니다.')}
 		</div>
 	{:else}
 		<div class="overflow-x-auto pb-2">

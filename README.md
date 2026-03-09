@@ -13,6 +13,7 @@ Docs: [opensession.io/docs](https://opensession.io/docs)
 ## Documentation Map
 
 - Product contract and command model: [`docs.md`](docs.md)
+- Korean product contract: [`docs.ko.md`](docs.ko.md)
 - Development and validation runbook: [`docs/development-validation-flow.md`](docs/development-validation-flow.md)
 - Harness loop policy: [`docs/harness-auto-improve-loop.md`](docs/harness-auto-improve-loop.md)
 - Parser source/reuse matrix: [`docs/parser-source-matrix.md`](docs/parser-source-matrix.md)

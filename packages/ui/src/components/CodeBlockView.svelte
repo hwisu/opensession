@@ -1,6 +1,7 @@
 <script lang="ts">
 import { LONG_CODE_LINE_THRESHOLD } from '../constants';
 import { highlightCode } from '../highlight';
+import { appLocale } from '../i18n';
 import { isLongContent } from '../markdown';
 
 let {
@@ -14,6 +15,8 @@ let {
 	startLine?: number;
 	showFull?: boolean;
 } = $props();
+
+const isKorean = $derived($appLocale === 'ko');
 
 function generateLineNumbers(src: string, start: number): string {
 	const count = src.split('\n').length;
@@ -43,7 +46,7 @@ const lineCount = $derived(code.split('\n').length);
 			onclick={() => (showFull = !showFull)}
 			class="w-full border-t border-border bg-bg-secondary px-3 py-1.5 text-center text-[10px] font-medium text-accent hover:bg-bg-hover"
 		>
-			{showFull ? 'Collapse' : `Show all (${lineCount} lines)`}
+			{showFull ? (isKorean ? '접기' : 'Collapse') : isKorean ? `전체 보기 (${lineCount}줄)` : `Show all (${lineCount} lines)`}
 		</button>
 	{/if}
 </div>

@@ -34,6 +34,7 @@ export interface RuntimeEnv {
 	getStorageItem: (key: string) => string | null;
 	setStorageItem: (key: string, value: string) => void;
 	removeStorageItem: (key: string) => void;
+	getPreferredLanguages?: () => string[];
 	getDocumentCookie: () => string;
 	getLocation: () => RuntimeLocation;
 	replaceHistoryUrl: (url: string) => void;
@@ -68,6 +69,18 @@ export function createBrowserRuntimeEnv(): RuntimeEnv {
 		removeStorageItem(key) {
 			if (typeof localStorage === 'undefined') return;
 			localStorage.removeItem(key);
+		},
+		getPreferredLanguages() {
+			if (typeof navigator === 'undefined') return [];
+			if (Array.isArray(navigator.languages) && navigator.languages.length > 0) {
+				return navigator.languages.filter(
+					(value): value is string => typeof value === 'string' && value.trim().length > 0,
+				);
+			}
+			if (typeof navigator.language === 'string' && navigator.language.trim().length > 0) {
+				return [navigator.language];
+			}
+			return [];
 		},
 		getDocumentCookie() {
 			if (typeof document === 'undefined') return '';
@@ -217,4 +230,26 @@ export function createRuntimeSessionReadAdapter(runtime: RuntimeEnv): SessionRea
 export function getOAuthUrl(runtime: RuntimeEnv, provider: string): string {
 	if (isDesktopLocalRuntime(runtime)) return '#';
 	return `${getBaseUrl(runtime)}/api/auth/oauth/${encodeURIComponent(provider)}`;
+}
+
+export function getPreferredLanguages(runtime: RuntimeEnv): string[] {
+	if (typeof runtime.getPreferredLanguages === 'function') {
+		return runtime.getPreferredLanguages();
+	}
+	if (!runtime.hasWindow() || typeof navigator === 'undefined') return [];
+	if (Array.isArray(navigator.languages) && navigator.languages.length > 0) {
+		return navigator.languages.filter(
+			(value): value is string => typeof value === 'string' && value.trim().length > 0,
+		);
+	}
+	if (typeof navigator.language === 'string' && navigator.language.trim().length > 0) {
+		return [navigator.language];
+	}
+	return [];
+}
+
+export function setDocumentLanguage(language: string) {
+	if (typeof document === 'undefined') return;
+	if (!document.documentElement) return;
+	document.documentElement.lang = language;
 }

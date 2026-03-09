@@ -1,17 +1,17 @@
 # OpenSession Web
 
-[한국어](README.ko.md)
+[English](README.md)
 
-This package contains the Svelte web app for OpenSession.
+이 패키지는 OpenSession용 Svelte 웹 앱을 포함합니다.
 
-## Run
+## 실행
 
 ```bash
 npm ci
 npm run dev
 ```
 
-## Validate
+## 검증
 
 ```bash
 npm run check
@@ -19,7 +19,7 @@ npm run check
 
 ## Live E2E
 
-Requires local worker (`wrangler dev`) and server (`opensession-server`) to already be running.
+로컬 worker(`wrangler dev`)와 서버(`opensession-server`)가 이미 실행 중이어야 합니다.
 
 ```bash
 OPENSESSION_E2E_WORKER_BASE_URL=http://127.0.0.1:8788 \
@@ -29,7 +29,7 @@ CI=1 \
 npm run test:e2e:live -- --reporter=list
 ```
 
-For product-level usage and install-and-forget flow, see the root docs:
+제품 수준 사용법과 install-and-forget 흐름은 루트 문서를 참고하세요.
 
 - `../README.md`
 - `../README.ko.md`

@@ -609,8 +609,7 @@ test.describe('Settings', () => {
 			active?.blur?.();
 			(document.body ?? window).dispatchEvent(
 				new KeyboardEvent('keydown', {
-					key: '?',
-					shiftKey: true,
+					key: 'h',
 					bubbles: true,
 				}),
 			);

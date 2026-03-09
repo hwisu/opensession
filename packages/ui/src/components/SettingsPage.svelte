@@ -54,6 +54,8 @@ import type {
 	RuntimeQuickJumpLink,
 	SettingsSectionNavItem,
 } from './settings-page/models';
+import { appLocale } from '../i18n';
+import LanguageSettingsPanel from './LanguageSettingsPanel.svelte';
 import {
 	copyTextSurface,
 	loadGitCredentialsState,
@@ -69,6 +71,20 @@ const {
 }: {
 	onNavigate?: (path: string) => void;
 } = $props();
+
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
+
+function boolWord(value: boolean): string {
+	return value ? localize('yes', '예') : localize('no', '아니오');
+}
+
+function toggleWord(value: boolean): string {
+	return value ? localize('On', '켜짐') : localize('Off', '꺼짐');
+}
 
 let settings = $state<UserSettings | null>(null);
 let loading = $state(true);
@@ -228,7 +244,7 @@ function vectorIndexProgressLabel(status: DesktopVectorIndexStatusResponse | nul
 	if (!status || status.total_sessions <= 0) return null;
 	const pct = progressPercent(status.processed_sessions, status.total_sessions);
 	if (pct == null) return null;
-	return `${status.processed_sessions}/${status.total_sessions} sessions (${pct}%)`;
+	return `${status.processed_sessions}/${status.total_sessions} ${localize('sessions', '세션')} (${pct}%)`;
 }
 
 function summaryBatchProgressLabel(
@@ -236,33 +252,52 @@ function summaryBatchProgressLabel(
 ): string | null {
 	if (!status) return null;
 	if (status.total_sessions <= 0) {
-		return status.failed_sessions > 0 ? `failed ${status.failed_sessions}` : 'no queued sessions';
+		return status.failed_sessions > 0
+			? localize(`failed ${status.failed_sessions}`, `${status.failed_sessions}개 실패`)
+			: localize('no queued sessions', '대기 중인 세션이 없습니다');
 	}
-	return `${status.processed_sessions}/${status.total_sessions} sessions · failed ${status.failed_sessions}`;
+	return localize(
+		`${status.processed_sessions}/${status.total_sessions} sessions · failed ${status.failed_sessions}`,
+		`${status.processed_sessions}/${status.total_sessions} 세션 · 실패 ${status.failed_sessions}`,
+	);
 }
 
 function formatIntervalSeconds(seconds: number): string {
-	if (seconds < 60) return `${seconds}s`;
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-	if (seconds % 3600 === 0) return `${Math.floor(seconds / 3600)}h`;
-	return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+	if (seconds < 60) return localize(`${seconds}s`, `${seconds}초`);
+	if (seconds < 3600) return localize(`${Math.floor(seconds / 60)}m`, `${Math.floor(seconds / 60)}분`);
+	if (seconds % 3600 === 0) {
+		return localize(`${Math.floor(seconds / 3600)}h`, `${Math.floor(seconds / 3600)}시간`);
+	}
+	return localize(
+		`${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`,
+		`${Math.floor(seconds / 3600)}시간 ${Math.floor((seconds % 3600) / 60)}분`,
+	);
 }
 
 function lifecycleResultLabel(status: DesktopLifecycleCleanupStatusResponse | null): string {
-	if (!status) return 'No lifecycle cleanup runs recorded yet.';
-	return `${status.deleted_sessions} sessions deleted · ${status.deleted_summaries} summaries removed`;
+	if (!status) return localize('No lifecycle cleanup runs recorded yet.', '아직 수명주기 정리 실행 기록이 없습니다.');
+	return localize(
+		`${status.deleted_sessions} sessions deleted · ${status.deleted_summaries} summaries removed`,
+		`세션 ${status.deleted_sessions}개 삭제 · 요약 ${status.deleted_summaries}개 제거`,
+	);
 }
 
 function lifecycleNextRunLabel(): string {
-	if (!runtimeLifecycleEnabled) return 'paused';
-	if (isLifecycleCleanupRunning(runtimeLifecycleStatus)) return 'running now';
+	if (!runtimeLifecycleEnabled) return localize('paused', '일시중지');
+	if (isLifecycleCleanupRunning(runtimeLifecycleStatus)) return localize('running now', '지금 실행 중');
 	const anchor = runtimeLifecycleStatus?.finished_at ?? runtimeLifecycleStatus?.started_at;
 	if (!anchor) {
-		return `after app start, then every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`;
+		return localize(
+			`after app start, then every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`,
+			`앱 시작 후, 이후 ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}마다`,
+		);
 	}
 	const next = new Date(new Date(anchor).getTime() + runtimeCleanupIntervalSecs * 1000);
 	if (Number.isNaN(next.getTime())) {
-		return `every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`;
+		return localize(
+			`every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`,
+			`${formatIntervalSeconds(runtimeCleanupIntervalSecs)}마다`,
+		);
 	}
 	return formatDate(next.toISOString());
 }
@@ -290,31 +325,37 @@ const runtimeChangeReaderVoiceToggleDisabled = $derived.by(() => {
 
 const runtimeChangeReaderVoiceBlockedReason = $derived.by(() => {
 	if (runtimeChangeReaderVoiceEnabled) return null;
-	if (!runtimeChangeReaderEnabled) return 'Enable Change Reader first.';
-	if (!runtimeChangeReaderVoiceApiKeyReady) return 'Add a Voice API key first.';
+	if (!runtimeChangeReaderEnabled) return localize('Enable Change Reader first.', '먼저 변경 리더를 켜세요.');
+	if (!runtimeChangeReaderVoiceApiKeyReady) return localize('Add a Voice API key first.', '먼저 Voice API 키를 추가하세요.');
 	return null;
 });
 
 const runtimeChangeReaderVoiceKeyStatusLabel = $derived.by(() => {
 	if (runtimeChangeReaderVoiceApiKey.trim().length > 0) {
-		return 'Voice API key: pending save';
+		return localize('Voice API key: pending save', 'Voice API 키: 저장 대기 중');
 	}
 	return runtimeChangeReaderVoiceApiKeyConfigured
-		? 'Voice API key: configured'
-		: 'Voice API key: missing';
+		? localize('Voice API key: configured', 'Voice API 키: 설정됨')
+		: localize('Voice API key: missing', 'Voice API 키: 없음');
 });
 
 const runtimeChangeReaderVoiceHint = $derived.by(() => {
 	if (runtimeChangeReaderVoiceBlockedReason) {
-		return `${runtimeChangeReaderVoiceBlockedReason} Voice playback only reads the change reader output aloud.`;
+		return localize(
+			`${runtimeChangeReaderVoiceBlockedReason} Voice playback only reads the change reader output aloud.`,
+			`${runtimeChangeReaderVoiceBlockedReason} 음성 재생은 변경 리더 출력을 소리 내어 읽기만 합니다.`,
+		);
 	}
-	return 'Voice playback reads the same change reader output aloud. It does not change summaries or follow-up Q&A.';
+	return localize(
+		'Voice playback reads the same change reader output aloud. It does not change summaries or follow-up questions.',
+		'음성 재생은 같은 변경 리더 출력을 소리 내어 읽습니다. 요약이나 후속 질문 내용은 바꾸지 않습니다.',
+	);
 });
 
 const runtimeChangeReaderVoiceSummary = $derived.by(() => {
 	const base = `${runtimeChangeReaderVoiceProvider} · ${runtimeChangeReaderVoiceModel}`;
 	if (!runtimeChangeReaderVoiceApiKeyReady) {
-		return `${base} · API key required`;
+		return localize(`${base} · API key required`, `${base} · API 키 필요`);
 	}
 	return base;
 });
@@ -324,42 +365,56 @@ const floatingJobs = $derived.by(() => {
 	if (runtimeSaving) {
 		jobs.push({
 			id: 'runtime-save',
-			label: 'Saving runtime settings',
-			detail: 'Storage migration and runtime validation can take a while. Continue using the page.',
+			label: localize('Saving runtime settings', '런타임 설정 저장 중'),
+			detail: localize(
+				'Storage migration and runtime validation can take a while. Continue using the page.',
+				'저장소 마이그레이션과 런타임 검증에 시간이 걸릴 수 있습니다. 이 페이지는 계속 사용해도 됩니다.',
+			),
 		});
 	}
 	if (runtimeVectorInstalling) {
 		jobs.push({
 			id: 'vector-install',
-			label: 'Installing vector model',
-			detail: 'Model pull is running in background.',
+			label: localize('Installing vector model', '벡터 모델 설치 중'),
+			detail: localize('Model pull is running in background.', '모델 다운로드가 백그라운드에서 진행 중입니다.'),
 		});
 	}
 	if (runtimeVectorReindexing) {
 		const progress = vectorIndexProgressLabel(runtimeVectorIndex);
 		jobs.push({
 			id: 'vector-reindex',
-			label: 'Rebuilding vector index',
+			label: localize('Rebuilding vector index', '벡터 인덱스 재구성 중'),
 			detail: progress
-				? `Session embeddings are being rebuilt in background. Processed ${progress}.`
-				: 'Session embeddings are being rebuilt in background.',
+				? localize(
+					`Session embeddings are being rebuilt in background. Processed ${progress}.`,
+					`세션 임베딩을 백그라운드에서 다시 만들고 있습니다. 진행 ${progress}.`,
+				)
+				: localize(
+					'Session embeddings are being rebuilt in background.',
+					'세션 임베딩을 백그라운드에서 다시 만들고 있습니다.',
+				),
 		});
 	}
 	if (runtimeSummaryBatchRunning) {
 		const progress = summaryBatchProgressLabel(runtimeSummaryBatchStatus);
 		jobs.push({
 			id: 'summary-batch',
-			label: 'Running summary batch',
+			label: localize('Running summary batch', '요약 배치 실행 중'),
 			detail: progress
-				? `Generating summaries in background. ${progress}.`
-				: 'Generating summaries in background.',
+				? localize(
+					`Generating summaries in background. ${progress}.`,
+					`백그라운드에서 요약을 생성하고 있습니다. ${progress}.`,
+				)
+				: localize('Generating summaries in background.', '백그라운드에서 요약을 생성하고 있습니다.'),
 		});
 	}
 	if (isLifecycleCleanupRunning(runtimeLifecycleStatus)) {
 		jobs.push({
 			id: 'lifecycle-cleanup',
-			label: 'Running lifecycle cleanup',
-			detail: runtimeLifecycleStatus?.message ?? 'Removing expired sessions and summaries.',
+			label: localize('Running lifecycle cleanup', '수명주기 정리 실행 중'),
+			detail:
+				runtimeLifecycleStatus?.message ??
+				localize('Removing expired sessions and summaries.', '만료된 세션과 요약을 제거하고 있습니다.'),
 		});
 	}
 	return jobs;
@@ -377,9 +432,9 @@ function currentRuntimeProviderTransport(): DesktopSummaryProviderTransport {
 }
 
 function storageBackendLabel(backend: DesktopSummaryStorageBackend): string {
-	if (backend === 'hidden_ref') return 'git hidden refs';
-	if (backend === 'local_db') return 'local SQLite';
-	return 'ephemeral only';
+	if (backend === 'hidden_ref') return localize('git hidden refs', 'git 숨김 ref');
+	if (backend === 'local_db') return localize('local SQLite', '로컬 SQLite');
+	return localize('ephemeral only', '임시 전용');
 }
 
 function persistedStorageBackend(): DesktopSummaryStorageBackend | null {
@@ -398,54 +453,84 @@ function hasPendingStorageBackendChange(): boolean {
 
 function storageBackendSummary(backend: DesktopSummaryStorageBackend): string {
 	if (backend === 'hidden_ref') {
-		return 'Read and write persisted summaries from git hidden refs in each session repository.';
+		return localize(
+			'Read and write persisted summaries from git hidden refs in each session repository.',
+			'각 세션 저장소의 git 숨김 ref에서 저장된 요약을 읽고 씁니다.',
+		);
 	}
 	if (backend === 'local_db') {
-		return 'Read and write persisted summaries from the local SQLite table `session_semantic_summaries`.';
+		return localize(
+			'Read and write persisted summaries from the local SQLite table `session_semantic_summaries`.',
+			'로컬 SQLite 테이블 `session_semantic_summaries`에서 저장된 요약을 읽고 씁니다.',
+		);
 	}
-	return 'Do not read or write persisted summaries. Results are generated only for the current request.';
+	return localize(
+		'Do not read or write persisted summaries. Results are generated only for the current request.',
+		'저장된 요약을 읽거나 쓰지 않습니다. 결과는 현재 요청에 대해서만 생성됩니다.',
+	);
 }
 
 function storageBackendDetails(backend: DesktopSummaryStorageBackend): string {
 	if (backend === 'hidden_ref') {
-		return 'Best when the session belongs to a git repository and you want git-backed summary history alongside the repo.';
+		return localize(
+			'Best when the session belongs to a git repository and you want git-backed summary history alongside the repo.',
+			'세션이 git 저장소에 속하고, 저장소와 함께 git 기반 요약 이력을 유지하고 싶을 때 적합합니다.',
+		);
 	}
 	if (backend === 'local_db') {
-		return 'Best when you want machine-local persistence without writing anything into git refs.';
+		return localize(
+			'Best when you want machine-local persistence without writing anything into git refs.',
+			'git ref에는 아무것도 쓰지 않고, 현재 머신에만 저장하고 싶을 때 적합합니다.',
+		);
 	}
-	return 'Use this only when you want no persistence. Existing stored summaries are left where they already are.';
+	return localize(
+		'Use this only when you want no persistence. Existing stored summaries are left where they already are.',
+		'저장을 전혀 원하지 않을 때만 사용하세요. 이미 저장된 요약은 기존 위치에 그대로 남습니다.',
+	);
 }
 
 function storageBackendTransitionDetail(): string {
 	const current = persistedStorageBackend();
 	if (!current) {
-		return 'Load runtime settings to inspect storage migration behavior.';
+		return localize('Load runtime settings to inspect storage migration behavior.', '저장소 마이그레이션 동작을 보려면 런타임 설정을 먼저 불러오세요.');
 	}
 	if (current === runtimeStorageBackend) {
-		return 'No storage backend switch is pending. Click Save Runtime only if you want to persist other runtime edits.';
+		return localize(
+			'No storage backend switch is pending. Click Save Runtime only if you want to persist other runtime edits.',
+			'대기 중인 저장소 백엔드 변경이 없습니다. 다른 런타임 수정 사항을 저장하려는 경우에만 런타임 저장을 누르세요.',
+		);
 	}
 	if (current === 'none') {
-		return `On next save, new summaries will persist to ${storageBackendLabel(runtimeStorageBackend)}. Nothing is copied because the current backend stores no persisted summaries.`;
+		return localize(
+			`On next save, new summaries will persist to ${storageBackendLabel(runtimeStorageBackend)}. Nothing is copied because the current backend stores no persisted summaries.`,
+			`다음 저장부터 새 요약은 ${storageBackendLabel(runtimeStorageBackend)}에 저장됩니다. 현재 백엔드에는 저장된 요약이 없어서 복사되는 항목은 없습니다.`,
+		);
 	}
 	if (runtimeStorageBackend === 'none') {
-		return `On next save, desktop stops reading and writing persisted summaries. Existing summaries stay in ${storageBackendLabel(current)}. Nothing is migrated or deleted automatically.`;
+		return localize(
+			`On next save, desktop stops reading and writing persisted summaries. Existing summaries stay in ${storageBackendLabel(current)}. Nothing is migrated or deleted automatically.`,
+			`다음 저장부터 데스크톱은 저장된 요약을 읽거나 쓰지 않습니다. 기존 요약은 ${storageBackendLabel(current)}에 그대로 남고, 자동 마이그레이션이나 삭제는 일어나지 않습니다.`,
+		);
 	}
-	return `On next save, existing summaries are copied from ${storageBackendLabel(current)} to ${storageBackendLabel(runtimeStorageBackend)}. Existing source copies are kept.`;
+	return localize(
+		`On next save, existing summaries are copied from ${storageBackendLabel(current)} to ${storageBackendLabel(runtimeStorageBackend)}. Existing source copies are kept.`,
+		`다음 저장 시 기존 요약이 ${storageBackendLabel(current)}에서 ${storageBackendLabel(runtimeStorageBackend)}로 복사됩니다. 기존 원본 복사본도 유지됩니다.`,
+	);
 }
 
 function runtimeSaveLabel(): string {
-	if (runtimeSaving) return 'Saving...';
+	if (runtimeSaving) return localize('Saving...', '저장 중...');
 	const current = persistedStorageBackend();
 	if (!current || current === runtimeStorageBackend) {
-		return 'Save Runtime';
+		return localize('Save Runtime', '런타임 저장');
 	}
 	if (
 		(current === 'hidden_ref' && runtimeStorageBackend === 'local_db') ||
 		(current === 'local_db' && runtimeStorageBackend === 'hidden_ref')
 	) {
-		return 'Save Runtime + Migrate';
+		return localize('Save Runtime + Migrate', '런타임 저장 + 마이그레이션');
 	}
-	return 'Save Runtime + Apply Storage';
+	return localize('Save Runtime + Apply Storage', '런타임 저장 + 저장소 적용');
 }
 
 let activeSettingsSectionId = $state('settings-section-overview');
@@ -519,12 +604,12 @@ function toggleRuntimeChangeReaderVoice() {
 }
 
 const runtimeQuickJumpLinks: RuntimeQuickJumpLink[] = [
-	{ id: 'runtime-section-activity', label: 'Activity' },
-	{ id: 'runtime-section-provider', label: 'Provider' },
-	{ id: 'runtime-section-vector', label: 'Vector' },
-	{ id: 'runtime-section-change-reader', label: 'Reader' },
-	{ id: 'runtime-section-storage', label: 'Storage' },
-	{ id: 'runtime-section-summary-batch', label: 'Batch' },
+	{ id: 'runtime-section-activity', label: localize('Activity', '활동') },
+	{ id: 'runtime-section-provider', label: localize('Provider', '프로바이더') },
+	{ id: 'runtime-section-vector', label: localize('Vector', '벡터') },
+	{ id: 'runtime-section-change-reader', label: localize('Reader', '리더') },
+	{ id: 'runtime-section-storage', label: localize('Storage', '저장소') },
+	{ id: 'runtime-section-summary-batch', label: localize('Batch', '배치') },
 	{ id: 'runtime-section-lifecycle', label: 'TTL' },
 ] as const;
 
@@ -532,86 +617,86 @@ const settingsNavItems = $derived.by((): SettingsSectionNavItem[] => {
 	const items = [
 		{
 			id: 'settings-section-overview',
-			label: 'Overview',
-			detail: 'Page summary and account context',
+			label: localize('Overview', '개요'),
+			detail: localize('Page summary and account context', '페이지 요약과 계정 상태'),
 			visible: true,
 		},
 		{
 			id: 'settings-section-profile',
-			label: 'Profile',
-			detail: 'Identity and linked providers',
+			label: localize('Profile', '프로필'),
+			detail: localize('Identity and linked providers', '신원과 연결된 프로바이더'),
 			visible: authApiEnabled && !authRequired,
 		},
 		{
 			id: 'settings-section-api-key',
-			label: 'API Key',
-			detail: 'CLI and automation access',
+			label: localize('API Key', 'API 키'),
+			detail: localize('CLI and automation access', 'CLI 및 자동화 접근'),
 			visible: authApiEnabled && !authRequired,
 		},
 		{
 			id: 'settings-section-git-credentials',
-			label: 'Git Auth',
-			detail: 'Private repository credentials',
+			label: localize('Git Auth', 'Git 인증'),
+			detail: localize('Private repository credentials', '비공개 저장소 자격 증명'),
 			visible: authApiEnabled && !authRequired,
 		},
 		{
 			id: 'settings-section-runtime',
-			label: 'Runtime',
-			detail: 'Desktop summary controls',
+			label: localize('Runtime', '런타임'),
+			detail: localize('Desktop summary controls', '데스크톱 요약 제어'),
 			visible: true,
 		},
 		{
 			id: 'runtime-section-activity',
-			label: 'Activity',
-			detail: 'Live job and cleanup status',
+			label: localize('Activity', '활동'),
+			detail: localize('Live job and cleanup status', '실시간 작업 및 정리 상태'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-provider',
-			label: 'Provider',
-			detail: 'Summary backend and transport',
+			label: localize('Provider', '프로바이더'),
+			detail: localize('Summary backend and transport', '요약 백엔드와 전송 방식'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-prompt',
-			label: 'Prompt',
-			detail: 'Template and reset controls',
+			label: localize('Prompt', '프롬프트'),
+			detail: localize('Template and reset controls', '템플릿과 초기화 제어'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-response',
-			label: 'Response',
-			detail: 'Style, shape, preview',
+			label: localize('Response', '응답'),
+			detail: localize('Style, shape, preview', '스타일, 형태, 미리보기'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-vector',
-			label: 'Vector',
-			detail: 'Embeddings and index jobs',
+			label: localize('Vector', '벡터'),
+			detail: localize('Embeddings and index jobs', '임베딩과 인덱스 작업'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-change-reader',
-			label: 'Reader',
-			detail: 'Text, Q&A, and voice',
+			label: localize('Reader', '리더'),
+			detail: localize('Text, questions, and voice', '텍스트, 질문, 음성'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-storage',
-			label: 'Storage',
-			detail: 'Persistence backend and trigger',
+			label: localize('Storage', '저장소'),
+			detail: localize('Persistence backend and trigger', '영속화 백엔드와 트리거'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-summary-batch',
-			label: 'Batch',
-			detail: 'Background summary generation',
+			label: localize('Batch', '배치'),
+			detail: localize('Background summary generation', '백그라운드 요약 생성'),
 			visible: runtimeSupported,
 		},
 		{
 			id: 'runtime-section-lifecycle',
-			label: 'Lifecycle',
-			detail: 'TTL and cleanup intervals',
+			label: localize('Lifecycle', '수명주기'),
+			detail: localize('TTL and cleanup intervals', 'TTL과 정리 주기'),
 			visible: runtimeSupported,
 		},
 	];
@@ -619,7 +704,9 @@ const settingsNavItems = $derived.by((): SettingsSectionNavItem[] => {
 });
 
 const runtimeQuickBatchScopeLabel = $derived.by(() =>
-	runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`,
+	runtimeBatchScope === 'all'
+		? localize('all sessions', '모든 세션')
+		: localize(`${runtimeBatchRecentDays} days`, `${runtimeBatchRecentDays}일`),
 );
 
 const runtimeActivityCards = $derived.by((): RuntimeActivityCard[] => {
@@ -629,155 +716,244 @@ const runtimeActivityCards = $derived.by((): RuntimeActivityCard[] => {
 	return [
 		{
 			testId: 'runtime-activity-vector',
-			title: 'Vector index',
+			title: localize('Vector index', '벡터 인덱스'),
 			subtitle: `${runtimeVectorProvider} · ${runtimeVectorModel}`,
 			badges: [
 				{
-					label: runtimeVectorEnabled ? 'On' : 'Off',
+					label: toggleWord(runtimeVectorEnabled),
 					tone: runtimeVectorEnabled ? 'enabled' : 'disabled',
 				},
 				{
-					label: runtimeVectorIndex?.state ?? 'idle',
+					label: localize(runtimeVectorIndex?.state ?? 'idle', runtimeVectorIndex?.state === 'running' ? '실행 중' : runtimeVectorIndex?.state === 'failed' ? '실패' : runtimeVectorIndex?.state === 'complete' ? '완료' : '유휴'),
 					tone: activityStateTone(runtimeVectorIndex?.state),
 				},
 			],
 			lines: filterLines([
-				`Provider reachable ${runtimeVectorPreflight?.ollama_reachable ? 'yes' : 'no'} · model installed ${runtimeVectorPreflight?.model_installed ? 'yes' : 'no'}`,
-				vectorIndexProgressLabel(runtimeVectorIndex) ?? 'No rebuild progress recorded yet.',
+				localize(
+					`Provider reachable ${boolWord(runtimeVectorPreflight?.ollama_reachable ?? false)} · model installed ${boolWord(runtimeVectorPreflight?.model_installed ?? false)}`,
+					`프로바이더 연결 ${boolWord(runtimeVectorPreflight?.ollama_reachable ?? false)} · 모델 설치 ${boolWord(runtimeVectorPreflight?.model_installed ?? false)}`,
+				),
+				vectorIndexProgressLabel(runtimeVectorIndex) ?? localize('No rebuild progress recorded yet.', '아직 재구성 진행 기록이 없습니다.'),
 				runtimeVectorIndex?.message,
 			]),
-			timestampLine: `started ${formatDate(runtimeVectorIndex?.started_at)} · finished ${formatDate(runtimeVectorIndex?.finished_at)}`,
+			timestampLine: localize(
+				`started ${formatDate(runtimeVectorIndex?.started_at)} · finished ${formatDate(runtimeVectorIndex?.finished_at)}`,
+				`시작 ${formatDate(runtimeVectorIndex?.started_at)} · 종료 ${formatDate(runtimeVectorIndex?.finished_at)}`,
+			),
 		},
 		{
 			testId: 'runtime-activity-summary-batch',
-			title: 'Summary batch',
-			subtitle: runtimeBatchExecutionMode === 'on_app_start' ? 'auto on app start' : 'manual only',
+			title: localize('Summary batch', '요약 배치'),
+			subtitle:
+				runtimeBatchExecutionMode === 'on_app_start'
+					? localize('auto on app start', '앱 시작 시 자동')
+					: localize('manual only', '수동 전용'),
 			badges: [
 				{
-					label: runtimeBatchExecutionMode === 'on_app_start' ? 'Auto' : 'Manual',
+					label: runtimeBatchExecutionMode === 'on_app_start' ? localize('Auto', '자동') : localize('Manual', '수동'),
 					tone: runtimeBatchExecutionMode === 'on_app_start' ? 'enabled' : 'disabled',
 				},
 				{
-					label: runtimeSummaryBatchStatus?.state ?? 'idle',
+					label: localize(runtimeSummaryBatchStatus?.state ?? 'idle', runtimeSummaryBatchStatus?.state === 'running' ? '실행 중' : runtimeSummaryBatchStatus?.state === 'failed' ? '실패' : runtimeSummaryBatchStatus?.state === 'complete' ? '완료' : '유휴'),
 					tone: activityStateTone(runtimeSummaryBatchStatus?.state),
 				},
 			],
 			lines: filterLines([
-				`scope ${runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}`,
-				summaryBatchProgressLabel(runtimeSummaryBatchStatus) ?? 'No batch runs recorded yet.',
+				localize(
+					`scope ${runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}`,
+					`범위 ${runtimeBatchScope === 'all' ? '모든 세션' : `${runtimeBatchRecentDays}일`}`,
+				),
+				summaryBatchProgressLabel(runtimeSummaryBatchStatus) ?? localize('No batch runs recorded yet.', '아직 배치 실행 기록이 없습니다.'),
 				runtimeSummaryBatchStatus?.message,
 			]),
-			timestampLine: `started ${formatDate(runtimeSummaryBatchStatus?.started_at)} · finished ${formatDate(runtimeSummaryBatchStatus?.finished_at)}`,
+			timestampLine: localize(
+				`started ${formatDate(runtimeSummaryBatchStatus?.started_at)} · finished ${formatDate(runtimeSummaryBatchStatus?.finished_at)}`,
+				`시작 ${formatDate(runtimeSummaryBatchStatus?.started_at)} · 종료 ${formatDate(runtimeSummaryBatchStatus?.finished_at)}`,
+			),
 		},
 		{
 			testId: 'runtime-activity-lifecycle',
-			title: 'Lifecycle cleanup',
-			subtitle: `${runtimeSessionTtlDays}d session TTL · ${runtimeSummaryTtlDays}d summary TTL`,
+			title: localize('Lifecycle cleanup', '수명주기 정리'),
+			subtitle: localize(
+				`${runtimeSessionTtlDays}d session TTL · ${runtimeSummaryTtlDays}d summary TTL`,
+				`세션 TTL ${runtimeSessionTtlDays}일 · 요약 TTL ${runtimeSummaryTtlDays}일`,
+			),
 			badges: [
 				{
-					label: runtimeLifecycleEnabled ? 'On' : 'Off',
+					label: toggleWord(runtimeLifecycleEnabled),
 					tone: runtimeLifecycleEnabled ? 'enabled' : 'disabled',
 				},
 				{
-					label: runtimeLifecycleStatus?.state ?? 'idle',
+					label: localize(runtimeLifecycleStatus?.state ?? 'idle', runtimeLifecycleStatus?.state === 'running' ? '실행 중' : runtimeLifecycleStatus?.state === 'failed' ? '실패' : runtimeLifecycleStatus?.state === 'complete' ? '완료' : '유휴'),
 					tone: activityStateTone(runtimeLifecycleStatus?.state),
 				},
 			],
 			lines: filterLines([
-				`interval ${formatIntervalSeconds(runtimeCleanupIntervalSecs)} · next ${lifecycleNextRunLabel()}`,
+				localize(
+					`interval ${formatIntervalSeconds(runtimeCleanupIntervalSecs)} · next ${lifecycleNextRunLabel()}`,
+					`주기 ${formatIntervalSeconds(runtimeCleanupIntervalSecs)} · 다음 ${lifecycleNextRunLabel()}`,
+				),
 				lifecycleResultLabel(runtimeLifecycleStatus),
 				runtimeLifecycleStatus?.message,
 			]),
-			timestampLine: `started ${formatDate(runtimeLifecycleStatus?.started_at)} · finished ${formatDate(runtimeLifecycleStatus?.finished_at)}`,
+			timestampLine: localize(
+				`started ${formatDate(runtimeLifecycleStatus?.started_at)} · finished ${formatDate(runtimeLifecycleStatus?.finished_at)}`,
+				`시작 ${formatDate(runtimeLifecycleStatus?.started_at)} · 종료 ${formatDate(runtimeLifecycleStatus?.finished_at)}`,
+			),
 		},
 	];
 });
 
 const runtimeQuickSummaryTriggerDetail = $derived.by(() =>
-	runtimeTriggerMode === 'on_session_save' ? 'runs automatically on new saves' : 'manual only',
+	runtimeTriggerMode === 'on_session_save'
+		? localize('runs automatically on new saves', '새 저장 시 자동으로 실행')
+		: localize('manual only', '수동 전용'),
 );
 
 const runtimeQuickBatchDetail = $derived.by(
-	() => `scope ${runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}`,
+	() =>
+		localize(
+			`scope ${runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}`,
+			`범위 ${runtimeBatchScope === 'all' ? '모든 세션' : `${runtimeBatchRecentDays}일`}`,
+		),
 );
 
 const runtimeQuickBatchStatusDetail = $derived.by(
-	() => summaryBatchProgressLabel(runtimeSummaryBatchStatus) ?? 'No batch runs yet.',
+	() => summaryBatchProgressLabel(runtimeSummaryBatchStatus) ?? localize('No batch runs yet.', '아직 배치 실행이 없습니다.'),
 );
 
 const runtimeQuickLifecycleDetail = $derived.by(
-	() => `${runtimeSessionTtlDays}d session TTL · every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`,
+	() =>
+		localize(
+			`${runtimeSessionTtlDays}d session TTL · every ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`,
+			`세션 TTL ${runtimeSessionTtlDays}일 · ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}마다`,
+		),
 );
 
-const runtimeQuickLifecycleNextDetail = $derived.by(() => `next ${lifecycleNextRunLabel()}`);
+const runtimeQuickLifecycleNextDetail = $derived.by(() =>
+	localize(`next ${lifecycleNextRunLabel()}`, `다음 ${lifecycleNextRunLabel()}`),
+);
 
 const runtimeQuickVectorDetail = $derived.by(() => {
 	const base = `${runtimeVectorProvider} · ${runtimeVectorModel}`;
 	if (runtimeVectorPreflight && !runtimeVectorPreflight.model_installed) {
-		return `${base} · model missing`;
+		return localize(`${base} · model missing`, `${base} · 모델 없음`);
 	}
 	return base;
 });
 
 const runtimeQuickVectorStatusDetail = $derived.by(
-	() => vectorIndexProgressLabel(runtimeVectorIndex) ?? `index ${runtimeVectorIndex?.state ?? 'idle'}`,
+	() =>
+		vectorIndexProgressLabel(runtimeVectorIndex) ??
+		localize(`index ${runtimeVectorIndex?.state ?? 'idle'}`, `인덱스 ${runtimeVectorIndex?.state === 'running' ? '실행 중' : runtimeVectorIndex?.state === 'failed' ? '실패' : runtimeVectorIndex?.state === 'complete' ? '완료' : '유휴'}`),
 );
 
 const runtimeQuickChangeReaderDetail = $derived.by(
 	() =>
-		`text reader · ${runtimeChangeReaderScope} · ${runtimeChangeReaderMaxContextChars.toLocaleString()} chars`,
+		localize(
+			`text reader · ${runtimeChangeReaderScope} · ${runtimeChangeReaderMaxContextChars.toLocaleString()} chars`,
+			`텍스트 리더 · ${runtimeChangeReaderScope} · ${runtimeChangeReaderMaxContextChars.toLocaleString()}자`,
+		),
 );
 
 const runtimeHelp = {
 	defaultSessionView:
-		'full shows the complete raw session. compressed prioritizes semantic summary + condensed context.',
+		localize(
+			'full shows the complete raw session. compressed prioritizes semantic summary + condensed context.',
+			'full은 전체 원본 세션을 보여주고, compressed는 시맨틱 요약과 압축된 맥락을 우선합니다.',
+		),
 	summaryProvider:
-		'disabled turns off summary generation. ollama uses local HTTP inference. codex_exec/claude_cli run local CLI providers.',
-	providerEndpoint: 'HTTP base URL for ollama or other local model server.',
-	providerModel: 'Model name used by the selected provider.',
+		localize(
+			'disabled turns off summary generation. ollama uses local HTTP inference. codex_exec/claude_cli run local CLI providers.',
+			'disabled는 요약 생성을 끕니다. ollama는 로컬 HTTP 추론을 사용하고, codex_exec/claude_cli는 로컬 CLI 프로바이더를 실행합니다.',
+		),
+	providerEndpoint: localize('HTTP base URL for ollama or other local model server.', 'ollama 또는 다른 로컬 모델 서버의 HTTP 기본 URL입니다.'),
+	providerModel: localize('Model name used by the selected provider.', '선택한 프로바이더가 사용하는 모델 이름입니다.'),
 	promptTemplate:
-		'Template passed to the summary generator. Keep placeholders used by your runtime prompt contract.',
+		localize(
+			'Template passed to the summary generator. Keep placeholders used by your runtime prompt contract.',
+			'요약 생성기에 전달되는 템플릿입니다. 런타임 프롬프트 계약에서 쓰는 placeholder는 유지하세요.',
+		),
 	responseStyle:
-		'compact = shortest output, standard = balanced, detailed = richer narrative and context.',
+		localize(
+			'compact = shortest output, standard = balanced, detailed = richer narrative and context.',
+			'compact는 가장 짧은 출력, standard는 균형형, detailed는 더 풍부한 서술과 맥락을 제공합니다.',
+		),
 	outputShape:
-		'layered groups by layer, file_list focuses per-file changes, security_first prioritizes auth/security impact.',
-	vectorModel: 'Embedding model name used for vector indexing.',
-	vectorEndpoint: 'Endpoint for local embedding provider (typically Ollama).',
+		localize(
+			'layered groups by layer, file_list focuses per-file changes, security_first prioritizes auth/security impact.',
+			'layered는 레이어별로 묶고, file_list는 파일별 변경에 집중하며, security_first는 인증/보안 영향을 우선합니다.',
+		),
+	vectorModel: localize('Embedding model name used for vector indexing.', '벡터 인덱싱에 쓰는 임베딩 모델 이름입니다.'),
+	vectorEndpoint: localize('Endpoint for local embedding provider (typically Ollama).', '로컬 임베딩 프로바이더용 엔드포인트입니다. 보통 Ollama를 사용합니다.'),
 	vectorChunkingMode:
-		'auto selects chunk size/overlap from session length best-practice rules. manual uses the fixed values below.',
-	vectorChunkSize: 'Number of lines per semantic chunk before embedding.',
-	vectorChunkOverlap: 'Overlapping lines preserved between adjacent chunks.',
-	vectorTopKChunks: 'Maximum chunk candidates retrieved per query.',
-	vectorTopKSessions: 'Maximum sessions surfaced after chunk ranking.',
+		localize(
+			'auto selects chunk size/overlap from session length best-practice rules. manual uses the fixed values below.',
+			'auto는 세션 길이에 따른 권장 규칙으로 chunk 크기와 overlap을 정합니다. manual은 아래 고정값을 사용합니다.',
+		),
+	vectorChunkSize: localize('Number of lines per semantic chunk before embedding.', '임베딩 전 시맨틱 청크당 줄 수입니다.'),
+	vectorChunkOverlap: localize('Overlapping lines preserved between adjacent chunks.', '인접 청크 사이에 유지할 겹치는 줄 수입니다.'),
+	vectorTopKChunks: localize('Maximum chunk candidates retrieved per query.', '쿼리당 가져올 최대 청크 후보 수입니다.'),
+	vectorTopKSessions: localize('Maximum sessions surfaced after chunk ranking.', '청크 랭킹 후 노출할 최대 세션 수입니다.'),
 	vectorEnable:
-		'Turns on semantic retrieval in search and change analysis. Requires model install and index build.',
+		localize(
+			'Turns on semantic retrieval in search and change analysis. Requires model install and index build.',
+			'검색과 변경 분석에서 시맨틱 검색을 켭니다. 모델 설치와 인덱스 구축이 필요합니다.',
+		),
 	changeReaderEnable:
-		'Turns on the text-based change reader so you can inspect what changed and why across a session.',
+		localize(
+			'Turns on the text-based change reader so you can inspect what changed and why across a session.',
+			'텍스트 기반 변경 리더를 켜서 세션 전반에서 무엇이 왜 바뀌었는지 살펴볼 수 있게 합니다.',
+		),
 	changeReaderScope:
-		'summary_only reads compressed context. full_context expands to broader session context when needed.',
-	changeReaderMaxContext: 'Upper bound of context text loaded for change reading.',
+		localize(
+			'summary_only reads compressed context. full_context expands to broader session context when needed.',
+			'summary_only는 압축된 맥락을 읽고, full_context는 필요 시 더 넓은 세션 맥락으로 확장합니다.',
+		),
+	changeReaderMaxContext: localize('Upper bound of context text loaded for change reading.', '변경 읽기에 불러올 컨텍스트 텍스트의 최대 길이입니다.'),
 	changeReaderQa:
-		'Adds follow-up text Q&A on top of the selected change reader context when the reader is enabled.',
+		localize(
+			'Adds follow-up text questions on top of the selected change reader context when the reader is enabled.',
+			'리더가 켜져 있을 때, 선택된 변경 리더 맥락 위에 후속 텍스트 질문을 추가합니다.',
+		),
 	changeReaderVoiceEnable:
-		'Reads the current change reader output aloud with TTS. Requires a Voice API key and does not change summaries or Q&A.',
-	changeReaderVoiceProvider: 'Voice provider for TTS playback.',
-	changeReaderVoiceModel: 'TTS model used when generating speech audio.',
-	changeReaderVoiceName: 'Voice preset name used by the provider.',
+		localize(
+			'Reads the current change reader output aloud with TTS. Requires a Voice API key and does not change summaries or questions.',
+			'TTS로 현재 변경 리더 출력을 소리 내어 읽습니다. Voice API 키가 필요하며, 요약이나 질문 내용을 바꾸지 않습니다.',
+		),
+	changeReaderVoiceProvider: localize('Voice provider for TTS playback.', 'TTS 재생에 사용할 음성 프로바이더입니다.'),
+	changeReaderVoiceModel: localize('TTS model used when generating speech audio.', '음성 오디오 생성에 사용할 TTS 모델입니다.'),
+	changeReaderVoiceName: localize('Voice preset name used by the provider.', '프로바이더가 사용하는 음성 프리셋 이름입니다.'),
 	changeReaderVoiceApiKey:
-		'Write-only API key for voice playback. Required before voice playback can be enabled. Leave empty to keep the current stored key.',
-	storageTrigger: 'manual runs only when explicitly requested. on_session_save runs automatically on new saves.',
+		localize(
+			'Write-only API key for voice playback. Required before voice playback can be enabled. Leave empty to keep the current stored key.',
+			'음성 재생용 쓰기 전용 API 키입니다. 음성 재생을 켜기 전에 필요합니다. 현재 저장된 키를 유지하려면 비워 두세요.',
+		),
+	storageTrigger: localize('manual runs only when explicitly requested. on_session_save runs automatically on new saves.', 'manual은 명시적으로 요청할 때만 실행합니다. on_session_save는 새 저장 시 자동 실행됩니다.'),
 	storageBackend:
-		'Where summaries are read from and written to after you click Save Runtime. Switching between hidden_ref and local_db copies existing summaries into the selected backend on save. Switching to none does not migrate or delete existing stored summaries.',
+		localize(
+			'Where summaries are read from and written to after you click Save Runtime. Switching between hidden_ref and local_db copies existing summaries into the selected backend on save. Switching to none does not migrate or delete existing stored summaries.',
+			'런타임 저장을 눌렀을 때 요약을 읽고 쓰는 위치입니다. hidden_ref와 local_db 사이를 바꾸면 저장 시 기존 요약을 선택한 백엔드로 복사합니다. none으로 바꾸면 기존 저장 요약을 마이그레이션하거나 삭제하지 않습니다.',
+		),
 	batchExecution:
-		'manual means run only when clicking Run now. on_app_start runs once automatically at desktop startup.',
+		localize(
+			'manual means run only when clicking Run now. on_app_start runs once automatically at desktop startup.',
+			'manual은 지금 실행을 눌렀을 때만 동작합니다. on_app_start는 데스크톱 시작 시 한 번 자동 실행됩니다.',
+		),
 	batchScope:
-		'recent_days targets only recent sessions. all targets every known session regardless of recency.',
-	batchRecentDays: 'Applies only when scope is recent_days. Minimum is 1 day.',
+		localize(
+			'recent_days targets only recent sessions. all targets every known session regardless of recency.',
+			'recent_days는 최근 세션만 대상으로 하고, all은 시점과 관계없이 알려진 모든 세션을 대상으로 합니다.',
+		),
+	batchRecentDays: localize('Applies only when scope is recent_days. Minimum is 1 day.', '범위가 recent_days일 때만 적용됩니다. 최소값은 1일입니다.'),
 	lifecycleEnable:
-		'Enables periodic TTL cleanup for session roots and summary artifacts using the rules below.',
-	sessionTtl: 'Sessions older than this threshold become cleanup candidates.',
-	summaryTtl: 'Summary artifacts older than this threshold become cleanup candidates.',
-	cleanupInterval: 'Seconds between periodic lifecycle cleanup runs.',
+		localize(
+			'Enables periodic TTL cleanup for session roots and summary artifacts using the rules below.',
+			'아래 규칙에 따라 세션 루트와 요약 아티팩트에 대한 주기적 TTL 정리를 활성화합니다.',
+		),
+	sessionTtl: localize('Sessions older than this threshold become cleanup candidates.', '이 기준보다 오래된 세션이 정리 후보가 됩니다.'),
+	summaryTtl: localize('Summary artifacts older than this threshold become cleanup candidates.', '이 기준보다 오래된 요약 아티팩트가 정리 후보가 됩니다.'),
+	cleanupInterval: localize('Seconds between periodic lifecycle cleanup runs.', '주기적 수명주기 정리 실행 사이의 초 단위 간격입니다.'),
 };
 
 function responsePreview(
@@ -786,20 +962,29 @@ function responsePreview(
 ): string {
 	const changesPrefix =
 		style === 'compact'
-			? 'Updated session summary pipeline.'
+			? localize('Updated session summary pipeline.', '세션 요약 파이프라인을 업데이트했습니다.')
 			: style === 'detailed'
-				? 'Refactored the desktop summary pipeline, split provider/prompt/response/storage concerns, and updated hidden-ref persistence semantics.'
-				: 'Updated desktop summary pipeline with clearer runtime settings.';
+				? localize(
+					'Refactored the desktop summary pipeline, split provider/prompt/response/storage concerns, and updated hidden-ref persistence semantics.',
+					'데스크톱 요약 파이프라인을 리팩터링하고 프로바이더/프롬프트/응답/저장소 관심사를 분리했으며, hidden_ref 영속화 의미를 업데이트했습니다.',
+				)
+				: localize('Updated desktop summary pipeline with clearer runtime settings.', '더 명확한 런타임 설정으로 데스크톱 요약 파이프라인을 업데이트했습니다.');
 	const security =
 		shape === 'security_first'
-			? 'Credential paths were isolated and storage policy now defaults to hidden_ref.'
-			: 'none detected';
+			? localize(
+				'Credential paths were isolated and storage policy now defaults to hidden_ref.',
+				'자격 증명 경로를 분리했고 저장소 정책 기본값을 hidden_ref로 맞췄습니다.',
+			)
+			: localize('none detected', '탐지되지 않음');
 
 	const files =
 		shape === 'file_list'
 			? ['desktop/src-tauri/src/main.rs', 'packages/ui/src/components/SettingsPage.svelte']
 			: ['desktop/src-tauri/src/main.rs'];
-	const layer = shape === 'file_list' ? 'application' : 'presentation';
+	const layer =
+		shape === 'file_list'
+			? localize('application', '애플리케이션')
+			: localize('presentation', '프레젠테이션');
 
 	return JSON.stringify(
 		{
@@ -810,8 +995,8 @@ function responsePreview(
 					layer,
 					summary:
 						style === 'compact'
-							? 'Settings/runtime summary flow updated.'
-							: 'Runtime settings and summary persistence behavior were updated.',
+							? localize('Settings/runtime summary flow updated.', '설정/런타임 요약 흐름을 업데이트했습니다.')
+							: localize('Runtime settings and summary persistence behavior were updated.', '런타임 설정과 요약 영속화 동작을 업데이트했습니다.'),
 					files,
 				},
 			],
@@ -831,7 +1016,7 @@ function formatDate(value: string | null | undefined): string {
 	if (!value) return '-';
 	const parsed = new Date(value);
 	if (Number.isNaN(parsed.getTime())) return '-';
-	return parsed.toLocaleString();
+	return parsed.toLocaleString(isKorean ? 'ko-KR' : 'en-US');
 }
 
 function normalizeError(err: unknown, fallback: string): string {
@@ -868,14 +1053,14 @@ function normalizeVectorError(err: unknown, fallback: string): string {
 		const batchEndpoint = apiDetailString(err.details, 'batch_endpoint');
 		const batchStatus = apiDetailNumber(err.details, 'batch_status');
 		const lines = [message];
-		if (reason) lines.push(`Reason: ${reason}`);
+		if (reason) lines.push(localize(`Reason: ${reason}`, `원인: ${reason}`));
 		if (status != null) lines.push(`HTTP: ${status}`);
-		if (batchReason) lines.push(`Batch reason: ${batchReason}`);
-		if (batchStatus != null) lines.push(`Batch HTTP: ${batchStatus}`);
-		if (hint) lines.push(`Action: ${hint}`);
-		if (model) lines.push(`Model: ${model}`);
-		if (endpoint) lines.push(`Endpoint: ${endpoint}`);
-		if (batchEndpoint) lines.push(`Batch endpoint: ${batchEndpoint}`);
+		if (batchReason) lines.push(localize(`Batch reason: ${batchReason}`, `배치 원인: ${batchReason}`));
+		if (batchStatus != null) lines.push(localize(`Batch HTTP: ${batchStatus}`, `배치 HTTP: ${batchStatus}`));
+		if (hint) lines.push(localize(`Action: ${hint}`, `조치: ${hint}`));
+		if (model) lines.push(localize(`Model: ${model}`, `모델: ${model}`));
+		if (endpoint) lines.push(localize(`Endpoint: ${endpoint}`, `엔드포인트: ${endpoint}`));
+		if (batchEndpoint) lines.push(localize(`Batch endpoint: ${batchEndpoint}`, `배치 엔드포인트: ${batchEndpoint}`));
 		return lines.join('\n');
 	}
 	return normalizeError(err, fallback);
@@ -883,23 +1068,26 @@ function normalizeVectorError(err: unknown, fallback: string): string {
 
 function vectorStatusGuidance(): string[] {
 	if (!runtimeVectorPreflight) {
-		return ['Run vector preflight to inspect provider and model readiness.'];
+		return [localize('Run vector preflight to inspect provider and model readiness.', '프로바이더와 모델 준비 상태를 보려면 벡터 사전 점검을 실행하세요.')];
 	}
 	const guidance: string[] = [];
 	if (!runtimeVectorPreflight.ollama_reachable) {
-		guidance.push('Install Ollama: https://ollama.com/download');
-		guidance.push('Start provider: run `ollama serve` and retry preflight.');
+		guidance.push(localize('Install Ollama: https://ollama.com/download', 'Ollama 설치: https://ollama.com/download'));
+		guidance.push(localize('Start provider: run `ollama serve` and retry preflight.', '프로바이더 시작: `ollama serve`를 실행한 뒤 사전 점검을 다시 시도하세요.'));
 	}
 	if (!runtimeVectorPreflight.model_installed) {
 		guidance.push(
-			`Install model: run \`ollama pull ${runtimeVectorPreflight.model}\` or click "Install model".`,
+			localize(
+				`Install model: run \`ollama pull ${runtimeVectorPreflight.model}\` or click "Install model".`,
+				`모델 설치: \`ollama pull ${runtimeVectorPreflight.model}\`를 실행하거나 "모델 설치"를 누르세요.`,
+			),
 		);
 	}
 	if (runtimeVectorIndex?.state === 'failed') {
-		guidance.push('Rebuild index: click "Rebuild index" after fixing provider/model issues.');
+		guidance.push(localize('Rebuild index: click "Rebuild index" after fixing provider/model issues.', '인덱스 재구성: 프로바이더/모델 문제를 고친 뒤 "인덱스 재구성"을 누르세요.'));
 	}
 	if (guidance.length === 0) {
-		guidance.push('Vector pipeline is ready.');
+		guidance.push(localize('Vector pipeline is ready.', '벡터 파이프라인이 준비되었습니다.'));
 	}
 	return guidance;
 }
@@ -1011,7 +1199,7 @@ async function refreshLifecycleCleanupStatus(surfaceError: boolean = true): Prom
 	} catch (err) {
 		runtimeLifecycleStatus = null;
 		if (surfaceError) {
-			runtimeError = normalizeError(err, 'Failed to fetch lifecycle cleanup status');
+			runtimeError = normalizeError(err, localize('Failed to fetch lifecycle cleanup status', '수명주기 정리 상태를 가져오지 못했습니다'));
 		}
 		return false;
 	}
@@ -1182,21 +1370,27 @@ const runtimeDraftDirty = $derived.by(() => {
 const runtimePersistStatus = $derived.by(() => {
 	if (runtimeLoading) {
 		return {
-			title: 'Loading runtime config',
-			detail: 'Fetching the current persisted desktop runtime settings.',
+			title: localize('Loading runtime config', '런타임 설정 불러오는 중'),
+			detail: localize('Fetching the current persisted desktop runtime settings.', '현재 저장된 데스크톱 런타임 설정을 가져오고 있습니다.'),
 		};
 	}
 	if (runtimeDraftDirty) {
 		return {
-			title: 'Unsaved runtime changes',
+			title: localize('Unsaved runtime changes', '저장되지 않은 런타임 변경 사항'),
 			detail:
-				'Checkbox, select, and input edits are drafts until you click Save Runtime. Reopening Settings reloads the last persisted values.',
+				localize(
+					'Checkbox, select, and input edits are drafts until you click Save Runtime. Reopening Settings reloads the last persisted values.',
+					'체크박스, 선택, 입력 변경은 런타임 저장을 누르기 전까지 초안입니다. 설정을 다시 열면 마지막으로 저장된 값이 다시 로드됩니다.',
+				),
 		};
 	}
 	return {
-		title: 'Runtime config is persisted',
+		title: localize('Runtime config is persisted', '런타임 설정이 저장된 상태입니다'),
 		detail:
-			'Current values match the saved desktop runtime config. New edits stay local to this page until you save them.',
+			localize(
+				'Current values match the saved desktop runtime config. New edits stay local to this page until you save them.',
+				'현재 값은 저장된 데스크톱 런타임 설정과 일치합니다. 새 수정 사항은 저장하기 전까지 이 페이지에만 반영됩니다.',
+			),
 	};
 });
 
@@ -1215,7 +1409,7 @@ function handleResetRuntimeDraft() {
 	if (!runtimeSettings) return;
 	applyRuntimeSettingsToDraft(runtimeSettings);
 	runtimeError = null;
-	runtimeDetectMessage = 'Discarded unsaved runtime edits.';
+	runtimeDetectMessage = localize('Discarded unsaved runtime edits.', '저장되지 않은 런타임 변경을 버렸습니다.');
 }
 
 async function handleSaveRuntimeSettings() {
@@ -1234,9 +1428,12 @@ async function handleSaveRuntimeSettings() {
 		applyRuntimeSettingsToDraft(updated);
 		await refreshLifecycleCleanupStatus(false);
 		await refreshSummaryBatchStatus();
-		runtimeDetectMessage = 'Runtime settings saved and will persist when you reopen Settings.';
+		runtimeDetectMessage = localize(
+			'Runtime settings saved and will persist when you reopen Settings.',
+			'런타임 설정을 저장했습니다. 설정을 다시 열어도 유지됩니다.',
+		);
 	} catch (err) {
-		runtimeError = normalizeError(err, 'Failed to save runtime settings');
+		runtimeError = normalizeError(err, localize('Failed to save runtime settings', '런타임 설정 저장에 실패했습니다'));
 	} finally {
 		runtimeSaving = false;
 	}
@@ -1249,7 +1446,7 @@ async function handleDetectRuntimeProvider() {
 	try {
 		const detected: DesktopSummaryProviderDetectResponse = await detectSummaryProvider();
 		if (!detected.detected || !detected.provider) {
-			runtimeDetectMessage = 'No local provider detected.';
+			runtimeDetectMessage = localize('No local provider detected.', '로컬 프로바이더를 찾지 못했습니다.');
 			return;
 		}
 		runtimeProvider = detected.provider;
@@ -1262,9 +1459,12 @@ async function handleDetectRuntimeProvider() {
 		});
 		runtimeSettings = updated;
 		applyRuntimeSettingsToDraft(updated);
-		runtimeDetectMessage = `Detected and applied provider: ${detected.provider}`;
+		runtimeDetectMessage = localize(
+			`Detected and applied provider: ${detected.provider}`,
+			`감지 후 적용한 프로바이더: ${detected.provider}`,
+		);
 	} catch (err) {
-		runtimeError = normalizeError(err, 'Failed to detect/apply local provider');
+		runtimeError = normalizeError(err, localize('Failed to detect/apply local provider', '로컬 프로바이더 감지/적용에 실패했습니다'));
 	} finally {
 		runtimeDetecting = false;
 	}
@@ -1277,7 +1477,7 @@ async function refreshSummaryBatchStatus() {
 	} catch (err) {
 		runtimeSummaryBatchStatus = null;
 		runtimeSummaryBatchRunning = false;
-		runtimeError = normalizeError(err, 'Failed to fetch summary batch status');
+		runtimeError = normalizeError(err, localize('Failed to fetch summary batch status', '요약 배치 상태를 가져오지 못했습니다'));
 	}
 }
 
@@ -1289,7 +1489,7 @@ async function handleRunSummaryBatchNow() {
 		runtimeSummaryBatchRunning = isSummaryBatchRunning(runtimeSummaryBatchStatus);
 	} catch (err) {
 		runtimeSummaryBatchRunning = false;
-		runtimeError = normalizeError(err, 'Failed to run summary batch');
+		runtimeError = normalizeError(err, localize('Failed to run summary batch', '요약 배치 실행에 실패했습니다'));
 	}
 }
 
@@ -1299,12 +1499,12 @@ async function refreshVectorPreflight(): Promise<boolean> {
 		runtimeVectorInstalling = isVectorInstallRunning(runtimeVectorPreflight);
 		runtimeVectorError = null;
 		if (runtimeVectorPreflight.model_installed && runtimeVectorEnabled) {
-			runtimeDetectMessage = 'Vector model is ready.';
+			runtimeDetectMessage = localize('Vector model is ready.', '벡터 모델이 준비되었습니다.');
 		}
 		return true;
 	} catch (err) {
 		runtimeVectorPreflight = null;
-		runtimeVectorError = normalizeVectorError(err, 'Failed to fetch vector model status');
+		runtimeVectorError = normalizeVectorError(err, localize('Failed to fetch vector model status', '벡터 모델 상태를 가져오지 못했습니다'));
 		return false;
 	}
 }
@@ -1316,7 +1516,7 @@ async function refreshVectorIndexStatus(): Promise<boolean> {
 		return true;
 	} catch (err) {
 		runtimeVectorIndex = null;
-		runtimeVectorError = normalizeVectorError(err, 'Failed to fetch vector index status');
+		runtimeVectorError = normalizeVectorError(err, localize('Failed to fetch vector index status', '벡터 인덱스 상태를 가져오지 못했습니다'));
 		return false;
 	}
 }
@@ -1327,7 +1527,7 @@ async function handleVectorInstallModel() {
 	try {
 		const status = await vectorInstallModel(runtimeVectorModel);
 		if (status.state === 'failed') {
-			runtimeVectorError = status.message ?? 'Model installation failed.';
+			runtimeVectorError = status.message ?? localize('Model installation failed.', '모델 설치에 실패했습니다.');
 			runtimeVectorInstalling = false;
 			return;
 		}
@@ -1335,7 +1535,7 @@ async function handleVectorInstallModel() {
 		await refreshVectorPreflight();
 	} catch (err) {
 		runtimeVectorInstalling = false;
-		runtimeVectorError = normalizeVectorError(err, 'Failed to install vector model');
+		runtimeVectorError = normalizeVectorError(err, localize('Failed to install vector model', '벡터 모델 설치에 실패했습니다'));
 	}
 }
 
@@ -1345,13 +1545,16 @@ async function handleVectorReindex() {
 	if (!runtimeVectorPreflight.ollama_reachable) {
 		runtimeVectorError =
 			runtimeVectorPreflight.message ??
-			'Ollama is not reachable. Start it with `ollama serve`.';
+			localize('Ollama is not reachable. Start it with `ollama serve`.', 'Ollama에 연결할 수 없습니다. `ollama serve`로 시작하세요.');
 		return;
 	}
 	if (!runtimeVectorPreflight.model_installed) {
 		runtimeVectorError =
 			runtimeVectorPreflight.message ??
-			`Model ${runtimeVectorPreflight.model} is not installed. Install model first.`;
+			localize(
+				`Model ${runtimeVectorPreflight.model} is not installed. Install model first.`,
+				`모델 ${runtimeVectorPreflight.model}이 설치되지 않았습니다. 먼저 모델을 설치하세요.`,
+			);
 		return;
 	}
 
@@ -1361,11 +1564,11 @@ async function handleVectorReindex() {
 		runtimeVectorIndex = await vectorIndexRebuild();
 		runtimeVectorReindexing = isVectorIndexRunning(runtimeVectorIndex);
 		if (runtimeVectorIndex?.state === 'failed') {
-			runtimeVectorError = runtimeVectorIndex.message ?? 'Vector index rebuild failed.';
+			runtimeVectorError = runtimeVectorIndex.message ?? localize('Vector index rebuild failed.', '벡터 인덱스 재구성에 실패했습니다.');
 		}
 	} catch (err) {
 		runtimeVectorReindexing = false;
-		runtimeVectorError = normalizeVectorError(err, 'Failed to start vector index rebuild');
+		runtimeVectorError = normalizeVectorError(err, localize('Failed to start vector index rebuild', '벡터 인덱스 재구성을 시작하지 못했습니다'));
 	}
 }
 
@@ -1377,14 +1580,14 @@ async function handleIssueApiKey() {
 		const response = await issueApiKey();
 		issuedApiKey = response.api_key;
 	} catch (err) {
-		error = normalizeError(err, 'Failed to issue API key');
+		error = normalizeError(err, localize('Failed to issue API key', 'API 키 발급에 실패했습니다'));
 	} finally {
 		issuing = false;
 	}
 }
 
 async function copyApiKey() {
-	copyMessage = await copyTextSurface(
+	const result = await copyTextSurface(
 		{
 			writeText: async (text) => {
 				if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
@@ -1395,6 +1598,10 @@ async function copyApiKey() {
 		},
 		issuedApiKey,
 	);
+	copyMessage =
+		result === 'Copied'
+			? localize('Copied', '복사했습니다')
+			: localize('Copy failed', '복사에 실패했습니다');
 }
 
 function currentBackgroundPollState() {
@@ -1429,7 +1636,7 @@ async function handleCreateCredential() {
 		credentialHeaderValue = '';
 		await loadGitCredentials();
 	} catch (err) {
-		credentialsError = normalizeError(err, 'Failed to save git credential');
+		credentialsError = normalizeError(err, localize('Failed to save git credential', 'Git 자격 증명 저장에 실패했습니다'));
 	} finally {
 		creatingCredential = false;
 	}
@@ -1442,7 +1649,7 @@ async function handleDeleteCredential(id: string) {
 		await deleteGitCredential(id);
 		await loadGitCredentials();
 	} catch (err) {
-		credentialsError = normalizeError(err, 'Failed to delete git credential');
+		credentialsError = normalizeError(err, localize('Failed to delete git credential', 'Git 자격 증명 삭제에 실패했습니다'));
 	} finally {
 		deletingCredentialId = null;
 	}
@@ -1516,7 +1723,7 @@ $effect(() => {
 </script>
 
 <svelte:head>
-	<title>Settings - opensession.io</title>
+	<title>{localize('Settings - opensession.io', '설정 - opensession.io')}</title>
 </svelte:head>
 
 <div data-testid="settings-page" class="mx-auto w-full max-w-7xl pb-10">
@@ -1529,63 +1736,68 @@ $effect(() => {
 
 		<div class="space-y-4">
 	<header id="settings-section-overview" class="scroll-mt-24 border border-border bg-bg-secondary px-4 py-3">
-		<p class="text-[11px] uppercase tracking-[0.12em] text-text-muted">Account</p>
-		<h1 class="mt-1 text-3xl font-semibold tracking-tight text-text-primary">Settings</h1>
-		<p class="mt-1 text-sm text-text-secondary">Personal profile and API access controls.</p>
+		<p class="text-[11px] uppercase tracking-[0.12em] text-text-muted">{localize('Account', '계정')}</p>
+		<h1 class="mt-1 text-3xl font-semibold tracking-tight text-text-primary">{localize('Settings', '설정')}</h1>
+		<p class="mt-1 text-sm text-text-secondary">{localize('Personal profile and API access controls.', '개인 프로필과 API 접근 제어를 관리합니다.')}</p>
 	</header>
 
+	<LanguageSettingsPanel />
+
 		{#if loading}
-			<div class="border border-border bg-bg-secondary px-4 py-8 text-center text-sm text-text-muted">Loading...</div>
+			<div class="border border-border bg-bg-secondary px-4 py-8 text-center text-sm text-text-muted">{localize('Loading...', '불러오는 중...')}</div>
 		{:else if authApiEnabled && authRequired}
 			<section
 				id="settings-section-profile"
 				data-testid="settings-require-auth"
 				class="scroll-mt-24 border border-border bg-bg-secondary px-4 py-6 text-sm text-text-secondary xl:max-w-3xl"
 			>
-			<p class="text-text-primary">Sign in is required to view personal settings.</p>
+			<p class="text-text-primary">{localize('Sign in is required to view personal settings.', '개인 설정을 보려면 로그인해야 합니다.')}</p>
 			<div class="mt-4">
 				<button
 					type="button"
 					onclick={() => onNavigate('/login')}
 					class="bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
 				>
-					Go to login
+					{localize('Go to login', '로그인으로 이동')}
 				</button>
 			</div>
 		</section>
 	{:else if authApiEnabled}
 		<section id="settings-section-profile" class="scroll-mt-24 border border-border bg-bg-secondary p-4 xl:max-w-3xl">
-			<h2 class="text-sm font-semibold text-text-primary">Profile</h2>
+			<h2 class="text-sm font-semibold text-text-primary">{localize('Profile', '프로필')}</h2>
 			{#if settings}
 				<dl class="mt-3 grid gap-2 text-xs text-text-secondary sm:grid-cols-[10rem_1fr]">
-					<dt>User ID</dt>
+					<dt>{localize('User ID', '사용자 ID')}</dt>
 					<dd class="font-mono text-text-primary">{settings.user_id}</dd>
-					<dt>Nickname</dt>
+					<dt>{localize('Nickname', '닉네임')}</dt>
 					<dd class="text-text-primary">{settings.nickname}</dd>
-					<dt>Email</dt>
-					<dd class="text-text-primary">{settings.email ?? 'not linked'}</dd>
-					<dt>Joined</dt>
+					<dt>{localize('Email', '이메일')}</dt>
+					<dd class="text-text-primary">{settings.email ?? localize('not linked', '연결되지 않음')}</dd>
+					<dt>{localize('Joined', '가입일')}</dt>
 					<dd class="text-text-primary">{formatDate(settings.created_at)}</dd>
-					<dt>Linked OAuth</dt>
+					<dt>{localize('Linked OAuth', '연결된 OAuth')}</dt>
 					<dd class="text-text-primary">
 						{#if settings.oauth_providers.length === 0}
-							none
+							{localize('none', '없음')}
 						{:else}
 							{settings.oauth_providers.map((provider) => provider.display_name).join(', ')}
 						{/if}
 					</dd>
 				</dl>
 			{:else}
-				<p class="mt-2 text-xs text-text-muted">No profile data available.</p>
+				<p class="mt-2 text-xs text-text-muted">{localize('No profile data available.', '프로필 데이터가 없습니다.')}</p>
 			{/if}
 		</section>
 
 		<section id="settings-section-api-key" class="scroll-mt-24 border border-border bg-bg-secondary p-4 xl:max-w-3xl">
 			<div class="flex flex-wrap items-center justify-between gap-3">
 				<div>
-					<h2 class="text-sm font-semibold text-text-primary">Personal API Key</h2>
+					<h2 class="text-sm font-semibold text-text-primary">{localize('Personal API Key', '개인 API 키')}</h2>
 					<p class="mt-1 text-xs text-text-secondary">
-						Issue a new key for CLI and automation access. Existing active key moves to grace mode.
+						{localize(
+							'Issue a new key for CLI and automation access. Existing active key moves to grace mode.',
+							'CLI와 자동화 접근용 새 키를 발급합니다. 기존 활성 키는 유예 상태로 전환됩니다.',
+						)}
 					</p>
 				</div>
 				<button
@@ -1595,13 +1807,17 @@ $effect(() => {
 					disabled={issuing}
 					class="bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
 				>
-					{issuing ? 'Issuing...' : issuedApiKey ? 'Regenerate key' : 'Issue key'}
+					{issuing
+						? localize('Issuing...', '발급 중...')
+						: issuedApiKey
+							? localize('Regenerate key', '키 재발급')
+							: localize('Issue key', '키 발급')}
 				</button>
 			</div>
 
 			{#if issuedApiKey}
 				<div class="mt-4 border border-border/80 bg-bg-primary p-3">
-					<p class="mb-2 text-xs text-text-muted">Shown once. Save this key now.</p>
+					<p class="mb-2 text-xs text-text-muted">{localize('Shown once. Save this key now.', '한 번만 표시됩니다. 지금 이 키를 저장하세요.')}</p>
 					<code data-testid="issued-api-key" class="block break-all font-mono text-xs text-text-primary">
 						{issuedApiKey}
 					</code>
@@ -1612,7 +1828,7 @@ $effect(() => {
 							onclick={copyApiKey}
 							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
 						>
-							Copy
+							{localize('Copy', '복사')}
 						</button>
 						{#if copyMessage}
 							<span class="text-xs text-text-muted">{copyMessage}</span>
@@ -1628,15 +1844,18 @@ $effect(() => {
 			data-testid="git-credential-settings"
 		>
 			<div class="space-y-1">
-				<h2 class="text-sm font-semibold text-text-primary">Private Git Credentials</h2>
+				<h2 class="text-sm font-semibold text-text-primary">{localize('Private Git Credentials', '비공개 Git 자격 증명')}</h2>
 				<p class="text-xs text-text-secondary">
-					Preferred: connect GitHub/GitLab OAuth. Manual credentials are used for private self-managed or generic git remotes.
+					{localize(
+						'Preferred: connect GitHub/GitLab OAuth. Manual credentials are used for private self-managed or generic git remotes.',
+						'권장: GitHub/GitLab OAuth를 연결하세요. 수동 자격 증명은 비공개 self-managed 또는 일반 git remote에 사용됩니다.',
+					)}
 				</p>
 			</div>
 
 			{#if !credentialsSupported}
 				<p class="mt-3 text-xs text-text-muted">
-					This deployment does not expose credential management endpoints.
+					{localize('This deployment does not expose credential management endpoints.', '이 배포는 자격 증명 관리 엔드포인트를 제공하지 않습니다.')}
 				</p>
 			{:else}
 				<div class="mt-4 space-y-3">
@@ -1644,35 +1863,35 @@ $effect(() => {
 						<input
 							data-testid="git-credential-label"
 							type="text"
-							placeholder="Label"
+							placeholder={localize('Label', '라벨')}
 							bind:value={credentialLabel}
 							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
 						/>
 						<input
 							data-testid="git-credential-host"
 							type="text"
-							placeholder="Host (e.g. gitlab.internal.example.com)"
+							placeholder={localize('Host (e.g. gitlab.internal.example.com)', '호스트 (예: gitlab.internal.example.com)')}
 							bind:value={credentialHost}
 							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
 						/>
 						<input
 							data-testid="git-credential-path-prefix"
 							type="text"
-							placeholder="Path prefix (optional, e.g. group/subgroup)"
+							placeholder={localize('Path prefix (optional, e.g. group/subgroup)', '경로 접두사 (선택, 예: group/subgroup)')}
 							bind:value={credentialPathPrefix}
 							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
 						/>
 						<input
 							data-testid="git-credential-header-name"
 							type="text"
-							placeholder="Header name"
+							placeholder={localize('Header name', '헤더 이름')}
 							bind:value={credentialHeaderName}
 							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
 						/>
 						<input
 							data-testid="git-credential-header-value"
 							type="password"
-							placeholder="Header value (secret)"
+							placeholder={localize('Header value (secret)', '헤더 값 (비밀값)')}
 							bind:value={credentialHeaderValue}
 							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary sm:col-span-2"
 						/>
@@ -1685,22 +1904,22 @@ $effect(() => {
 							disabled={creatingCredential}
 							class="bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:opacity-60"
 						>
-							{creatingCredential ? 'Saving...' : 'Save credential'}
+							{creatingCredential ? localize('Saving...', '저장 중...') : localize('Save credential', '자격 증명 저장')}
 						</button>
 					</div>
 				</div>
 
 				<div class="mt-4 border border-border/70">
 					<div class="grid grid-cols-[1.1fr_1fr_1fr_auto] gap-2 border-b border-border bg-bg-primary px-3 py-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">
-						<span>Label</span>
-						<span>Host</span>
-						<span>Path Prefix</span>
-						<span>Action</span>
+						<span>{localize('Label', '라벨')}</span>
+						<span>{localize('Host', '호스트')}</span>
+						<span>{localize('Path Prefix', '경로 접두사')}</span>
+						<span>{localize('Action', '동작')}</span>
 					</div>
 					{#if credentialsLoading}
-						<div class="px-3 py-3 text-xs text-text-muted">Loading credentials...</div>
+						<div class="px-3 py-3 text-xs text-text-muted">{localize('Loading credentials...', '자격 증명을 불러오는 중...')}</div>
 					{:else if credentials.length === 0}
-						<div class="px-3 py-3 text-xs text-text-muted">No manual credentials registered.</div>
+						<div class="px-3 py-3 text-xs text-text-muted">{localize('No manual credentials registered.', '등록된 수동 자격 증명이 없습니다.')}</div>
 					{:else}
 						{#each credentials as credential}
 							<div class="grid grid-cols-[1.1fr_1fr_1fr_auto] items-center gap-2 border-b border-border/60 px-3 py-2 text-xs">
@@ -1714,14 +1933,17 @@ $effect(() => {
 									onclick={() => handleDeleteCredential(credential.id)}
 									class="border border-border px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary disabled:opacity-60"
 								>
-									{deletingCredentialId === credential.id ? 'Deleting...' : 'Delete'}
+									{deletingCredentialId === credential.id ? localize('Deleting...', '삭제 중...') : localize('Delete', '삭제')}
 								</button>
 							</div>
 						{/each}
 					{/if}
 				</div>
 				<p class="mt-2 text-[11px] text-text-muted">
-					Secrets are never shown again after save. Stored values are encrypted at rest.
+					{localize(
+						'Secrets are never shown again after save. Stored values are encrypted at rest.',
+						'비밀값은 저장 후 다시 표시되지 않습니다. 저장된 값은 at-rest 암호화됩니다.',
+					)}
 				</p>
 			{/if}
 		</section>
@@ -1741,9 +1963,12 @@ $effect(() => {
 	>
 		<div class="flex flex-wrap items-center justify-between gap-3">
 			<div>
-				<h2 class="text-sm font-semibold text-text-primary">Runtime Summary (Desktop)</h2>
+				<h2 class="text-sm font-semibold text-text-primary">{localize('Runtime Summary (Desktop)', '런타임 요약 (데스크톱)')}</h2>
 				<p class="mt-1 text-xs text-text-secondary">
-					Provider, prompt, response, and storage settings for desktop local runtime.
+					{localize(
+						'Provider, prompt, response, and storage settings for desktop local runtime.',
+						'데스크톱 로컬 런타임의 프로바이더, 프롬프트, 응답, 저장소 설정입니다.',
+					)}
 				</p>
 			</div>
 			<div class="flex items-center gap-2">
@@ -1754,7 +1979,7 @@ $effect(() => {
 						disabled={!runtimeSupported || runtimeDetecting || runtimeSaving || runtimeLoading}
 						class="inline-flex h-9 items-center border border-border px-3 text-xs font-semibold text-text-secondary hover:text-text-primary disabled:opacity-60"
 					>
-						{runtimeDetecting ? 'Detecting...' : 'Detect Provider'}
+						{runtimeDetecting ? localize('Detecting...', '감지 중...') : localize('Detect Provider', '프로바이더 감지')}
 					</button>
 						<button
 							type="button"
@@ -1769,10 +1994,13 @@ $effect(() => {
 		</div>
 
 		{#if runtimeLoading}
-			<p class="mt-3 text-xs text-text-muted">Loading runtime settings...</p>
+			<p class="mt-3 text-xs text-text-muted">{localize('Loading runtime settings...', '런타임 설정을 불러오는 중...')}</p>
 		{:else if !runtimeSupported}
 			<p class="mt-3 text-xs text-text-muted">
-				Runtime settings are not available in this environment (desktop IPC required).
+				{localize(
+					'Runtime settings are not available in this environment (desktop IPC required).',
+					'이 환경에서는 런타임 설정을 사용할 수 없습니다. (데스크톱 IPC 필요)',
+				)}
 			</p>
 		{:else}
 			<div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem] xl:items-start">
@@ -1793,13 +2021,13 @@ $effect(() => {
 
 				<label class="block text-xs text-text-secondary">
 					<FieldHelp
-						label="Default Session View"
+						label={localize('Default Session View', '기본 세션 보기')}
 						help={runtimeHelp.defaultSessionView}
 						testId="runtime-help-default-session-view"
 					/>
 					<select bind:value={runtimeSessionDefaultView} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="full">full</option>
-						<option value="compressed">compressed</option>
+						<option value="full">{localize('full', '전체')}</option>
+						<option value="compressed">{localize('compressed', '압축')}</option>
 					</select>
 				</label>
 
@@ -1808,10 +2036,10 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-provider"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Provider</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Provider', '프로바이더')}</h3>
 					<label class="block text-xs text-text-secondary">
 						<FieldHelp
-							label="Summary Provider"
+								label={localize('Summary Provider', '요약 프로바이더')}
 							help={runtimeHelp.summaryProvider}
 							testId="runtime-help-summary-provider"
 						/>
@@ -1821,19 +2049,19 @@ $effect(() => {
 							data-testid="runtime-provider-select"
 							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
 						>
-							<option value="disabled">disabled</option>
+							<option value="disabled">{localize('disabled', '사용 안 함')}</option>
 							<option value="ollama">ollama</option>
 							<option value="codex_exec">codex_exec</option>
 							<option value="claude_cli">claude_cli</option>
 						</select>
 					</label>
 					<p class="text-[11px] text-text-muted" data-testid="runtime-provider-transport">
-						transport: {currentRuntimeProviderTransport()}
+						{localize('transport', '전송 방식')}: {currentRuntimeProviderTransport()}
 					</p>
 					{#if currentRuntimeProviderTransport() === 'http'}
 						<label class="block text-xs text-text-secondary">
 							<FieldHelp
-								label="Endpoint"
+								label={localize('Endpoint', '엔드포인트')}
 								help={runtimeHelp.providerEndpoint}
 								testId="runtime-help-provider-endpoint"
 							/>
@@ -1845,7 +2073,7 @@ $effect(() => {
 						</label>
 						<label class="block text-xs text-text-secondary">
 							<FieldHelp
-								label="Model"
+								label={localize('Model', '모델')}
 								help={runtimeHelp.providerModel}
 								testId="runtime-help-provider-model"
 							/>
@@ -1858,7 +2086,7 @@ $effect(() => {
 					{:else if currentRuntimeProviderTransport() === 'cli'}
 						<label class="block text-xs text-text-secondary">
 							<FieldHelp
-								label="Model (optional)"
+								label={localize('Model (optional)', '모델 (선택)')}
 								help={runtimeHelp.providerModel}
 								testId="runtime-help-provider-model"
 							/>
@@ -1869,7 +2097,7 @@ $effect(() => {
 							/>
 						</label>
 						<p class="text-[11px] text-text-muted" data-testid="runtime-provider-cli-status">
-							{runtimeDetectMessage ?? 'Run Detect Provider to verify CLI availability.'}
+							{runtimeDetectMessage ?? localize('Run Detect Provider to verify CLI availability.', 'CLI 사용 가능 여부를 확인하려면 프로바이더 감지를 실행하세요.')}
 						</p>
 					{/if}
 				</section>
@@ -1879,10 +2107,10 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-prompt"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Prompt</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Prompt', '프롬프트')}</h3>
 					<label class="block text-xs text-text-secondary">
 						<FieldHelp
-							label="Prompt Template"
+							label={localize('Prompt Template', '프롬프트 템플릿')}
 							help={runtimeHelp.promptTemplate}
 							testId="runtime-help-prompt-template"
 						/>
@@ -1900,11 +2128,11 @@ $effect(() => {
 							data-testid="runtime-prompt-reset-default"
 							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
 						>
-							Reset to default
+							{localize('Reset to default', '기본값으로 재설정')}
 						</button>
 					</div>
 					<label class="block text-xs text-text-secondary">
-						<span class="mb-1 block">Default Template (read-only)</span>
+						<span class="mb-1 block">{localize('Default Template (read-only)', '기본 템플릿 (읽기 전용)')}</span>
 						<textarea
 							readonly
 							value={runtimePromptDefaultTemplate}
@@ -1919,38 +2147,38 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-response"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Response</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Response', '응답')}</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Response Style"
+								label={localize('Response Style', '응답 스타일')}
 								help={runtimeHelp.responseStyle}
 								testId="runtime-help-response-style"
 							/>
 							<select bind:value={runtimeResponseStyle} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-								<option value="compact">compact</option>
-								<option value="standard">standard</option>
-								<option value="detailed">detailed</option>
+								<option value="compact">{localize('compact', '간결')}</option>
+								<option value="standard">{localize('standard', '표준')}</option>
+								<option value="detailed">{localize('detailed', '상세')}</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Output Shape"
+								label={localize('Output Shape', '출력 형태')}
 								help={runtimeHelp.outputShape}
 								testId="runtime-help-output-shape"
 							/>
 							<select bind:value={runtimeOutputShape} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-								<option value="layered">layered</option>
-								<option value="file_list">file_list</option>
-								<option value="security_first">security_first</option>
+								<option value="layered">{localize('layered', '레이어별')}</option>
+								<option value="file_list">{localize('file_list', '파일 목록')}</option>
+								<option value="security_first">{localize('security_first', '보안 우선')}</option>
 							</select>
 						</label>
 					</div>
 					<p class="text-[11px] text-text-muted">
-						Desktop source mode is locked to <code>session_only</code> ({runtimeSourceMode}).
+						{localize('Desktop source mode is locked to', '데스크톱 원본 모드는')} <code>session_only</code> ({runtimeSourceMode}){localize('.', '로 고정됩니다.')}
 					</p>
 					<div class="border border-border/70 bg-bg-primary p-2" data-testid="settings-response-preview">
-						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">Response Preview</p>
+						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Response Preview', '응답 미리보기')}</p>
 						<pre class="max-w-full whitespace-pre-wrap text-xs text-text-secondary [overflow-wrap:anywhere]">{responsePreview(runtimeResponseStyle, runtimeOutputShape)}</pre>
 					</div>
 				</section>
@@ -1960,11 +2188,11 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-vector"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Vector Search</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Vector Search', '벡터 검색')}</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Model"
+								label={localize('Model', '모델')}
 								help={runtimeHelp.vectorModel}
 								testId="runtime-help-vector-model"
 							/>
@@ -1976,7 +2204,7 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Endpoint"
+								label={localize('Endpoint', '엔드포인트')}
 								help={runtimeHelp.vectorEndpoint}
 								testId="runtime-help-vector-endpoint"
 							/>
@@ -1988,7 +2216,7 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Chunking Mode"
+								label={localize('Chunking Mode', '청킹 모드')}
 								help={runtimeHelp.vectorChunkingMode}
 								testId="runtime-help-vector-chunking-mode"
 							/>
@@ -1997,13 +2225,13 @@ $effect(() => {
 								data-testid="runtime-vector-chunking-mode"
 								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
 							>
-								<option value="auto">auto</option>
-								<option value="manual">manual</option>
+								<option value="auto">{localize('auto', '자동')}</option>
+								<option value="manual">{localize('manual', '수동')}</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Chunk Size (lines)"
+								label={localize('Chunk Size (lines)', '청크 크기 (줄)')}
 								help={runtimeHelp.vectorChunkSize}
 								testId="runtime-help-vector-chunk-size"
 							/>
@@ -2018,7 +2246,7 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Chunk Overlap (lines)"
+								label={localize('Chunk Overlap (lines)', '청크 겹침 (줄)')}
 								help={runtimeHelp.vectorChunkOverlap}
 								testId="runtime-help-vector-chunk-overlap"
 							/>
@@ -2033,7 +2261,7 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Top K Chunks"
+								label={localize('Top K Chunks', '상위 K 청크')}
 								help={runtimeHelp.vectorTopKChunks}
 								testId="runtime-help-vector-top-k-chunks"
 							/>
@@ -2046,7 +2274,7 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Top K Sessions"
+								label={localize('Top K Sessions', '상위 K 세션')}
 								help={runtimeHelp.vectorTopKSessions}
 								testId="runtime-help-vector-top-k-sessions"
 							/>
@@ -2068,7 +2296,7 @@ $effect(() => {
 						/>
 						<FieldHelp
 							inline
-							label="Enable semantic vector search"
+							label={localize('Enable semantic vector search', '시맨틱 벡터 검색 사용')}
 							help={runtimeHelp.vectorEnable}
 							testId="runtime-help-vector-enable"
 						/>
@@ -2082,7 +2310,7 @@ $effect(() => {
 							disabled={runtimeVectorInstalling || runtimeSaving || runtimeLoading}
 							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 						>
-							{runtimeVectorInstalling ? 'Installing...' : 'Install model'}
+							{runtimeVectorInstalling ? localize('Installing...', '설치 중...') : localize('Install model', '모델 설치')}
 						</button>
 						<button
 							type="button"
@@ -2091,29 +2319,29 @@ $effect(() => {
 							disabled={runtimeVectorReindexing || runtimeSaving || runtimeLoading || !runtimeVectorPreflight?.ollama_reachable || !runtimeVectorPreflight?.model_installed}
 							class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 						>
-							{runtimeVectorReindexing ? 'Reindexing...' : 'Rebuild index'}
+							{runtimeVectorReindexing ? localize('Reindexing...', '인덱싱 중...') : localize('Rebuild index', '인덱스 재구성')}
 						</button>
 					</div>
 
 					<div class="rounded border border-border/60 bg-bg-primary px-3 py-3 text-sm text-text-muted" data-testid="runtime-vector-status">
 						<p class="font-medium text-text-primary">
-							Provider {runtimeVectorProvider} · granularity {runtimeVectorGranularity} · chunking {runtimeVectorChunkingMode}
+							{localize('Provider', '프로바이더')} {runtimeVectorProvider} · {localize('granularity', '세분화')} {runtimeVectorGranularity} · {localize('chunking', '청킹')} {runtimeVectorChunkingMode}
 						</p>
 						{#if runtimeVectorPreflight}
 							<p class="mt-1">
-								Model {runtimeVectorPreflight.model} · reachable {runtimeVectorPreflight.ollama_reachable ? 'yes' : 'no'} · installed{' '}
-								{runtimeVectorPreflight.model_installed ? 'yes' : 'no'} · install {runtimeVectorPreflight.install_state}
+								{localize('Model', '모델')} {runtimeVectorPreflight.model} · {localize('reachable', '접속 가능')} {boolWord(runtimeVectorPreflight.ollama_reachable)} · {localize('installed', '설치됨')}{' '}
+								{boolWord(runtimeVectorPreflight.model_installed)} · {localize('install', '설치')} {runtimeVectorPreflight.install_state}
 								({runtimeVectorPreflight.progress_pct}%)
 							</p>
 							{#if runtimeVectorPreflight.message}
 								<p class="mt-1">{runtimeVectorPreflight.message}</p>
 							{/if}
 						{:else}
-							<p class="mt-1">Vector model status unavailable.</p>
+							<p class="mt-1">{localize('Vector model status unavailable.', '벡터 모델 상태를 확인할 수 없습니다.')}</p>
 						{/if}
 						{#if runtimeVectorIndex}
 							<p class="mt-1">
-								Index {runtimeVectorIndex.state} · processed {runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
+								{localize('Index', '인덱스')} {runtimeVectorIndex.state} · {localize('processed', '처리됨')} {runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
 								{#if progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions) != null}
 									· {progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions)}%
 								{/if}
@@ -2121,7 +2349,7 @@ $effect(() => {
 							{#if progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions) != null}
 								<div class="mt-2" data-testid="runtime-vector-progress">
 									<div class="flex items-center justify-between text-[11px] text-text-secondary">
-										<span>Embedding progress</span>
+										<span>{localize('Embedding progress', '임베딩 진행률')}</span>
 										<span>
 											{runtimeVectorIndex.processed_sessions}/{runtimeVectorIndex.total_sessions}
 											({progressPercent(runtimeVectorIndex.processed_sessions, runtimeVectorIndex.total_sessions)}%)
@@ -2138,23 +2366,25 @@ $effect(() => {
 							{#if runtimeVectorIndex.message}
 								<p class="mt-1 whitespace-pre-line">
 									{runtimeVectorIndex.state === 'failed'
-										? `Last rebuild failure:\n${runtimeVectorIndex.message}`
+										? localize(`Last rebuild failure:\n${runtimeVectorIndex.message}`, `마지막 재구성 실패:\n${runtimeVectorIndex.message}`)
 										: runtimeVectorIndex.message}
 								</p>
 								{#if runtimeVectorIndex.state === 'failed' && runtimeVectorPreflight?.ollama_reachable && runtimeVectorPreflight?.model_installed}
 									<p class="mt-1 text-[11px] text-text-secondary">
-										Provider looks reachable now. Click <strong>Rebuild index</strong> to retry with the current endpoint.
+										{localize('Provider looks reachable now. Click', '지금은 프로바이더에 연결할 수 있습니다.')}
+										<strong>{localize('Rebuild index', '인덱스 재구성')}</strong>
+										{localize('to retry with the current endpoint.', '를 눌러 현재 엔드포인트로 다시 시도하세요.')}
 									</p>
 								{/if}
 							{/if}
 							{#if runtimeVectorIndex.started_at || runtimeVectorIndex.finished_at}
 								<p class="mt-1 text-[11px] text-text-secondary">
-									started: {formatDate(runtimeVectorIndex.started_at)} | finished: {formatDate(runtimeVectorIndex.finished_at)}
+									{localize('started', '시작')}: {formatDate(runtimeVectorIndex.started_at)} | {localize('finished', '종료')}: {formatDate(runtimeVectorIndex.finished_at)}
 								</p>
 							{/if}
 						{/if}
 						<div class="mt-2 space-y-1 rounded border border-border/50 bg-bg-secondary/50 px-2 py-2 text-[11px] text-text-secondary">
-							<p class="font-semibold uppercase tracking-[0.08em] text-text-muted">Actions</p>
+							<p class="font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Actions', '조치')}</p>
 							{#each vectorStatusGuidance() as line}
 								<p>{line}</p>
 							{/each}
@@ -2175,14 +2405,14 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-change-reader"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Change Reader', '변경 리더')}</h3>
 					<div
 						class="space-y-1 rounded border border-border/60 bg-bg-primary px-3 py-2 text-[11px] text-text-secondary"
 						data-testid="runtime-change-reader-mode-guide"
 					>
-						<p><span class="font-semibold text-text-primary">Reader</span>: text view of the selected change context.</p>
-						<p><span class="font-semibold text-text-primary">Follow-up Q&amp;A</span>: ask extra text questions about that same change context.</p>
-						<p><span class="font-semibold text-text-primary">Voice playback</span>: read the change reader output aloud with TTS. Requires a Voice API key.</p>
+						<p><span class="font-semibold text-text-primary">{localize('Reader', '리더')}</span>: {localize('text view of the selected change context.', '선택한 변경 맥락의 텍스트 보기입니다.')}</p>
+						<p><span class="font-semibold text-text-primary">{localize('Follow-up questions', '후속 질문')}</span>: {localize('ask extra text questions about that same change context.', '같은 변경 맥락에 대해 추가 텍스트 질문을 합니다.')}</p>
+						<p><span class="font-semibold text-text-primary">{localize('Voice playback', '음성 재생')}</span>: {localize('read the change reader output aloud with TTS. Requires a Voice API key.', 'TTS로 변경 리더 출력을 소리 내어 읽습니다. Voice API 키가 필요합니다.')}</p>
 					</div>
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input
@@ -2192,7 +2422,7 @@ $effect(() => {
 						/>
 						<FieldHelp
 							inline
-							label="Enable notebook-style change reading"
+							label={localize('Enable notebook-style change reading', '노트북형 변경 읽기 사용')}
 							help={runtimeHelp.changeReaderEnable}
 							testId="runtime-help-change-reader-enable"
 						/>
@@ -2200,18 +2430,18 @@ $effect(() => {
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Default Scope"
+								label={localize('Default Scope', '기본 범위')}
 								help={runtimeHelp.changeReaderScope}
 								testId="runtime-help-change-reader-scope"
 							/>
 							<select bind:value={runtimeChangeReaderScope} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-								<option value="summary_only">summary_only</option>
-								<option value="full_context">full_context</option>
+								<option value="summary_only">{localize('summary_only', '요약만')}</option>
+								<option value="full_context">{localize('full_context', '전체 컨텍스트')}</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Max Context Chars"
+								label={localize('Max Context Chars', '최대 컨텍스트 문자 수')}
 								help={runtimeHelp.changeReaderMaxContext}
 								testId="runtime-help-change-reader-max-context"
 							/>
@@ -2233,13 +2463,13 @@ $effect(() => {
 						/>
 						<FieldHelp
 							inline
-							label="Enable Follow-up Q&A"
+							label={localize('Enable follow-up questions', '후속 질문 사용')}
 							help={runtimeHelp.changeReaderQa}
 							testId="runtime-help-change-reader-qa"
 						/>
 					</label>
 					<div class="space-y-2 rounded border border-border/60 bg-bg-primary px-2 py-2">
-						<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">Voice Playback</p>
+						<p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Voice Playback', '음성 재생')}</p>
 						<p class="text-[11px] text-text-secondary">{runtimeChangeReaderVoiceHint}</p>
 						<label class="flex items-center gap-2 text-xs text-text-secondary">
 							<input
@@ -2251,7 +2481,7 @@ $effect(() => {
 							/>
 							<FieldHelp
 								inline
-								label="Enable Voice Playback (TTS)"
+							label={localize('Enable Voice Playback (TTS)', '음성 재생 (TTS) 사용')}
 								help={runtimeHelp.changeReaderVoiceEnable}
 								testId="runtime-help-change-reader-voice-enable"
 							/>
@@ -2259,7 +2489,7 @@ $effect(() => {
 						<div class="grid gap-2 sm:grid-cols-3">
 							<label class="text-xs text-text-secondary">
 								<FieldHelp
-									label="Voice Provider"
+									label={localize('Voice Provider', '음성 프로바이더')}
 									help={runtimeHelp.changeReaderVoiceProvider}
 									testId="runtime-help-change-reader-voice-provider"
 								/>
@@ -2273,7 +2503,7 @@ $effect(() => {
 							</label>
 							<label class="text-xs text-text-secondary">
 								<FieldHelp
-									label="Voice Model"
+									label={localize('Voice Model', '음성 모델')}
 									help={runtimeHelp.changeReaderVoiceModel}
 									testId="runtime-help-change-reader-voice-model"
 								/>
@@ -2285,7 +2515,7 @@ $effect(() => {
 							</label>
 							<label class="text-xs text-text-secondary">
 								<FieldHelp
-									label="Voice Name"
+									label={localize('Voice Name', '음성 이름')}
 									help={runtimeHelp.changeReaderVoiceName}
 									testId="runtime-help-change-reader-voice-name"
 								/>
@@ -2298,13 +2528,13 @@ $effect(() => {
 						</div>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Voice API Key (write-only)"
+								label={localize('Voice API Key (write-only)', 'Voice API 키 (쓰기 전용)')}
 								help={runtimeHelp.changeReaderVoiceApiKey}
 								testId="runtime-help-change-reader-voice-api-key"
 							/>
 							<input
 								type="password"
-								placeholder={runtimeChangeReaderVoiceApiKeyConfigured ? 'Configured (enter new key to rotate)' : 'Enter API key'}
+								placeholder={runtimeChangeReaderVoiceApiKeyConfigured ? localize('Configured (enter new key to rotate)', '설정됨 (교체하려면 새 키 입력)') : localize('Enter API key', 'API 키 입력')}
 								bind:value={runtimeChangeReaderVoiceApiKey}
 								data-testid="runtime-change-reader-voice-api-key"
 								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
@@ -2318,7 +2548,10 @@ $effect(() => {
 						</p>
 					</div>
 					<p class="text-[11px] text-text-muted">
-						Uses the configured summary provider when available, then falls back to local heuristic context extraction.
+						{localize(
+							'Uses the configured summary provider when available, then falls back to local heuristic context extraction.',
+							'설정된 요약 프로바이더를 우선 사용하고, 사용할 수 없으면 로컬 휴리스틱 컨텍스트 추출로 대체합니다.',
+						)}
 					</p>
 				</section>
 
@@ -2327,50 +2560,50 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-storage"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Storage</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Storage', '저장소')}</h3>
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Trigger"
+								label={localize('Trigger', '트리거')}
 								help={runtimeHelp.storageTrigger}
 								testId="runtime-help-storage-trigger"
 							/>
 							<select bind:value={runtimeTriggerMode} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-								<option value="manual">manual</option>
-								<option value="on_session_save">on_session_save</option>
+								<option value="manual">{localize('manual', '수동')}</option>
+								<option value="on_session_save">{localize('on_session_save', '세션 저장 시')}</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Backend"
+								label={localize('Backend', '백엔드')}
 								help={runtimeHelp.storageBackend}
 								testId="runtime-help-storage-backend"
 							/>
 							<select bind:value={runtimeStorageBackend} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-								<option value="hidden_ref">hidden_ref (git refs)</option>
-								<option value="local_db">local_db (sqlite)</option>
-								<option value="none">none (no persistence)</option>
+								<option value="hidden_ref">{localize('hidden_ref (git refs)', 'hidden_ref (git ref)')}</option>
+								<option value="local_db">{localize('local_db (sqlite)', 'local_db (sqlite)')}</option>
+								<option value="none">{localize('none (no persistence)', 'none (저장 안 함)')}</option>
 							</select>
 						</label>
 					</div>
 					<div class="space-y-1 rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-storage-backend-notice">
 						<p>
-							Current persisted backend:
+							{localize('Current persisted backend', '현재 저장된 백엔드')}:
 							{#if persistedStorageBackend()}
 								<code>{persistedStorageBackend()}</code> ({persistedStorageBackendLabel()})
 							{:else}
-								unknown
+								{localize('unknown', '알 수 없음')}
 							{/if}
 						</p>
 						<p>
-							Selected backend:
+							{localize('Selected backend', '선택된 백엔드')}:
 							<code>{runtimeStorageBackend}</code> ({storageBackendLabel(runtimeStorageBackend)})
 						</p>
 						<p>{storageBackendSummary(runtimeStorageBackend)}</p>
 						<p>{storageBackendDetails(runtimeStorageBackend)}</p>
 						<p data-testid="runtime-storage-transition-note">{storageBackendTransitionDetail()}</p>
 						{#if hasPendingStorageBackendChange()}
-							<p class="text-text-primary">Apply this change with <strong>{runtimeSaveLabel()}</strong> above.</p>
+							<p class="text-text-primary">{localize('Apply this change with', '이 변경을 적용하려면 위의')} <strong>{runtimeSaveLabel()}</strong>{localize('above.', '를 누르세요.')}</p>
 						{/if}
 					</div>
 				</section>
@@ -2381,7 +2614,7 @@ $effect(() => {
 					data-testid="settings-runtime-summary-batch"
 				>
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Summary Batch</h3>
+						<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Summary Batch', '요약 배치')}</h3>
 						<button
 							type="button"
 							data-testid="runtime-summary-batch-run"
@@ -2389,35 +2622,35 @@ $effect(() => {
 							disabled={runtimeSummaryBatchRunning || runtimeSaving || runtimeLoading}
 							class="inline-flex h-9 items-center border border-border px-3 text-xs text-text-secondary hover:text-text-primary disabled:opacity-60"
 						>
-							{runtimeSummaryBatchRunning ? 'Running...' : 'Run now'}
+							{runtimeSummaryBatchRunning ? localize('Running...', '실행 중...') : localize('Run now', '지금 실행')}
 						</button>
 					</div>
 					<div class="grid gap-2 sm:grid-cols-3">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Execution Mode"
+								label={localize('Execution Mode', '실행 모드')}
 								help={runtimeHelp.batchExecution}
 								testId="runtime-help-batch-execution-mode"
 							/>
 							<select bind:value={runtimeBatchExecutionMode} class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary">
-								<option value="manual">manual</option>
-								<option value="on_app_start">on_app_start</option>
+								<option value="manual">{localize('manual', '수동')}</option>
+								<option value="on_app_start">{localize('on_app_start', '앱 시작 시')}</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Scope"
+								label={localize('Scope', '범위')}
 								help={runtimeHelp.batchScope}
 								testId="runtime-help-batch-scope"
 							/>
 							<select bind:value={runtimeBatchScope} class="h-9 w-full border border-border bg-bg-primary px-2 text-xs text-text-primary">
-								<option value="recent_days">recent_days</option>
-								<option value="all">all</option>
+								<option value="recent_days">{localize('recent_days', '최근 일수')}</option>
+								<option value="all">{localize('all', '전체')}</option>
 							</select>
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Recent Days"
+								label={localize('Recent Days', '최근 일수')}
 								help={runtimeHelp.batchRecentDays}
 								testId="runtime-help-batch-recent-days"
 							/>
@@ -2434,12 +2667,12 @@ $effect(() => {
 					<div class="rounded border border-border/60 bg-bg-primary px-2 py-2 text-[11px] text-text-muted" data-testid="runtime-summary-batch-status">
 						{#if runtimeSummaryBatchStatus}
 							<p>
-								state: {runtimeSummaryBatchStatus.state} | {summaryBatchProgressLabel(runtimeSummaryBatchStatus)}
+								{localize('state', '상태')}: {runtimeSummaryBatchStatus.state} | {summaryBatchProgressLabel(runtimeSummaryBatchStatus)}
 							</p>
 							{#if progressPercent(runtimeSummaryBatchStatus.processed_sessions, runtimeSummaryBatchStatus.total_sessions) != null}
 								<div class="mt-2" data-testid="runtime-summary-batch-progress">
 									<div class="flex items-center justify-between text-[11px] text-text-secondary">
-										<span>Batch progress</span>
+										<span>{localize('Batch progress', '배치 진행률')}</span>
 										<span>
 											{runtimeSummaryBatchStatus.processed_sessions}/{runtimeSummaryBatchStatus.total_sessions}
 											({progressPercent(runtimeSummaryBatchStatus.processed_sessions, runtimeSummaryBatchStatus.total_sessions)}%)
@@ -2457,10 +2690,10 @@ $effect(() => {
 								<p class="mt-1">{runtimeSummaryBatchStatus.message}</p>
 							{/if}
 							<p class="mt-1">
-								started: {formatDate(runtimeSummaryBatchStatus.started_at)} | finished: {formatDate(runtimeSummaryBatchStatus.finished_at)}
+								{localize('started', '시작')}: {formatDate(runtimeSummaryBatchStatus.started_at)} | {localize('finished', '종료')}: {formatDate(runtimeSummaryBatchStatus.finished_at)}
 							</p>
 						{:else}
-							<p>batch status unavailable.</p>
+							<p>{localize('batch status unavailable.', '배치 상태를 확인할 수 없습니다.')}</p>
 						{/if}
 					</div>
 				</section>
@@ -2470,12 +2703,12 @@ $effect(() => {
 					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
 					data-testid="settings-runtime-lifecycle"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Data Lifecycle</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Data Lifecycle', '데이터 수명주기')}</h3>
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input type="checkbox" bind:checked={runtimeLifecycleEnabled} data-testid="runtime-lifecycle-enable" />
 						<FieldHelp
 							inline
-							label="Enable periodic lifecycle cleanup"
+							label={localize('Enable periodic lifecycle cleanup', '주기적 수명주기 정리 사용')}
 							help={runtimeHelp.lifecycleEnable}
 							testId="runtime-help-lifecycle-enable"
 						/>
@@ -2483,7 +2716,7 @@ $effect(() => {
 					<div class="grid gap-2 sm:grid-cols-3">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Session TTL (days)"
+								label={localize('Session TTL (days)', '세션 TTL (일)')}
 								help={runtimeHelp.sessionTtl}
 								testId="runtime-help-session-ttl"
 							/>
@@ -2497,7 +2730,7 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Summary TTL (days)"
+								label={localize('Summary TTL (days)', '요약 TTL (일)')}
 								help={runtimeHelp.summaryTtl}
 								testId="runtime-help-summary-ttl"
 							/>
@@ -2511,7 +2744,7 @@ $effect(() => {
 						</label>
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
-								label="Cleanup Interval (sec)"
+								label={localize('Cleanup Interval (sec)', '정리 주기 (초)')}
 								help={runtimeHelp.cleanupInterval}
 								testId="runtime-help-cleanup-interval"
 							/>
@@ -2530,42 +2763,42 @@ $effect(() => {
 					>
 						{#if runtimeLifecycleStatus}
 							<p>
-								state: {runtimeLifecycleStatus.state} | deleted: {runtimeLifecycleStatus.deleted_sessions} sessions /
-								{runtimeLifecycleStatus.deleted_summaries} summaries
+								{localize('state', '상태')}: {runtimeLifecycleStatus.state} | {localize('deleted', '삭제됨')}: {runtimeLifecycleStatus.deleted_sessions} {localize('sessions', '세션')} /
+								{runtimeLifecycleStatus.deleted_summaries} {localize('summaries', '요약')}
 							</p>
 							<p class="mt-1">
-								next run: {lifecycleNextRunLabel()} | interval: {formatIntervalSeconds(runtimeCleanupIntervalSecs)}
+								{localize('next run', '다음 실행')}: {lifecycleNextRunLabel()} | {localize('interval', '주기')}: {formatIntervalSeconds(runtimeCleanupIntervalSecs)}
 							</p>
 							{#if runtimeLifecycleStatus.message}
 								<p class="mt-1">{runtimeLifecycleStatus.message}</p>
 							{/if}
 							<p class="mt-1">
-								started: {formatDate(runtimeLifecycleStatus.started_at)} | finished: {formatDate(runtimeLifecycleStatus.finished_at)}
+								{localize('started', '시작')}: {formatDate(runtimeLifecycleStatus.started_at)} | {localize('finished', '종료')}: {formatDate(runtimeLifecycleStatus.finished_at)}
 							</p>
 						{:else}
-							<p>No lifecycle cleanup runs recorded yet.</p>
+							<p>{localize('No lifecycle cleanup runs recorded yet.', '아직 수명주기 정리 실행 기록이 없습니다.')}</p>
 						{/if}
 					</div>
 					<div class="overflow-x-auto border border-border/70 bg-bg-primary p-2">
-						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">Root / Dependent Cleanup</p>
+						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Root / Dependent Cleanup', '루트 / 종속 항목 정리')}</p>
 						<table class="w-full text-left text-[11px] text-text-secondary">
 							<thead>
 								<tr class="text-text-muted">
-									<th class="pb-1">Root</th>
-									<th class="pb-1">Dependents</th>
-									<th class="pb-1">Rule</th>
+									<th class="pb-1">{localize('Root', '루트')}</th>
+									<th class="pb-1">{localize('Dependents', '종속 항목')}</th>
+									<th class="pb-1">{localize('Rule', '규칙')}</th>
 								</tr>
 							</thead>
 							<tbody>
 								<tr>
-									<td class="pr-4 align-top">session</td>
-									<td class="pr-4 align-top">summary, vector chunks, vector index, body cache, session links</td>
-									<td class="align-top">delete session => delete all dependents</td>
+									<td class="pr-4 align-top">{localize('session', '세션')}</td>
+									<td class="pr-4 align-top">{localize('summary, vector chunks, vector index, body cache, session links', '요약, 벡터 청크, 벡터 인덱스, 본문 캐시, 세션 링크')}</td>
+									<td class="align-top">{localize('Deleting a session also deletes all dependents', '세션을 삭제하면 모든 종속 항목도 삭제됩니다')}</td>
 								</tr>
 								<tr>
-									<td class="pr-4 align-top">summary</td>
-									<td class="pr-4 align-top">summary metadata (hidden_ref/local row)</td>
-									<td class="align-top">delete summary => keep session</td>
+									<td class="pr-4 align-top">{localize('summary', '요약')}</td>
+									<td class="pr-4 align-top">{localize('summary metadata (hidden_ref/local row)', '요약 메타데이터 (hidden_ref/로컬 행)')}</td>
+									<td class="align-top">{localize('Deleting a summary keeps the session', '요약을 삭제해도 세션은 유지됩니다')}</td>
 								</tr>
 							</tbody>
 						</table>
@@ -2644,7 +2877,7 @@ $effect(() => {
 						disabled={runtimeSaving}
 						class="inline-flex h-9 items-center border border-border px-3 text-xs font-semibold text-text-secondary hover:text-text-primary disabled:opacity-60"
 					>
-						Reset Draft
+						{localize('Reset Draft', '초안 초기화')}
 					</button>
 					<button
 						type="button"

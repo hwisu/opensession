@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from 'svelte';
 import { listSessionRepos, listSessions } from '../api';
+import { appLocale, translate } from '../i18n';
 import {
 	createBrowserSessionListCache,
 	createSessionListModel,
@@ -57,28 +58,31 @@ const floatingJobs = $derived.by(() => {
 	return [
 		{
 			id: 'session-refresh',
-			label: 'Refreshing sessions',
-			detail: 'Background reindex is running. You can continue browsing.',
+			label: translate($appLocale, 'sessionList.refreshJobLabel'),
+			detail: translate($appLocale, 'sessionList.refreshJobDetail'),
 		},
 	];
 });
 
 const rangeCycle: readonly TimeRange[] = ['all', '24h', '7d', '30d'];
-const timeRangeTabs: ReadonlyArray<{ value: TimeRange; label: string }> = [
-	{ value: 'all', label: 'All Time' },
-	{ value: '24h', label: '24h' },
-	{ value: '7d', label: '7d' },
-	{ value: '30d', label: '30d' },
-];
+const timeRangeTabs = $derived.by(
+	(): ReadonlyArray<{ value: TimeRange; label: string }> => [
+		{ value: 'all', label: translate($appLocale, 'sessionList.range.all') },
+		{ value: '24h', label: translate($appLocale, 'sessionList.range.24h') },
+		{ value: '7d', label: translate($appLocale, 'sessionList.range.7d') },
+		{ value: '30d', label: translate($appLocale, 'sessionList.range.30d') },
+	],
+);
 
 function sessionIndex(sessionId: string): number {
 	return sessionOrder.get(sessionId) ?? -1;
 }
 
-const tools = [
-	{ value: '', label: 'All Tools' },
+const tools = $derived.by(() => [
+	{ value: '', label: translate($appLocale, 'sessionList.allTools') },
 	...Object.values(TOOL_CONFIGS).map((t) => ({ value: t.name, label: t.label })),
-];
+]);
+const validToolValues = ['', ...Object.values(TOOL_CONFIGS).map((tool) => tool.name)];
 const validTimeRanges = new Set<TimeRange>(['all', '24h', '7d', '30d']);
 const sessionListModel = createSessionListModel(
 	{
@@ -184,7 +188,7 @@ const sessionListModel = createSessionListModel(
 		listSessionRepos,
 		cache: createBrowserSessionListCache(),
 		getLocationSearch: () => (typeof window === 'undefined' ? '' : window.location.search),
-		validToolValues: tools.map((tool) => tool.value),
+		validToolValues,
 		validTimeRanges,
 		perPage,
 	},
@@ -313,14 +317,18 @@ async function handleCopyShortcut(e: KeyboardEvent) {
 	if (!textToCopy) return;
 	e.preventDefault();
 	const copied = await writeClipboardText(textToCopy);
-	setCopyFeedbackMessage(copied ? 'Copied' : 'Copy failed');
+	setCopyFeedbackMessage(
+		copied ? translate($appLocale, 'common.copied') : translate($appLocale, 'common.copyFailed'),
+	);
 }
 
 async function copySelectedSessionTitle() {
 	const text = selectedSessionTitleForCopy();
 	if (!text) return;
 	const copied = await writeClipboardText(text);
-	setCopyFeedbackMessage(copied ? 'Copied' : 'Copy failed');
+	setCopyFeedbackMessage(
+		copied ? translate($appLocale, 'common.copied') : translate($appLocale, 'common.copyFailed'),
+	);
 }
 
 onMount(() => {
@@ -398,7 +406,7 @@ function handleCopyEvent(e: ClipboardEvent) {
 	e.preventDefault();
 	if (e.clipboardData) {
 		e.clipboardData.setData('text/plain', textToCopy);
-		setCopyFeedbackMessage('Copied');
+		setCopyFeedbackMessage(translate($appLocale, 'common.copied'));
 		return;
 	}
 	void copySelectedSessionTitle();
@@ -458,12 +466,16 @@ $effect(() => {
 <svelte:window oncopy={handleCopyEvent} onkeydown={handleKeydown} />
 
 <svelte:head>
-	<title>opensession.io - AI Session Explorer</title>
+	<title>{translate($appLocale, 'sessionList.title')}</title>
 </svelte:head>
 
 <div class="flex h-full flex-col">
 	<div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
-		<div class="flex items-center gap-1" role="tablist" aria-label="Time range">
+		<div
+			class="flex items-center gap-1"
+			role="tablist"
+			aria-label={translate($appLocale, 'sessionList.timeRange')}
+		>
 			{#each timeRangeTabs as tab}
 				<button
 					role="tab"
@@ -484,7 +496,7 @@ $effect(() => {
 			<input
 				id="session-search"
 				type="text"
-				placeholder="search..."
+				placeholder={translate($appLocale, 'sessionList.searchPlaceholder')}
 				bind:this={searchInput}
 				bind:value={searchQuery}
 				onkeydown={handleSearchInputKeydown}
@@ -502,12 +514,14 @@ $effect(() => {
 			{/each}
 		</select>
 		<div class="flex w-full items-center gap-1 sm:w-auto">
-			<label for="session-repo-filter" class="shrink-0 text-xs text-text-muted">repo</label>
+			<label for="session-repo-filter" class="shrink-0 text-xs text-text-muted">
+				{translate($appLocale, 'sessionList.repo')}
+			</label>
 			<input
 				id="session-repo-filter"
 				list="session-repo-options"
 				type="text"
-				placeholder="org/repo"
+				placeholder={translate($appLocale, 'sessionList.repoPlaceholder')}
 				bind:this={repoFilterInputEl}
 				bind:value={repoInput}
 				onkeydown={handleRepoInputKeydown}
@@ -525,7 +539,7 @@ $effect(() => {
 					onclick={clearRepoFilter}
 					class="shrink-0 border border-border bg-bg-secondary px-1.5 py-0.5 text-xs text-text-muted transition-colors hover:text-text-primary"
 				>
-					clear
+					{translate($appLocale, 'common.clear')}
 				</button>
 			{/if}
 		</div>
@@ -535,18 +549,18 @@ $effect(() => {
 		>
 			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
 				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">Cmd/Ctrl+C</kbd>
-				<span>copy title</span>
+				<span>{translate($appLocale, 'sessionList.copyTitle')}</span>
 			</span>
 			<span class="inline-flex items-center gap-1 rounded border border-border bg-bg-secondary px-1.5 py-0.5">
 				<kbd class="rounded border border-accent/40 bg-accent/10 px-1 py-[1px] font-mono text-[10px] text-accent">Shift+R</kbd>
-				<span>force refresh</span>
+				<span>{translate($appLocale, 'sessionList.forceRefresh')}</span>
 			</span>
 			{#if copyFeedback}
 				<span
 					data-testid="session-copy-feedback"
 					class="rounded border border-border bg-bg-secondary px-1.5 py-0.5"
-					class:text-success={copyFeedback === 'Copied'}
-					class:text-error={copyFeedback === 'Copy failed'}
+					class:text-success={copyFeedback === translate($appLocale, 'common.copied')}
+					class:text-error={copyFeedback === translate($appLocale, 'common.copyFailed')}
 				>
 					{copyFeedback}
 				</span>
@@ -556,7 +570,7 @@ $effect(() => {
 				onclick={copySelectedSessionTitle}
 				class="rounded border border-border bg-bg-secondary px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
 			>
-				Copy selected
+				{translate($appLocale, 'sessionList.copySelected')}
 			</button>
 			<button
 				type="button"
@@ -565,7 +579,9 @@ $effect(() => {
 				disabled={forceRefreshing}
 				class="rounded border border-border bg-bg-secondary px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:text-text-primary disabled:opacity-60"
 			>
-				{forceRefreshing ? 'Refreshing...' : 'Force refresh'}
+				{forceRefreshing
+					? translate($appLocale, 'sessionList.refreshing')
+					: translate($appLocale, 'sessionList.forceRefreshButton')}
 			</button>
 		</div>
 	</div>
@@ -578,14 +594,16 @@ $effect(() => {
 
 	<div class="flex-1 overflow-y-auto">
 		<div data-testid="session-layout-summary" class="border-b border-border px-3 py-1 text-xs text-text-muted">
-			Sessions ({total})
-			<span class="ml-2 text-text-secondary">[single chronological feed]</span>
+			{translate($appLocale, 'sessionList.header', { total })}
+			<span class="ml-2 text-text-secondary">{translate($appLocale, 'sessionList.feedHint')}</span>
 		</div>
 
 			{#if sessions.length === 0 && !loading}
 				<div class="py-16 text-center">
-					<p class="text-sm text-text-muted">No sessions found</p>
-					<p class="mt-1 text-xs text-text-muted">Public feed is currently empty.</p>
+					<p class="text-sm text-text-muted">{translate($appLocale, 'sessionList.noSessions')}</p>
+					<p class="mt-1 text-xs text-text-muted">
+						{translate($appLocale, 'sessionList.noSessionsDetail')}
+					</p>
 				</div>
 			{/if}
 
@@ -599,7 +617,9 @@ $effect(() => {
 
 		{#if loading}
 			<div class="py-4 text-center text-xs text-text-muted">
-				{sessions.length === 0 ? 'Loading...' : 'Updating...'}
+				{sessions.length === 0
+					? translate($appLocale, 'common.loading')
+					: translate($appLocale, 'common.updating')}
 			</div>
 		{/if}
 
@@ -609,7 +629,7 @@ $effect(() => {
 					onclick={renderMore}
 					class="px-4 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
 				>
-					Render More
+					{translate($appLocale, 'common.renderMore')}
 				</button>
 			</div>
 		{/if}
@@ -620,7 +640,7 @@ $effect(() => {
 					onclick={loadMore}
 					class="px-4 py-1 text-xs text-text-secondary transition-colors hover:text-text-primary"
 				>
-					Load More
+					{translate($appLocale, 'common.loadMore')}
 				</button>
 			</div>
 		{/if}

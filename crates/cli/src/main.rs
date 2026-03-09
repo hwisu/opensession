@@ -8,6 +8,7 @@ mod entrypoint;
 mod handoff_v1;
 mod hooks;
 mod inspect;
+mod locale;
 mod open_target;
 mod parse_cmd;
 mod register;

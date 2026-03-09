@@ -1,4 +1,5 @@
 <script lang="ts">
+import { appLocale } from '../../i18n';
 import type { RuntimeActivityCard, RuntimeActivityTone } from './models';
 
 const {
@@ -6,6 +7,12 @@ const {
 }: {
 	cards?: RuntimeActivityCard[];
 } = $props();
+
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 
 function activityPillClasses(tone: RuntimeActivityTone): string {
 	if (tone === 'running') {
@@ -32,14 +39,17 @@ function activityPillClasses(tone: RuntimeActivityTone): string {
 	<div class="flex flex-wrap items-start justify-between gap-2">
 		<div>
 			<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
-				Background Activity
+				{localize('Background Activity', '백그라운드 활동')}
 			</h3>
 			<p class="mt-1 text-[11px] text-text-secondary">
-				Live view of desktop auto jobs, cleanup loops, and their last recorded work.
+				{localize(
+					'Live view of desktop auto jobs, cleanup loops, and their last recorded work.',
+					'데스크톱 자동 작업, 정리 루프, 마지막 실행 상태를 실시간으로 보여줍니다.',
+				)}
 			</p>
 		</div>
 		<p class="text-[11px] text-text-muted">
-			Updates while this page stays open.
+			{localize('Updates while this page stays open.', '이 페이지를 열어 두는 동안 계속 갱신됩니다.')}
 		</p>
 	</div>
 	<div class="grid gap-3 lg:grid-cols-3">

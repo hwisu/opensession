@@ -1,4 +1,6 @@
 <script lang="ts">
+import { appLocale, translate } from '../i18n';
+
 const {
 	onNavigate = (_path: string) => {},
 }: {
@@ -17,42 +19,51 @@ type GoalCard = {
 	proof: string;
 };
 
-const goalCards: GoalCard[] = [
+const goalCards = $derived.by((): GoalCard[] => [
 	{
 		id: 'data',
-		title: 'Every Session Is Data',
-		summary:
-			'Messages, tool calls, diffs, corrections, and outcomes are stored as structured events.',
-		proof: 'The same records are available in CLI, TUI, and web.',
+		title: translate($appLocale, 'landing.goal.data.title'),
+		summary: translate($appLocale, 'landing.goal.data.summary'),
+		proof: translate($appLocale, 'landing.goal.data.proof'),
 	},
 	{
 		id: 'review',
-		title: 'Review What Actually Happened',
-		summary: 'Use timeline view to check which tools ran, what changed, and where context shifted.',
-		proof: 'Decisions can be verified from events, not memory.',
+		title: translate($appLocale, 'landing.goal.review.title'),
+		summary: translate($appLocale, 'landing.goal.review.summary'),
+		proof: translate($appLocale, 'landing.goal.review.proof'),
 	},
 	{
 		id: 'share',
-		title: 'Git-Native Sharing',
-		summary:
-			'Sessions are versioned, reviewed, and referenced by commit through normal git history.',
-		proof: 'Sharing uses standard refs and regular repository workflows.',
+		title: translate($appLocale, 'landing.goal.share.title'),
+		summary: translate($appLocale, 'landing.goal.share.summary'),
+		proof: translate($appLocale, 'landing.goal.share.proof'),
 	},
 	{
 		id: 'handoff',
-		title: 'Reproducible Handoffs',
-		summary:
-			'Handoffs use the same session records, so the next owner can continue from the same state.',
-		proof: 'No separate handoff summary is required as source of truth.',
+		title: translate($appLocale, 'landing.goal.handoff.title'),
+		summary: translate($appLocale, 'landing.goal.handoff.summary'),
+		proof: translate($appLocale, 'landing.goal.handoff.proof'),
 	},
-];
+]);
 
-const operatingLoop = [
-	{ label: 'Record', detail: 'Capture sessions as structured artifacts, not screenshots.' },
-	{ label: 'Inspect', detail: 'Review timeline evidence to understand behavior and outcomes.' },
-	{ label: 'Share', detail: 'Distribute reproducible artifacts through web and git refs.' },
-	{ label: 'Refine', detail: 'Use findings to improve prompts, tools, and ownership transfer.' },
-];
+const operatingLoop = $derived.by(() => [
+	{
+		label: translate($appLocale, 'landing.loop.record.label'),
+		detail: translate($appLocale, 'landing.loop.record.detail'),
+	},
+	{
+		label: translate($appLocale, 'landing.loop.inspect.label'),
+		detail: translate($appLocale, 'landing.loop.inspect.detail'),
+	},
+	{
+		label: translate($appLocale, 'landing.loop.share.label'),
+		detail: translate($appLocale, 'landing.loop.share.detail'),
+	},
+	{
+		label: translate($appLocale, 'landing.loop.refine.label'),
+		detail: translate($appLocale, 'landing.loop.refine.detail'),
+	},
+]);
 
 let compactDesktopLanding = $state(false);
 
@@ -70,20 +81,21 @@ $effect(() => {
 </script>
 
 <svelte:head>
-	<title>OpenSession - Version Control for AI Work</title>
+	<title>{translate($appLocale, 'landing.title')}</title>
 </svelte:head>
 
 <div class="landing-stage mx-auto w-full max-w-6xl px-3 py-8 sm:px-6 sm:py-10" data-testid="landing-page">
 	<section class="hero-panel p-5 sm:p-6">
 		<div class="grid gap-6 lg:grid-cols-[1.1fr_0.9fr] lg:gap-8">
 			<div class="space-y-4">
-				<p class="stage-kicker text-[11px] uppercase tracking-[0.18em] text-text-muted">version control for ai work</p>
+				<p class="stage-kicker text-[11px] uppercase tracking-[0.18em] text-text-muted">
+					{translate($appLocale, 'landing.kicker')}
+				</p>
 				<h1 class="stage-title text-4xl leading-[0.92] text-text-primary sm:text-5xl lg:text-6xl">
-					Version Control for AI Work.
+					{translate($appLocale, 'landing.heroTitle')}
 				</h1>
 				<p class="max-w-xl text-sm leading-relaxed text-text-secondary sm:text-base" data-testid="landing-hero-copy">
-					AI coding sessions are easy to lose. Context disappears, handoffs degrade, and screenshots replace evidence.
-					OpenSession turns AI sessions into structured, replayable artifacts.
+					{translate($appLocale, 'landing.heroCopy')}
 				</p>
 					<div class="flex flex-wrap gap-2">
 						<button
@@ -91,42 +103,42 @@ $effect(() => {
 							onclick={() => onNavigate('/sessions')}
 							class="stage-cta bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85"
 						>
-							Open Sessions
+							{translate($appLocale, 'landing.openSessions')}
 						</button>
 						<button
 							type="button"
 							onclick={() => onNavigate('/docs#getting-started')}
 							class="stage-cta bg-warning px-4 py-2 text-xs font-semibold text-text-primary transition-colors hover:bg-warning/85"
 						>
-							Beginner Quick Start
+							{translate($appLocale, 'landing.quickStart')}
 						</button>
 						<button
 							type="button"
 							onclick={() => onNavigate('/docs')}
 							class="stage-cta border border-border px-4 py-2 text-xs font-semibold text-text-secondary transition-colors hover:border-accent hover:text-accent"
 						>
-						Open Docs
+						{translate($appLocale, 'landing.openDocs')}
 					</button>
 				</div>
 			</div>
 
 			<div class="stage-note border border-border bg-bg-primary/65 p-4">
 				<p class="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">
-					What That Means
+					{translate($appLocale, 'landing.whatMeans')}
 				</p>
 				<ul class="space-y-2">
-					<li class="text-sm text-text-secondary">Timeline view instead of screenshot-based review.</li>
-					<li class="text-sm text-text-secondary">Git-based sharing with commit-level references.</li>
-					<li class="text-sm text-text-secondary">Handoffs tied to the same session records.</li>
+					<li class="text-sm text-text-secondary">{translate($appLocale, 'landing.timelineReview')}</li>
+					<li class="text-sm text-text-secondary">{translate($appLocale, 'landing.gitSharing')}</li>
+					<li class="text-sm text-text-secondary">{translate($appLocale, 'landing.handoffs')}</li>
 				</ul>
 				<div class="mt-4 grid gap-2 sm:grid-cols-2">
 					<div class="signal-chip border border-border px-2 py-2 text-[11px] text-text-secondary">
-						<span class="block text-text-muted">Session Model</span>
-						<span class="block text-text-primary">Structured Events</span>
+						<span class="block text-text-muted">{translate($appLocale, 'landing.sessionModel')}</span>
+						<span class="block text-text-primary">{translate($appLocale, 'landing.structuredEvents')}</span>
 					</div>
 					<div class="signal-chip border border-border px-2 py-2 text-[11px] text-text-secondary">
-						<span class="block text-text-muted">Work Loop</span>
-						<span class="block text-text-primary">Record -> Inspect -> Share -> Refine</span>
+						<span class="block text-text-muted">{translate($appLocale, 'landing.workLoop')}</span>
+						<span class="block text-text-primary">{translate($appLocale, 'landing.workLoopValue')}</span>
 					</div>
 				</div>
 			</div>
@@ -135,14 +147,20 @@ $effect(() => {
 
 	{#if !compactDesktopLanding}
 		<section data-contract-section="goal-map" class="mise-panel mt-6 p-4 sm:p-5">
-			<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ goal-map</div>
-			<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">What This Means</h2>
+			<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">
+				{translate($appLocale, 'landing.goalMapTag')}
+			</div>
+			<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">
+				{translate($appLocale, 'landing.goalMapTitle')}
+			</h2>
 			<div class="grid gap-3 md:grid-cols-2">
 				{#each goalCards as card}
 					<article class="mise-card border border-border bg-bg-secondary/70 p-4" data-goal-id={card.id}>
 						<div class="mb-2 flex items-center justify-between">
 							<span class="text-xs text-accent">{card.id}</span>
-							<span class="text-[11px] uppercase text-text-muted">Goal</span>
+							<span class="text-[11px] uppercase text-text-muted">
+								{translate($appLocale, 'landing.goalLabel')}
+							</span>
 						</div>
 						<h3 class="text-base font-semibold text-text-primary">{card.title}</h3>
 						<p class="mt-2 text-xs leading-relaxed text-text-secondary">{card.summary}</p>
@@ -153,12 +171,18 @@ $effect(() => {
 		</section>
 
 		<section data-contract-section="operating-loop" class="mise-panel mt-6 p-4 sm:p-5">
-			<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">$ operating-loop</div>
-			<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">Work Loop</h2>
+			<div class="mb-3 text-xs uppercase tracking-[0.12em] text-text-muted">
+				{translate($appLocale, 'landing.operatingLoopTag')}
+			</div>
+			<h2 class="section-title mb-4 text-2xl text-text-primary sm:text-3xl">
+				{translate($appLocale, 'landing.operatingLoopTitle')}
+			</h2>
 			<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
 				{#each operatingLoop as step, idx}
 					<div class="mise-card border border-border bg-bg-secondary/70 p-3" data-flow-step={step.label}>
-						<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">Step {idx + 1}</div>
+						<div class="text-[11px] uppercase tracking-[0.08em] text-text-muted">
+							{translate($appLocale, 'landing.step', { number: idx + 1 })}
+						</div>
 						<div class="mt-1 text-sm font-semibold text-text-primary">{step.label}</div>
 						<p class="mt-2 text-xs leading-relaxed text-text-secondary">{step.detail}</p>
 					</div>

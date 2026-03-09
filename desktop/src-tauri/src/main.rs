@@ -4,8 +4,9 @@ mod app;
 
 use app::change_reader::{
     desktop_ask_session_changes, desktop_change_reader_tts, desktop_read_session_changes,
-    require_non_empty_request_field,
 };
+#[cfg(test)]
+use app::change_reader::require_non_empty_request_field;
 use app::handoff::{desktop_build_handoff, desktop_share_session_quick};
 use app::launch_route::desktop_take_launch_route;
 #[cfg(test)]
@@ -50,9 +51,11 @@ use app::{
 };
 use opensession_api::{
     CapabilitiesResponse, DESKTOP_IPC_CONTRACT_VERSION, DesktopApiError,
-    DesktopContractVersionResponse, DesktopSessionListQuery,
+    DesktopContractVersionResponse,
     oauth::{AuthProvidersResponse, OAuthProviderInfo},
 };
+#[cfg(test)]
+use opensession_api::DesktopSessionListQuery;
 use opensession_local_db::LocalDb;
 use opensession_runtime_config::DaemonConfig;
 use serde_json::json;
@@ -199,8 +202,19 @@ fn desktop_get_contract_version() -> DesktopContractVersionResponse {
 }
 
 #[tauri::command]
-fn desktop_get_docs_markdown() -> String {
-    include_str!("../../../docs.md").to_string()
+fn desktop_get_docs_markdown(locale: Option<String>) -> String {
+    desktop_docs_markdown(locale.as_deref()).to_string()
+}
+
+fn desktop_docs_markdown(locale: Option<&str>) -> &'static str {
+    if locale
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("ko") || value.to_ascii_lowercase().starts_with("ko-"))
+    {
+        include_str!("../../../docs.ko.md")
+    } else {
+        include_str!("../../../docs.md")
+    }
 }
 
 fn main() {

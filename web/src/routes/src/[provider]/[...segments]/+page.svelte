@@ -3,6 +3,7 @@ import { goto } from '$app/navigation';
 import { page } from '$app/stores';
 import { untrack } from 'svelte';
 import {
+	appLocale,
 	buildNativeFilterOptions,
 	buildUnifiedFilterOptions,
 	createSourcePreviewModel,
@@ -58,13 +59,19 @@ $effect(() => {
 		});
 	});
 });
+
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 </script>
 
 {#if state.pageState === 'loading' || state.pageState === 'idle'}
-	<div class="py-16 text-center text-xs text-text-muted">Loading source preview...</div>
+	<div class="py-16 text-center text-xs text-text-muted">{localize('Loading source preview...', '소스 미리보기를 불러오는 중...')}</div>
 {:else if state.pageState === 'unsupported'}
 	<div class="mx-auto max-w-3xl border border-border bg-bg-secondary p-6 text-sm text-text-secondary">
-		This deployment does not support source parse preview.
+		{localize('This deployment does not support source parse preview.', '이 배포 환경에서는 소스 파싱 미리보기를 지원하지 않습니다.')}
 	</div>
 {:else if state.pageState === 'select_parser'}
 	<div class="mx-auto max-w-3xl space-y-3">
@@ -82,7 +89,7 @@ $effect(() => {
 	</div>
 {:else if state.pageState === 'error'}
 	<div class="mx-auto max-w-3xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
-		{state.errorMessage ?? 'Failed to load source.'}
+		{state.errorMessage ?? localize('Failed to load source.', '소스를 불러오지 못했습니다.')}
 	</div>
 {:else if state.preview && state.currentRoute}
 	<div class="space-y-3">
@@ -102,5 +109,5 @@ $effect(() => {
 		/>
 	</div>
 {:else}
-	<div class="py-16 text-center text-xs text-text-muted">No preview data.</div>
+	<div class="py-16 text-center text-xs text-text-muted">{localize('No preview data.', '미리보기 데이터가 없습니다.')}</div>
 {/if}

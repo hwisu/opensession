@@ -12,8 +12,9 @@ import {
 	truncate,
 } from '../event-helpers';
 import { highlightCode } from '../highlight';
+import { appLocale } from '../i18n';
 import { isLongContent, renderMarkdown } from '../markdown';
-import type { Event } from '../types';
+import { formatClockTime, type Event } from '../types';
 import CodeBlockView from './CodeBlockView.svelte';
 import ContentBlockList from './ContentBlockList.svelte';
 import DiffView from './DiffView.svelte';
@@ -39,6 +40,11 @@ const {
 	pairedResult,
 	resultOk = false,
 }: { event: Event; pairedResult?: Event; resultOk?: boolean } = $props();
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 
 // --- Helpers ---
 type RequestUserInputOption = {
@@ -386,14 +392,14 @@ const summaryLabel = $derived.by(() => {
 		}
 		case 'ToolResult': {
 			if (isRequestUserInputTool && requestUserInputResultPayload) {
-				if (requestUserInputResultPayload.answers.length === 0) return 'no answers';
+				if (requestUserInputResultPayload.answers.length === 0) return localize('no answers', '응답 없음');
 				const first = requestUserInputResultPayload.answers[0];
-				const preview = first.answers[0] ?? first.raw ?? '(no answer)';
+				const preview = first.answers[0] ?? first.raw ?? localize('(no answer)', '(응답 없음)');
 				if (requestUserInputResultPayload.answers.length === 1) return `${first.id}: ${preview}`;
 				return `${first.id}: ${preview} +${requestUserInputResultPayload.answers.length - 1}`;
 			}
 			const line = firstMeaningfulEventLine(event);
-			return line ? truncate(line) : 'output';
+			return line ? truncate(line) : localize('output', '출력');
 		}
 		case 'TaskStart':
 			return t.data.title ?? '';
@@ -432,7 +438,11 @@ const metaBadgeText = $derived.by(() => {
 			(n, b) => n + (b.type === 'Text' ? b.text.split('\n').filter(Boolean).length : 0),
 			0,
 		);
-		return count > 0 ? `${count} ${t.type === 'FileSearch' ? 'files' : 'matches'}` : '';
+		return count > 0
+			? isKorean
+				? `${count}개 ${t.type === 'FileSearch' ? '파일' : '일치'}`
+				: `${count} ${t.type === 'FileSearch' ? 'files' : 'matches'}`
+			: '';
 	}
 	return null;
 });
@@ -469,9 +479,9 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 	<div class="ev-message group my-1 sm:my-4" data-event-type={eventTypeName}>
 		{#if isUser}
 			<div class="flex items-start gap-1.5 sm:gap-3">
-				<span class="tui-badge tui-badge-user mt-0.5 shrink-0">USER</span>
+				<span class="tui-badge tui-badge-user mt-0.5 shrink-0">{localize('USER', '사용자')}</span>
 				{#if event.timestamp}
-					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}</span>
+					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{formatClockTime(event.timestamp)}</span>
 				{/if}
 				<div class="min-w-0 flex-1">
 					<div class="border-l-2 border-l-green-400/30 pl-2 sm:pl-3 text-sm leading-relaxed">
@@ -481,9 +491,9 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 			</div>
 		{:else if isSystem}
 			<div class="flex items-start gap-1.5 sm:gap-3">
-				<span class="tui-badge tui-badge-system mt-0.5 shrink-0">SYSTEM</span>
+				<span class="tui-badge tui-badge-system mt-0.5 shrink-0">{localize('SYSTEM', '시스템')}</span>
 				{#if event.timestamp}
-					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}</span>
+					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{formatClockTime(event.timestamp)}</span>
 				{/if}
 				<div class="min-w-0 flex-1 text-sm leading-relaxed">
 					<ContentBlockList blocks={event.content.blocks} bind:showFull showJson={true} />
@@ -491,9 +501,9 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 			</div>
 		{:else}
 			<div class="flex items-start gap-1.5 sm:gap-3">
-				<span class="tui-badge tui-badge-agent mt-0.5 shrink-0">AGENT</span>
+				<span class="tui-badge tui-badge-agent mt-0.5 shrink-0">{localize('AGENT', '에이전트')}</span>
 				{#if event.timestamp}
-					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}</span>
+					<span class="mt-0.5 shrink-0 text-[10px] text-text-muted hidden sm:inline">{formatClockTime(event.timestamp)}</span>
 				{/if}
 				<div class="min-w-0 flex-1 text-sm leading-relaxed">
 					<ContentBlockList blocks={event.content.blocks} bind:showFull showJson={true} />
@@ -510,7 +520,9 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 			class="group flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-xs transition-colors hover:bg-bg-hover"
 		>
 			<span class="inline-flex text-text-muted transition-transform" class:rotate-90={expanded}>{@html chevronRightIcon}</span>
-			<span class="font-medium text-text-muted group-hover:text-text-secondary">Thinking</span>
+			<span class="font-medium text-text-muted group-hover:text-text-secondary">
+				{localize('Thinking', '사고')}
+			</span>
 			{#if event.duration_ms}
 				<span class="ml-auto shrink-0 font-mono text-[10px] text-text-muted">{event.duration_ms}ms</span>
 			{/if}
@@ -533,7 +545,7 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 									onclick={() => (showFull = !showFull)}
 									class="mt-1 text-[10px] font-medium text-accent hover:underline"
 								>
-									{showFull ? 'Show less' : 'Show more...'}
+									{showFull ? localize('Show less', '접기') : localize('Show more...', '더 보기...')}
 								</button>
 							{/if}
 						{/if}
@@ -551,7 +563,9 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 			class="group flex w-full items-center gap-2 border border-accent/30 border-l-4 border-l-accent bg-accent/10 px-3 py-1.5 text-left text-xs transition-colors hover:bg-bg-hover"
 		>
 			<span class="inline-flex text-accent">{@html arrowRightIcon}</span>
-			<span class="flex-1 font-medium text-text-secondary truncate">{subAgentDesc ? truncate(subAgentDesc, CHIP_LABEL_MAX) : 'Sub-agent'}</span>
+			<span class="flex-1 font-medium text-text-secondary truncate">
+				{subAgentDesc ? truncate(subAgentDesc, CHIP_LABEL_MAX) : localize('Sub-agent', '하위 에이전트')}
+			</span>
 			{#if event.duration_ms}
 				<span class="font-mono text-[10px] text-text-muted">{event.duration_ms}ms</span>
 			{/if}
@@ -602,9 +616,9 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 		>
 			{#snippet metaBadge()}
 				{#if isError}
-					<span class="shrink-0 rounded bg-error/20 px-1.5 py-0.5 text-[10px] text-error">error</span>
+					<span class="shrink-0 rounded bg-error/20 px-1.5 py-0.5 text-[10px] text-error">{localize('error', '오류')}</span>
 				{:else if pairedResult && pairedResultIsError}
-					<span class="shrink-0 rounded bg-error/20 px-1.5 py-0.5 text-[10px] text-error">error</span>
+					<span class="shrink-0 rounded bg-error/20 px-1.5 py-0.5 text-[10px] text-error">{localize('error', '오류')}</span>
 				{:else if pairedResult}
 					<span class="shrink-0 font-mono text-[10px] text-success">✓</span>
 				{:else if resultOk}
@@ -624,10 +638,14 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 					<span class="shrink-0 font-mono text-[10px] text-error">↩ {(event.event_type.data as { exit_code?: number }).exit_code}</span>
 				{/if}
 				{#if !metaBadgeText && hasContent && contentLength > 0 && (isShellCommand || eventTypeName === 'WebFetch' || eventTypeName === 'ToolCall' || eventTypeName === 'ToolResult')}
-					<span class="shrink-0 font-mono text-[10px] text-text-muted">{formatContentLength(contentLength)} chars</span>
+					<span class="shrink-0 font-mono text-[10px] text-text-muted">
+						{isKorean ? `${formatContentLength(contentLength)}자` : `${formatContentLength(contentLength)} chars`}
+					</span>
 				{/if}
 				{#if eventTypeName === 'ToolResult' && hasCodeBlock && codeStats}
-					<span class="shrink-0 font-mono text-[10px] text-text-muted">{codeStats.lines} lines</span>
+					<span class="shrink-0 font-mono text-[10px] text-text-muted">
+						{isKorean ? `${codeStats.lines}줄` : `${codeStats.lines} lines`}
+					</span>
 				{/if}
 			{/snippet}
 
@@ -653,7 +671,7 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 								{/if}
 								{#if question.options.length > 0}
 									<div class="mt-2 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-										Options
+										{localize('Options', '선택지')}
 									</div>
 									<div class="mt-1 space-y-1.5">
 										{#each question.options as option, optionIndex}
@@ -677,7 +695,7 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 					<div class="space-y-2 p-3">
 						{#if requestUserInputResultPayload.answers.length === 0}
 							<div class="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-xs text-warning">
-								No answers found in payload.
+								{localize('No answer was found in the response.', '응답에서 답변을 찾지 못했습니다.')}
 							</div>
 						{:else}
 							{#each requestUserInputResultPayload.answers as answer}
@@ -694,7 +712,7 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 									{:else if answer.raw}
 										<div class="mt-1.5 whitespace-pre-wrap text-xs text-text-muted">{answer.raw}</div>
 									{:else}
-										<div class="mt-1.5 text-xs text-warning">(no answer)</div>
+										<div class="mt-1.5 text-xs text-warning">{localize('(no answer)', '(응답 없음)')}</div>
 									{/if}
 								</div>
 							{/each}
@@ -728,7 +746,7 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 										onclick={() => (showFull = !showFull)}
 										class="w-full border-t border-border bg-bg-secondary px-3 py-1.5 text-center text-[10px] font-medium text-accent hover:bg-bg-hover"
 									>
-										{showFull ? 'Collapse' : 'Show more...'}
+										{showFull ? localize('Collapse', '접기') : localize('Show more...', '더 보기...')}
 									</button>
 								{/if}
 							{/if}
@@ -745,12 +763,14 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 				{/if}
 				{#if pairedResult && pairedResult.content.blocks.length > 0}
 					<div class="border-t border-border/50 mt-1">
-						<div class="px-3 py-1 text-[10px] font-medium text-text-muted uppercase tracking-wider bg-bg-secondary/50">Result</div>
+						<div class="px-3 py-1 text-[10px] font-medium text-text-muted uppercase tracking-wider bg-bg-secondary/50">
+							{localize('Result', '결과')}
+						</div>
 						{#if pairedRequestUserInputResultPayload}
 							<div class="space-y-2 p-3">
 								{#if pairedRequestUserInputResultPayload.answers.length === 0}
 									<div class="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-xs text-warning">
-										No answers found in payload.
+										{localize('No answer was found in the response.', '응답에서 답변을 찾지 못했습니다.')}
 									</div>
 								{:else}
 									{#each pairedRequestUserInputResultPayload.answers as answer}
@@ -767,7 +787,7 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 											{:else if answer.raw}
 												<div class="mt-1.5 whitespace-pre-wrap text-xs text-text-muted">{answer.raw}</div>
 											{:else}
-												<div class="mt-1.5 text-xs text-warning">(no answer)</div>
+												<div class="mt-1.5 text-xs text-warning">{localize('(no answer)', '(응답 없음)')}</div>
 											{/if}
 										</div>
 									{/each}
@@ -789,7 +809,7 @@ const fileEditDiff = $derived(eventTypeName === 'FileEdit' ? extractFileEditDiff
 												onclick={() => (showFull = !showFull)}
 												class="w-full border-t border-border bg-bg-secondary px-3 py-1.5 text-center text-[10px] font-medium text-accent hover:bg-bg-hover"
 											>
-												{showFull ? 'Collapse' : 'Show more...'}
+												{showFull ? localize('Collapse', '접기') : localize('Show more...', '더 보기...')}
 											</button>
 										{/if}
 									{/if}

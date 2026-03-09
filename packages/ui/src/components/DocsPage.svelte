@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount } from 'svelte';
+import { appLocale, translate } from '../i18n';
 import { renderMarkdown } from '../markdown';
 
 const {
@@ -23,12 +23,12 @@ type ParsedDocs = {
 let loading = $state(true);
 let error = $state<string | null>(null);
 let parsed = $state<ParsedDocs>({
-	title: 'Documentation',
+	title: translate($appLocale, 'docs.defaultTitle'),
 	introMarkdown: '',
 	chapters: [],
 });
 
-const FALLBACK_DOCS_MARKDOWN = `# Documentation
+const FALLBACK_DOCS_MARKDOWN_EN = `# Documentation
 
 ## Getting Started
 
@@ -44,6 +44,26 @@ Local docs are available in desktop runtime without a server.
 - Search and filter metadata is still indexed in local SQLite (\`local.db\`) for fast list queries.
 `;
 
+const FALLBACK_DOCS_MARKDOWN_KO = `# 문서
+
+## 시작하기
+
+로컬 문서는 서버 없이도 데스크톱 런타임에서 사용할 수 있습니다.
+
+- \`/sessions\`에서 로컬 세션을 탐색합니다
+- \`/settings\`에서 런타임 summary provider/prompt/response/storage를 설정합니다
+- 세션 상세에서 handoff build를 실행해 다운로드 가능한 handoff artifact를 만듭니다
+
+## 저장소
+
+- \`hidden_ref\`는 summary artifact를 git-native ref에 저장합니다.
+- 빠른 목록 조회를 위해 검색/필터 메타데이터는 로컬 SQLite(\`local.db\`)에 계속 인덱싱됩니다.
+`;
+
+function fallbackDocsMarkdown(locale: 'en' | 'ko'): string {
+	return locale === 'ko' ? FALLBACK_DOCS_MARKDOWN_KO : FALLBACK_DOCS_MARKDOWN_EN;
+}
+
 function isDesktopRuntime(): boolean {
 	if (typeof window === 'undefined') return false;
 	const maybeTauri = window as Window & { __TAURI_INTERNALS__?: unknown };
@@ -51,15 +71,17 @@ function isDesktopRuntime(): boolean {
 	return window.location.protocol === 'tauri:';
 }
 
-async function readDesktopDocsMarkdown(): Promise<string | null> {
+async function readDesktopDocsMarkdown(locale: 'en' | 'ko'): Promise<string | null> {
 	if (!isDesktopRuntime()) return null;
 	const tauri = (
-		window as unknown as { __TAURI__?: { core?: { invoke?: <T>(cmd: string) => Promise<T> } } }
+		window as unknown as {
+			__TAURI__?: { core?: { invoke?: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T> } };
+		}
 	).__TAURI__;
 	const invoke = tauri?.core?.invoke;
 	if (typeof invoke !== 'function') return null;
 	try {
-		const body = await invoke<string>('desktop_get_docs_markdown');
+		const body = await invoke<string>('desktop_get_docs_markdown', { locale });
 		const normalized = body.trim();
 		return normalized.length > 0 ? normalized : null;
 	} catch {
@@ -67,8 +89,8 @@ async function readDesktopDocsMarkdown(): Promise<string | null> {
 	}
 }
 
-async function fetchWebDocsMarkdown(): Promise<string> {
-	const res = await fetch('/docs?format=markdown', {
+async function fetchWebDocsMarkdown(locale: 'en' | 'ko'): Promise<string> {
+	const res = await fetch(`/docs?format=markdown&lang=${locale}`, {
 		cache: 'no-store',
 		headers: {
 			Accept: 'text/markdown',
@@ -93,7 +115,7 @@ function slugify(value: string): string {
 
 function parseDocsMarkdown(markdown: string): ParsedDocs {
 	const lines = markdown.split(/\r?\n/);
-	let title = 'Documentation';
+	let title = translate($appLocale, 'docs.defaultTitle');
 	let startIndex = 0;
 	const titleMatch = lines[0]?.match(/^#\s+(.+?)\s*$/);
 	if (titleMatch) {
@@ -152,16 +174,23 @@ function parseDocsMarkdown(markdown: string): ParsedDocs {
 	};
 }
 
-onMount(() => {
+function localize(en: string, ko: string): string {
+	return $appLocale === 'ko' ? ko : en;
+}
+
+$effect(() => {
+	const locale = $appLocale;
 	let cancelled = false;
+	loading = true;
+	error = null;
 	Promise.resolve()
 		.then(async () => {
-			const desktopBody = await readDesktopDocsMarkdown();
+			const desktopBody = await readDesktopDocsMarkdown(locale);
 			if (desktopBody) return desktopBody;
 			try {
-				return await fetchWebDocsMarkdown();
+				return await fetchWebDocsMarkdown(locale);
 			} catch {
-				return FALLBACK_DOCS_MARKDOWN;
+				return fallbackDocsMarkdown(locale);
 			}
 		})
 		.then((body) => {
@@ -171,7 +200,7 @@ onMount(() => {
 		})
 		.catch((e) => {
 			if (cancelled) return;
-			error = e instanceof Error ? e.message : 'Failed to load docs';
+			error = e instanceof Error ? e.message : translate($appLocale, 'docs.loading');
 			loading = false;
 		});
 
@@ -182,17 +211,19 @@ onMount(() => {
 </script>
 
 <svelte:head>
-	<title>Docs - opensession.io</title>
+	<title>{translate($appLocale, 'docs.title')}</title>
 </svelte:head>
 
 <div class="docs-stage mx-auto max-w-[72rem] space-y-5" data-testid="docs-page">
 	<section class="docs-hero border border-border p-4 sm:p-5">
 		<div class="flex flex-wrap items-end justify-between gap-3">
 			<div class="space-y-1">
-				<p class="docs-kicker text-[11px] uppercase tracking-[0.12em] text-text-muted">Docs</p>
+				<p class="docs-kicker text-[11px] uppercase tracking-[0.12em] text-text-muted">
+					{translate($appLocale, 'docs.kicker')}
+				</p>
 				<h1 class="docs-title text-3xl text-text-primary sm:text-4xl">{parsed.title}</h1>
 				<p class="max-w-2xl text-xs text-text-secondary sm:text-sm">
-					Functional guides for register, share, inspect, and handoff workflows.
+					{translate($appLocale, 'docs.heroCopy')}
 				</p>
 			</div>
 
@@ -202,7 +233,7 @@ onMount(() => {
 					onclick={() => onNavigate('/sessions')}
 					class="docs-nav-btn border border-border px-3 py-1 text-text-secondary transition-colors hover:border-accent hover:text-accent"
 				>
-					Sessions
+					{translate($appLocale, 'docs.sessions')}
 				</button>
 			</div>
 		</div>
@@ -210,13 +241,13 @@ onMount(() => {
 
 	{#if loading}
 		<div class="border border-border bg-bg-secondary px-4 py-6 text-sm text-text-secondary">
-			Loading docs...
+			{translate($appLocale, 'docs.loading')}
 		</div>
 	{:else if error}
 		<div class="border border-error/30 bg-error/10 px-4 py-6 text-sm text-error">{error}</div>
 	{:else if parsed.chapters.length === 0}
 		<div class="border border-warning/30 bg-warning/10 px-4 py-6 text-sm text-warning">
-			No documentation chapters were found.
+			{translate($appLocale, 'docs.notFound')}
 		</div>
 	{:else}
 		<div class="docs-shell grid items-start gap-5 lg:grid-cols-[18.25rem_minmax(0,1fr)]" data-testid="docs-content">
@@ -224,7 +255,7 @@ onMount(() => {
 				data-testid="docs-toc"
 				class="docs-toc hidden h-fit border border-border bg-bg-secondary/65 p-3 lg:block lg:sticky lg:top-5 lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto"
 			>
-				<p class="docs-toc-title mb-2 text-xs text-text-muted">Contents</p>
+				<p class="docs-toc-title mb-2 text-xs text-text-muted">{localize('Contents', '목차')}</p>
 				<nav class="space-y-1.5">
 					{#each parsed.chapters as chapter, idx}
 						<a

@@ -104,9 +104,22 @@ export type {
 	ToolConfig,
 } from './types';
 export { formatDuration, formatTimestamp, getToolConfig, TOOL_CONFIGS } from './types';
+export { formatClockTime } from './types';
 // Shared utilities
 export type { FileStats } from './utils';
 export { computeFileStats, formatFullDate, getDisplayTitle, stripTags } from './utils';
+export {
+	appLocale,
+	cycleLanguageMode,
+	initializeLocalization,
+	languageMode,
+	refreshLocaleFromPlatform,
+	resolveLocale,
+	setLanguagePreference,
+	translate,
+	type AppLocale,
+	type LanguageMode,
+} from './i18n';
 export {
 	createShellModel,
 	createShellModelState,

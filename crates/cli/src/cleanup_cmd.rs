@@ -57,6 +57,9 @@ struct CleanupInitArgs {
     /// Artifact branch TTL in days.
     #[arg(long, default_value_t = DEFAULT_TTL_DAYS)]
     artifact_ttl_days: u16,
+    /// Persist PR/MR session snapshots on this dedicated branch instead of ephemeral per-PR branches.
+    #[arg(long)]
+    session_archive_branch: Option<String>,
     /// Skip confirmation prompt.
     #[arg(long)]
     yes: bool,
@@ -107,6 +110,8 @@ struct CleanupConfig {
     remote: String,
     hidden_ttl_days: u16,
     artifact_ttl_days: u16,
+    #[serde(default)]
+    session_archive_branch: Option<String>,
     managed_at: String,
     managed_by: String,
 }
@@ -129,6 +134,7 @@ struct CleanupPaths {
 struct InitExecutionReport {
     provider: CleanupProvider,
     resolved_remote: String,
+    session_archive_branch: Option<String>,
     applied_paths: Vec<String>,
     manual_steps: Vec<String>,
     warnings: Vec<String>,
@@ -152,6 +158,7 @@ struct JanitorSummary {
 struct CleanupStatusJson {
     configured: bool,
     provider: Option<String>,
+    session_archive_branch: Option<String>,
     janitor_present: bool,
     provider_template_ready: bool,
     next_action: Option<String>,
@@ -273,6 +280,7 @@ pub fn maybe_prompt_cleanup_init_after_push(repo_root: &Path, remote: &str) -> R
             remote: remote.to_string(),
             hidden_ttl_days: DEFAULT_TTL_DAYS,
             artifact_ttl_days: DEFAULT_TTL_DAYS,
+            session_archive_branch: None,
             yes: true,
             json: false,
             silent: true,
@@ -292,6 +300,7 @@ fn run_init(args: CleanupInitArgs) -> Result<()> {
             remote: args.remote,
             hidden_ttl_days: args.hidden_ttl_days,
             artifact_ttl_days: args.artifact_ttl_days,
+            session_archive_branch: args.session_archive_branch,
             yes: args.yes,
             json: args.json,
             silent: false,
@@ -303,6 +312,7 @@ fn run_init(args: CleanupInitArgs) -> Result<()> {
             "configured": true,
             "provider": report.provider.as_str(),
             "resolved_remote": report.resolved_remote,
+            "session_archive_branch": report.session_archive_branch,
             "applied_paths": report.applied_paths,
             "manual_steps": report.manual_steps,
             "warnings": report.warnings,
@@ -313,6 +323,9 @@ fn run_init(args: CleanupInitArgs) -> Result<()> {
 
     println!("cleanup configured: provider={}", report.provider.as_str());
     println!("remote: {}", report.resolved_remote);
+    if let Some(branch) = &report.session_archive_branch {
+        println!("session archive branch: {branch}");
+    }
     if !report.applied_paths.is_empty() {
         println!("applied:");
         for path in &report.applied_paths {
@@ -343,6 +356,7 @@ fn run_status(args: CleanupStatusArgs) -> Result<()> {
         let payload = CleanupStatusJson {
             configured: false,
             provider: None,
+            session_archive_branch: None,
             janitor_present: paths.janitor.exists(),
             provider_template_ready: false,
             next_action: Some("opensession cleanup init --provider auto".to_string()),
@@ -388,6 +402,7 @@ fn run_status(args: CleanupStatusArgs) -> Result<()> {
     let payload = CleanupStatusJson {
         configured: true,
         provider: Some(config.provider.as_str().to_string()),
+        session_archive_branch: config.session_archive_branch.clone(),
         janitor_present,
         provider_template_ready: provider_ready,
         next_action,
@@ -404,6 +419,9 @@ fn run_status(args: CleanupStatusArgs) -> Result<()> {
         "cleanup: configured (provider={})",
         config.provider.as_str()
     );
+    if let Some(branch) = &config.session_archive_branch {
+        println!("session archive branch: {branch}");
+    }
     println!(
         "janitor: {}",
         if payload.janitor_present {
@@ -474,6 +492,7 @@ struct InitRequest {
     remote: String,
     hidden_ttl_days: u16,
     artifact_ttl_days: u16,
+    session_archive_branch: Option<String>,
     yes: bool,
     json: bool,
     silent: bool,
@@ -484,6 +503,7 @@ fn init_cleanup(repo_root: &Path, req: InitRequest) -> Result<InitExecutionRepor
     let remote = resolve_remote(&req.remote, repo_root)?;
 
     let mut warnings = Vec::new();
+    let session_archive_branch = normalize_optional_branch(req.session_archive_branch);
     let provider = match req.provider {
         CleanupInitProvider::Auto => {
             let detected = detect_provider_for_remote(&remote.url);
@@ -508,6 +528,12 @@ fn init_cleanup(repo_root: &Path, req: InitRequest) -> Result<InitExecutionRepor
         format!("remote: {}", remote.push_target),
         format!("hidden_ttl_days: {}", req.hidden_ttl_days),
         format!("artifact_ttl_days: {}", req.artifact_ttl_days),
+        format!(
+            "session_archive_branch: {}",
+            session_archive_branch
+                .as_deref()
+                .unwrap_or("(ephemeral per-pr branches)")
+        ),
         format!("write: {}", paths.config.display()),
         format!("write: {}", paths.janitor.display()),
         format!("write: {}", paths.cron_example.display()),
@@ -553,6 +579,7 @@ fn init_cleanup(repo_root: &Path, req: InitRequest) -> Result<InitExecutionRepor
         remote: remote.push_target.clone(),
         hidden_ttl_days: req.hidden_ttl_days,
         artifact_ttl_days: req.artifact_ttl_days,
+        session_archive_branch: session_archive_branch.clone(),
         managed_at: chrono::Utc::now().to_rfc3339(),
         managed_by: MANAGED_MARKER.to_string(),
     };
@@ -626,6 +653,7 @@ fn init_cleanup(repo_root: &Path, req: InitRequest) -> Result<InitExecutionRepor
     Ok(InitExecutionReport {
         provider,
         resolved_remote: remote.push_target,
+        session_archive_branch,
         applied_paths,
         manual_steps,
         warnings,
@@ -938,7 +966,26 @@ fn validate_config(config: &CleanupConfig) -> Result<()> {
     if config.remote.trim().is_empty() {
         bail!("cleanup config remote is empty");
     }
+    if config
+        .session_archive_branch
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(str::is_empty)
+    {
+        bail!("cleanup config session_archive_branch is empty");
+    }
     Ok(())
+}
+
+fn normalize_optional_branch(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn provider_template_ready(paths: &CleanupPaths, provider: CleanupProvider) -> bool {
@@ -1084,6 +1131,7 @@ mod tests {
             remote: "origin".to_string(),
             hidden_ttl_days: 30,
             artifact_ttl_days: 30,
+            session_archive_branch: Some("pr/sessions".to_string()),
             managed_at: "2026-02-27T00:00:00Z".to_string(),
             managed_by: MANAGED_MARKER.to_string(),
         };
@@ -1094,6 +1142,10 @@ mod tests {
         assert_eq!(parsed.provider, CleanupProvider::Generic);
         assert_eq!(parsed.hidden_ttl_days, 30);
         assert_eq!(parsed.artifact_ttl_days, 30);
+        assert_eq!(
+            parsed.session_archive_branch.as_deref(),
+            Some("pr/sessions")
+        );
     }
 
     #[test]

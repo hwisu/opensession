@@ -137,20 +137,29 @@ function main() {
   if (!workflow.includes('--publish-artifacts true')) {
     fail('workflow must request artifact publication for review reports.');
   }
+  if (!workflow.includes('--artifact-branch "$ARTIFACT_BRANCH"')) {
+    fail('workflow must pass resolved artifact branch context to report builder.');
+  }
+  if (!workflow.includes('--preserve-existing-artifacts "$PERSIST_ARTIFACTS"')) {
+    fail('workflow must preserve existing archive branch contents when persistent storage is enabled.');
+  }
   if (!workflow.includes('Configure git author for artifact branch')) {
     fail('workflow must configure git author before publishing artifact branch.');
   }
-  if (!workflow.includes('Apply artifact retention policy (merged PR only)')) {
-    fail('cleanup must apply artifact retention policy for merged PRs.');
+  if (!workflow.includes('Resolve artifact storage')) {
+    fail('workflow must resolve artifact storage from cleanup config.');
   }
-  if (!workflow.includes('OPENSESSION_ARTIFACT_RETENTION')) {
-    fail('cleanup must support repository-level OPENSESSION_ARTIFACT_RETENTION variable.');
+  if (!workflow.includes('session_archive_branch')) {
+    fail('workflow must support repo-local session_archive_branch setting.');
   }
-  if (!workflow.includes("vars.OPENSESSION_ARTIFACT_RETENTION || 'next_commit'")) {
-    fail('artifact retention must default to next_commit when repo variable is unset.');
+  if (!workflow.includes("steps.storage.outputs.persistent != 'true'")) {
+    fail('cleanup must delete ephemeral artifact branches only when no archive branch is configured.');
+  }
+  if (!workflow.includes('Delete ephemeral artifact branch on PR close')) {
+    fail('cleanup must delete ephemeral artifact branches on PR close.');
   }
   if (!workflow.includes('--publish-artifacts "$publish_artifacts"')) {
-    fail('final report builder must toggle artifact publishing based on retention mode.');
+    fail('final report builder must toggle artifact publishing based on archive policy.');
   }
   if (!workflow.includes('github.rest.issues.deleteComment')) {
     fail('sticky comment upsert must dedupe stale marker comments.');

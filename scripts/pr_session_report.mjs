@@ -96,7 +96,9 @@ function buildReviewId(repoFullName, prNumber, head) {
   return `gh-${owner}-${repo}-pr${prNumber}-${shortSha(head)}`;
 }
 
-function buildArtifactBranchName(prNumber) {
+function buildArtifactBranchName(prNumber, explicitBranch = '') {
+  const normalizedBranch = String(explicitBranch ?? '').trim();
+  if (normalizedBranch) return normalizedBranch;
   if (!prNumber) return null;
   return `opensession/pr-${prNumber}-sessions`;
 }
@@ -445,6 +447,8 @@ function ensureTrailingNewline(value) {
 
 function publishArtifactsBranch({
   enabled,
+  artifactBranch,
+  preserveExisting,
   repoFullName,
   prNumber,
   head,
@@ -455,7 +459,7 @@ function publishArtifactsBranch({
   commits,
   sessions,
 }) {
-  const branchName = buildArtifactBranchName(prNumber);
+  const branchName = buildArtifactBranchName(prNumber, artifactBranch);
   const artifactRoot = buildArtifactRoot(reviewId);
   if (!branchName || !artifactRoot) {
     return {
@@ -487,12 +491,25 @@ function publishArtifactsBranch({
   let publishError = null;
   try {
     runGit(['worktree', 'add', '--detach', worktreeDir]);
-    runGit(['checkout', '--orphan', branchName], { cwd: worktreeDir });
-    runGit(['rm', '-rf', '.'], { cwd: worktreeDir, allowFail: true });
+    const branchExists =
+      runGit(['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${branchName}`], {
+        cwd: worktreeDir,
+        allowFail: true,
+      }).length > 0;
+    if (preserveExisting && branchExists) {
+      runGit(['fetch', '--no-tags', '--depth=1', 'origin', `${branchName}:${branchName}`], {
+        cwd: worktreeDir,
+      });
+      runGit(['checkout', branchName], { cwd: worktreeDir });
+      fs.rmSync(path.join(worktreeDir, artifactRoot), { recursive: true, force: true });
+    } else {
+      runGit(['checkout', '--orphan', branchName], { cwd: worktreeDir });
+      runGit(['rm', '-rf', '.'], { cwd: worktreeDir, allowFail: true });
 
-    for (const entry of fs.readdirSync(worktreeDir)) {
-      if (entry === '.git') continue;
-      fs.rmSync(path.join(worktreeDir, entry), { recursive: true, force: true });
+      for (const entry of fs.readdirSync(worktreeDir)) {
+        if (entry === '.git') continue;
+        fs.rmSync(path.join(worktreeDir, entry), { recursive: true, force: true });
+      }
     }
 
     for (const session of sessions) {
@@ -762,6 +779,8 @@ function main() {
   const prNumberRaw = args['pr-number'] ?? '';
   const prNumber = /^\d+$/.test(prNumberRaw) ? Number(prNumberRaw) : null;
   const publishArtifacts = (args['publish-artifacts'] ?? 'false') === 'true';
+  const preserveExistingArtifacts = (args['preserve-existing-artifacts'] ?? 'false') === 'true';
+  const artifactBranch = args['artifact-branch'] ?? '';
   const base = args.base ?? '';
   const head = args.head ?? '';
   const generatedAt = new Date().toISOString();
@@ -785,6 +804,8 @@ function main() {
   const reviewId = buildReviewId(repoFullName, prNumber, head);
   const artifact = publishArtifactsBranch({
     enabled: publishArtifacts,
+    artifactBranch,
+    preserveExisting: preserveExistingArtifacts,
     repoFullName,
     prNumber,
     head,

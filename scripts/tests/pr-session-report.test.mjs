@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { renderReport } from '../pr_session_report.mjs';
+import { buildArtifactBranchName, renderReport } from '../pr_session_report.mjs';
+
+test('buildArtifactBranchName accepts persistent branch override', () => {
+  assert.equal(buildArtifactBranchName(18), 'opensession/pr-18-sessions');
+  assert.equal(buildArtifactBranchName(18, 'pr/sessions'), 'pr/sessions');
+});
 
 test('renderReport emphasizes metrics, areas, and linked session metadata', () => {
   const report = renderReport({

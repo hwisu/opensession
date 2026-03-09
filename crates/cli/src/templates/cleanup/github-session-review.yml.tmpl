@@ -3,7 +3,7 @@ name: OpenSession Session Review
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, closed]
 
 permissions:
   contents: write
@@ -13,27 +13,53 @@ permissions:
 jobs:
   session_review:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Resolve artifact storage
+        id: storage
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import pathlib
+          import tomllib
+
+          archive_branch = ""
+          config_path = pathlib.Path(".opensession/cleanup/config.toml")
+          if config_path.exists():
+              data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+              archive_branch = str(data.get("session_archive_branch") or "").strip()
+
+          pr_number = os.environ["PR_NUMBER"]
+          artifact_branch = archive_branch or f"opensession/pr-{pr_number}-sessions"
+          print(f"artifact_branch={artifact_branch}")
+          print(f"persistent={'1' if archive_branch else '0'}")
+          PY
+
       - name: Compute ledger ref and publish artifact branch
         id: artifact
         env:
           BRANCH: ${{ github.head_ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ARTIFACT_BRANCH: ${{ steps.storage.outputs.artifact_branch }}
+          PERSISTENT_STORAGE: ${{ steps.storage.outputs.persistent }}
         run: |
           set -euo pipefail
 
-          encoded="$(python - <<'PY'
-import base64, os
-print(base64.urlsafe_b64encode(os.environ['BRANCH'].encode()).decode().rstrip('='))
-PY
-)"
+          encoded="$(python3 - <<'PY'
+          import base64, os
+          print(base64.urlsafe_b64encode(os.environ['BRANCH'].encode()).decode().rstrip('='))
+          PY
+          )"
           ledger_ref="refs/opensession/branches/${encoded}"
-          artifact_branch="opensession/pr-${PR_NUMBER}-sessions"
+          artifact_branch="$ARTIFACT_BRANCH"
           has_ledger=0
           push_ok=0
 
@@ -48,6 +74,7 @@ PY
           echo "artifact_branch=${artifact_branch}" >> "$GITHUB_OUTPUT"
           echo "has_ledger=${has_ledger}" >> "$GITHUB_OUTPUT"
           echo "push_ok=${push_ok}" >> "$GITHUB_OUTPUT"
+          echo "persistent_storage=${PERSISTENT_STORAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Upsert session review comment
         uses: actions/github-script@v7
@@ -56,6 +83,7 @@ PY
           ARTIFACT_BRANCH: ${{ steps.artifact.outputs.artifact_branch }}
           HAS_LEDGER: ${{ steps.artifact.outputs.has_ledger }}
           PUSH_OK: ${{ steps.artifact.outputs.push_ok }}
+          PERSISTENT_STORAGE: ${{ steps.artifact.outputs.persistent_storage }}
         with:
           script: |
             const marker = '<!-- opensession-auto-session-review -->';
@@ -65,6 +93,7 @@ PY
             const pushOk = process.env.PUSH_OK === '1';
             const ledgerRef = process.env.LEDGER_REF;
             const artifactBranch = process.env.ARTIFACT_BRANCH;
+            const persistentStorage = process.env.PERSISTENT_STORAGE === '1';
             const branchUrl = `https://github.com/${owner}/${repo}/tree/${artifactBranch}`;
 
             const lines = [
@@ -75,6 +104,7 @@ PY
               '| --- | --- |',
               `| Ledger ref | \`${ledgerRef}\` |`,
               `| Artifact branch | [\`${artifactBranch}\`](${branchUrl}) |`,
+              `| Retention | ${persistentStorage ? 'persistent archive branch' : 'ephemeral branch (deleted on PR close)'} |`,
             ];
 
             if (!hasLedger) {
@@ -83,9 +113,12 @@ PY
             } else if (!pushOk) {
               lines.push('| Status | ledger found, but artifact publish failed |');
               lines.push('| Next action | Check workflow write permissions for `contents: write`. |');
+            } else if (persistentStorage) {
+              lines.push('| Status | persistent archive branch updated |');
+              lines.push('| Next action | Open the archive branch to inspect stored review snapshots. |');
             } else {
-              lines.push('| Status | artifact branch updated |');
-              lines.push('| Next action | Open the artifact branch or run the full session-review workflow for digest output. |');
+              lines.push('| Status | ephemeral artifact branch updated |');
+              lines.push('| Next action | Open the artifact branch while the PR is active; it will be deleted on PR close. |');
             }
 
             const body = `${lines.join('\n')}\n`;
@@ -113,3 +146,52 @@ PY
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
+
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve artifact storage
+        id: storage
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import pathlib
+          import tomllib
+
+          archive_branch = ""
+          config_path = pathlib.Path(".opensession/cleanup/config.toml")
+          if config_path.exists():
+              data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+              archive_branch = str(data.get("session_archive_branch") or "").strip()
+
+          pr_number = os.environ["PR_NUMBER"]
+          artifact_branch = archive_branch or f"opensession/pr-{pr_number}-sessions"
+          print(f"artifact_branch={artifact_branch}")
+          print(f"persistent={'1' if archive_branch else '0'}")
+          PY
+
+      - name: Delete ephemeral artifact branch
+        if: steps.storage.outputs.persistent != '1'
+        env:
+          ARTIFACT_BRANCH: ${{ steps.storage.outputs.artifact_branch }}
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in 1 2; do
+            if git push origin ":refs/heads/$ARTIFACT_BRANCH" >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::warning::Failed to delete artifact branch $ARTIFACT_BRANCH after retry"
+          fi

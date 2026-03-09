@@ -67,6 +67,67 @@ fn cleanup_init_github_writes_expected_files() {
 }
 
 #[test]
+fn cleanup_init_persists_session_archive_branch_setting() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    let remote = tmp.path().join("cleanup-archive-remote.git");
+    init_git_repo(&repo);
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+
+    let out = run(
+        tmp.path(),
+        &repo,
+        &[
+            "cleanup",
+            "init",
+            "--provider",
+            "github",
+            "--session-archive-branch",
+            "pr/sessions",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "cleanup init failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let payload: Value = serde_json::from_slice(&out.stdout).expect("cleanup init json");
+    assert_eq!(
+        payload
+            .get("session_archive_branch")
+            .and_then(Value::as_str),
+        Some("pr/sessions")
+    );
+
+    let config_body = fs::read_to_string(
+        repo.join(".opensession")
+            .join("cleanup")
+            .join("config.toml"),
+    )
+    .expect("read cleanup config");
+    assert!(config_body.contains("session_archive_branch = \"pr/sessions\""));
+
+    let workflow_body = fs::read_to_string(
+        repo.join(".github")
+            .join("workflows")
+            .join("opensession-session-review.yml"),
+    )
+    .expect("read review workflow");
+    assert!(workflow_body.contains("session_archive_branch"));
+    assert!(workflow_body.contains("Delete ephemeral artifact branch"));
+}
+
+#[test]
 fn cleanup_init_gitlab_without_marker_reports_manual_steps() {
     let tmp = make_home();
     let repo = tmp.path().join("repo");
@@ -249,6 +310,13 @@ fn cleanup_run_dry_and_apply_handles_hidden_and_artifact_refs() {
     );
     run_git(&repo, &["checkout", "main"]);
 
+    run_git(&repo, &["checkout", "-b", "pr/sessions"]);
+    write_file(&repo.join("archive.txt"), "persistent archive branch\n");
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "archive branch"]);
+    run_git(&repo, &["push", "origin", "pr/sessions:pr/sessions"]);
+    run_git(&repo, &["checkout", "main"]);
+
     let init_out = run(
         tmp.path(),
         &repo,
@@ -295,6 +363,18 @@ fn cleanup_run_dry_and_apply_handles_hidden_and_artifact_refs() {
             .unwrap_or(false),
         "expected artifact branch candidate in dry-run"
     );
+    assert!(
+        !dry_payload
+            .get("artifact_candidates")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|item| item
+                .as_str()
+                .unwrap_or_default()
+                .contains("refs/heads/pr/sessions")),
+        "persistent archive branch should not be targeted by janitor"
+    );
 
     let apply_out = run(tmp.path(), &repo, &["cleanup", "run", "--apply", "--json"]);
     assert!(
@@ -323,5 +403,13 @@ fn cleanup_run_dry_and_apply_handles_hidden_and_artifact_refs() {
                 .contains("refs/heads/opensession/pr-77-sessions")
         }),
         "expected artifact branch deletion"
+    );
+    assert!(
+        !deleted.iter().any(|item| {
+            item.as_str()
+                .unwrap_or_default()
+                .contains("refs/heads/pr/sessions")
+        }),
+        "persistent archive branch should not be deleted"
     );
 }

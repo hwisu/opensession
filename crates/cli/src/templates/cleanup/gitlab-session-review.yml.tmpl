@@ -7,13 +7,25 @@ opensession_session_review:
   script:
     - set -eu
     - |
+      archive_branch="$(python3 - <<'PY'
+      import pathlib
+      import tomllib
+
+      config_path = pathlib.Path(".opensession/cleanup/config.toml")
+      if config_path.exists():
+          data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+          print(str(data.get("session_archive_branch") or "").strip())
+      else:
+          print("")
+      PY
+      )"
       encoded="$(python3 - <<'PY'
 import base64, os
 print(base64.urlsafe_b64encode(os.environ['CI_COMMIT_REF_NAME'].encode()).decode().rstrip('='))
 PY
 )"
       ledger_ref="refs/opensession/branches/${encoded}"
-      artifact_branch="opensession/mr-${CI_MERGE_REQUEST_IID}-sessions"
+      artifact_branch="${archive_branch:-opensession/mr-${CI_MERGE_REQUEST_IID}-sessions}"
       has_ledger=0
       push_ok=0
 
@@ -39,6 +51,7 @@ PY
 | --- | --- |
 | Ledger ref | \\`${ledger_ref}\\` |
 | Artifact branch | ${CI_PROJECT_URL}/-/tree/${artifact_branch} |
+| Retention | $( [ -n "$archive_branch" ] && printf 'persistent archive branch' || printf 'ephemeral branch' ) |
 "
 
       if [ "$has_ledger" -ne 1 ]; then
@@ -52,7 +65,7 @@ PY
       else
         body="${body}
 | Status | artifact branch updated |
-| Next action | Open the artifact branch or run the full session-review pipeline for digest output. |"
+| Next action | $( [ -n "$archive_branch" ] && printf 'Open the archive branch to inspect stored review snapshots.' || printf 'Open the artifact branch while the MR is active.' ) |"
       fi
 
       notes_api="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes"

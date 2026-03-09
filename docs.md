@@ -194,6 +194,9 @@ opensession cleanup run
 
 # Apply deletions
 opensession cleanup run --apply
+
+# Keep review snapshots permanently on a dedicated branch
+opensession cleanup init --provider auto --session-archive-branch pr/sessions --yes
 ```
 
 Defaults:
@@ -209,8 +212,8 @@ opensession cleanup init --provider auto --hidden-ttl-days 0 --artifact-ttl-days
 
 Provider matrix:
 
-- GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. PR updates publish/refresh `opensession/pr-<number>-sessions` and upsert a PR comment.
-- GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note.
+- GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. By default PR updates publish ephemeral `opensession/pr-<number>-sessions` branches and delete them when the PR closes; set `--session-archive-branch <branch>` to keep immutable review snapshots on a dedicated archive branch such as `pr/sessions`.
+- GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note, or use the configured archive branch when `--session-archive-branch` is set.
 - Generic git: `.opensession/cleanup/cron.example` is generated for cron/system scheduler wiring.
 - Session-review comments include `Reviewer Quick Digest` with Q&A excerpts (`Question | Answer` rows), modified file summary, and added/updated tests.
 

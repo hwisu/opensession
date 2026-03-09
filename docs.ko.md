@@ -200,17 +200,21 @@ opensession cleanup run --apply
 
 - hidden ref TTL: 30일
 - artifact branch TTL: 30일
+- 기본값은 ephemeral PR/MR artifact branch이며 리뷰가 닫히면 삭제됩니다. `--session-archive-branch <branch>`를 설정하면 `pr/sessions` 같은 전용 archive branch에 immutable snapshot을 계속 보관합니다.
 
 민감한 저장소용:
 
 ```bash
 opensession cleanup init --provider auto --hidden-ttl-days 0 --artifact-ttl-days 0 --yes
+
+# 전용 브랜치에 리뷰 스냅샷 영구 보관
+opensession cleanup init --provider auto --session-archive-branch pr/sessions --yes
 ```
 
 프로바이더 매트릭스:
 
-- GitHub: `.github/workflows/opensession-cleanup.yml`와 `.github/workflows/opensession-session-review.yml`을 생성합니다. PR 업데이트 시 `opensession/pr-<number>-sessions`를 게시/갱신하고 PR 코멘트를 upsert합니다.
-- GitLab: `.gitlab/opensession-cleanup.yml`와 `.gitlab/opensession-session-review.yml`을 생성합니다. `.gitlab-ci.yml`은 OpenSession 관리 마커 블록이 있을 때만(또는 새 파일일 때만) 갱신합니다. MR 파이프라인은 `opensession/mr-<iid>-sessions`를 게시/갱신하고 MR note를 남깁니다.
+- GitHub: `.github/workflows/opensession-cleanup.yml`와 `.github/workflows/opensession-session-review.yml`을 생성합니다. 기본값은 ephemeral `opensession/pr-<number>-sessions` 브랜치를 PR 동안만 유지하고 PR close 시 삭제합니다. `--session-archive-branch <branch>`를 설정하면 `pr/sessions` 같은 전용 archive branch에 immutable snapshot을 저장합니다.
+- GitLab: `.gitlab/opensession-cleanup.yml`와 `.gitlab/opensession-session-review.yml`을 생성합니다. `.gitlab-ci.yml`은 OpenSession 관리 마커 블록이 있을 때만(또는 새 파일일 때만) 갱신합니다. MR 파이프라인은 `opensession/mr-<iid>-sessions`를 게시/갱신하거나, `--session-archive-branch`가 설정된 경우 해당 archive branch를 사용합니다.
 - Generic git: cron/system scheduler 연동용 `.opensession/cleanup/cron.example`를 생성합니다.
 - session-review 코멘트에는 `Reviewer Quick Digest`가 포함되며, Q&A 발췌(`Question | Answer` 행), 수정 파일 요약, 추가/수정 테스트가 함께 표시됩니다.
 

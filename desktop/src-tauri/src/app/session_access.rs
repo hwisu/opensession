@@ -9,9 +9,7 @@ use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_core::trace::Session as HailSession;
 use opensession_git_native::extract_git_context;
 use opensession_local_db::{LocalDb, LocalSessionLink, LocalSessionRow};
-use opensession_parsers::{
-    discover::discover_for_tool, ingest::preview_parse_bytes, parse_with_default_parsers,
-};
+use opensession_parsers::{ParserRegistry, discover::discover_for_tool};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::fs;
@@ -51,9 +49,10 @@ fn refresh_local_session_index(db: &LocalDb) {
     let mut parse_errors = 0usize;
     let mut upsert_errors = 0usize;
     let mut upserted = 0usize;
+    let parser_registry = ParserRegistry::default();
 
     for path in force_refresh_discovered_paths() {
-        let parsed = match parse_with_default_parsers(&path) {
+        let parsed = match parser_registry.parse_path(&path) {
             Ok(session) => session,
             Err(error) => {
                 parse_errors = parse_errors.saturating_add(1);
@@ -203,7 +202,7 @@ pub(crate) fn normalize_session_body_to_hail_jsonl(
 
     if let Some(path_text) = source_path {
         let path = Path::new(path_text);
-        if let Ok(Some(session)) = parse_with_default_parsers(path) {
+        if let Ok(Some(session)) = ParserRegistry::default().parse_path(path) {
             return session_to_hail_jsonl(session);
         }
     }
@@ -213,7 +212,9 @@ pub(crate) fn normalize_session_body_to_hail_jsonl(
         .and_then(|name| name.to_str())
         .unwrap_or("session.jsonl");
 
-    let preview = preview_parse_bytes(filename, body.as_bytes(), None).map_err(|error| {
+    let preview = ParserRegistry::default()
+        .preview_bytes(filename, body.as_bytes(), None)
+        .map_err(|error| {
         desktop_error(
             "desktop.session_parse_failed",
             422,

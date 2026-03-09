@@ -4,15 +4,14 @@
 #[test]
 #[ignore = "requires real Codex session files"]
 fn parse_real_codex_session() {
-    let codex = opensession_parsers::all_parsers()
-        .into_iter()
-        .find(|p| p.name() == "codex")
-        .unwrap();
-
+    let registry = opensession_parsers::ParserRegistry::default();
     let paths = opensession_parsers::discover::discover_for_tool("codex");
     assert!(!paths.is_empty(), "No Codex session files found");
 
     for path in &paths {
+        let codex = registry
+            .parser_for_path(path)
+            .unwrap_or_else(|| panic!("No parser found for {}", path.display()));
         assert!(
             codex.can_parse(path),
             "can_parse failed for {}",
@@ -38,15 +37,14 @@ fn parse_real_codex_session() {
 #[test]
 #[ignore = "requires real Gemini session files"]
 fn parse_real_gemini_session() {
-    let gemini = opensession_parsers::all_parsers()
-        .into_iter()
-        .find(|p| p.name() == "gemini")
-        .unwrap();
-
+    let registry = opensession_parsers::ParserRegistry::default();
     let paths = opensession_parsers::discover::discover_for_tool("gemini");
     assert!(!paths.is_empty(), "No Gemini session files found");
 
     for path in &paths {
+        let gemini = registry
+            .parser_for_path(path)
+            .unwrap_or_else(|| panic!("No parser found for {}", path.display()));
         assert!(
             gemini.can_parse(path),
             "can_parse failed for {}",
@@ -71,15 +69,14 @@ fn parse_real_gemini_session() {
 #[test]
 #[ignore = "requires real OpenCode session files"]
 fn parse_real_opencode_session() {
-    let opencode = opensession_parsers::all_parsers()
-        .into_iter()
-        .find(|p| p.name() == "opencode")
-        .unwrap();
-
+    let registry = opensession_parsers::ParserRegistry::default();
     let paths = opensession_parsers::discover::discover_for_tool("opencode");
     assert!(!paths.is_empty(), "No OpenCode session files found");
 
     for path in &paths {
+        let opencode = registry
+            .parser_for_path(path)
+            .unwrap_or_else(|| panic!("No parser found for {}", path.display()));
         assert!(
             opencode.can_parse(path),
             "can_parse failed for {}",

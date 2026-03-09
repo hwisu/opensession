@@ -2,7 +2,7 @@ use crate::user_guidance::guided_error;
 use anyhow::{Context, Result};
 use clap::Args;
 use opensession_core::validate::validate_session;
-use opensession_parsers::ingest::{ParseError, preview_parse_bytes};
+use opensession_parsers::{ParseError, ParserRegistry};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Args)]
@@ -42,8 +42,9 @@ pub fn run(args: ParseArgs) -> Result<()> {
         .and_then(|value| value.to_str())
         .unwrap_or("session");
 
-    let preview =
-        preview_parse_bytes(filename, &bytes, Some(args.profile.as_str())).map_err(|err| {
+    let preview = ParserRegistry::default()
+        .preview_bytes(filename, &bytes, Some(args.profile.as_str()))
+        .map_err(|err| {
             match err {
                 ParseError::InvalidParserHint { .. }
                 | ParseError::ParserSelectionRequired { .. }

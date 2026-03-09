@@ -63,7 +63,7 @@ const SUPPORTED_PARSER_IDS: &[&str] = &[
 ];
 
 /// Detect parser candidates from filename and content text.
-pub fn detect_candidates(filename: &str, content: &str) -> Vec<ParseCandidate> {
+pub(crate) fn detect_candidates(filename: &str, content: &str) -> Vec<ParseCandidate> {
     let mut candidates: Vec<ParseCandidate> = Vec::new();
     let lower_name = filename.to_ascii_lowercase();
     let trimmed = content.trim();
@@ -141,7 +141,7 @@ pub fn detect_candidates(filename: &str, content: &str) -> Vec<ParseCandidate> {
 }
 
 /// Parse content bytes with hint + detector fallback.
-pub fn preview_parse_bytes(
+pub(crate) fn preview_parse_bytes(
     filename: &str,
     content_bytes: &[u8],
     parser_hint: Option<&str>,

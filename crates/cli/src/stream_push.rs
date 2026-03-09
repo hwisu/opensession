@@ -140,7 +140,8 @@ pub fn run_stream_push(agent: &str) -> Result<()> {
     }
 
     // Parse the full file with the standard parser.
-    let session = opensession_parsers::parse_with_default_parsers(&session_file)?
+    let session = opensession_parsers::ParserRegistry::default()
+        .parse_path(&session_file)?
         .ok_or_else(|| anyhow::anyhow!("No parser for {}", session_file.display()))?;
     if is_auxiliary_session(&session) {
         return Ok(());

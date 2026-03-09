@@ -3,6 +3,7 @@ use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_git_native::extract_git_context;
 use opensession_local_db::LocalDb;
 use opensession_parsers::discover::discover_sessions;
+use opensession_parsers::ParserRegistry;
 use std::path::Path;
 
 /// Run the index command: discover all local sessions and build/update the local DB index.
@@ -42,7 +43,7 @@ pub fn run_index() -> Result<()> {
 
 /// Index a single session file. Returns Ok(true) if indexed, Ok(false) if skipped.
 fn index_one_file(db: &LocalDb, path: &Path) -> Result<bool> {
-    let session = match opensession_parsers::parse_with_default_parsers(path)? {
+    let session = match ParserRegistry::default().parse_path(path)? {
         Some(session) => session,
         None => return Ok(false),
     };

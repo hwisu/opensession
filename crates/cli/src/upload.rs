@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::config::{load_config, load_daemon_config};
 use opensession_api_client::ApiClient;
-use opensession_parsers::{all_parsers, parser_for_path};
+use opensession_parsers::ParserRegistry;
 
 /// Upload a session file to the configured server (or git branch with --git)
 pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Result<()> {
@@ -20,8 +20,8 @@ pub async fn run_upload(file: &Path, parent_ids: &[String], use_git: bool) -> Re
     let daemon_config = load_daemon_config()?;
 
     // Find a parser that can handle this file
-    let parsers = all_parsers();
-    let parser = parser_for_path(&parsers, file);
+    let registry = ParserRegistry::default();
+    let parser = registry.parser_for_path(file);
 
     let parser = match parser {
         Some(p) => p,

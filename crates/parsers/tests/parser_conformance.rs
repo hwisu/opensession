@@ -1,7 +1,7 @@
 use opensession_core::trace::{
     ATTR_SEMANTIC_CALL_ID, ATTR_SOURCE_RAW_TYPE, ATTR_SOURCE_SCHEMA_VERSION, EventType,
 };
-use opensession_parsers::{SessionParser, all_parsers};
+use opensession_parsers::{ParserRegistry, SessionParser};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -9,11 +9,29 @@ fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-fn parser_by_name(name: &str) -> Box<dyn SessionParser> {
-    all_parsers()
-        .into_iter()
-        .find(|parser| parser.name() == name)
-        .unwrap_or_else(|| panic!("parser {name} not found"))
+fn parser_for_fixture<'a>(registry: &'a ParserRegistry, path: &Path) -> &'a dyn SessionParser {
+    registry
+        .parser_for_path(path)
+        .unwrap_or_else(|| panic!("parser not found for {}", path.display()))
+}
+
+fn stage_fixture(
+    temp_root: &Path,
+    fixtures: &Path,
+    fixture_relative: &str,
+    staged_relative: &str,
+) -> PathBuf {
+    let source = fixtures.join(fixture_relative);
+    let staged = temp_root.join(staged_relative);
+    std::fs::create_dir_all(
+        staged
+            .parent()
+            .unwrap_or_else(|| panic!("missing parent for {}", staged.display())),
+    )
+    .unwrap_or_else(|_| panic!("create dir for {}", staged.display()));
+    std::fs::copy(&source, &staged)
+        .unwrap_or_else(|_| panic!("copy {} to {}", source.display(), staged.display()));
+    staged
 }
 
 fn build_cursor_fixture_db(fixtures: &Path) -> PathBuf {
@@ -61,10 +79,17 @@ fn build_cursor_fixture_db(fixtures: &Path) -> PathBuf {
 #[test]
 fn parser_conformance_fixtures_cover_five_tools() {
     let fixtures = fixture_root();
+    let registry = ParserRegistry::default();
+    let staged = tempfile::tempdir().expect("create staged parser fixtures");
 
-    let codex = parser_by_name("codex");
-    let codex_session = codex
-        .parse(&fixtures.join("codex/rollout-desktop.jsonl"))
+    let codex_fixture = stage_fixture(
+        staged.path(),
+        &fixtures,
+        "codex/rollout-desktop.jsonl",
+        ".codex/sessions/rollout-desktop.jsonl",
+    );
+    let codex_session = parser_for_fixture(&registry, &codex_fixture)
+        .parse(&codex_fixture)
         .expect("parse codex fixture");
     assert!(
         codex_session
@@ -78,8 +103,14 @@ fn parser_conformance_fixtures_cover_five_tools() {
             EventType::Custom { ref kind } if kind == "token_count"
         )
     }));
-    let codex_web_session = codex
-        .parse(&fixtures.join("codex/web-search-actions.jsonl"))
+    let codex_web_fixture = stage_fixture(
+        staged.path(),
+        &fixtures,
+        "codex/web-search-actions.jsonl",
+        ".codex/sessions/web-search-actions.jsonl",
+    );
+    let codex_web_session = parser_for_fixture(&registry, &codex_web_fixture)
+        .parse(&codex_web_fixture)
         .expect("parse codex web fixture");
     assert!(codex_web_session.events.iter().any(|event| {
         matches!(
@@ -150,9 +181,14 @@ fn parser_conformance_fixtures_cover_five_tools() {
             == Some("plan_fixture_1")
     }));
 
-    let claude = parser_by_name("claude-code");
-    let claude_session = claude
-        .parse(&fixtures.join("claude/session-fallback.jsonl"))
+    let claude_fixture = stage_fixture(
+        staged.path(),
+        &fixtures,
+        "claude/session-fallback.jsonl",
+        ".claude/projects/demo/session-fallback.jsonl",
+    );
+    let claude_session = parser_for_fixture(&registry, &claude_fixture)
+        .parse(&claude_fixture)
         .expect("parse claude fixture");
     assert!(claude_session.events.iter().any(|event| {
         matches!(
@@ -161,9 +197,14 @@ fn parser_conformance_fixtures_cover_five_tools() {
         )
     }));
 
-    let gemini = parser_by_name("gemini");
-    let gemini_session = gemini
-        .parse(&fixtures.join("gemini/session-parts.json"))
+    let gemini_fixture = stage_fixture(
+        staged.path(),
+        &fixtures,
+        "gemini/session-parts.json",
+        ".gemini/tmp/demo/chats/session-parts.json",
+    );
+    let gemini_session = parser_for_fixture(&registry, &gemini_fixture)
+        .parse(&gemini_fixture)
         .expect("parse gemini fixture");
     assert!(
         gemini_session
@@ -184,8 +225,14 @@ fn parser_conformance_fixtures_cover_five_tools() {
             .and_then(|value| value.as_str())
             .is_some()
     }));
-    let gemini_tool_session = gemini
-        .parse(&fixtures.join("gemini/session-toolcalls.json"))
+    let gemini_tool_fixture = stage_fixture(
+        staged.path(),
+        &fixtures,
+        "gemini/session-toolcalls.json",
+        ".gemini/tmp/demo/chats/session-toolcalls.json",
+    );
+    let gemini_tool_session = parser_for_fixture(&registry, &gemini_tool_fixture)
+        .parse(&gemini_tool_fixture)
         .expect("parse gemini toolCalls fixture");
     assert!(gemini_tool_session.events.iter().any(|event| {
         matches!(
@@ -208,9 +255,9 @@ fn parser_conformance_fixtures_cover_five_tools() {
             == Some("gemini-json-v3-toolcalls")
     }));
 
-    let opencode = parser_by_name("opencode");
-    let opencode_session = opencode
-        .parse(&fixtures.join("opencode/storage/session/project/ses_fixture.json"))
+    let opencode_fixture = fixtures.join("opencode/storage/session/project/ses_fixture.json");
+    let opencode_session = parser_for_fixture(&registry, &opencode_fixture)
+        .parse(&opencode_fixture)
         .expect("parse opencode fixture");
     assert_eq!(opencode_session.agent.provider, "openai");
     assert_eq!(opencode_session.agent.model, "gpt-5.2-codex");
@@ -222,8 +269,10 @@ fn parser_conformance_fixtures_cover_five_tools() {
                 .and_then(|v| v.as_str())
                 == Some("part:text")
     }));
-    let opencode_company_session = opencode
-        .parse(&fixtures.join("opencode/storage/session/project/ses_company_logic.json"))
+    let opencode_company_fixture =
+        fixtures.join("opencode/storage/session/project/ses_company_logic.json");
+    let opencode_company_session = parser_for_fixture(&registry, &opencode_company_fixture)
+        .parse(&opencode_company_fixture)
         .expect("parse opencode company fixture");
     assert!(opencode_company_session.events.iter().any(|event| {
         matches!(event.event_type, EventType::Thinking)
@@ -277,8 +326,9 @@ fn parser_conformance_fixtures_cover_five_tools() {
     }));
 
     let cursor_db = build_cursor_fixture_db(&fixtures);
-    let cursor = parser_by_name("cursor");
-    let cursor_session = cursor.parse(&cursor_db).expect("parse cursor fixture db");
+    let cursor_session = parser_for_fixture(&registry, &cursor_db)
+        .parse(&cursor_db)
+        .expect("parse cursor fixture db");
     assert!(
         cursor_session
             .events

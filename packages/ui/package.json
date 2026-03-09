@@ -31,7 +31,6 @@
 	"dependencies": {
 		"effect": "3.19.19",
 		"highlight.js": "^11.11.1",
-		"isomorphic-dompurify": "^3.0.0",
 		"marked": "^17.0.4"
 	},
 	"scripts": {

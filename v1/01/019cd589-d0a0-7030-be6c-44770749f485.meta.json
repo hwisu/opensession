@@ -3,9 +3,9 @@
     "branch": "codex/symphony-local-review-ledger",
     "commits": [
       "fe3446b96ffff2bc88a5f2afa8b115ed081d27bd",
-      "f2576aff9413a0c0d6f277a8d3513abc331d55db"
+      "eb528a67543a6262dfa7cd7bc36282f0e561bc74"
     ],
-    "head": "f2576aff9413a0c0d6f277a8d3513abc331d55db",
+    "head": "eb528a67543a6262dfa7cd7bc36282f0e561bc74",
     "remote": "https://github.com/hwisu/opensession.git",
     "repo_name": "hwisu/opensession"
   },

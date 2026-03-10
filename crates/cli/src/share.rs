@@ -1,8 +1,12 @@
 use crate::cleanup_cmd;
 use crate::config_cmd::load_repo_config;
+use crate::runtime_settings::load_runtime_config;
 use crate::user_guidance::guided_error;
 use anyhow::{Context, Result, bail};
 use clap::Args;
+use opensession_core::Session;
+use opensession_core::sanitize::{SanitizeConfig, sanitize_session};
+use opensession_core::session::working_directory;
 use opensession_core::source_uri::{SourceSpec, SourceUri};
 use opensession_local_store::{find_repo_root, read_local_object_from_uri};
 use std::fs::OpenOptions;
@@ -163,7 +167,7 @@ fn run_git(uri: SourceUri, args: &ShareArgs) -> Result<()> {
     })?;
 
     let cwd = std::env::current_dir().context("read current directory")?;
-    let (_path, bytes) = read_local_object_from_uri(&uri, &cwd)?;
+    let (object_path, bytes) = read_local_object_from_uri(&uri, &cwd)?;
     let repo_root = find_repo_root(&cwd).ok_or_else(|| {
         guided_error(
             "current directory is not inside a git repository",
@@ -202,12 +206,14 @@ fn run_git(uri: SourceUri, args: &ShareArgs) -> Result<()> {
         record_share_metric("remote_ready", Some("quick"), None);
     }
     let remote = resolve_remote(&remote_arg, &repo_root)?;
+    ensure_repo_initialized_for_public_share(&repo_root)?;
+    let shared_bytes = prepare_git_share_bytes(&bytes, &object_path, &repo_root)?;
     let commit_message = format!("opensession share {local_hash}");
     opensession_git_native::store_blob_at_ref(
         &repo_root,
         &target_ref,
         &target_path,
-        &bytes,
+        &shared_bytes,
         &commit_message,
     )
     .map_err(|err| anyhow::anyhow!("failed to store git object: {err}"))?;
@@ -292,6 +298,155 @@ fn run_git(uri: SourceUri, args: &ShareArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn ensure_repo_initialized_for_public_share(repo_root: &Path) -> Result<()> {
+    if repo_has_public_share_init(repo_root)? {
+        return Ok(());
+    }
+
+    Err(guided_error(
+        "public share is blocked until this repository is explicitly initialized for OpenSession",
+        [
+            "run `opensession doctor --fix --yes --profile local --fanout-mode hidden_ref` in this repo",
+            "or create repo config: `opensession config init --base-url https://opensession.io`",
+        ],
+    ))
+}
+
+fn repo_has_public_share_init(repo_root: &Path) -> Result<bool> {
+    if repo_root.join(".opensession").join("config.toml").exists() {
+        return Ok(true);
+    }
+
+    for key in ["opensession.fanout-mode", "opensession.open-target"] {
+        if git_local_config_value(repo_root, key)?.is_some() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn git_local_config_value(repo_root: &Path, key: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("config")
+        .arg("--local")
+        .arg("--get")
+        .arg(key)
+        .output()
+        .with_context(|| format!("read git config `{key}`"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn prepare_git_share_bytes(bytes: &[u8], object_path: &Path, repo_root: &Path) -> Result<Vec<u8>> {
+    let raw = std::str::from_utf8(bytes).context("local source object is not valid UTF-8")?;
+    let mut session = Session::from_jsonl(raw).context("parse local source object for share")?;
+    ensure_session_origin_matches_repo(&session, object_path, repo_root)?;
+
+    let daemon_config = load_runtime_config()?;
+    let sanitize_config = public_share_sanitize_config(&daemon_config);
+    sanitize_session(&mut session, &sanitize_config);
+    session.recompute_stats();
+    session
+        .to_jsonl()
+        .map(|jsonl| jsonl.into_bytes())
+        .map_err(|err| anyhow::anyhow!("serialize sanitized session for share: {err}"))
+}
+
+fn ensure_session_origin_matches_repo(
+    session: &Session,
+    object_path: &Path,
+    repo_root: &Path,
+) -> Result<()> {
+    let session_cwd = working_directory(session).ok_or_else(|| {
+        guided_error(
+            format!(
+                "public share is blocked because session `{}` has no working directory metadata",
+                session.session_id
+            ),
+            [
+                format!(
+                    "re-capture or re-parse the session inside `{}` so the repo origin is recorded",
+                    repo_root.display()
+                ),
+                format!(
+                    "keep `{}` local-only if it did not originate from this repo",
+                    object_path.display()
+                ),
+            ],
+        )
+    })?;
+
+    let session_repo_root = find_repo_root(Path::new(session_cwd)).ok_or_else(|| {
+        guided_error(
+            format!(
+                "public share is blocked because session `{}` was not recorded inside a git repository",
+                session.session_id
+            ),
+            [
+                "keep this session local-only".to_string(),
+                format!(
+                    "re-capture or re-parse the session from inside `{}` before sharing",
+                    repo_root.display()
+                ),
+            ],
+        )
+    })?;
+
+    if same_repo_root(&session_repo_root, repo_root) {
+        return Ok(());
+    }
+
+    Err(guided_error(
+        format!(
+            "public share is blocked because session `{}` originated from a different git repository",
+            session.session_id
+        ),
+        [
+            format!("session repo: {}", session_repo_root.display()),
+            format!("current repo: {}", repo_root.display()),
+            "share only sessions that were recorded in the current initialized repo".to_string(),
+        ],
+    ))
+}
+
+fn same_repo_root(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn public_share_sanitize_config(
+    daemon_config: &opensession_runtime_config::DaemonConfig,
+) -> SanitizeConfig {
+    let mut exclude_patterns = SanitizeConfig::default().exclude_patterns;
+    for pattern in &daemon_config.privacy.exclude_patterns {
+        if !exclude_patterns
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(pattern))
+        {
+            exclude_patterns.push(pattern.clone());
+        }
+    }
+
+    SanitizeConfig {
+        strip_paths: true,
+        strip_env_vars: true,
+        exclude_patterns,
+    }
 }
 
 #[derive(Debug, Clone)]

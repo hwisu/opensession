@@ -1,4 +1,18 @@
 use super::*;
+use opensession_core::ContentBlock;
+
+fn init_share_repo(home: &Path, repo: &Path) {
+    let out = run(
+        home,
+        repo,
+        &["config", "init", "--base-url", "https://example.test"],
+    );
+    assert!(
+        out.status.success(),
+        "config init failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
 
 #[test]
 fn register_and_cat_roundtrip() {
@@ -88,9 +102,13 @@ fn share_quick_auto_detects_origin_without_push_and_reports_state() {
         &repo,
         &["remote", "add", "origin", remote.to_str().expect("remote")],
     );
+    init_share_repo(tmp.path(), &repo);
 
     let input = repo.join("sample.hail.jsonl");
-    write_file(&input, &make_hail_jsonl("s-share-quick-no-push"));
+    write_file(
+        &input,
+        &make_hail_jsonl_with_cwd("s-share-quick-no-push", &repo),
+    );
     let register_out = run(
         tmp.path(),
         &repo,
@@ -142,9 +160,13 @@ fn share_quick_push_consent_persists_and_enables_auto_push() {
         &repo,
         &["remote", "add", "origin", remote.to_str().expect("remote")],
     );
+    init_share_repo(tmp.path(), &repo);
 
     let first_input = repo.join("first.hail.jsonl");
-    write_file(&first_input, &make_hail_jsonl("s-share-quick-first"));
+    write_file(
+        &first_input,
+        &make_hail_jsonl_with_cwd("s-share-quick-first", &repo),
+    );
     let first_register = run(
         tmp.path(),
         &repo,
@@ -193,7 +215,10 @@ fn share_quick_push_consent_persists_and_enables_auto_push() {
     assert_eq!(consent_config, "true");
 
     let second_input = repo.join("second.hail.jsonl");
-    write_file(&second_input, &make_hail_jsonl("s-share-quick-second"));
+    write_file(
+        &second_input,
+        &make_hail_jsonl_with_cwd("s-share-quick-second", &repo),
+    );
     let second_register = run(
         tmp.path(),
         &repo,
@@ -290,9 +315,13 @@ fn share_quick_rejects_ambiguous_remote_and_allows_explicit_override() {
             "https://github.com/example/mirror.git",
         ],
     );
+    init_share_repo(tmp.path(), &repo);
 
     let input = repo.join("sample.hail.jsonl");
-    write_file(&input, &make_hail_jsonl("s-share-quick-ambiguous"));
+    write_file(
+        &input,
+        &make_hail_jsonl_with_cwd("s-share-quick-ambiguous", &repo),
+    );
     let register_out = run(
         tmp.path(),
         &repo,
@@ -392,9 +421,10 @@ fn share_git_without_push_prints_push_command() {
         &repo,
         &["remote", "add", "origin", remote.to_str().expect("remote")],
     );
+    init_share_repo(tmp.path(), &repo);
 
     let input = repo.join("sample.hail.jsonl");
-    write_file(&input, &make_hail_jsonl("s-share-git"));
+    write_file(&input, &make_hail_jsonl_with_cwd("s-share-git", &repo));
     let register_out = run(
         tmp.path(),
         &repo,
@@ -436,9 +466,10 @@ fn share_git_with_gitlab_dot_com_remote_emits_gl_uri() {
     let tmp = make_home();
     let repo = tmp.path().join("repo");
     init_git_repo(&repo);
+    init_share_repo(tmp.path(), &repo);
 
     let input = repo.join("sample.hail.jsonl");
-    write_file(&input, &make_hail_jsonl("s-share-gl"));
+    write_file(&input, &make_hail_jsonl_with_cwd("s-share-gl", &repo));
     let register_out = run(
         tmp.path(),
         &repo,
@@ -484,9 +515,13 @@ fn share_git_push_in_non_tty_does_not_trigger_cleanup_prompt() {
         &repo,
         &["remote", "add", "origin", remote.to_str().expect("remote")],
     );
+    init_share_repo(tmp.path(), &repo);
 
     let input = repo.join("sample.hail.jsonl");
-    write_file(&input, &make_hail_jsonl("s-share-push-no-tty"));
+    write_file(
+        &input,
+        &make_hail_jsonl_with_cwd("s-share-push-no-tty", &repo),
+    );
     let register_out = run(
         tmp.path(),
         &repo,
@@ -607,4 +642,252 @@ fn share_web_supports_gl_and_git_routes() {
     );
     let git_stdout = String::from_utf8_lossy(&git_out.stdout);
     assert!(git_stdout.contains("https://example.test/src/git/"));
+}
+
+#[test]
+fn share_git_blocks_public_share_until_repo_is_initialized() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    let remote = tmp.path().join("remote.git");
+    init_git_repo(&repo);
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+
+    let input = repo.join("sample.hail.jsonl");
+    write_file(
+        &input,
+        &make_hail_jsonl_with_cwd("s-share-uninitialized", &repo),
+    );
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(
+        tmp.path(),
+        &repo,
+        &["share", &local_uri, "--git", "--remote", "origin"],
+    );
+    assert!(
+        !share_out.status.success(),
+        "share unexpectedly succeeded without repo init"
+    );
+    let stderr = String::from_utf8_lossy(&share_out.stderr);
+    assert!(stderr.contains("explicitly initialized for OpenSession"));
+    assert!(stderr.contains("opensession doctor --fix"));
+    assert!(stderr.contains("opensession config init"));
+}
+
+#[test]
+fn share_git_blocks_sessions_from_a_different_repo() {
+    let tmp = make_home();
+    let source_repo = tmp.path().join("source-repo");
+    let share_repo = tmp.path().join("share-repo");
+    let remote = tmp.path().join("remote.git");
+    let outside = tmp.path().join("outside");
+    init_git_repo(&source_repo);
+    init_git_repo(&share_repo);
+    fs::create_dir_all(&outside).expect("create outside dir");
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &share_repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+    init_share_repo(tmp.path(), &share_repo);
+
+    let input = outside.join("cross-repo.hail.jsonl");
+    write_file(
+        &input,
+        &make_hail_jsonl_with_cwd("s-share-cross-repo", &source_repo),
+    );
+    let register_out = run(
+        tmp.path(),
+        &outside,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(
+        tmp.path(),
+        &share_repo,
+        &["share", &local_uri, "--git", "--remote", "origin"],
+    );
+    assert!(
+        !share_out.status.success(),
+        "share unexpectedly succeeded for cross-repo session"
+    );
+    let stderr = String::from_utf8_lossy(&share_out.stderr);
+    assert!(stderr.contains("originated from a different git repository"));
+    assert!(stderr.contains(source_repo.to_str().expect("source repo path")));
+    assert!(stderr.contains(share_repo.to_str().expect("share repo path")));
+}
+
+#[test]
+fn share_git_blocks_sessions_recorded_outside_any_repo() {
+    let tmp = make_home();
+    let share_repo = tmp.path().join("share-repo");
+    let remote = tmp.path().join("remote.git");
+    let outside = tmp.path().join("outside-work");
+    init_git_repo(&share_repo);
+    fs::create_dir_all(&outside).expect("create outside work dir");
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &share_repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+    init_share_repo(tmp.path(), &share_repo);
+
+    let input = outside.join("outside.hail.jsonl");
+    write_file(
+        &input,
+        &make_hail_jsonl_with_cwd("s-share-outside-origin", &outside),
+    );
+    let register_out = run(
+        tmp.path(),
+        &outside,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+
+    let share_out = run(
+        tmp.path(),
+        &share_repo,
+        &["share", &local_uri, "--git", "--remote", "origin"],
+    );
+    assert!(
+        !share_out.status.success(),
+        "share unexpectedly succeeded for non-repo session"
+    );
+    let stderr = String::from_utf8_lossy(&share_out.stderr);
+    assert!(stderr.contains("was not recorded inside a git repository"));
+    assert!(stderr.contains("keep this session local-only"));
+}
+
+#[test]
+fn share_git_sanitizes_sensitive_paths_and_credentials_before_writing_git() {
+    let tmp = make_home();
+    let repo = tmp.path().join("repo");
+    let remote = tmp.path().join("remote.git");
+    init_git_repo(&repo);
+    run_git(
+        tmp.path(),
+        &["init", "--bare", remote.to_str().expect("remote")],
+    );
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+    init_share_repo(tmp.path(), &repo);
+
+    let home_sensitive = tmp.path().join(".zshrc");
+    let mut session = Session::new(
+        "s-share-sensitive".to_string(),
+        Agent {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            tool: "codex".to_string(),
+            tool_version: None,
+        },
+    );
+    session.context.title = Some(format!("review {}", home_sensitive.display()));
+    session
+        .context
+        .attributes
+        .insert("cwd".to_string(), Value::String(repo.display().to_string()));
+    session.context.attributes.insert(
+        "source_path".to_string(),
+        Value::String(home_sensitive.display().to_string()),
+    );
+    session.events.push(Event {
+        event_id: "e1".to_string(),
+        timestamp: chrono::Utc::now(),
+        event_type: EventType::FileEdit {
+            path: home_sensitive.display().to_string(),
+            diff: Some("+ export API_KEY=sk-sensitive".to_string()),
+        },
+        task_id: None,
+        content: Content {
+            blocks: vec![
+                ContentBlock::Text {
+                    text: format!("cat {}", home_sensitive.display()),
+                },
+                ContentBlock::File {
+                    path: home_sensitive.display().to_string(),
+                    content: Some("export API_KEY=sk-sensitive".to_string()),
+                },
+            ],
+        },
+        duration_ms: None,
+        attributes: Default::default(),
+    });
+    session.events.push(Event {
+        event_id: "e2".to_string(),
+        timestamp: chrono::Utc::now(),
+        event_type: EventType::ShellCommand {
+            command: format!("cat {} API_KEY=sk-sensitive", home_sensitive.display()),
+            exit_code: Some(0),
+        },
+        task_id: None,
+        content: Content::text("done"),
+        duration_ms: None,
+        attributes: Default::default(),
+    });
+    session.recompute_stats();
+
+    let input = repo.join("sensitive.hail.jsonl");
+    write_file(&input, &session.to_jsonl().expect("session jsonl"));
+    let register_out = run(
+        tmp.path(),
+        &repo,
+        &["register", "--quiet", input.to_str().expect("path")],
+    );
+    let local_uri = first_non_empty_line(&register_out.stdout);
+    let local_hash = local_uri
+        .split('/')
+        .next_back()
+        .expect("local hash")
+        .to_string();
+
+    let share_out = run(
+        tmp.path(),
+        &repo,
+        &["share", &local_uri, "--git", "--remote", "origin"],
+    );
+    assert!(
+        share_out.status.success(),
+        "share failed: {}",
+        String::from_utf8_lossy(&share_out.stderr)
+    );
+
+    let stored = run_git(
+        &repo,
+        &[
+            "show",
+            &format!(
+                "{}:sessions/{local_hash}.jsonl",
+                opensession_git_native::branch_ledger_ref("main")
+            ),
+        ],
+    );
+    let shared_body = String::from_utf8_lossy(&stored.stdout);
+    assert!(!shared_body.contains("sk-sensitive"), "{shared_body}");
+    assert!(!shared_body.contains(".zshrc"));
+    assert!(!shared_body.contains(&home_sensitive.display().to_string()));
+    assert!(shared_body.contains("[REDACTED_CREDENTIAL]"));
+    assert!(shared_body.contains("[REDACTED_SENSITIVE_PATH]"));
+    assert!(shared_body.contains("[REDACTED_SENSITIVE_FILE]"));
 }

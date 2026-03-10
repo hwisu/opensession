@@ -117,8 +117,26 @@ pub(crate) fn default_nickname() -> String {
 pub(crate) fn default_exclude_patterns() -> Vec<String> {
     vec![
         "*.env".to_string(),
+        "*.env.*".to_string(),
+        "*.zshrc".to_string(),
+        "*.zprofile".to_string(),
+        "*.zlogin".to_string(),
+        "*.bashrc".to_string(),
+        "*.bash_profile".to_string(),
+        "*.profile".to_string(),
+        "*.npmrc".to_string(),
+        "*.pypirc".to_string(),
+        "*.netrc".to_string(),
+        "*.git-credentials".to_string(),
+        ".ssh/*".to_string(),
+        "*/.ssh/*".to_string(),
+        "*.pem".to_string(),
         "*secret*".to_string(),
         "*credential*".to_string(),
+        "*password*".to_string(),
+        "*token*".to_string(),
+        "*api_key*".to_string(),
+        "*apikey*".to_string(),
     ]
 }
 

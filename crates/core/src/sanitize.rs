@@ -1,6 +1,11 @@
 use crate::trace::{ContentBlock, Event, EventType, Session};
 use regex::Regex;
+use serde_json::Value;
 use std::sync::LazyLock;
+
+const REDACTED_CREDENTIAL: &str = "[REDACTED_CREDENTIAL]";
+const REDACTED_SENSITIVE_FILE: &str = "[REDACTED_SENSITIVE_FILE]";
+const REDACTED_SENSITIVE_PATH: &str = "[REDACTED_SENSITIVE_PATH]";
 
 /// Configuration for sanitization
 #[derive(Debug, Clone)]
@@ -20,6 +25,20 @@ impl Default for SanitizeConfig {
             strip_env_vars: true,
             exclude_patterns: vec![
                 "*.env".to_string(),
+                "*.env.*".to_string(),
+                "*.zshrc".to_string(),
+                "*.zprofile".to_string(),
+                "*.zlogin".to_string(),
+                "*.bashrc".to_string(),
+                "*.bash_profile".to_string(),
+                "*.profile".to_string(),
+                "*.npmrc".to_string(),
+                "*.pypirc".to_string(),
+                "*.netrc".to_string(),
+                "*.git-credentials".to_string(),
+                ".ssh/*".to_string(),
+                "*/.ssh/*".to_string(),
+                "*.pem".to_string(),
                 "*secret*".to_string(),
                 "*credential*".to_string(),
                 "*password*".to_string(),
@@ -38,36 +57,58 @@ static ENV_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(api[_-]?key|token|secret|password|credential|auth)[=:]\s*\S+").unwrap()
 });
 
+static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\S+").unwrap());
+
 /// Sanitize a session in-place
 pub fn sanitize_session(session: &mut Session, config: &SanitizeConfig) {
+    sanitize_session_context(session, config);
     for event in &mut session.events {
         sanitize_event(event, config);
     }
 }
 
+fn sanitize_session_context(session: &mut Session, config: &SanitizeConfig) {
+    if let Some(title) = session.context.title.as_mut() {
+        *title = sanitize_free_text(title, config);
+    }
+    if let Some(description) = session.context.description.as_mut() {
+        *description = sanitize_free_text(description, config);
+    }
+    for tag in &mut session.context.tags {
+        *tag = sanitize_free_text(tag, config);
+    }
+    for value in session.context.attributes.values_mut() {
+        sanitize_json_value(value, config);
+    }
+}
+
 /// Sanitize a single event
 pub fn sanitize_event(event: &mut Event, config: &SanitizeConfig) {
-    // Sanitize event type fields
+    for value in event.attributes.values_mut() {
+        sanitize_json_value(value, config);
+    }
+
     match &mut event.event_type {
-        EventType::FileEdit { path, .. }
-        | EventType::FileCreate { path }
-        | EventType::FileDelete { path } => {
-            if config.strip_paths {
-                *path = strip_home_dir(path);
+        EventType::FileEdit { path, diff } => {
+            let is_sensitive = is_excluded_path(path, &config.exclude_patterns);
+            *path = sanitize_path_value(path, config);
+            if is_sensitive {
+                *diff = Some(REDACTED_SENSITIVE_FILE.to_string());
+            } else if let Some(diff) = diff {
+                *diff = sanitize_free_text(diff, config);
             }
         }
+        EventType::FileRead { path }
+        | EventType::FileCreate { path }
+        | EventType::FileDelete { path } => {
+            *path = sanitize_path_value(path, config);
+        }
         EventType::ShellCommand { command, .. } => {
-            if config.strip_env_vars {
-                *command = strip_env_vars(command);
-            }
-            if config.strip_paths {
-                *command = strip_home_dir(command);
-            }
+            *command = sanitize_free_text(command, config);
         }
         _ => {}
     }
 
-    // Sanitize content blocks
     for block in &mut event.content.blocks {
         sanitize_content_block(block, config);
     }
@@ -76,33 +117,162 @@ pub fn sanitize_event(event: &mut Event, config: &SanitizeConfig) {
 fn sanitize_content_block(block: &mut ContentBlock, config: &SanitizeConfig) {
     match block {
         ContentBlock::Text { text } => {
-            if config.strip_paths {
-                *text = strip_home_dir(text);
-            }
-            if config.strip_env_vars {
-                *text = strip_env_vars(text);
-            }
+            *text = sanitize_free_text(text, config);
         }
         ContentBlock::Code { code, .. } => {
-            if config.strip_paths {
-                *code = strip_home_dir(code);
-            }
-            if config.strip_env_vars {
-                *code = strip_env_vars(code);
-            }
+            *code = sanitize_free_text(code, config);
         }
         ContentBlock::File { path, content, .. } => {
-            if config.strip_paths {
-                *path = strip_home_dir(path);
+            let is_sensitive = is_excluded_path(path, &config.exclude_patterns);
+            *path = sanitize_path_value(path, config);
+            if is_sensitive {
+                *content = Some(REDACTED_SENSITIVE_FILE.to_string());
+            } else if let Some(content) = content {
+                *content = sanitize_free_text(content, config);
             }
-            if let Some(c) = content
-                && config.strip_env_vars
-            {
-                *c = strip_env_vars(c);
+        }
+        ContentBlock::Json { data } => sanitize_json_value(data, config),
+        ContentBlock::Reference { uri, .. } => {
+            *uri = sanitize_free_text(uri, config);
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_json_value(value: &mut Value, config: &SanitizeConfig) {
+    match value {
+        Value::String(text) => {
+            *text = sanitize_free_text(text, config);
+        }
+        Value::Array(values) => {
+            for value in values {
+                sanitize_json_value(value, config);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values_mut() {
+                sanitize_json_value(value, config);
             }
         }
         _ => {}
     }
+}
+
+fn sanitize_path_value(path: &str, config: &SanitizeConfig) -> String {
+    if is_excluded_path(path, &config.exclude_patterns) {
+        return REDACTED_SENSITIVE_PATH.to_string();
+    }
+
+    if config.strip_paths {
+        return strip_home_dir(path);
+    }
+
+    path.to_string()
+}
+
+fn sanitize_free_text(text: &str, config: &SanitizeConfig) -> String {
+    let mut sanitized = text.to_string();
+    if config.strip_paths {
+        sanitized = strip_home_dir(&sanitized);
+    }
+    sanitized = redact_sensitive_path_tokens(&sanitized, &config.exclude_patterns);
+    if config.strip_env_vars {
+        sanitized = strip_env_vars(&sanitized);
+    }
+    sanitized
+}
+
+fn redact_sensitive_path_tokens(text: &str, patterns: &[String]) -> String {
+    TOKEN_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let token = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+            redact_token_if_sensitive_path(token, patterns)
+        })
+        .to_string()
+}
+
+fn redact_token_if_sensitive_path(token: &str, patterns: &[String]) -> String {
+    let trimmed = token.trim_matches(|c: char| {
+        matches!(
+            c,
+            '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+        )
+    });
+    if trimmed.is_empty() || !looks_like_path_token(trimmed) || !is_excluded_path(trimmed, patterns)
+    {
+        return token.to_string();
+    }
+
+    let prefix_len = token.find(trimmed).unwrap_or(0);
+    let suffix_start = prefix_len + trimmed.len();
+    let prefix = &token[..prefix_len];
+    let suffix = &token[suffix_start..];
+    format!("{prefix}{REDACTED_SENSITIVE_PATH}{suffix}")
+}
+
+fn looks_like_path_token(token: &str) -> bool {
+    token.starts_with('~')
+        || token.starts_with('.')
+        || token.contains('/')
+        || token.contains('\\')
+        || token.contains('.')
+}
+
+fn is_excluded_path(path: &str, patterns: &[String]) -> bool {
+    let normalized = path.trim().replace('\\', "/").to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let without_relative = normalized.strip_prefix("./").unwrap_or(normalized.as_str());
+    let without_home = without_relative
+        .strip_prefix("~/")
+        .unwrap_or(without_relative);
+    let basename = without_home.rsplit('/').next().unwrap_or(without_home);
+
+    patterns.iter().any(|pattern| {
+        let normalized_pattern = pattern.trim().replace('\\', "/").to_ascii_lowercase();
+        !normalized_pattern.is_empty()
+            && (wildcard_match(&normalized_pattern, &normalized)
+                || wildcard_match(&normalized_pattern, without_relative)
+                || wildcard_match(&normalized_pattern, without_home)
+                || wildcard_match(&normalized_pattern, basename))
+    })
+}
+
+fn wildcard_match(pattern: &str, candidate: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let candidate = candidate.as_bytes();
+    let mut pattern_idx = 0usize;
+    let mut candidate_idx = 0usize;
+    let mut star_idx: Option<usize> = None;
+    let mut star_candidate_idx = 0usize;
+
+    while candidate_idx < candidate.len() {
+        if pattern_idx < pattern.len() && pattern[pattern_idx] == candidate[candidate_idx] {
+            pattern_idx += 1;
+            candidate_idx += 1;
+            continue;
+        }
+        if pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+            star_idx = Some(pattern_idx);
+            pattern_idx += 1;
+            star_candidate_idx = candidate_idx;
+            continue;
+        }
+        if let Some(star) = star_idx {
+            pattern_idx = star + 1;
+            star_candidate_idx += 1;
+            candidate_idx = star_candidate_idx;
+            continue;
+        }
+        return false;
+    }
+
+    while pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+        pattern_idx += 1;
+    }
+    pattern_idx == pattern.len()
 }
 
 /// Replace home directory paths with ~
@@ -113,7 +283,7 @@ fn strip_home_dir(text: &str) -> String {
 /// Replace environment variable values with [REDACTED]
 fn strip_env_vars(text: &str) -> String {
     ENV_VAR_RE
-        .replace_all(text, "[REDACTED_CREDENTIAL]")
+        .replace_all(text, REDACTED_CREDENTIAL)
         .to_string()
 }
 
@@ -132,11 +302,8 @@ mod tests {
 
     #[test]
     fn test_strip_env_vars() {
-        assert_eq!(
-            strip_env_vars("API_KEY=sk-1234567890"),
-            "[REDACTED_CREDENTIAL]"
-        );
-        assert_eq!(strip_env_vars("token: abc123def"), "[REDACTED_CREDENTIAL]");
+        assert_eq!(strip_env_vars("API_KEY=sk-1234567890"), REDACTED_CREDENTIAL);
+        assert_eq!(strip_env_vars("token: abc123def"), REDACTED_CREDENTIAL);
     }
 
     #[test]
@@ -205,7 +372,7 @@ mod tests {
                 assert!(!code.contains("/Users/alice"));
                 assert!(code.contains("~/project/main.rs"));
                 assert!(!code.contains("sk-abc123"));
-                assert!(code.contains("[REDACTED_CREDENTIAL]"));
+                assert!(code.contains(REDACTED_CREDENTIAL));
             }
             _ => panic!("expected Code block"),
         }
@@ -227,9 +394,9 @@ mod tests {
         match &event.content.blocks[0] {
             ContentBlock::File { path, content, .. } => {
                 assert_eq!(path, "~/docs/readme.md");
-                let c = content.as_deref().unwrap();
-                assert!(!c.contains("hunter2"));
-                assert!(c.contains("[REDACTED_CREDENTIAL]"));
+                let content = content.as_deref().unwrap();
+                assert!(!content.contains("hunter2"));
+                assert!(content.contains(REDACTED_CREDENTIAL));
             }
             _ => panic!("expected File block"),
         }
@@ -249,7 +416,7 @@ mod tests {
         match &event.event_type {
             EventType::ShellCommand { command, .. } => {
                 assert!(!command.contains("abc123"));
-                assert!(command.contains("[REDACTED_CREDENTIAL]"));
+                assert!(command.contains(REDACTED_CREDENTIAL));
                 assert!(!command.contains("/Users/alice"));
                 assert!(command.contains("~/bin/run"));
             }
@@ -269,8 +436,9 @@ mod tests {
         );
         sanitize_event(&mut event, &config);
         match &event.event_type {
-            EventType::FileEdit { path, .. } => {
+            EventType::FileEdit { path, diff } => {
                 assert_eq!(path, "~/project/src/lib.rs");
+                assert_eq!(diff.as_deref(), Some("+ some diff"));
             }
             _ => panic!("expected FileEdit"),
         }
@@ -278,7 +446,6 @@ mod tests {
 
     #[test]
     fn test_sanitize_tool_call() {
-        // ToolCall has only a name field; sanitization applies to content blocks
         let config = SanitizeConfig::default();
         let mut event = make_event(
             EventType::ToolCall {
@@ -292,7 +459,7 @@ mod tests {
                 assert!(!text.contains("/Users/alice"));
                 assert!(text.contains("~/scripts/deploy.sh"));
                 assert!(!text.contains("abc123"));
-                assert!(text.contains("[REDACTED_CREDENTIAL]"));
+                assert!(text.contains(REDACTED_CREDENTIAL));
             }
             _ => panic!("expected Text block"),
         }
@@ -315,7 +482,6 @@ mod tests {
         sanitize_event(&mut event, &config);
         match &event.event_type {
             EventType::FileEdit { path, .. } => {
-                // Path should NOT be stripped
                 assert_eq!(path, "/Users/john/project/main.rs");
             }
             _ => panic!("expected FileEdit"),
@@ -330,14 +496,13 @@ mod tests {
 
     #[test]
     fn test_config_exclude_patterns() {
-        // exclude_patterns is a config field for downstream consumers; sanitize_event
-        // itself does not filter events — it only transforms content in-place.
-        // Verify the default patterns are populated correctly.
         let config = SanitizeConfig::default();
         assert!(config.exclude_patterns.contains(&"*.env".to_string()));
+        assert!(config.exclude_patterns.contains(&"*.zshrc".to_string()));
+        assert!(config.exclude_patterns.contains(&".ssh/*".to_string()));
         assert!(config.exclude_patterns.contains(&"*secret*".to_string()));
         assert!(config.exclude_patterns.contains(&"*token*".to_string()));
-        assert_eq!(config.exclude_patterns.len(), 7);
+        assert!(config.exclude_patterns.len() >= 10);
     }
 
     #[test]
@@ -357,9 +522,7 @@ mod tests {
         sanitize_event(&mut event, &config);
         match &event.event_type {
             EventType::ShellCommand { command, .. } => {
-                // Env vars should NOT be stripped
                 assert!(command.contains("API_KEY=sk-12345"));
-                // But paths should still be stripped
                 assert!(!command.contains("/Users/alice"));
                 assert!(command.contains("~/bin/run"));
             }
@@ -367,10 +530,121 @@ mod tests {
         }
         match &event.content.blocks[0] {
             ContentBlock::Text { text } => {
-                // Env vars in content should NOT be stripped
                 assert!(text.contains("token: abc123"));
             }
             _ => panic!("expected Text block"),
         }
+    }
+
+    #[test]
+    fn test_sensitive_file_paths_are_redacted_everywhere() {
+        let config = SanitizeConfig::default();
+        let mut event = make_event(
+            EventType::FileEdit {
+                path: "/Users/alice/.zshrc".to_string(),
+                diff: Some("+ export API_KEY=sk-secret".to_string()),
+            },
+            Content {
+                blocks: vec![
+                    ContentBlock::Text {
+                        text: "cat /Users/alice/.zshrc".to_string(),
+                    },
+                    ContentBlock::File {
+                        path: "/Users/alice/.zshrc".to_string(),
+                        content: Some("export API_KEY=sk-secret".to_string()),
+                    },
+                ],
+            },
+        );
+
+        sanitize_event(&mut event, &config);
+
+        match &event.event_type {
+            EventType::FileEdit { path, diff } => {
+                assert_eq!(path, REDACTED_SENSITIVE_PATH);
+                assert_eq!(diff.as_deref(), Some(REDACTED_SENSITIVE_FILE));
+            }
+            _ => panic!("expected FileEdit"),
+        }
+        match &event.content.blocks[0] {
+            ContentBlock::Text { text } => {
+                assert!(!text.contains(".zshrc"));
+                assert!(text.contains(REDACTED_SENSITIVE_PATH));
+            }
+            _ => panic!("expected Text block"),
+        }
+        match &event.content.blocks[1] {
+            ContentBlock::File { path, content, .. } => {
+                assert_eq!(path, REDACTED_SENSITIVE_PATH);
+                assert_eq!(content.as_deref(), Some(REDACTED_SENSITIVE_FILE));
+            }
+            _ => panic!("expected File block"),
+        }
+    }
+
+    #[test]
+    fn test_sanitize_session_context_metadata() {
+        let config = SanitizeConfig::default();
+        let mut session = Session::new(
+            "s-meta".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.context.title = Some("Review /Users/alice/.zshrc".to_string());
+        session.context.description = Some("API_KEY=sk-secret".to_string());
+        session.context.attributes.insert(
+            "cwd".to_string(),
+            Value::String("/Users/alice/projects/repo".to_string()),
+        );
+        session.context.attributes.insert(
+            "all_cwds".to_string(),
+            Value::Array(vec![
+                Value::String("/Users/alice/projects/repo".to_string()),
+                Value::String("/Users/alice/.ssh/id_rsa".to_string()),
+            ]),
+        );
+
+        sanitize_session(&mut session, &config);
+
+        assert!(
+            !session
+                .context
+                .title
+                .as_deref()
+                .unwrap_or_default()
+                .contains(".zshrc")
+        );
+        assert!(
+            session
+                .context
+                .title
+                .as_deref()
+                .unwrap_or_default()
+                .contains(REDACTED_SENSITIVE_PATH)
+        );
+        assert_eq!(
+            session.context.description.as_deref(),
+            Some(REDACTED_CREDENTIAL)
+        );
+        assert_eq!(
+            session
+                .context
+                .attributes
+                .get("cwd")
+                .and_then(Value::as_str),
+            Some("~/projects/repo")
+        );
+        let all_cwds = session
+            .context
+            .attributes
+            .get("all_cwds")
+            .and_then(Value::as_array)
+            .expect("all_cwds array");
+        assert_eq!(all_cwds[0].as_str(), Some("~/projects/repo"));
+        assert_eq!(all_cwds[1].as_str(), Some(REDACTED_SENSITIVE_PATH));
     }
 }

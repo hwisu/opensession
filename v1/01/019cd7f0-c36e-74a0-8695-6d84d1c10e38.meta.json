@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "codex/symphony-local-review-ledger",
+    "commits": [
+      "b94c6939a2807200fa4f480ba837c1a55bf74162"
+    ],
+    "head": "b94c6939a2807200fa4f480ba837c1a55bf74162",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cd7f0-c36e-74a0-8695-6d84d1c10e38",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 945,
+    "event_count": 335,
+    "files_changed": 4,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 23,
+    "task_count": 2,
+    "tool_call_count": 35,
+    "total_input_tokens": 10621046,
+    "total_output_tokens": 45327,
+    "user_message_count": 3
+  },
+  "title": "opensession init을 안한 레포에서의 작업 혹은 레포에서 진행하지 않은 작업이 공개적으로 올라가지 않도록 강력하게 수정해주길 바...",
+  "tool": "codex"
+}

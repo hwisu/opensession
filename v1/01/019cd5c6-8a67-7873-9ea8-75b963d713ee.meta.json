@@ -6,10 +6,9 @@
       "f2576aff9413a0c0d6f277a8d3513abc331d55db",
       "eb528a67543a6262dfa7cd7bc36282f0e561bc74",
       "7dc779db33bea73c7ebe95409ab4c75e163db76b",
-      "ecffd839f62830f213e4857f2c46c99d393bf05b",
-      "b94c6939a2807200fa4f480ba837c1a55bf74162"
+      "ecffd839f62830f213e4857f2c46c99d393bf05b"
     ],
-    "head": "b94c6939a2807200fa4f480ba837c1a55bf74162",
+    "head": "890a7bb249b46642dc99f748cfa748d545672a01",
     "remote": "https://github.com/hwisu/opensession.git",
     "repo_name": "hwisu/opensession"
   },

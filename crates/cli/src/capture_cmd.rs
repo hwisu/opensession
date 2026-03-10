@@ -17,17 +17,31 @@ use std::path::PathBuf;
 
 const ENV_CAPTURE_PROFILE: &str = "OPENSESSION_CAPTURE_PROFILE";
 const ENV_CAPTURE_MANIFEST: &str = "OPENSESSION_CAPTURE_MANIFEST";
-const ENV_CAPTURE_PROTOCOL: &str = "OPENSESSION_CAPTURE_PROTOCOL";
-const ENV_CAPTURE_SYSTEM: &str = "OPENSESSION_CAPTURE_SYSTEM";
 const ENV_CAPTURE_JOB_ID: &str = "OPENSESSION_CAPTURE_JOB_ID";
-const ENV_CAPTURE_JOB_TITLE: &str = "OPENSESSION_CAPTURE_JOB_TITLE";
 const ENV_CAPTURE_RUN_ID: &str = "OPENSESSION_CAPTURE_RUN_ID";
-const ENV_CAPTURE_ATTEMPT: &str = "OPENSESSION_CAPTURE_ATTEMPT";
 const ENV_CAPTURE_STAGE: &str = "OPENSESSION_CAPTURE_STAGE";
 const ENV_CAPTURE_REVIEW_KIND: &str = "OPENSESSION_CAPTURE_REVIEW_KIND";
-const ENV_CAPTURE_STATUS: &str = "OPENSESSION_CAPTURE_STATUS";
-const ENV_CAPTURE_THREAD_ID: &str = "OPENSESSION_CAPTURE_THREAD_ID";
 const ENV_CAPTURE_ARTIFACTS_JSON: &str = "OPENSESSION_CAPTURE_ARTIFACTS_JSON";
+
+const LEGACY_CAPTURE_ENV_OVERRIDES: &[&str] = &[
+    "OPENSESSION_CAPTURE_PROTOCOL",
+    "OPENSESSION_CAPTURE_SYSTEM",
+    "OPENSESSION_CAPTURE_JOB_TITLE",
+    "OPENSESSION_CAPTURE_ATTEMPT",
+    "OPENSESSION_CAPTURE_STATUS",
+    "OPENSESSION_CAPTURE_THREAD_ID",
+];
+
+const SUPPORTED_CAPTURE_ENV_OVERRIDES: &[&str] = &[
+    ENV_CAPTURE_JOB_ID,
+    ENV_CAPTURE_RUN_ID,
+    ENV_CAPTURE_STAGE,
+    ENV_CAPTURE_REVIEW_KIND,
+    ENV_CAPTURE_ARTIFACTS_JSON,
+];
+
+const SUPPORTED_CAPTURE_MANIFEST_FIELDS: &[&str] =
+    &["job_id", "run_id", "stage", "review_kind", "artifacts"];
 
 #[derive(Debug, Clone, Args)]
 pub struct CaptureArgs {
@@ -42,29 +56,25 @@ pub enum CaptureAction {
 }
 
 #[derive(Debug, Clone, Args)]
-#[command(after_long_help = r"Examples:
+#[command(after_long_help = r#"Examples:
   opensession capture import --log ./.codex/sessions/rollout.jsonl
+  printf '{"job_id":"AUTH-123","review_kind":"todo"}\n' > ./job_manifest.json
   opensession capture import --log ./rollout.jsonl --manifest ./job_manifest.json --out ./session.jsonl --json
 
 Defaults:
   - parser profile auto-detects when --profile is omitted
   - job_manifest.json next to the log is auto-discovered when --manifest is omitted
-  - if no manifest exists, job metadata is synthesized from env/defaults
+  - sidecar manifests are partial JSON patches with only the required review keys
+  - protocol/system/job_title/attempt/status/thread_id are synthesized automatically
 
 Env overrides:
   OPENSESSION_CAPTURE_PROFILE
   OPENSESSION_CAPTURE_MANIFEST
-  OPENSESSION_CAPTURE_PROTOCOL
-  OPENSESSION_CAPTURE_SYSTEM
   OPENSESSION_CAPTURE_JOB_ID
-  OPENSESSION_CAPTURE_JOB_TITLE
   OPENSESSION_CAPTURE_RUN_ID
-  OPENSESSION_CAPTURE_ATTEMPT
   OPENSESSION_CAPTURE_STAGE
   OPENSESSION_CAPTURE_REVIEW_KIND
-  OPENSESSION_CAPTURE_STATUS
-  OPENSESSION_CAPTURE_THREAD_ID
-  OPENSESSION_CAPTURE_ARTIFACTS_JSON")]
+  OPENSESSION_CAPTURE_ARTIFACTS_JSON"#)]
 pub struct CaptureImportArgs {
     /// Parser profile id (`codex`, `claude-code`, `gemini`, ...). Auto-detected when omitted.
     #[arg(long)]
@@ -101,27 +111,16 @@ struct CaptureImportOutput {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct JobManifestPatch {
-    #[serde(default)]
-    protocol: Option<JobProtocol>,
-    #[serde(default)]
-    system: Option<String>,
     #[serde(default)]
     job_id: Option<String>,
     #[serde(default)]
-    job_title: Option<String>,
-    #[serde(default)]
     run_id: Option<String>,
-    #[serde(default)]
-    attempt: Option<i64>,
     #[serde(default)]
     stage: Option<JobStage>,
     #[serde(default)]
     review_kind: Option<JobReviewKind>,
-    #[serde(default)]
-    status: Option<JobStatus>,
-    #[serde(default)]
-    thread_id: Option<String>,
     #[serde(default)]
     artifacts: Option<Vec<JobArtifactRef>>,
 }
@@ -243,28 +242,16 @@ fn resolve_manifest(args: &CaptureImportArgs, session: &Session) -> Result<JobMa
         .unwrap_or_else(|| infer_job_id(&args.log, session));
 
     Ok(JobManifest {
-        protocol: env_patch
-            .protocol
-            .or(file_patch.protocol)
-            .unwrap_or(JobProtocol::Opensession),
-        system: env_patch
-            .system
-            .or(file_patch.system)
-            .unwrap_or_else(|| "opensession".to_string()),
-        job_title: env_patch
-            .job_title
-            .or(file_patch.job_title)
-            .unwrap_or_else(|| infer_job_title(&job_id)),
+        protocol: JobProtocol::Opensession,
+        system: "opensession".to_string(),
+        job_title: infer_job_title(&job_id),
         run_id: env_patch
             .run_id
             .or(file_patch.run_id)
             .unwrap_or_else(|| session.session_id.clone()),
-        attempt: env_patch.attempt.or(file_patch.attempt).unwrap_or(0),
-        status: env_patch
-            .status
-            .or(file_patch.status)
-            .unwrap_or_else(|| infer_status(stage, review_kind)),
-        thread_id: env_patch.thread_id.or(file_patch.thread_id),
+        attempt: 0,
+        status: infer_status(stage, review_kind),
+        thread_id: None,
         artifacts: env_patch
             .artifacts
             .or(file_patch.artifacts)
@@ -299,25 +286,59 @@ fn load_manifest_patch(args: &CaptureImportArgs) -> Result<JobManifestPatch> {
     serde_json::from_slice(&manifest_bytes).map_err(|err| {
         guided_error(
             format!("failed to parse manifest `{}`: {err}", path.display()),
-            ["ensure manifest is valid JSON and retry".to_string()],
+            [
+                format!(
+                    "use only partial manifest keys: {}",
+                    SUPPORTED_CAPTURE_MANIFEST_FIELDS.join(", ")
+                ),
+                "protocol/system/job_title/attempt/status/thread_id are synthesized automatically"
+                    .to_string(),
+            ],
         )
     })
 }
 
 fn env_manifest_patch() -> Result<JobManifestPatch> {
+    reject_legacy_capture_env_overrides()?;
     Ok(JobManifestPatch {
-        protocol: parse_env_enum(ENV_CAPTURE_PROTOCOL)?,
-        system: env_trimmed(ENV_CAPTURE_SYSTEM),
         job_id: env_trimmed(ENV_CAPTURE_JOB_ID),
-        job_title: env_trimmed(ENV_CAPTURE_JOB_TITLE),
         run_id: env_trimmed(ENV_CAPTURE_RUN_ID),
-        attempt: parse_env_number(ENV_CAPTURE_ATTEMPT)?,
         stage: parse_env_enum(ENV_CAPTURE_STAGE)?,
         review_kind: parse_env_enum(ENV_CAPTURE_REVIEW_KIND)?,
-        status: parse_env_enum(ENV_CAPTURE_STATUS)?,
-        thread_id: env_trimmed(ENV_CAPTURE_THREAD_ID),
         artifacts: parse_env_json(ENV_CAPTURE_ARTIFACTS_JSON)?,
     })
+}
+
+fn reject_legacy_capture_env_overrides() -> Result<()> {
+    let found = LEGACY_CAPTURE_ENV_OVERRIDES
+        .iter()
+        .copied()
+        .filter(|name| env_present(name))
+        .collect::<Vec<_>>();
+    if found.is_empty() {
+        return Ok(());
+    }
+
+    Err(guided_error(
+        format!(
+            "capture import no longer supports legacy env overrides: {}",
+            found.join(", ")
+        ),
+        [
+            format!(
+                "use only supported capture env overrides: {}",
+                SUPPORTED_CAPTURE_ENV_OVERRIDES.join(", ")
+            ),
+            "protocol/system/job_title/attempt/status/thread_id are synthesized automatically"
+                .to_string(),
+        ],
+    ))
+}
+
+fn env_present(name: &str) -> bool {
+    std::env::var_os(name)
+        .map(|value| !value.to_string_lossy().trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn env_trimmed(name: &str) -> Option<String> {
@@ -338,18 +359,6 @@ fn parse_env_enum<T: DeserializeOwned>(name: &str) -> Result<Option<T>> {
             [format!(
                 "set {name} to a supported snake_case value and retry"
             )],
-        )
-    })
-}
-
-fn parse_env_number(name: &str) -> Result<Option<i64>> {
-    let Some(value) = env_trimmed(name) else {
-        return Ok(None);
-    };
-    value.parse::<i64>().map(Some).map_err(|err| {
-        guided_error(
-            format!("invalid {name}: {err}"),
-            [format!("set {name} to an integer and retry")],
         )
     })
 }

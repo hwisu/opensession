@@ -86,6 +86,32 @@ function toggleWord(value: boolean): string {
 	return value ? localize('On', '켜짐') : localize('Off', '꺼짐');
 }
 
+const DEFAULT_RUNTIME_SESSION_VIEW = 'full' as const;
+const DEFAULT_RUNTIME_RESPONSE_STYLE = 'standard' as const;
+const DEFAULT_RUNTIME_OUTPUT_SHAPE = 'layered' as const;
+const DEFAULT_RUNTIME_TRIGGER_MODE = 'on_session_save' as const;
+const DEFAULT_RUNTIME_STORAGE_BACKEND = 'hidden_ref' as const;
+const DEFAULT_RUNTIME_BATCH_EXECUTION_MODE = 'on_app_start' as const;
+const DEFAULT_RUNTIME_BATCH_SCOPE = 'recent_days' as const;
+const DEFAULT_RUNTIME_BATCH_RECENT_DAYS = 30;
+const DEFAULT_RUNTIME_VECTOR_PROVIDER = 'ollama' as const;
+const DEFAULT_RUNTIME_VECTOR_MODEL = 'bge-m3';
+const DEFAULT_RUNTIME_VECTOR_ENDPOINT = 'http://127.0.0.1:11434';
+const DEFAULT_RUNTIME_VECTOR_GRANULARITY = 'event_line_chunk' as const;
+const DEFAULT_RUNTIME_VECTOR_CHUNKING_MODE = 'auto' as const;
+const DEFAULT_RUNTIME_VECTOR_CHUNK_SIZE_LINES = 12;
+const DEFAULT_RUNTIME_VECTOR_CHUNK_OVERLAP_LINES = 3;
+const DEFAULT_RUNTIME_VECTOR_TOP_K_CHUNKS = 30;
+const DEFAULT_RUNTIME_VECTOR_TOP_K_SESSIONS = 20;
+const DEFAULT_RUNTIME_CHANGE_READER_SCOPE = 'summary_only' as const;
+const DEFAULT_RUNTIME_CHANGE_READER_MAX_CONTEXT_CHARS = 12000;
+const DEFAULT_RUNTIME_CHANGE_READER_VOICE_PROVIDER = 'openai' as const;
+const DEFAULT_RUNTIME_CHANGE_READER_VOICE_MODEL = 'gpt-4o-mini-tts';
+const DEFAULT_RUNTIME_CHANGE_READER_VOICE_NAME = 'alloy';
+const DEFAULT_RUNTIME_LIFECYCLE_SESSION_TTL_DAYS = 30;
+const DEFAULT_RUNTIME_LIFECYCLE_SUMMARY_TTL_DAYS = 30;
+const DEFAULT_RUNTIME_LIFECYCLE_INTERVAL_SECS = 3600;
+
 let settings = $state<UserSettings | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
@@ -108,45 +134,55 @@ let runtimeDetecting = $state(false);
 let runtimeSupported = $state(true);
 let runtimeError = $state<string | null>(null);
 let runtimeDetectMessage = $state<string | null>(null);
-let runtimeSessionDefaultView = $state<'full' | 'compressed'>('full');
+let runtimeSessionDefaultView = $state<'full' | 'compressed'>(DEFAULT_RUNTIME_SESSION_VIEW);
 let runtimeProvider = $state<DesktopSummaryProviderId>('disabled');
 let runtimeProviderTransport = $state<DesktopSummaryProviderTransport>('none');
 let runtimeEndpoint = $state('');
 let runtimeModel = $state('');
 let runtimeSourceMode = $state<DesktopSummarySourceMode>('session_only');
-let runtimeResponseStyle = $state<DesktopSummaryResponseStyle>('standard');
-let runtimeOutputShape = $state<DesktopSummaryOutputShape>('layered');
+let runtimeResponseStyle = $state<DesktopSummaryResponseStyle>(DEFAULT_RUNTIME_RESPONSE_STYLE);
+let runtimeOutputShape = $state<DesktopSummaryOutputShape>(DEFAULT_RUNTIME_OUTPUT_SHAPE);
 let runtimePromptTemplate = $state('');
 let runtimePromptDefaultTemplate = $state('');
-let runtimeTriggerMode = $state<DesktopSummaryTriggerMode>('on_session_save');
-let runtimeStorageBackend = $state<DesktopSummaryStorageBackend>('hidden_ref');
-let runtimeBatchExecutionMode = $state<DesktopSummaryBatchExecutionMode>('on_app_start');
-let runtimeBatchScope = $state<DesktopSummaryBatchScope>('recent_days');
-let runtimeBatchRecentDays = $state(30);
+let runtimeTriggerMode = $state<DesktopSummaryTriggerMode>(DEFAULT_RUNTIME_TRIGGER_MODE);
+let runtimeStorageBackend = $state<DesktopSummaryStorageBackend>(DEFAULT_RUNTIME_STORAGE_BACKEND);
+let runtimeBatchExecutionMode = $state<DesktopSummaryBatchExecutionMode>(
+	DEFAULT_RUNTIME_BATCH_EXECUTION_MODE,
+);
+let runtimeBatchScope = $state<DesktopSummaryBatchScope>(DEFAULT_RUNTIME_BATCH_SCOPE);
+let runtimeBatchRecentDays = $state(DEFAULT_RUNTIME_BATCH_RECENT_DAYS);
 let runtimeVectorEnabled = $state(false);
-let runtimeVectorProvider = $state<DesktopVectorSearchProvider>('ollama');
-let runtimeVectorModel = $state('bge-m3');
-let runtimeVectorEndpoint = $state('http://127.0.0.1:11434');
-let runtimeVectorGranularity = $state<DesktopVectorSearchGranularity>('event_line_chunk');
-let runtimeVectorChunkingMode = $state<DesktopVectorChunkingMode>('auto');
-let runtimeVectorChunkSizeLines = $state(12);
-let runtimeVectorChunkOverlapLines = $state(3);
-let runtimeVectorTopKChunks = $state(30);
-let runtimeVectorTopKSessions = $state(20);
+let runtimeVectorProvider = $state<DesktopVectorSearchProvider>(DEFAULT_RUNTIME_VECTOR_PROVIDER);
+let runtimeVectorModel = $state(DEFAULT_RUNTIME_VECTOR_MODEL);
+let runtimeVectorEndpoint = $state(DEFAULT_RUNTIME_VECTOR_ENDPOINT);
+let runtimeVectorGranularity = $state<DesktopVectorSearchGranularity>(
+	DEFAULT_RUNTIME_VECTOR_GRANULARITY,
+);
+let runtimeVectorChunkingMode = $state<DesktopVectorChunkingMode>(
+	DEFAULT_RUNTIME_VECTOR_CHUNKING_MODE,
+);
+let runtimeVectorChunkSizeLines = $state(DEFAULT_RUNTIME_VECTOR_CHUNK_SIZE_LINES);
+let runtimeVectorChunkOverlapLines = $state(DEFAULT_RUNTIME_VECTOR_CHUNK_OVERLAP_LINES);
+let runtimeVectorTopKChunks = $state(DEFAULT_RUNTIME_VECTOR_TOP_K_CHUNKS);
+let runtimeVectorTopKSessions = $state(DEFAULT_RUNTIME_VECTOR_TOP_K_SESSIONS);
 let runtimeChangeReaderEnabled = $state(false);
-let runtimeChangeReaderScope = $state<DesktopChangeReaderScope>('summary_only');
+let runtimeChangeReaderScope = $state<DesktopChangeReaderScope>(
+	DEFAULT_RUNTIME_CHANGE_READER_SCOPE,
+);
 let runtimeChangeReaderQaEnabled = $state(true);
-let runtimeChangeReaderMaxContextChars = $state(12000);
+let runtimeChangeReaderMaxContextChars = $state(DEFAULT_RUNTIME_CHANGE_READER_MAX_CONTEXT_CHARS);
 let runtimeChangeReaderVoiceEnabled = $state(false);
-let runtimeChangeReaderVoiceProvider = $state<DesktopChangeReaderVoiceProvider>('openai');
-let runtimeChangeReaderVoiceModel = $state('gpt-4o-mini-tts');
-let runtimeChangeReaderVoiceName = $state('alloy');
+let runtimeChangeReaderVoiceProvider = $state<DesktopChangeReaderVoiceProvider>(
+	DEFAULT_RUNTIME_CHANGE_READER_VOICE_PROVIDER,
+);
+let runtimeChangeReaderVoiceModel = $state(DEFAULT_RUNTIME_CHANGE_READER_VOICE_MODEL);
+let runtimeChangeReaderVoiceName = $state(DEFAULT_RUNTIME_CHANGE_READER_VOICE_NAME);
 let runtimeChangeReaderVoiceApiKey = $state('');
 let runtimeChangeReaderVoiceApiKeyConfigured = $state(false);
 let runtimeLifecycleEnabled = $state(true);
-let runtimeSessionTtlDays = $state(30);
-let runtimeSummaryTtlDays = $state(30);
-let runtimeCleanupIntervalSecs = $state(3600);
+let runtimeSessionTtlDays = $state(DEFAULT_RUNTIME_LIFECYCLE_SESSION_TTL_DAYS);
+let runtimeSummaryTtlDays = $state(DEFAULT_RUNTIME_LIFECYCLE_SUMMARY_TTL_DAYS);
+let runtimeCleanupIntervalSecs = $state(DEFAULT_RUNTIME_LIFECYCLE_INTERVAL_SECS);
 let runtimeVectorPreflight = $state<DesktopVectorPreflightResponse | null>(null);
 let runtimeVectorIndex = $state<DesktopVectorIndexStatusResponse | null>(null);
 let runtimeVectorInstalling = $state(false);
@@ -155,6 +191,13 @@ let runtimeVectorError = $state<string | null>(null);
 let runtimeSummaryBatchStatus = $state<DesktopSummaryBatchStatusResponse | null>(null);
 let runtimeSummaryBatchRunning = $state(false);
 let runtimeLifecycleStatus = $state<DesktopLifecycleCleanupStatusResponse | null>(null);
+let runtimePromptExpanded = $state(false);
+let runtimeResponseExpanded = $state(false);
+let runtimeVectorExpanded = $state(false);
+let runtimeChangeReaderExpanded = $state(false);
+let runtimeStorageExpanded = $state(false);
+let runtimeSummaryBatchExpanded = $state(false);
+let runtimeLifecycleExpanded = $state(false);
 const BACKGROUND_JOB_POLL_INTERVAL_MS = 1000;
 const BACKGROUND_STATUS_POLL_INTERVAL_MS = 5000;
 
@@ -307,6 +350,113 @@ function activityStateTone(state: string | null | undefined): RuntimeActivityTon
 	if (state === 'failed') return 'failed';
 	if (state === 'complete') return 'complete';
 	return 'disabled';
+}
+
+function disclosurePanelClasses(open: boolean): string {
+	return open
+		? 'border-accent/30 bg-accent/5'
+		: 'border-border/60 bg-bg-primary';
+}
+
+function disclosureToggleLabel(open: boolean): string {
+	return open ? localize('Hide details', '세부 숨기기') : localize('Show details', '세부 보기');
+}
+
+function promptSectionSummary(): string {
+	return runtimePromptTemplate === runtimePromptDefaultTemplate
+		? localize('Default template', '기본 템플릿')
+		: localize('Custom template', '사용자 템플릿');
+}
+
+function responseSectionSummary(): string {
+	return `${runtimeResponseStyle} · ${runtimeOutputShape}`;
+}
+
+function vectorSectionSummary(): string {
+	return localize(
+		`${toggleWord(runtimeVectorEnabled)} · ${runtimeVectorProvider} · ${runtimeVectorModel}`,
+		`${toggleWord(runtimeVectorEnabled)} · ${runtimeVectorProvider} · ${runtimeVectorModel}`,
+	);
+}
+
+function changeReaderSectionSummary(): string {
+	return localize(
+		`${toggleWord(runtimeChangeReaderEnabled)} · ${runtimeChangeReaderScope} · ${runtimeChangeReaderMaxContextChars.toLocaleString()} chars`,
+		`${toggleWord(runtimeChangeReaderEnabled)} · ${runtimeChangeReaderScope} · ${runtimeChangeReaderMaxContextChars.toLocaleString()}자`,
+	);
+}
+
+function storageSectionSummary(): string {
+	return `${runtimeTriggerMode} · ${runtimeStorageBackend}`;
+}
+
+function summaryBatchSectionSummary(): string {
+	return localize(
+		`${runtimeBatchExecutionMode} · ${runtimeBatchScope === 'all' ? 'all sessions' : `${runtimeBatchRecentDays} days`}`,
+		`${runtimeBatchExecutionMode} · ${runtimeBatchScope === 'all' ? '모든 세션' : `${runtimeBatchRecentDays}일`}`,
+	);
+}
+
+function lifecycleSectionSummary(): string {
+	return localize(
+		`${toggleWord(runtimeLifecycleEnabled)} · ${runtimeSessionTtlDays}d / ${runtimeSummaryTtlDays}d · ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`,
+		`${toggleWord(runtimeLifecycleEnabled)} · ${runtimeSessionTtlDays}일 / ${runtimeSummaryTtlDays}일 · ${formatIntervalSeconds(runtimeCleanupIntervalSecs)}`,
+	);
+}
+
+function applyRuntimeSectionExpansion(settings: DesktopRuntimeSettingsResponse) {
+	const promptTemplate = settings.summary.prompt.template ?? '';
+	const promptDefaultTemplate = settings.summary.prompt.default_template ?? '';
+	const responseStyle = settings.summary.response.style ?? DEFAULT_RUNTIME_RESPONSE_STYLE;
+	const outputShape = settings.summary.response.shape ?? DEFAULT_RUNTIME_OUTPUT_SHAPE;
+	const vectorSettings = settings.vector_search;
+	const changeReaderSettings = settings.change_reader;
+	const lifecycleSettings = settings.lifecycle;
+	const summaryBatchSettings = settings.summary.batch;
+	const storageSettings = settings.summary.storage;
+
+	runtimePromptExpanded = promptTemplate !== promptDefaultTemplate;
+	runtimeResponseExpanded =
+		responseStyle !== DEFAULT_RUNTIME_RESPONSE_STYLE ||
+		outputShape !== DEFAULT_RUNTIME_OUTPUT_SHAPE;
+	runtimeVectorExpanded =
+		(vectorSettings.enabled ?? false) ||
+		(runtimeVectorPreflight?.model_installed === false) ||
+		runtimeVectorInstalling ||
+		runtimeVectorReindexing ||
+		runtimeVectorIndex?.state === 'failed' ||
+		runtimeVectorError != null;
+	runtimeChangeReaderExpanded =
+		(changeReaderSettings?.enabled ?? false) ||
+		(changeReaderSettings?.scope ?? DEFAULT_RUNTIME_CHANGE_READER_SCOPE) !==
+			DEFAULT_RUNTIME_CHANGE_READER_SCOPE ||
+		(changeReaderSettings?.qa_enabled ?? true) !== true ||
+		(changeReaderSettings?.max_context_chars ?? DEFAULT_RUNTIME_CHANGE_READER_MAX_CONTEXT_CHARS) !==
+			DEFAULT_RUNTIME_CHANGE_READER_MAX_CONTEXT_CHARS ||
+		(changeReaderSettings?.voice?.enabled ?? false) ||
+		(changeReaderSettings?.voice?.api_key_configured ?? false);
+	runtimeStorageExpanded =
+		(storageSettings.trigger ?? DEFAULT_RUNTIME_TRIGGER_MODE) !== DEFAULT_RUNTIME_TRIGGER_MODE ||
+		(storageSettings.backend ?? DEFAULT_RUNTIME_STORAGE_BACKEND) !==
+			DEFAULT_RUNTIME_STORAGE_BACKEND;
+	runtimeSummaryBatchExpanded =
+		(summaryBatchSettings.execution_mode ?? DEFAULT_RUNTIME_BATCH_EXECUTION_MODE) !==
+			DEFAULT_RUNTIME_BATCH_EXECUTION_MODE ||
+		(summaryBatchSettings.scope ?? DEFAULT_RUNTIME_BATCH_SCOPE) !== DEFAULT_RUNTIME_BATCH_SCOPE ||
+		(summaryBatchSettings.recent_days ?? DEFAULT_RUNTIME_BATCH_RECENT_DAYS) !==
+			DEFAULT_RUNTIME_BATCH_RECENT_DAYS ||
+		runtimeSummaryBatchStatus?.state === 'running' ||
+		runtimeSummaryBatchStatus?.state === 'failed';
+	runtimeLifecycleExpanded =
+		(lifecycleSettings?.enabled ?? true) !== true ||
+		(lifecycleSettings?.session_ttl_days ?? DEFAULT_RUNTIME_LIFECYCLE_SESSION_TTL_DAYS) !==
+			DEFAULT_RUNTIME_LIFECYCLE_SESSION_TTL_DAYS ||
+		(lifecycleSettings?.summary_ttl_days ?? DEFAULT_RUNTIME_LIFECYCLE_SUMMARY_TTL_DAYS) !==
+			DEFAULT_RUNTIME_LIFECYCLE_SUMMARY_TTL_DAYS ||
+		(lifecycleSettings?.cleanup_interval_secs ?? DEFAULT_RUNTIME_LIFECYCLE_INTERVAL_SECS) !==
+			DEFAULT_RUNTIME_LIFECYCLE_INTERVAL_SECS ||
+		runtimeLifecycleStatus?.state === 'running' ||
+		runtimeLifecycleStatus?.state === 'failed';
 }
 
 const runtimeChangeReaderQaToggleDisabled = $derived.by(
@@ -565,44 +715,6 @@ function setActiveSettingsSection(sectionId: string) {
 	scrollToSettingsSection(sectionId);
 }
 
-function updateRuntimeProvider(provider: DesktopSummaryProviderId) {
-	runtimeProvider = provider;
-	handleRuntimeProviderChange();
-}
-
-function updateRuntimeStorageBackend(backend: DesktopSummaryStorageBackend) {
-	runtimeStorageBackend = backend;
-}
-
-function toggleRuntimeSummaryTrigger() {
-	runtimeTriggerMode = runtimeTriggerMode === 'on_session_save' ? 'manual' : 'on_session_save';
-}
-
-function toggleRuntimeBatchExecution() {
-	runtimeBatchExecutionMode =
-		runtimeBatchExecutionMode === 'on_app_start' ? 'manual' : 'on_app_start';
-}
-
-function toggleRuntimeLifecycle() {
-	runtimeLifecycleEnabled = !runtimeLifecycleEnabled;
-}
-
-function toggleRuntimeVector() {
-	runtimeVectorEnabled = !runtimeVectorEnabled;
-}
-
-function toggleRuntimeChangeReader() {
-	runtimeChangeReaderEnabled = !runtimeChangeReaderEnabled;
-}
-
-function toggleRuntimeChangeReaderQa() {
-	runtimeChangeReaderQaEnabled = !runtimeChangeReaderQaEnabled;
-}
-
-function toggleRuntimeChangeReaderVoice() {
-	runtimeChangeReaderVoiceEnabled = !runtimeChangeReaderVoiceEnabled;
-}
-
 const runtimeQuickJumpLinks: RuntimeQuickJumpLink[] = [
 	{ id: 'runtime-section-activity', label: localize('Activity', '활동') },
 	{ id: 'runtime-section-provider', label: localize('Provider', '프로바이더') },
@@ -644,60 +756,6 @@ const settingsNavItems = $derived.by((): SettingsSectionNavItem[] => {
 			label: localize('Runtime', '런타임'),
 			detail: localize('Desktop summary controls', '데스크톱 요약 제어'),
 			visible: true,
-		},
-		{
-			id: 'runtime-section-activity',
-			label: localize('Activity', '활동'),
-			detail: localize('Live job and cleanup status', '실시간 작업 및 정리 상태'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-provider',
-			label: localize('Provider', '프로바이더'),
-			detail: localize('Summary backend and transport', '요약 백엔드와 전송 방식'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-prompt',
-			label: localize('Prompt', '프롬프트'),
-			detail: localize('Template and reset controls', '템플릿과 초기화 제어'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-response',
-			label: localize('Response', '응답'),
-			detail: localize('Style, shape, preview', '스타일, 형태, 미리보기'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-vector',
-			label: localize('Vector', '벡터'),
-			detail: localize('Embeddings and index jobs', '임베딩과 인덱스 작업'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-change-reader',
-			label: localize('Reader', '리더'),
-			detail: localize('Text, questions, and voice', '텍스트, 질문, 음성'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-storage',
-			label: localize('Storage', '저장소'),
-			detail: localize('Persistence backend and trigger', '영속화 백엔드와 트리거'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-summary-batch',
-			label: localize('Batch', '배치'),
-			detail: localize('Background summary generation', '백그라운드 요약 생성'),
-			visible: runtimeSupported,
-		},
-		{
-			id: 'runtime-section-lifecycle',
-			label: localize('Lifecycle', '수명주기'),
-			detail: localize('TTL and cleanup intervals', 'TTL과 정리 주기'),
-			visible: runtimeSupported,
 		},
 	];
 	return items.filter((item) => item.visible);
@@ -1122,7 +1180,7 @@ async function loadGitCredentials() {
 
 function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimeSessionDefaultView =
-		settings.session_default_view === 'compressed' ? 'compressed' : 'full';
+		settings.session_default_view === 'compressed' ? 'compressed' : DEFAULT_RUNTIME_SESSION_VIEW;
 	runtimeProvider = settings.summary.provider.id;
 	runtimeProviderTransport = settings.summary.provider.transport;
 	runtimeEndpoint = settings.summary.provider.endpoint ?? '';
@@ -1130,40 +1188,54 @@ function applyRuntimeSettingsToDraft(settings: DesktopRuntimeSettingsResponse) {
 	runtimeSourceMode = settings.ui_constraints.source_mode_locked
 		? settings.ui_constraints.source_mode_locked_value
 		: (settings.summary.source_mode ?? 'session_only');
-	runtimeResponseStyle = settings.summary.response.style ?? 'standard';
-	runtimeOutputShape = settings.summary.response.shape ?? 'layered';
+	runtimeResponseStyle = settings.summary.response.style ?? DEFAULT_RUNTIME_RESPONSE_STYLE;
+	runtimeOutputShape = settings.summary.response.shape ?? DEFAULT_RUNTIME_OUTPUT_SHAPE;
 	runtimePromptTemplate = settings.summary.prompt.template ?? '';
 	runtimePromptDefaultTemplate = settings.summary.prompt.default_template ?? '';
-	runtimeTriggerMode = settings.summary.storage.trigger ?? 'on_session_save';
-	runtimeStorageBackend = settings.summary.storage.backend ?? 'hidden_ref';
-	runtimeBatchExecutionMode = settings.summary.batch.execution_mode ?? 'on_app_start';
-	runtimeBatchScope = settings.summary.batch.scope ?? 'recent_days';
-	runtimeBatchRecentDays = settings.summary.batch.recent_days ?? 30;
+	runtimeTriggerMode = settings.summary.storage.trigger ?? DEFAULT_RUNTIME_TRIGGER_MODE;
+	runtimeStorageBackend = settings.summary.storage.backend ?? DEFAULT_RUNTIME_STORAGE_BACKEND;
+	runtimeBatchExecutionMode =
+		settings.summary.batch.execution_mode ?? DEFAULT_RUNTIME_BATCH_EXECUTION_MODE;
+	runtimeBatchScope = settings.summary.batch.scope ?? DEFAULT_RUNTIME_BATCH_SCOPE;
+	runtimeBatchRecentDays = settings.summary.batch.recent_days ?? DEFAULT_RUNTIME_BATCH_RECENT_DAYS;
 	runtimeVectorEnabled = settings.vector_search.enabled ?? false;
-	runtimeVectorProvider = settings.vector_search.provider ?? 'ollama';
-	runtimeVectorModel = settings.vector_search.model ?? 'bge-m3';
-	runtimeVectorEndpoint = settings.vector_search.endpoint ?? 'http://127.0.0.1:11434';
-	runtimeVectorGranularity = settings.vector_search.granularity ?? 'event_line_chunk';
-	runtimeVectorChunkingMode = settings.vector_search.chunking_mode ?? 'auto';
-	runtimeVectorChunkSizeLines = settings.vector_search.chunk_size_lines ?? 12;
-	runtimeVectorChunkOverlapLines = settings.vector_search.chunk_overlap_lines ?? 3;
-	runtimeVectorTopKChunks = settings.vector_search.top_k_chunks ?? 30;
-	runtimeVectorTopKSessions = settings.vector_search.top_k_sessions ?? 20;
+	runtimeVectorProvider = settings.vector_search.provider ?? DEFAULT_RUNTIME_VECTOR_PROVIDER;
+	runtimeVectorModel = settings.vector_search.model ?? DEFAULT_RUNTIME_VECTOR_MODEL;
+	runtimeVectorEndpoint = settings.vector_search.endpoint ?? DEFAULT_RUNTIME_VECTOR_ENDPOINT;
+	runtimeVectorGranularity =
+		settings.vector_search.granularity ?? DEFAULT_RUNTIME_VECTOR_GRANULARITY;
+	runtimeVectorChunkingMode =
+		settings.vector_search.chunking_mode ?? DEFAULT_RUNTIME_VECTOR_CHUNKING_MODE;
+	runtimeVectorChunkSizeLines =
+		settings.vector_search.chunk_size_lines ?? DEFAULT_RUNTIME_VECTOR_CHUNK_SIZE_LINES;
+	runtimeVectorChunkOverlapLines =
+		settings.vector_search.chunk_overlap_lines ?? DEFAULT_RUNTIME_VECTOR_CHUNK_OVERLAP_LINES;
+	runtimeVectorTopKChunks = settings.vector_search.top_k_chunks ?? DEFAULT_RUNTIME_VECTOR_TOP_K_CHUNKS;
+	runtimeVectorTopKSessions =
+		settings.vector_search.top_k_sessions ?? DEFAULT_RUNTIME_VECTOR_TOP_K_SESSIONS;
 	runtimeChangeReaderEnabled = settings.change_reader?.enabled ?? false;
-	runtimeChangeReaderScope = settings.change_reader?.scope ?? 'summary_only';
+	runtimeChangeReaderScope =
+		settings.change_reader?.scope ?? DEFAULT_RUNTIME_CHANGE_READER_SCOPE;
 	runtimeChangeReaderQaEnabled = settings.change_reader?.qa_enabled ?? true;
-	runtimeChangeReaderMaxContextChars = settings.change_reader?.max_context_chars ?? 12000;
+	runtimeChangeReaderMaxContextChars =
+		settings.change_reader?.max_context_chars ?? DEFAULT_RUNTIME_CHANGE_READER_MAX_CONTEXT_CHARS;
 	runtimeChangeReaderVoiceEnabled = settings.change_reader?.voice?.enabled ?? false;
-	runtimeChangeReaderVoiceProvider = settings.change_reader?.voice?.provider ?? 'openai';
-	runtimeChangeReaderVoiceModel = settings.change_reader?.voice?.model ?? 'gpt-4o-mini-tts';
-	runtimeChangeReaderVoiceName = settings.change_reader?.voice?.voice ?? 'alloy';
+	runtimeChangeReaderVoiceProvider =
+		settings.change_reader?.voice?.provider ?? DEFAULT_RUNTIME_CHANGE_READER_VOICE_PROVIDER;
+	runtimeChangeReaderVoiceModel =
+		settings.change_reader?.voice?.model ?? DEFAULT_RUNTIME_CHANGE_READER_VOICE_MODEL;
+	runtimeChangeReaderVoiceName =
+		settings.change_reader?.voice?.voice ?? DEFAULT_RUNTIME_CHANGE_READER_VOICE_NAME;
 	runtimeChangeReaderVoiceApiKeyConfigured =
 		settings.change_reader?.voice?.api_key_configured ?? false;
 	runtimeChangeReaderVoiceApiKey = '';
 	runtimeLifecycleEnabled = settings.lifecycle?.enabled ?? true;
-	runtimeSessionTtlDays = settings.lifecycle?.session_ttl_days ?? 30;
-	runtimeSummaryTtlDays = settings.lifecycle?.summary_ttl_days ?? 30;
-	runtimeCleanupIntervalSecs = settings.lifecycle?.cleanup_interval_secs ?? 3600;
+	runtimeSessionTtlDays =
+		settings.lifecycle?.session_ttl_days ?? DEFAULT_RUNTIME_LIFECYCLE_SESSION_TTL_DAYS;
+	runtimeSummaryTtlDays =
+		settings.lifecycle?.summary_ttl_days ?? DEFAULT_RUNTIME_LIFECYCLE_SUMMARY_TTL_DAYS;
+	runtimeCleanupIntervalSecs =
+		settings.lifecycle?.cleanup_interval_secs ?? DEFAULT_RUNTIME_LIFECYCLE_INTERVAL_SECS;
 }
 
 async function loadRuntimeSettings() {
@@ -1188,6 +1260,7 @@ async function loadRuntimeSettings() {
 	runtimeSummaryBatchRunning = result.runtimeSummaryBatchRunning;
 	if (runtimeSettings) {
 		applyRuntimeSettingsToDraft(runtimeSettings);
+		applyRuntimeSectionExpansion(runtimeSettings);
 	}
 	runtimeLoading = false;
 }
@@ -1408,6 +1481,7 @@ function handleResetPromptTemplate() {
 function handleResetRuntimeDraft() {
 	if (!runtimeSettings) return;
 	applyRuntimeSettingsToDraft(runtimeSettings);
+	applyRuntimeSectionExpansion(runtimeSettings);
 	runtimeError = null;
 	runtimeDetectMessage = localize('Discarded unsaved runtime edits.', '저장되지 않은 런타임 변경을 버렸습니다.');
 }
@@ -2019,70 +2093,91 @@ $effect(() => {
 
 				<RuntimeActivityPanel cards={runtimeActivityCards} />
 
-				<label class="block text-xs text-text-secondary">
-					<FieldHelp
-						label={localize('Default Session View', '기본 세션 보기')}
-						help={runtimeHelp.defaultSessionView}
-						testId="runtime-help-default-session-view"
-					/>
-					<select bind:value={runtimeSessionDefaultView} class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary">
-						<option value="full">{localize('full', '전체')}</option>
-						<option value="compressed">{localize('compressed', '압축')}</option>
-					</select>
-				</label>
-
 				<section
 					id="runtime-section-provider"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					class="scroll-mt-24 space-y-3 border border-border/60 bg-bg-primary p-3"
 					data-testid="settings-runtime-provider"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Provider', '프로바이더')}</h3>
-					<label class="block text-xs text-text-secondary">
-						<FieldHelp
-								label={localize('Summary Provider', '요약 프로바이더')}
-							help={runtimeHelp.summaryProvider}
-							testId="runtime-help-summary-provider"
-						/>
-						<select
-							bind:value={runtimeProvider}
-							onchange={handleRuntimeProviderChange}
-							data-testid="runtime-provider-select"
-							class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+					<div class="flex flex-wrap items-start justify-between gap-3">
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Summary Basics', '요약 기본 설정')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">
+								{localize(
+									'Keep the defaults unless you need a specific provider or default landing view.',
+									'특정 프로바이더나 기본 진입 보기 설정이 필요할 때만 이 값을 바꾸세요.',
+								)}
+							</p>
+						</div>
+						<p
+							class="rounded border border-border/60 px-2 py-1 text-[11px] text-text-muted"
+							data-testid="runtime-provider-transport"
 						>
-							<option value="disabled">{localize('disabled', '사용 안 함')}</option>
-							<option value="ollama">ollama</option>
-							<option value="codex_exec">codex_exec</option>
-							<option value="claude_cli">claude_cli</option>
-						</select>
-					</label>
-					<p class="text-[11px] text-text-muted" data-testid="runtime-provider-transport">
-						{localize('transport', '전송 방식')}: {currentRuntimeProviderTransport()}
-					</p>
+							{localize('transport', '전송 방식')}: {currentRuntimeProviderTransport()}
+						</p>
+					</div>
+					<div class="grid gap-3 lg:grid-cols-2">
+						<label class="block text-xs text-text-secondary">
+							<FieldHelp
+								label={localize('Default Session View', '기본 세션 보기')}
+								help={runtimeHelp.defaultSessionView}
+								testId="runtime-help-default-session-view"
+							/>
+							<select
+								bind:value={runtimeSessionDefaultView}
+								class="w-full border border-border bg-bg-secondary px-2 py-2 text-xs text-text-primary"
+							>
+								<option value="full">{localize('full', '전체')}</option>
+								<option value="compressed">{localize('compressed', '압축')}</option>
+							</select>
+						</label>
+						<label class="block text-xs text-text-secondary">
+							<FieldHelp
+								label={localize('Summary Provider', '요약 프로바이더')}
+								help={runtimeHelp.summaryProvider}
+								testId="runtime-help-summary-provider"
+							/>
+							<select
+								bind:value={runtimeProvider}
+								onchange={handleRuntimeProviderChange}
+								data-testid="runtime-provider-select"
+								class="w-full border border-border bg-bg-secondary px-2 py-2 text-xs text-text-primary"
+							>
+								<option value="disabled">{localize('disabled', '사용 안 함')}</option>
+								<option value="ollama">ollama</option>
+								<option value="codex_exec">codex_exec</option>
+								<option value="claude_cli">claude_cli</option>
+							</select>
+						</label>
+					</div>
 					{#if currentRuntimeProviderTransport() === 'http'}
-						<label class="block text-xs text-text-secondary">
-							<FieldHelp
-								label={localize('Endpoint', '엔드포인트')}
-								help={runtimeHelp.providerEndpoint}
-								testId="runtime-help-provider-endpoint"
-							/>
-							<input
-								bind:value={runtimeEndpoint}
-								data-testid="runtime-provider-endpoint"
-								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
-							/>
-						</label>
-						<label class="block text-xs text-text-secondary">
-							<FieldHelp
-								label={localize('Model', '모델')}
-								help={runtimeHelp.providerModel}
-								testId="runtime-help-provider-model"
-							/>
-							<input
-								bind:value={runtimeModel}
-								data-testid="runtime-provider-model"
-								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
-							/>
-						</label>
+						<div class="grid gap-3 lg:grid-cols-2">
+							<label class="block text-xs text-text-secondary">
+								<FieldHelp
+									label={localize('Endpoint', '엔드포인트')}
+									help={runtimeHelp.providerEndpoint}
+									testId="runtime-help-provider-endpoint"
+								/>
+								<input
+									bind:value={runtimeEndpoint}
+									data-testid="runtime-provider-endpoint"
+									class="w-full border border-border bg-bg-secondary px-2 py-2 text-xs text-text-primary"
+								/>
+							</label>
+							<label class="block text-xs text-text-secondary">
+								<FieldHelp
+									label={localize('Model', '모델')}
+									help={runtimeHelp.providerModel}
+									testId="runtime-help-provider-model"
+								/>
+								<input
+									bind:value={runtimeModel}
+									data-testid="runtime-provider-model"
+									class="w-full border border-border bg-bg-secondary px-2 py-2 text-xs text-text-primary"
+								/>
+							</label>
+						</div>
 					{:else if currentRuntimeProviderTransport() === 'cli'}
 						<label class="block text-xs text-text-secondary">
 							<FieldHelp
@@ -2093,7 +2188,7 @@ $effect(() => {
 							<input
 								bind:value={runtimeModel}
 								data-testid="runtime-provider-model"
-								class="w-full border border-border bg-bg-primary px-2 py-2 text-xs text-text-primary"
+								class="w-full border border-border bg-bg-secondary px-2 py-2 text-xs text-text-primary"
 							/>
 						</label>
 						<p class="text-[11px] text-text-muted" data-testid="runtime-provider-cli-status">
@@ -2102,12 +2197,28 @@ $effect(() => {
 					{/if}
 				</section>
 
-				<section
+				<details
 					id="runtime-section-prompt"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					bind:open={runtimePromptExpanded}
+					data-state={runtimePromptExpanded ? 'open' : 'closed'}
+					class={`scroll-mt-24 overflow-hidden border ${disclosurePanelClasses(runtimePromptExpanded)}`}
 					data-testid="settings-runtime-prompt"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Prompt', '프롬프트')}</h3>
+					<summary
+						data-testid="runtime-toggle-prompt-section"
+						class="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-3"
+					>
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Prompt', '프롬프트')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">{promptSectionSummary()}</p>
+						</div>
+						<span class="text-[11px] font-semibold text-text-muted">
+							{disclosureToggleLabel(runtimePromptExpanded)}
+						</span>
+					</summary>
+					<div class="space-y-2 border-t border-border/60 px-3 py-3">
 					<label class="block text-xs text-text-secondary">
 						<FieldHelp
 							label={localize('Prompt Template', '프롬프트 템플릿')}
@@ -2140,14 +2251,31 @@ $effect(() => {
 							class="w-full border border-border/70 bg-bg-primary/60 px-2 py-2 text-xs text-text-muted"
 						></textarea>
 					</label>
-				</section>
+					</div>
+				</details>
 
-				<section
+				<details
 					id="runtime-section-response"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					bind:open={runtimeResponseExpanded}
+					data-state={runtimeResponseExpanded ? 'open' : 'closed'}
+					class={`scroll-mt-24 overflow-hidden border ${disclosurePanelClasses(runtimeResponseExpanded)}`}
 					data-testid="settings-runtime-response"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Response', '응답')}</h3>
+					<summary
+						data-testid="runtime-toggle-response-section"
+						class="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-3"
+					>
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Response', '응답')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">{responseSectionSummary()}</p>
+						</div>
+						<span class="text-[11px] font-semibold text-text-muted">
+							{disclosureToggleLabel(runtimeResponseExpanded)}
+						</span>
+					</summary>
+					<div class="space-y-2 border-t border-border/60 px-3 py-3">
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
@@ -2181,14 +2309,31 @@ $effect(() => {
 						<p class="mb-2 text-[11px] uppercase tracking-[0.08em] text-text-muted">{localize('Response Preview', '응답 미리보기')}</p>
 						<pre class="max-w-full whitespace-pre-wrap text-xs text-text-secondary [overflow-wrap:anywhere]">{responsePreview(runtimeResponseStyle, runtimeOutputShape)}</pre>
 					</div>
-				</section>
+					</div>
+				</details>
 
-				<section
+				<details
 					id="runtime-section-vector"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					bind:open={runtimeVectorExpanded}
+					data-state={runtimeVectorExpanded ? 'open' : 'closed'}
+					class={`scroll-mt-24 overflow-hidden border ${disclosurePanelClasses(runtimeVectorExpanded)}`}
 					data-testid="settings-runtime-vector"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Vector Search', '벡터 검색')}</h3>
+					<summary
+						data-testid="runtime-toggle-vector-section"
+						class="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-3"
+					>
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Vector Search', '벡터 검색')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">{vectorSectionSummary()}</p>
+						</div>
+						<span class="text-[11px] font-semibold text-text-muted">
+							{disclosureToggleLabel(runtimeVectorExpanded)}
+						</span>
+					</summary>
+					<div class="space-y-2 border-t border-border/60 px-3 py-3">
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
@@ -2398,14 +2543,31 @@ $effect(() => {
 							</p>
 						{/if}
 					</div>
-				</section>
+					</div>
+				</details>
 
-				<section
+				<details
 					id="runtime-section-change-reader"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					bind:open={runtimeChangeReaderExpanded}
+					data-state={runtimeChangeReaderExpanded ? 'open' : 'closed'}
+					class={`scroll-mt-24 overflow-hidden border ${disclosurePanelClasses(runtimeChangeReaderExpanded)}`}
 					data-testid="settings-runtime-change-reader"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Change Reader', '변경 리더')}</h3>
+					<summary
+						data-testid="runtime-toggle-change-reader-section"
+						class="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-3"
+					>
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Change Reader', '변경 리더')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">{changeReaderSectionSummary()}</p>
+						</div>
+						<span class="text-[11px] font-semibold text-text-muted">
+							{disclosureToggleLabel(runtimeChangeReaderExpanded)}
+						</span>
+					</summary>
+					<div class="space-y-2 border-t border-border/60 px-3 py-3">
 					<div
 						class="space-y-1 rounded border border-border/60 bg-bg-primary px-3 py-2 text-[11px] text-text-secondary"
 						data-testid="runtime-change-reader-mode-guide"
@@ -2553,14 +2715,31 @@ $effect(() => {
 							'설정된 요약 프로바이더를 우선 사용하고, 사용할 수 없으면 로컬 휴리스틱 컨텍스트 추출로 대체합니다.',
 						)}
 					</p>
-				</section>
+					</div>
+				</details>
 
-				<section
+				<details
 					id="runtime-section-storage"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					bind:open={runtimeStorageExpanded}
+					data-state={runtimeStorageExpanded ? 'open' : 'closed'}
+					class={`scroll-mt-24 overflow-hidden border ${disclosurePanelClasses(runtimeStorageExpanded)}`}
 					data-testid="settings-runtime-storage"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Storage', '저장소')}</h3>
+					<summary
+						data-testid="runtime-toggle-storage-section"
+						class="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-3"
+					>
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Storage', '저장소')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">{storageSectionSummary()}</p>
+						</div>
+						<span class="text-[11px] font-semibold text-text-muted">
+							{disclosureToggleLabel(runtimeStorageExpanded)}
+						</span>
+					</summary>
+					<div class="space-y-2 border-t border-border/60 px-3 py-3">
 					<div class="grid gap-2 sm:grid-cols-2">
 						<label class="text-xs text-text-secondary">
 							<FieldHelp
@@ -2606,15 +2785,32 @@ $effect(() => {
 							<p class="text-text-primary">{localize('Apply this change with', '이 변경을 적용하려면 위의')} <strong>{runtimeSaveLabel()}</strong>{localize('above.', '를 누르세요.')}</p>
 						{/if}
 					</div>
-				</section>
+					</div>
+				</details>
 
-				<section
+				<details
 					id="runtime-section-summary-batch"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					bind:open={runtimeSummaryBatchExpanded}
+					data-state={runtimeSummaryBatchExpanded ? 'open' : 'closed'}
+					class={`scroll-mt-24 overflow-hidden border ${disclosurePanelClasses(runtimeSummaryBatchExpanded)}`}
 					data-testid="settings-runtime-summary-batch"
 				>
+					<summary
+						data-testid="runtime-toggle-summary-batch-section"
+						class="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-3"
+					>
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Summary Batch', '요약 배치')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">{summaryBatchSectionSummary()}</p>
+						</div>
+						<span class="text-[11px] font-semibold text-text-muted">
+							{disclosureToggleLabel(runtimeSummaryBatchExpanded)}
+						</span>
+					</summary>
+					<div class="space-y-2 border-t border-border/60 px-3 py-3">
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Summary Batch', '요약 배치')}</h3>
 						<button
 							type="button"
 							data-testid="runtime-summary-batch-run"
@@ -2696,14 +2892,31 @@ $effect(() => {
 							<p>{localize('batch status unavailable.', '배치 상태를 확인할 수 없습니다.')}</p>
 						{/if}
 					</div>
-				</section>
+					</div>
+				</details>
 
-				<section
+				<details
 					id="runtime-section-lifecycle"
-					class="scroll-mt-24 space-y-2 border border-border/60 p-3"
+					bind:open={runtimeLifecycleExpanded}
+					data-state={runtimeLifecycleExpanded ? 'open' : 'closed'}
+					class={`scroll-mt-24 overflow-hidden border ${disclosurePanelClasses(runtimeLifecycleExpanded)}`}
 					data-testid="settings-runtime-lifecycle"
 				>
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{localize('Data Lifecycle', '데이터 수명주기')}</h3>
+					<summary
+						data-testid="runtime-toggle-lifecycle-section"
+						class="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-3"
+					>
+						<div>
+							<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+								{localize('Data Lifecycle', '데이터 수명주기')}
+							</h3>
+							<p class="mt-1 text-[11px] text-text-secondary">{lifecycleSectionSummary()}</p>
+						</div>
+						<span class="text-[11px] font-semibold text-text-muted">
+							{disclosureToggleLabel(runtimeLifecycleExpanded)}
+						</span>
+					</summary>
+					<div class="space-y-2 border-t border-border/60 px-3 py-3">
 					<label class="flex items-center gap-2 text-xs text-text-secondary">
 						<input type="checkbox" bind:checked={runtimeLifecycleEnabled} data-testid="runtime-lifecycle-enable" />
 						<FieldHelp
@@ -2803,7 +3016,8 @@ $effect(() => {
 							</tbody>
 						</table>
 					</div>
-				</section>
+					</div>
+				</details>
 
 				</div>
 
@@ -2817,9 +3031,7 @@ $effect(() => {
 					sessionDefaultView={runtimeSessionDefaultView}
 					providerTransport={currentRuntimeProviderTransport()}
 					batchScopeLabel={runtimeQuickBatchScopeLabel}
-					summaryTriggerAuto={runtimeTriggerMode === 'on_session_save'}
 					summaryTriggerDetail={runtimeQuickSummaryTriggerDetail}
-					batchAuto={runtimeBatchExecutionMode === 'on_app_start'}
 					batchDetail={runtimeQuickBatchDetail}
 					batchStatusDetail={runtimeQuickBatchStatusDetail}
 					lifecycleEnabled={runtimeLifecycleEnabled}
@@ -2827,29 +3039,16 @@ $effect(() => {
 					lifecycleResultDetail={lifecycleResultLabel(runtimeLifecycleStatus)}
 					lifecycleNextDetail={runtimeQuickLifecycleNextDetail}
 					vectorEnabled={runtimeVectorEnabled}
-					vectorToggleDisabled={!runtimeVectorPreflight?.model_installed}
 					vectorDetail={runtimeQuickVectorDetail}
 					vectorStatusDetail={runtimeQuickVectorStatusDetail}
 					changeReaderEnabled={runtimeChangeReaderEnabled}
 					changeReaderDetail={runtimeQuickChangeReaderDetail}
 					changeReaderQaEnabled={runtimeChangeReaderQaEnabled}
-					changeReaderQaDisabled={runtimeChangeReaderQaToggleDisabled}
 					changeReaderVoiceEnabled={runtimeChangeReaderVoiceEnabled}
-					changeReaderVoiceDisabled={runtimeChangeReaderVoiceToggleDisabled}
-					changeReaderVoiceBlockedReason={runtimeChangeReaderVoiceBlockedReason}
 					changeReaderVoiceSummary={runtimeChangeReaderVoiceSummary}
 					jumpLinks={runtimeQuickJumpLinks}
 					onReset={handleResetRuntimeDraft}
 					onSave={handleSaveRuntimeSettings}
-					onProviderChange={updateRuntimeProvider}
-					onStorageBackendChange={updateRuntimeStorageBackend}
-					onToggleSummaryTrigger={toggleRuntimeSummaryTrigger}
-					onToggleBatch={toggleRuntimeBatchExecution}
-					onToggleLifecycle={toggleRuntimeLifecycle}
-					onToggleVector={toggleRuntimeVector}
-					onToggleChangeReader={toggleRuntimeChangeReader}
-					onToggleChangeReaderQa={toggleRuntimeChangeReaderQa}
-					onToggleChangeReaderVoice={toggleRuntimeChangeReaderVoice}
 					onJumpToSection={setActiveSettingsSection}
 				/>
 			</div>

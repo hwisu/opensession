@@ -1,6 +1,16 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+
+async function openRuntimeSection(page: Page, sectionTestId: string, toggleTestId: string) {
+	const section = page.locator(`[data-testid="${sectionTestId}"]`);
+	await expect(section).toBeVisible();
+	if ((await section.getAttribute('data-state')) !== 'open') {
+		await page.locator(`[data-testid="${toggleTestId}"]`).click();
+		await expect(section).toHaveAttribute('data-state', 'open');
+	}
+	return section;
+}
 
 test.describe('Settings', () => {
 	test('settings page requires auth when no token exists', async ({ page }) => {
@@ -403,23 +413,48 @@ test.describe('Settings', () => {
 		expect(saveRuntimeBox).not.toBeNull();
 		expect(Math.abs((detectProviderBox?.height ?? 0) - (saveRuntimeBox?.height ?? 0))).toBeLessThanOrEqual(2);
 		await expect(page.locator('[data-testid="settings-left-tabs"]')).toBeVisible();
-		const lifecycleNavTab = page.locator('[data-testid="settings-nav-runtime-section-lifecycle"]');
-		const lifecycleSection = page.locator('[data-testid="settings-runtime-lifecycle"]');
-		const lifecycleBeforeJumpY = (await lifecycleSection.boundingBox())?.y ?? 0;
-		expect(lifecycleBeforeJumpY).toBeGreaterThan(500);
-		await lifecycleNavTab.click();
-		await expect(lifecycleNavTab).toHaveAttribute('data-state', 'active');
-		await expect
-			.poll(async () => (await lifecycleSection.boundingBox())?.y ?? 999)
-			.toBeLessThan(lifecycleBeforeJumpY - 400);
+		expect(await page.locator('[data-testid^="settings-nav-"]').count()).toBe(2);
+		await expect(page.locator('[data-testid="settings-nav-settings-section-runtime"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-quick-menu"]')).toBeVisible();
 		await expect(page.locator('[data-testid="runtime-quick-draft-state"]')).toHaveText('Saved');
-		await expect(page.locator('[data-testid="settings-nav-runtime-section-activity"]')).toBeVisible();
+		await expect(page.locator('[data-testid="settings-runtime-prompt"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
+		await expect(page.locator('[data-testid="settings-runtime-response"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
+		await expect(page.locator('[data-testid="settings-runtime-vector"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
+		await expect(page.locator('[data-testid="settings-runtime-change-reader"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
+		await expect(page.locator('[data-testid="settings-runtime-storage"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
+		await expect(page.locator('[data-testid="settings-runtime-summary-batch"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
+		await expect(page.locator('[data-testid="settings-runtime-lifecycle"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
 		await expect(page.locator('[data-testid="runtime-activity-lifecycle"]')).toContainText(
 			'3 sessions deleted',
 		);
 		await expect(page.locator('[data-testid="runtime-activity-lifecycle"]')).toContainText(
 			'9 summaries removed',
+		);
+		await openRuntimeSection(
+			page,
+			'settings-runtime-lifecycle',
+			'runtime-toggle-lifecycle-section',
 		);
 		await expect(page.locator('[data-testid="runtime-lifecycle-status"]')).toContainText(
 			'state: complete',
@@ -427,20 +462,32 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="runtime-lifecycle-status"]')).toContainText(
 			'deleted: 3 sessions / 9 summaries',
 		);
-		await expect(page.locator('[data-testid="runtime-quick-toggle-change-reader-voice"]')).toBeDisabled();
-		await page.locator('[data-testid="runtime-quick-toggle-lifecycle"]').click();
+		await page.locator('[data-testid="runtime-lifecycle-enable"]').click();
 		await expect(page.locator('[data-testid="runtime-lifecycle-enable"]')).not.toBeChecked();
 		await expect(page.locator('[data-testid="runtime-quick-draft-state"]')).toHaveText('Draft');
 		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toBeVisible();
-		await page.locator('[data-testid="runtime-quick-toggle-change-reader"]').click();
+		await openRuntimeSection(
+			page,
+			'settings-runtime-change-reader',
+			'runtime-toggle-change-reader-section',
+		);
+		await expect(page.locator('[data-testid="runtime-change-reader-voice-enable"]')).toBeDisabled();
+		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
 		await expect(page.locator('[data-testid="runtime-change-reader-enable"]')).toBeChecked();
-		await expect(page.locator('[data-testid="runtime-quick-toggle-change-reader-voice"]')).toBeDisabled();
-		await page.locator('[data-testid="runtime-quick-toggle-vector"]').click();
+		await expect(page.locator('[data-testid="runtime-change-reader-voice-enable"]')).toBeDisabled();
+		await openRuntimeSection(page, 'settings-runtime-vector', 'runtime-toggle-vector-section');
+		await page.locator('[data-testid="runtime-vector-enable"]').check();
 		await expect(page.locator('[data-testid="runtime-vector-enable"]')).toBeChecked();
 		await page.locator('[data-testid="runtime-quick-reset"]').click();
 		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toHaveCount(0);
-		await expect(page.locator('[data-testid="runtime-lifecycle-enable"]')).toBeChecked();
-		await expect(page.locator('[data-testid="runtime-vector-enable"]')).not.toBeChecked();
+		await expect(page.locator('[data-testid="settings-runtime-lifecycle"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
+		await expect(page.locator('[data-testid="settings-runtime-vector"]')).toHaveAttribute(
+			'data-state',
+			'closed',
+		);
 
 		await page.locator('[data-testid="runtime-provider-select"]').selectOption('ollama');
 		await expect(page.locator('[data-testid="runtime-provider-endpoint"]')).toBeVisible();
@@ -449,12 +496,14 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="runtime-provider-endpoint"]')).toHaveCount(0);
 		await expect(page.locator('[data-testid="runtime-provider-cli-status"]')).toBeVisible();
 
+		await openRuntimeSection(page, 'settings-runtime-prompt', 'runtime-toggle-prompt-section');
 		await page.locator('[data-testid="runtime-prompt-template"]').fill('custom {{HAIL_COMPACT}}');
 		await page.locator('[data-testid="runtime-prompt-reset-default"]').click();
 		await expect(page.locator('[data-testid="runtime-prompt-template"]')).toHaveValue(
 			/HAIL_COMPACT/,
 		);
 
+		await openRuntimeSection(page, 'settings-runtime-response', 'runtime-toggle-response-section');
 		const preview = page.locator('[data-testid="settings-response-preview"] pre');
 		await expect(preview).toContainText('Runtime settings and summary');
 		await expect(preview).toHaveText(/^\{/);
@@ -472,7 +521,7 @@ test.describe('Settings', () => {
 			.selectOption('compact');
 		await expect(preview).toContainText('Updated session summary pipeline');
 
-		await expect(page.locator('[data-testid="settings-runtime-vector"]')).toBeVisible();
+		await openRuntimeSection(page, 'settings-runtime-vector', 'runtime-toggle-vector-section');
 		await expect(page.locator('[data-testid="runtime-vector-status"]')).toContainText(
 			'install ready (100%)',
 		);
@@ -483,6 +532,7 @@ test.describe('Settings', () => {
 		await expect(page.locator('[data-testid="runtime-vector-chunk-size"]')).toBeDisabled();
 		await page.locator('[data-testid="runtime-vector-chunking-mode"]').selectOption('manual');
 		await expect(page.locator('[data-testid="runtime-vector-chunk-size"]')).toBeEnabled();
+		await openRuntimeSection(page, 'settings-runtime-storage', 'runtime-toggle-storage-section');
 		const runtimeHelpHints = page.locator('[data-testid^="runtime-help-"]');
 		expect(await runtimeHelpHints.count()).toBeGreaterThanOrEqual(20);
 		const storageBackendHelp = page.locator('[data-testid="runtime-help-storage-backend"]');
@@ -502,7 +552,11 @@ test.describe('Settings', () => {
 					((storageHelpBox?.x ?? 0) + (storageHelpBox?.width ?? 0)),
 			),
 		).toBeLessThanOrEqual(4);
-		await expect(page.locator('[data-testid="settings-runtime-change-reader"]')).toBeVisible();
+		await openRuntimeSection(
+			page,
+			'settings-runtime-change-reader',
+			'runtime-toggle-change-reader-section',
+		);
 		await page.locator('[data-testid="runtime-help-change-reader-enable"]').hover();
 		await expect(page.getByRole('tooltip')).toContainText('text-based change reader');
 		await expect(page.locator('[data-testid="runtime-change-reader-mode-guide"]')).toContainText(
@@ -526,6 +580,11 @@ test.describe('Settings', () => {
 		);
 		await page.locator('[data-testid="runtime-reset-draft"]').click();
 		await expect(page.locator('[data-testid="runtime-draft-bar"]')).toHaveCount(0);
+		await openRuntimeSection(
+			page,
+			'settings-runtime-change-reader',
+			'runtime-toggle-change-reader-section',
+		);
 		await expect(page.locator('[data-testid="runtime-change-reader-enable"]')).not.toBeChecked();
 		await page.locator('[data-testid="runtime-change-reader-enable"]').check();
 		await page
@@ -550,7 +609,7 @@ test.describe('Settings', () => {
 			page.locator('[data-testid="runtime-change-reader-voice-requirement"]'),
 		).toContainText('reads the same change reader output aloud');
 
-		await expect(page.locator('[data-testid="settings-runtime-storage"]')).toBeVisible();
+		await openRuntimeSection(page, 'settings-runtime-storage', 'runtime-toggle-storage-section');
 		await expect(page.locator('[data-testid="runtime-storage-backend-notice"]')).toContainText(
 			'Current persisted backend:',
 		);
@@ -574,7 +633,11 @@ test.describe('Settings', () => {
 		);
 		await expect(saveRuntimeButton).toHaveText('Save Runtime + Apply Storage');
 
-		await expect(page.locator('[data-testid="settings-runtime-summary-batch"]')).toBeVisible();
+		await openRuntimeSection(
+			page,
+			'settings-runtime-summary-batch',
+			'runtime-toggle-summary-batch-section',
+		);
 		await page
 			.locator('[data-testid="settings-runtime-summary-batch"] select')
 			.first()
@@ -589,7 +652,11 @@ test.describe('Settings', () => {
 			'state: complete',
 		);
 
-		await expect(page.locator('[data-testid="settings-runtime-lifecycle"]')).toBeVisible();
+		await openRuntimeSection(
+			page,
+			'settings-runtime-lifecycle',
+			'runtime-toggle-lifecycle-section',
+		);
 		await page.locator('[data-testid="runtime-lifecycle-session-ttl"]').fill('45');
 		await page.locator('[data-testid="runtime-lifecycle-summary-ttl"]').fill('60');
 		await page.locator('[data-testid="runtime-lifecycle-interval"]').fill('120');

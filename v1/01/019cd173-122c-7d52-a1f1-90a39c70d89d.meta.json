@@ -1,0 +1,31 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "688f6192176774f86c50aceceb175dc0fb85ddd0",
+      "5297b09fbf250feb50bce4986f4e2148e41eb347"
+    ],
+    "head": "fe3446b96ffff2bc88a5f2afa8b115ed081d27bd",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cd173-122c-7d52-a1f1-90a39c70d89d",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 1629,
+    "event_count": 719,
+    "files_changed": 2,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 67,
+    "task_count": 1,
+    "tool_call_count": 63,
+    "total_input_tokens": 13719156,
+    "total_output_tokens": 43425,
+    "user_message_count": 6
+  },
+  "title": "여기폴더가 130기가나 되는데 뭔가 문제가 있는것 같아 기존 아티팩트가 다 남아잇나 ?",
+  "tool": "codex"
+}

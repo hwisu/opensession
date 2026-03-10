@@ -108,12 +108,15 @@ function buildArtifactRoot(reviewId) {
   return `reviews/${reviewId}`;
 }
 
-function localReviewLink(reviewId, sessionId = '', commitSha = '') {
-  if (!reviewId) return null;
-  const url = new URL(`http://127.0.0.1:8788/review/local/${reviewId}`);
-  if (sessionId) url.searchParams.set('session', sessionId);
-  if (commitSha) url.searchParams.set('commit', commitSha);
-  return url.toString();
+function pullRequestUrl(repoFullName, prNumber) {
+  if (!repoFullName || !prNumber) return null;
+  return `https://github.com/${repoFullName}/pull/${prNumber}`;
+}
+
+function localReviewCommand(repoFullName, prNumber) {
+  const prUrl = pullRequestUrl(repoFullName, prNumber);
+  if (!prUrl) return null;
+  return `opensession review ${prUrl}`;
 }
 
 function githubBlobLink(repoFullName, branchName, filePath) {
@@ -411,10 +414,40 @@ function collectAreaSummary(changedFiles) {
     .sort((a, b) => (b.count - a.count) || a.area.localeCompare(b.area));
 }
 
-function escapeTableCell(value) {
-  return String(value ?? '-')
-    .replace(/\|/g, '\\|')
-    .replace(/\r?\n/g, '<br>');
+function formatDigestValue(value, fallback = '-') {
+  const normalized = normalizeDigestText(value);
+  return normalized || fallback;
+}
+
+function formatCountLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function summarizeAreas(areaSummary, limit = 4) {
+  const items = areaSummary
+    .slice(0, limit)
+    .map((item) => `\`${item.area}\` (${item.count})`);
+  if (items.length === 0) return 'none';
+  const remaining = areaSummary.length - items.length;
+  return `${items.join(', ')}${remaining > 0 ? `, +${remaining} more` : ''}`;
+}
+
+function summarizeSessions(sessions, limit = 3) {
+  const items = sessions
+    .slice(0, limit)
+    .map((session) => {
+      const title = formatDigestValue(session.title, '');
+      return title && title !== '-'
+        ? `\`${title}\``
+        : `\`${session.session_id}\``;
+    });
+  if (items.length === 0) return 'none';
+  const remaining = sessions.length - items.length;
+  return `${items.join(', ')}${remaining > 0 ? `, +${remaining} more` : ''}`;
+}
+
+function joinMarkdownLinks(parts) {
+  return parts.filter(Boolean).join(' · ') || '-';
 }
 
 function pushDetailsList(lines, summary, items, formatter, limit = 12) {
@@ -469,6 +502,7 @@ function publishArtifactsBranch({
       manifestPath: null,
       error: null,
       treeLink: null,
+      persistent: false,
     };
   }
 
@@ -482,6 +516,7 @@ function publishArtifactsBranch({
       manifestPath,
       error: null,
       treeLink,
+      persistent: preserveExisting,
     };
   }
 
@@ -599,6 +634,7 @@ function publishArtifactsBranch({
     manifestPath,
     error: publishError,
     treeLink,
+    persistent: preserveExisting,
   };
 }
 
@@ -627,6 +663,7 @@ function renderReport({
   const qas = qaDigest?.pairs ?? [];
   const reviewId = buildReviewId(repoFullName, prNumber, head);
   const prLinks = pullRequestLinks(repoFullName, prNumber, base, head);
+  const prUrl = pullRequestUrl(repoFullName, prNumber);
   const sessionsPerCommit = commits.length > 0
     ? (sessions.length / commits.length).toFixed(1)
     : '0.0';
@@ -634,53 +671,84 @@ function renderReport({
   lines.push(marker);
   lines.push(`### ${title}`);
   lines.push('');
-  lines.push('| Metric | Value |');
-  lines.push('| --- | --- |');
-  lines.push(`| Ledger ref | \`${ledgerRef}\` |`);
-  if (base && head) {
-    lines.push(`| Base -> Head | \`${base}\` -> \`${head}\` |`);
-  } else if (head) {
-    lines.push(`| Head | \`${head}\` |`);
+  if (repoFullName && prNumber) {
+    lines.push(`Snapshot for \`${repoFullName}\` PR #${prNumber}.`);
+  } else if (repoFullName) {
+    lines.push(`Snapshot for \`${repoFullName}\`.`);
+  } else {
+    lines.push('Snapshot for the current review range.');
   }
-  lines.push(`| Updated at (UTC) | ${generatedAt} |`);
-  lines.push(`| Commit range size | ${commits.length} |`);
-  lines.push(`| Primary linked sessions | ${sessions.length} |`);
-  lines.push(`| Modified files | ${changedFiles.length} |`);
-  lines.push(`| Added/updated test files | ${testFiles.length} |`);
-  lines.push(`| Session scope | primary only (auxiliary filtered) |`);
-  if (prLinks) {
-    lines.push(`| Quick links | [Files changed](${prLinks.files}) · [Commits](${prLinks.commits})${prLinks.compare ? ` · [Compare](${prLinks.compare})` : ''} |`);
-  }
-  if (reviewId && prLinks) {
-    lines.push(`| Local review | [Open in UI](${localReviewLink(reviewId)}) · \`ops review ${prLinks.files.replace('/files', '')}\` |`);
-  }
-  if (artifact?.enabled && artifact?.branchName && artifact?.treeLink) {
-    const manifestLink = artifact?.manifestPath && artifact?.branchName
-      ? githubBlobLink(repoFullName, artifact.branchName, artifact.manifestPath)
-      : null;
-    lines.push(`| Artifact branch | [\`${artifact.branchName}\`](${artifact.treeLink})${manifestLink ? ` · [manifest.json](${manifestLink})` : ''} |`);
-  }
-  if (artifact?.enabled && artifact?.error) {
-    lines.push(`| Artifact publish | failed (\`${artifact.error}\`) |`);
-  }
-  lines.push(`| Ledger status | ${missingLedgerRef ? `missing (\`${ledgerRef}\`)` : 'available'} |`);
+  lines.push('Session scope is primary only (auxiliary filtered).');
+  lines.push('');
+
+  const quickLinks = prLinks
+    ? joinMarkdownLinks([
+        `[Files changed](${prLinks.files})`,
+        `[Commits](${prLinks.commits})`,
+        prLinks.compare ? `[Compare](${prLinks.compare})` : '',
+      ])
+    : '';
+  const localReview = localReviewCommand(repoFullName, prNumber);
+  const artifactLinks =
+    artifact?.enabled && artifact?.branchName && artifact?.treeLink
+      ? joinMarkdownLinks([
+          `[\`${artifact.branchName}\`](${artifact.treeLink})`,
+          artifact?.manifestPath && artifact?.branchName
+            ? `[manifest.json](${githubBlobLink(repoFullName, artifact.branchName, artifact.manifestPath)})`
+            : '',
+        ])
+      : '';
+
   lines.push('');
 
   lines.push('#### Reviewer Quick Digest');
-  lines.push('| Q&A | Areas | Files | Tests | Sessions / Commit |');
-  lines.push('| ---: | ---: | ---: | ---: | ---: |');
-  lines.push(`| ${qas.length} | ${areaSummary.length} | ${changedFiles.length} | ${testFiles.length} | ${sessionsPerCommit} |`);
-  lines.push('');
-
-  if (areaSummary.length > 0) {
-    lines.push('#### Area Summary');
-    lines.push('| Area | Files changed |');
-    lines.push('| --- | ---: |');
-    for (const item of areaSummary.slice(0, 8)) {
-      lines.push(`| ${escapeTableCell(item.area)} | ${item.count} |`);
-    }
-    lines.push('');
+  lines.push(`- **Comment type:** ${mode === 'final' ? 'final snapshot' : 'sticky update'}`);
+  if (reviewId) {
+    lines.push(`- **Review ID:** \`${reviewId}\``);
   }
+  lines.push(`- **Updated at (UTC):** ${generatedAt}`);
+  lines.push(`- **Ledger:** ${missingLedgerRef ? `missing (\`${ledgerRef}\`)` : `available on \`${ledgerRef}\``}`);
+  if (base && head) {
+    lines.push(`- **Range:** ${commitLink(repoFullName, base)} -> ${commitLink(repoFullName, head)}`);
+  } else if (head) {
+    lines.push(`- **Head:** ${commitLink(repoFullName, head)}`);
+  }
+  lines.push(
+    `- **Coverage:** ${formatCountLabel(qas.length, 'Q&A excerpt')}, ${formatCountLabel(areaSummary.length, 'changed area')}, ${formatCountLabel(changedFiles.length, 'modified file')}, ${formatCountLabel(testFiles.length, 'added or updated test file', 'added or updated test files')}, ${sessionsPerCommit} sessions per commit.`,
+  );
+  if (areaSummary.length > 0) {
+    lines.push(`- **Top areas:** ${summarizeAreas(areaSummary)}.`);
+  }
+  if (sessions.length > 0) {
+    lines.push(`- **Linked session titles:** ${summarizeSessions(sessions)}.`);
+  }
+  if (quickLinks) {
+    lines.push(`- **Quick links:** ${quickLinks}`);
+  }
+  if (localReview) {
+    lines.push(`- **Local replay:** \`${localReview}\``);
+  }
+  if (prUrl) {
+    lines.push(`- **PR URL:** ${prUrl}`);
+  }
+  if (artifact?.branchName) {
+    const policy = artifact.enabled
+      ? (artifact.persistent
+          ? 'persistent archive branch'
+          : 'ephemeral branch (deleted on PR close)')
+      : (artifact.persistent
+          ? 'not published in this run; persistent archive branch is configured'
+          : 'not published in this run; ephemeral cleanup policy applies');
+    const branchSummary = artifact.enabled
+      ? (artifactLinks || `\`${artifact.branchName}\``)
+      : `\`${artifact.branchName}\``;
+    const rootSuffix = artifact?.artifactRoot ? `, root \`${artifact.artifactRoot}\`` : '';
+    lines.push(`- **Artifact storage:** ${policy} on ${branchSummary}${rootSuffix}`);
+  }
+  if (artifact?.enabled && artifact?.error) {
+    lines.push(`- **Artifact publish:** failed (\`${artifact.error}\`)`);
+  }
+  lines.push('');
 
   if (missingLedgerRef) {
     lines.push('No ledger ref found for this branch yet. Push at least one tracked session and retry.');
@@ -689,14 +757,14 @@ function renderReport({
 
   if (qas.length > 0) {
     lines.push('#### Interactive Q&A');
-    lines.push('| Session | Commit | Question | Answer |');
-    lines.push('| --- | --- | --- | --- |');
     for (const pair of qas) {
-      lines.push(
-        `| \`${escapeTableCell(pair.session_id ?? '-')}\` | ${pair.commit ? commitLink(repoFullName, pair.commit) : '-'} | ${escapeTableCell(pair.question)} | ${escapeTableCell(pair.answer ?? '-')} |`,
-      );
+      const sessionLabel = pair.session_id ? `\`${pair.session_id}\`` : '`-`';
+      const commitLabel = pair.commit ? commitLink(repoFullName, pair.commit) : '`-`';
+      lines.push(`- **Session:** ${sessionLabel} on ${commitLabel}`);
+      lines.push(`  **Question:** ${formatDigestValue(pair.question, '(interactive question missing)')}`);
+      lines.push(`  **Answer:** ${pair.answer ? formatDigestValue(pair.answer) : '_No answer captured yet._'}`);
+      lines.push('');
     }
-    lines.push('');
   } else {
     lines.push('#### Interactive Q&A');
     lines.push('No interactive Q&A excerpts were captured from primary sessions.');
@@ -724,8 +792,6 @@ function renderReport({
   lines.push('<details>');
   lines.push(`<summary>Linked sessions (${sessions.length})</summary>`);
   lines.push('');
-  lines.push('| Session ID | Tool | Files | Commits | Open | OpenSession | JSONL | Meta | Title |');
-  lines.push('| --- | --- | ---: | --- | --- | --- | --- | --- | --- |');
   for (const session of sessions.slice(0, 50)) {
     const commitCell = session.commits.length > 0
       ? session.commits
@@ -734,8 +800,6 @@ function renderReport({
           .join(', ')
       : String(session.commits.length);
     const suffix = session.commits.length > 3 ? ` +${session.commits.length - 3}` : '';
-    const primaryCommit = session.commits[0] ?? '';
-    const openLink = localReviewLink(reviewId, session.session_id, primaryCommit);
     const webLink =
       artifact?.enabled && artifact?.branchName && artifact?.artifactRoot && session.hail_path
         ? opensessionSourceLink(
@@ -760,12 +824,25 @@ function renderReport({
             `${artifact.artifactRoot}/${session.meta_path}`,
           )
         : null;
+    const reviewLinks = joinMarkdownLinks([
+      webLink ? `[web](${webLink})` : '',
+      hailLink ? `[jsonl](${hailLink})` : '',
+      metaLink ? `[meta](${metaLink})` : '',
+    ]);
+    const title = formatDigestValue(session.title, session.session_id);
+    lines.push(`- **${title}**`);
     lines.push(
-      `| \`${session.session_id}\` | ${escapeTableCell(session.tool || '-')} | ${session.files_changed ?? 0} | ${commitCell}${suffix} | ${openLink ? `[open](${openLink})` : '-'} | ${webLink ? `[web](${webLink})` : '-'} | ${hailLink ? `[jsonl](${hailLink})` : '-'} | ${metaLink ? `[meta](${metaLink})` : `\`${session.meta_path ?? ''}\``} | ${escapeTableCell(session.title || '-')} |`,
+      `  Session \`${session.session_id}\` via \`${session.tool || '-'}\`, ${formatCountLabel(session.files_changed ?? 0, 'file')} changed, ${formatCountLabel(session.commits.length, 'commit')} linked.`,
     );
+    lines.push(`  Commits: ${commitCell}${suffix}`);
+    lines.push(`  Artifact links: ${reviewLinks}`);
+    if (!metaLink && session.meta_path) {
+      lines.push(`  Meta path: \`${session.meta_path}\``);
+    }
+    lines.push('');
   }
   if (sessions.length > 50) {
-    lines.push(`| ... | ... | ... | ... | ... | ... | ... | ... | ...and ${sessions.length - 50} more sessions. |`);
+    lines.push(`- ...and ${sessions.length - 50} more sessions.`);
   }
   lines.push('</details>');
   return lines.join('\n');
@@ -854,7 +931,8 @@ export {
   collectIndexedSessions,
   collectQaDigestFromSessions,
   isTestFilePath,
-  localReviewLink,
+  localReviewCommand,
   normalizeDigestText,
+  pullRequestUrl,
   renderReport,
 };

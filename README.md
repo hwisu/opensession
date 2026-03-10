@@ -243,7 +243,7 @@ Defaults:
 - artifact branch TTL: 30 days
 - GitHub/GitLab setup also writes PR/MR session-review automation that updates a session artifact branch and posts a review comment on PR/MR updates.
 - By default PR/MR artifact branches are ephemeral and are deleted when the review closes; set `--session-archive-branch <branch>` to keep immutable review snapshots on a dedicated archive branch such as `pr/sessions`.
-- Session review comments now include a `Reviewer Quick Digest` block with Q&A excerpts (question/answer rows), modified files, and added/updated tests.
+- Session review comments now include a `Reviewer Quick Digest` block with mobile-friendly Q&A prose, modified files, and added/updated tests.
 
 Sensitive repositories can force immediate cleanup:
 

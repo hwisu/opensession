@@ -153,7 +153,7 @@ Desktop dry-run reliability workflow:
 Reviewer block highlights:
 
 - `Reviewer Quick Digest`
-- Q&A excerpts rendered as `Question | Answer` table rows (content, not counts)
+- Q&A excerpts rendered as mobile-friendly Markdown prose with session/commit context (content, not counts)
 - modified file summary
 - added/updated test file summary
-- direct local review deep-link (`/review/local/:id`) and commit/session trail
+- local replay command (`opensession review <github-pr-url>`), review ID, and commit/session trail

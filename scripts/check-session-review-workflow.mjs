@@ -43,20 +43,23 @@ function main() {
   if (!reportScript.includes("'<!-- opensession-session-review-final -->'")) {
     fail('Final marker is missing in scripts/pr_session_report.mjs.');
   }
-  if (!reportScript.includes('| Metric | Value |')) {
-    fail('Report must include an overview metric table.');
+  if (reportScript.includes('| Metric | Value |')) {
+    fail('Report must not use markdown tables for overview metrics.');
   }
   if (!reportScript.includes('Files changed](') || !reportScript.includes('Commits](')) {
     fail('Report must include PR quick links to files/commits.');
   }
-  if (!reportScript.includes('Open in UI') || !reportScript.includes('ops review')) {
-    fail('Report must include local review deep-link.');
+  if (reportScript.includes('127.0.0.1:8788/review/local/')) {
+    fail('Report must not embed localhost review links in PR comments.');
   }
-  if (!reportScript.includes('Artifact branch |')) {
-    fail('Report must include artifact branch summary link.');
+  if (!reportScript.includes('**Local replay:**') || !reportScript.includes('localReviewCommand(')) {
+    fail('Report must include a local replay command instead of localhost links.');
   }
-  if (!reportScript.includes('| Session ID | Tool | Files | Commits | Open | OpenSession | JSONL | Meta | Title |')) {
-    fail('Report must include session metadata columns for per-session navigation.');
+  if (!reportScript.includes('**Artifact storage:**')) {
+    fail('Report must include artifact storage metadata.');
+  }
+  if (reportScript.includes('| Session ID | Tool | Files | Commits | Open | OpenSession | JSONL | Meta | Title |')) {
+    fail('Report must not use markdown tables for per-session navigation.');
   }
   if (!reportScript.includes('opensessionSourceLink(')) {
     fail('Report must build opensession.io source links for web review.');
@@ -85,14 +88,20 @@ function main() {
   if (!reportScript.includes('#### Reviewer Quick Digest')) {
     fail('Report must include Reviewer Quick Digest block for high-signal review context.');
   }
-  if (!reportScript.includes('| Q&A | Areas | Files | Tests | Sessions / Commit |')) {
-    fail('Report must summarize review KPIs in a digest table.');
+  if (!reportScript.includes('**Comment type:**') || !reportScript.includes('**Review ID:**')) {
+    fail('Report must include review metadata for comment type and review id.');
   }
-  if (!reportScript.includes('#### Area Summary')) {
-    fail('Report must summarize changed areas.');
+  if (!reportScript.includes('**Coverage:**')) {
+    fail('Report must summarize review KPIs in digest prose.');
   }
-  if (!reportScript.includes('| Session | Commit | Question | Answer |')) {
-    fail('Report must render Q&A digest with session and commit context.');
+  if (!reportScript.includes('**Top areas:**')) {
+    fail('Report must summarize changed areas in the quick digest.');
+  }
+  if (reportScript.includes('| Session | Commit | Question | Answer |')) {
+    fail('Report must not use markdown tables for Q&A digest rows.');
+  }
+  if (!reportScript.includes('**Question:**') || !reportScript.includes('**Answer:**')) {
+    fail('Report must render Q&A digest as prose with session and commit context.');
   }
   if (!reportScript.includes('primary only (auxiliary filtered)')) {
     fail('Report must describe primary-session filtering.');
@@ -106,7 +115,7 @@ function main() {
   if (!reportScript.includes('collectAreaSummary')) {
     fail('Report script must derive area summary rows from changed files.');
   }
-  if (!reportScript.includes('Updated at (UTC)')) {
+  if (!reportScript.includes('**Updated at (UTC):**')) {
     fail('Report must include update timestamp for per-run freshness.');
   }
 

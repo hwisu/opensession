@@ -242,7 +242,7 @@ opensession cleanup run --apply
 - artifact branch TTL: 30일
 - GitHub/GitLab 설정 시 PR/MR 갱신마다 session artifact branch를 갱신하고 리뷰 코멘트를 남기는 session-review 자동화 템플릿도 함께 생성됩니다.
 - 기본값은 ephemeral PR/MR artifact branch이며 리뷰가 닫히면 삭제됩니다. `--session-archive-branch <branch>`를 설정하면 `pr/sessions` 같은 전용 archive branch에 immutable snapshot을 계속 보관합니다.
-- session-review 코멘트에는 `Reviewer Quick Digest` 블록이 포함되며, Q&A 발췌(질문/응답), 수정 파일, 추가/수정 테스트가 함께 표시됩니다.
+- session-review 코멘트에는 `Reviewer Quick Digest` 블록이 포함되며, 모바일 친화적인 Q&A 줄글 요약, 수정 파일, 추가/수정 테스트가 함께 표시됩니다.
 
 민감한 저장소는 즉시 정리 모드를 권장합니다.
 

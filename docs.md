@@ -215,7 +215,7 @@ Provider matrix:
 - GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. By default PR updates publish ephemeral `opensession/pr-<number>-sessions` branches and delete them when the PR closes; set `--session-archive-branch <branch>` to keep immutable review snapshots on a dedicated archive branch such as `pr/sessions`.
 - GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note, or use the configured archive branch when `--session-archive-branch` is set.
 - Generic git: `.opensession/cleanup/cron.example` is generated for cron/system scheduler wiring.
-- Session-review comments include `Reviewer Quick Digest` with Q&A excerpts (`Question | Answer` rows), modified file summary, and added/updated tests.
+- Session-review comments include `Reviewer Quick Digest` with mobile-friendly Q&A prose, modified file summary, and added/updated tests.
 
 ## Development & Validation
 
@@ -344,7 +344,7 @@ Default mode is web. Use `--no-open` to print URL only.
 
 Local `view` targets do not require registered git credentials.
 They use local git objects / local source bytes and generate a local review bundle.
-Commit-linked local review pages expose a `Reviewer Quick Digest` panel that renders Q&A content excerpts (not just counts), modified files, and added/updated tests.
+Commit-linked local review pages expose a `Reviewer Quick Digest` panel that renders mobile-friendly Q&A content excerpts (not just counts), modified files, and added/updated tests.
 
 ## Handoff
 

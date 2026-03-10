@@ -216,7 +216,7 @@ opensession cleanup init --provider auto --session-archive-branch pr/sessions --
 - GitHub: `.github/workflows/opensession-cleanup.yml`와 `.github/workflows/opensession-session-review.yml`을 생성합니다. 기본값은 ephemeral `opensession/pr-<number>-sessions` 브랜치를 PR 동안만 유지하고 PR close 시 삭제합니다. `--session-archive-branch <branch>`를 설정하면 `pr/sessions` 같은 전용 archive branch에 immutable snapshot을 저장합니다.
 - GitLab: `.gitlab/opensession-cleanup.yml`와 `.gitlab/opensession-session-review.yml`을 생성합니다. `.gitlab-ci.yml`은 OpenSession 관리 마커 블록이 있을 때만(또는 새 파일일 때만) 갱신합니다. MR 파이프라인은 `opensession/mr-<iid>-sessions`를 게시/갱신하거나, `--session-archive-branch`가 설정된 경우 해당 archive branch를 사용합니다.
 - Generic git: cron/system scheduler 연동용 `.opensession/cleanup/cron.example`를 생성합니다.
-- session-review 코멘트에는 `Reviewer Quick Digest`가 포함되며, Q&A 발췌(`Question | Answer` 행), 수정 파일 요약, 추가/수정 테스트가 함께 표시됩니다.
+- session-review 코멘트에는 `Reviewer Quick Digest`가 포함되며, 모바일 친화적인 Q&A 줄글 요약, 수정 파일 요약, 추가/수정 테스트가 함께 표시됩니다.
 
 ## 개발 및 검증
 
@@ -346,7 +346,7 @@ opensession view main..feature/my-branch
 
 로컬 `view` 대상은 등록된 git credential이 필요하지 않습니다.
 로컬 git object / 로컬 source byte를 사용해 local review bundle을 만들기 때문입니다.
-commit-linked local review page는 Q&A 내용 발췌, 수정 파일, 추가/수정 테스트를 포함하는 `Reviewer Quick Digest` 패널을 노출합니다.
+commit-linked local review page는 모바일 친화적인 Q&A 내용 발췌, 수정 파일, 추가/수정 테스트를 포함하는 `Reviewer Quick Digest` 패널을 노출합니다.
 
 ## Handoff
 

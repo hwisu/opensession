@@ -64,9 +64,7 @@ pub fn daemon_stop() -> Result<()> {
     // Send SIGTERM
     #[cfg(unix)]
     {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
+        terminate_process_unix(pid);
     }
 
     #[cfg(not(unix))]
@@ -133,8 +131,7 @@ pub fn is_daemon_running() -> bool {
 fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // kill with signal 0 checks process existence without sending a signal
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        process_exists_unix(pid)
     }
     #[cfg(not(unix))]
     {
@@ -143,6 +140,30 @@ fn is_process_running(pid: u32) -> bool {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
             .unwrap_or(false)
+    }
+}
+
+#[cfg(unix)]
+fn process_exists_unix(pid: u32) -> bool {
+    // SAFETY: kill(pid, 0) does not deliver a signal. It is the standard Unix probe for
+    // process existence and permissions, and we pass the parsed PID value directly to libc.
+    let rc = unsafe { libc::kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    )
+}
+
+#[cfg(unix)]
+fn terminate_process_unix(pid: u32) {
+    // SAFETY: sending SIGTERM to a parsed PID delegates to the OS for permission and existence
+    // checks. The libc call does not outlive borrowed data and has no Rust aliasing concerns.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
     }
 }
 

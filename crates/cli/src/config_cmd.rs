@@ -399,8 +399,7 @@ fn run_summary(action: SummaryConfigAction) -> Result<()> {
 }
 
 fn config_path(cwd: &Path) -> Result<PathBuf> {
-    let root =
-        opensession_core::object_store::find_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let root = opensession_local_store::find_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     Ok(root.join(".opensession").join("config.toml"))
 }
 
@@ -425,7 +424,7 @@ fn normalize_base_url(value: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_base_url, RepoConfig};
+    use super::{RepoConfig, normalize_base_url};
 
     #[test]
     fn default_repo_config_has_base_url() {

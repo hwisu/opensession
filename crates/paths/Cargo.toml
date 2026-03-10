@@ -1,0 +1,21 @@
+[package]
+name = "opensession-paths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Centralized OpenSession runtime path helpers"
+include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+directories = { workspace = true }
+opensession-runtime-config = { workspace = true }
+thiserror = { workspace = true }

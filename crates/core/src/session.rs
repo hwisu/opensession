@@ -170,10 +170,10 @@ pub fn build_git_storage_meta_json(session: &Session) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
+        ATTR_PARENT_SESSION_ID, ATTR_SESSION_ROLE, GitMeta, SessionRole,
         build_git_storage_meta_json, build_git_storage_meta_json_with_git,
         interaction_compressed_session, interaction_compressed_stats, is_auxiliary_session,
-        session_role, source_path, working_directory, GitMeta, SessionRole, ATTR_PARENT_SESSION_ID,
-        ATTR_SESSION_ROLE,
+        session_role, source_path, working_directory,
     };
     use crate::trace::{Agent, Content, Event, EventType, Session};
     use serde_json::Value;

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { appLocale } from '../i18n';
 import type { Event } from '../types';
 
 const { events }: { events: Event[] } = $props();
@@ -7,6 +8,7 @@ let activeIdx = $state(0);
 let observer: IntersectionObserver | null = null;
 let activeUpdateRaf: number | null = null;
 let queuedActiveIdx: number | null = null;
+const isKorean = $derived($appLocale === 'ko');
 
 const userMessageIndices = $derived.by(() => {
 	const indices: number[] = [];
@@ -31,6 +33,10 @@ function scrollToMessage(msgNum: number) {
 	if (el) {
 		el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
+}
+
+function messageLabel(index: number): string {
+	return isKorean ? `메시지 ${index + 1}` : `Message ${index + 1}`;
 }
 
 function scheduleActiveIndex(nextIdx: number) {
@@ -87,12 +93,16 @@ $effect(() => {
 </script>
 
 {#if userMessageIndices.length > 1}
-	<nav class="fixed left-4 top-1/2 -translate-y-1/2 hidden lg:flex flex-col items-center gap-1" style="z-index: var(--z-minimap)" aria-label="Message navigation">
+	<nav
+		class="fixed left-4 top-1/2 -translate-y-1/2 hidden lg:flex flex-col items-center gap-1"
+		style="z-index: var(--z-minimap)"
+		aria-label={isKorean ? '메시지 탐색' : 'Message navigation'}
+	>
 		{#each userMessageIndices as _, i}
 			<button
 				onclick={() => scrollToMessage(i)}
 				class="group relative flex items-center"
-				title="Message {i + 1}"
+				title={messageLabel(i)}
 			>
 				<!-- Square -->
 				<span

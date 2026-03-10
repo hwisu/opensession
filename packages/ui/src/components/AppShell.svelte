@@ -1,15 +1,22 @@
 <script lang="ts">
 import type { Snippet } from 'svelte';
-import { tick } from 'svelte';
+import { onMount, tick } from 'svelte';
 import {
-	ApiError,
 	authLogout,
 	getApiCapabilities,
 	getSettings,
 	isAuthenticated,
 	verifyAuth,
 } from '../api';
+import { createShellModel, createShellModelState } from '../models/app-shell-model';
 import type { UserSettings } from '../types';
+import {
+	appLocale,
+	initializeLocalization,
+	refreshLocaleFromPlatform,
+	translate,
+} from '../i18n';
+import LanguageModePicker from './LanguageModePicker.svelte';
 import ThemeToggle from './ThemeToggle.svelte';
 
 type DesktopWindow = Window & {
@@ -34,6 +41,8 @@ type PaletteCommand = {
 	run: () => void;
 };
 
+const OPENSESSION_GITHUB_URL = 'https://github.com/hwisu/opensession';
+
 const {
 	currentPath,
 	children,
@@ -46,22 +55,16 @@ const {
 	onNavigate?: (path: string) => void;
 } = $props();
 
-let user = $state<UserSettings | null>(null);
-let paletteOpen = $state(false);
-let paletteQuery = $state('');
-let paletteSelectionIndex = $state(0);
+const shellState = $state(createShellModelState());
 let paletteInput: HTMLInputElement | undefined = $state();
-let helpOpen = $state(false);
 let helpDialog: HTMLDivElement | undefined = $state();
-let accountMenuOpen = $state(false);
 let accountMenuRoot: HTMLDivElement | undefined = $state();
-let authEnabled = $state(false);
-let hasLocalAuth = $state(false);
-let desktopRuntime = $state(false);
 
 const isSessionDetail = $derived(currentPath.startsWith('/session/'));
 const isSessionList = $derived(currentPath === '/sessions');
-const showLoginLink = $derived(!hasLocalAuth && (!desktopRuntime || authEnabled));
+const showLoginLink = $derived(
+	!shellState.hasLocalAuth && (!shellState.desktopRuntime || shellState.authEnabled),
+);
 
 function trimNonEmpty(value: string | null | undefined): string | null {
 	if (typeof value !== 'string') return null;
@@ -95,9 +98,9 @@ function shortDate(iso: string | null | undefined): string {
 	return parsed.toLocaleDateString();
 }
 
-function linkedProvidersLabel(currentUser: UserSettings | null): string {
+function linkedProvidersLabel(currentUser: UserSettings | null, emptyLabel: string): string {
 	if (!currentUser || !currentUser.oauth_providers || currentUser.oauth_providers.length === 0) {
-		return 'none';
+		return emptyLabel;
 	}
 	return currentUser.oauth_providers.map((provider) => provider.display_name).join(', ');
 }
@@ -118,147 +121,96 @@ function getDesktopInvoke(): DesktopInvoke | null {
 	return typeof invoke === 'function' ? invoke : null;
 }
 
+const shellModel = createShellModel(shellState, {
+	getApiCapabilities,
+	verifyAuth,
+	getSettings,
+	authLogout,
+	isAuthenticated,
+	isDesktopRuntime: () => {
+		if (typeof window === 'undefined') return false;
+		const desktopWindow = window as DesktopWindow;
+		return '__TAURI_INTERNALS__' in desktopWindow || desktopWindow.location.protocol === 'tauri:';
+	},
+	takeLaunchRoute: async () => {
+		const invoke = getDesktopInvoke();
+		if (!invoke) return null;
+		const maybeRoute = await invoke<unknown>('desktop_take_launch_route');
+		return typeof maybeRoute === 'string' ? maybeRoute : null;
+	},
+	getCurrentLocationPath: () => {
+		if (typeof window === 'undefined') return currentPath;
+		return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+	},
+	startInterval: (callback, ms) => window.setInterval(callback, ms),
+	clearInterval: (handle) => {
+		window.clearInterval(handle as number);
+	},
+	navigate: (path) => onNavigate(path),
+});
+
 const navLinks = $derived.by(() => {
-	const links: Array<{ href: string; label: string }> = [{ href: '/sessions', label: 'Sessions' }];
-	links.push({ href: '/docs', label: 'Docs' });
-	if (desktopRuntime || hasLocalAuth) {
-		links.push({ href: '/settings', label: 'Settings' });
+	const links: Array<{ href: string; label: string }> = [
+		{ href: '/sessions', label: translate($appLocale, 'nav.sessions') },
+	];
+	links.push({ href: '/docs', label: translate($appLocale, 'nav.docs') });
+	if (shellState.desktopRuntime || shellState.hasLocalAuth) {
+		links.push({ href: '/settings', label: translate($appLocale, 'nav.settings') });
 	}
 	return links;
 });
 
 $effect(() => {
-	let cancelled = false;
-	if (typeof window !== 'undefined') {
-		const desktopWindow = window as DesktopWindow;
-		desktopRuntime =
-			'__TAURI_INTERNALS__' in desktopWindow || desktopWindow.location.protocol === 'tauri:';
-	}
-	getApiCapabilities()
-		.then((capabilities) => {
-			if (cancelled) return;
-			authEnabled = capabilities.auth_enabled;
-		})
-		.catch(() => {
-			if (cancelled) return;
-			authEnabled = false;
-		});
-
-	return () => {
-		cancelled = true;
-	};
+	void shellModel.loadCapabilities();
 });
 
 $effect(() => {
-	if (!desktopRuntime || typeof window === 'undefined') return;
-	const invoke = getDesktopInvoke();
-	if (!invoke) return;
-
-	let cancelled = false;
-	let commandSupported = true;
-
-	const pollLaunchRoute = async () => {
-		if (cancelled || !commandSupported) return;
-		try {
-			const maybeRoute = await invoke<unknown>('desktop_take_launch_route');
-			if (typeof maybeRoute !== 'string' || maybeRoute.trim().length === 0) return;
-			const nextPath = maybeRoute.trim();
-			const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-			if (nextPath === currentPath) return;
-			onNavigate(nextPath);
-		} catch {
-			// Older desktop runtimes may not implement this command yet.
-			commandSupported = false;
-		}
-	};
-
-	void pollLaunchRoute();
-	const timer = window.setInterval(() => {
-		void pollLaunchRoute();
-	}, 1200);
-
-	return () => {
-		cancelled = true;
-		window.clearInterval(timer);
-	};
+	void shellState.desktopRuntime;
+	if (!shellState.desktopRuntime) return;
+	return shellModel.startLaunchRoutePolling();
 });
 
 const shortcutHints = $derived.by(() => {
 	if (isSessionDetail) {
-		return ['Cmd/Ctrl+K palette', 'j/k scroll', '1-0 filters', '/ search', 'n/p match', 'Esc back'];
+		return [
+			`Cmd/Ctrl+K ${translate($appLocale, 'shortcut.palette')}`,
+			`j/k ${translate($appLocale, 'shortcut.scroll')}`,
+			`1-0 ${translate($appLocale, 'shortcut.filters')}`,
+			`/ ${translate($appLocale, 'shortcut.search')}`,
+			`n/p ${translate($appLocale, 'shortcut.match')}`,
+			`Esc ${translate($appLocale, 'shortcut.back')}`,
+		];
 	}
 	if (isSessionList) {
 		return [
-			'Cmd/Ctrl+K palette',
-			'j/k navigate',
-			'Enter open',
-			'/ search',
-			't tool',
-			'r range',
-			'Shift+R refresh',
-			'g repo',
+			`Cmd/Ctrl+K ${translate($appLocale, 'shortcut.palette')}`,
+			`j/k ${translate($appLocale, 'shortcut.navigate')}`,
+			`Enter ${translate($appLocale, 'shortcut.open')}`,
+			`/ ${translate($appLocale, 'shortcut.search')}`,
+			`t ${translate($appLocale, 'shortcut.tool')}`,
+			`r ${translate($appLocale, 'shortcut.range')}`,
+			`g ${translate($appLocale, 'shortcut.repo')}`,
 		];
 	}
-	return ['Cmd/Ctrl+K palette', 'Esc back'];
+	return [
+		`Cmd/Ctrl+K ${translate($appLocale, 'shortcut.palette')}`,
+		`Esc ${translate($appLocale, 'shortcut.back')}`,
+	];
 });
 
 $effect(() => {
 	void currentPath;
-	if (!authEnabled) {
-		user = null;
-		hasLocalAuth = false;
-		accountMenuOpen = false;
-		return;
-	}
-
-	if (!isAuthenticated()) {
-		user = null;
-		hasLocalAuth = false;
-		accountMenuOpen = false;
-		return;
-	}
-
-	let cancelled = false;
-	verifyAuth()
-		.then(async (ok) => {
-			if (!ok || cancelled) {
-				user = null;
-				hasLocalAuth = false;
-				accountMenuOpen = false;
-				return;
-			}
-			try {
-				const settings = await getSettings();
-				if (!cancelled) {
-					user = settings;
-					hasLocalAuth = true;
-				}
-			} catch (e) {
-				if (cancelled) return;
-				user = null;
-				hasLocalAuth = false;
-				accountMenuOpen = false;
-				if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-					await authLogout();
-				}
-			}
-		})
-		.catch(() => {
-			if (!cancelled) {
-				user = null;
-				hasLocalAuth = false;
-				accountMenuOpen = false;
-			}
-		});
-
-	return () => {
-		cancelled = true;
-	};
+	void shellState.authEnabled;
+	void shellModel.loadUser();
 });
 
 $effect(() => {
 	void currentPath;
-	accountMenuOpen = false;
+	shellModel.resetMenusForPath();
+});
+
+onMount(() => {
+	initializeLocalization();
 });
 
 function createPaletteCommand(
@@ -279,37 +231,37 @@ const allPaletteCommands = $derived.by(() => {
 	const commands: PaletteCommand[] = [
 		createPaletteCommand(
 			'go-sessions',
-			'Go to Sessions',
-			'Open the main session list',
+			translate($appLocale, 'palette.goSessions.label'),
+			translate($appLocale, 'palette.goSessions.description'),
 			['sessions', 'home', 'list', '/sessions'],
 			() => onNavigate('/sessions'),
 		),
 		createPaletteCommand(
 			'go-docs',
-			'Go to Docs',
-			'Open product and API documentation',
+			translate($appLocale, 'palette.goDocs.label'),
+			translate($appLocale, 'palette.goDocs.description'),
 			['docs', 'documentation', 'guide'],
 			() => onNavigate('/docs'),
 		),
 	];
 
-	if (!hasLocalAuth && (!desktopRuntime || authEnabled)) {
+	if (!shellState.hasLocalAuth && (!shellState.desktopRuntime || shellState.authEnabled)) {
 		commands.push(
 			createPaletteCommand(
 				'go-login',
-				'Go to Login',
-				'Sign in to your account',
+				translate($appLocale, 'palette.goLogin.label'),
+				translate($appLocale, 'palette.goLogin.description'),
 				['login', 'auth', 'signin'],
 				() => onNavigate('/login'),
 			),
 		);
 	}
-	if (hasLocalAuth || desktopRuntime) {
+	if (shellState.hasLocalAuth || shellState.desktopRuntime) {
 		commands.push(
 			createPaletteCommand(
 				'go-settings',
-				'Go to Settings',
-				'Open personal settings and API key controls',
+				translate($appLocale, 'palette.goSettings.label'),
+				translate($appLocale, 'palette.goSettings.description'),
 				['settings', 'account', 'profile', 'api key'],
 				() => onNavigate('/settings'),
 			),
@@ -320,8 +272,8 @@ const allPaletteCommands = $derived.by(() => {
 		commands.push(
 			createPaletteCommand(
 				'focus-list-search',
-				'Focus session search',
-				'Move cursor to list search input',
+				translate($appLocale, 'palette.focusSessionSearch.label'),
+				translate($appLocale, 'palette.focusSessionSearch.description'),
 				['search', 'find', 'session list'],
 				dispatchFocusSearch,
 			),
@@ -332,8 +284,8 @@ const allPaletteCommands = $derived.by(() => {
 		commands.push(
 			createPaletteCommand(
 				'focus-detail-search',
-				'Focus in-session search',
-				'Move cursor to timeline search input',
+				translate($appLocale, 'palette.focusDetailSearch.label'),
+				translate($appLocale, 'palette.focusDetailSearch.description'),
 				['search', 'find', 'timeline', 'session detail'],
 				dispatchFocusSearch,
 			),
@@ -343,7 +295,7 @@ const allPaletteCommands = $derived.by(() => {
 	return commands;
 });
 
-const normalizedPaletteQuery = $derived(paletteQuery.trim().toLowerCase());
+const normalizedPaletteQuery = $derived(shellState.paletteQuery.trim().toLowerCase());
 const visiblePaletteCommands = $derived.by(() => {
 	if (!normalizedPaletteQuery) return allPaletteCommands;
 
@@ -357,18 +309,11 @@ const visiblePaletteCommands = $derived.by(() => {
 
 $effect(() => {
 	void normalizedPaletteQuery;
-	paletteSelectionIndex = 0;
+	shellModel.resetPaletteSelection();
 });
 
 $effect(() => {
-	const max = visiblePaletteCommands.length - 1;
-	if (max < 0) {
-		paletteSelectionIndex = 0;
-		return;
-	}
-	if (paletteSelectionIndex > max) {
-		paletteSelectionIndex = max;
-	}
+	shellModel.clampPaletteSelection(visiblePaletteCommands.length - 1);
 });
 
 function isLinkActive(href: string): boolean {
@@ -382,7 +327,7 @@ function isPaletteShortcut(e: KeyboardEvent): boolean {
 }
 
 function isHelpShortcut(e: KeyboardEvent): boolean {
-	return e.key === '?' || (e.key === '/' && e.shiftKey);
+	return !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'h';
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -391,24 +336,21 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 async function openPalette() {
-	paletteOpen = true;
-	paletteQuery = '';
-	paletteSelectionIndex = 0;
+	shellModel.openPalette();
 	await tick();
 	paletteInput?.focus();
 }
 
 function closePalette() {
-	paletteOpen = false;
-	paletteQuery = '';
+	shellModel.closePalette();
 }
 
 function openHelp() {
-	helpOpen = true;
+	shellModel.openHelp();
 }
 
 function closeHelp() {
-	helpOpen = false;
+	shellModel.closeHelp();
 }
 
 function trapHelpFocus(e: KeyboardEvent) {
@@ -436,15 +378,15 @@ function trapHelpFocus(e: KeyboardEvent) {
 }
 
 function closeAccountMenu() {
-	accountMenuOpen = false;
+	shellModel.closeAccountMenu();
 }
 
 function toggleAccountMenu() {
-	accountMenuOpen = !accountMenuOpen;
+	shellModel.toggleAccountMenu();
 }
 
 function handleWindowPointerDown(e: MouseEvent) {
-	if (!accountMenuOpen) return;
+	if (!shellState.accountMenuOpen) return;
 	const target = e.target;
 	if (!(target instanceof Node)) return;
 	if (accountMenuRoot?.contains(target)) return;
@@ -458,9 +400,7 @@ function executePaletteCommand(command: PaletteCommand | undefined) {
 }
 
 function movePaletteSelection(direction: 1 | -1) {
-	const len = visiblePaletteCommands.length;
-	if (len === 0) return;
-	paletteSelectionIndex = (paletteSelectionIndex + direction + len) % len;
+	shellModel.movePaletteSelection(direction, visiblePaletteCommands.length);
 }
 
 function handlePaletteInputKeydown(e: KeyboardEvent) {
@@ -476,7 +416,7 @@ function handlePaletteInputKeydown(e: KeyboardEvent) {
 	}
 	if (e.key === 'Enter') {
 		e.preventDefault();
-		executePaletteCommand(visiblePaletteCommands[paletteSelectionIndex]);
+		executePaletteCommand(visiblePaletteCommands[shellState.paletteSelectionIndex]);
 		return;
 	}
 	if (e.key === 'Escape') {
@@ -486,15 +426,11 @@ function handlePaletteInputKeydown(e: KeyboardEvent) {
 }
 
 async function handleSignOut() {
-	closeAccountMenu();
-	await authLogout();
-	user = null;
-	hasLocalAuth = false;
-	onNavigate('/sessions');
+	await shellModel.signOut();
 }
 
 function handleAccountMenuNavigate(path: string) {
-	closeAccountMenu();
+	shellModel.closeAccountMenu();
 	onNavigate(path);
 }
 
@@ -502,14 +438,14 @@ function handleGlobalKey(e: KeyboardEvent) {
 	if (isHelpShortcut(e)) {
 		if (isEditableTarget(e.target)) return;
 		e.preventDefault();
-		if (helpOpen) closeHelp();
+		if (shellState.helpOpen) closeHelp();
 		else openHelp();
 		return;
 	}
 
 	if (isPaletteShortcut(e)) {
 		e.preventDefault();
-		if (paletteOpen) {
+		if (shellState.paletteOpen) {
 			closePalette();
 		} else {
 			void openPalette();
@@ -517,7 +453,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 		return;
 	}
 
-	if (helpOpen) {
+	if (shellState.helpOpen) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			closeHelp();
@@ -527,13 +463,13 @@ function handleGlobalKey(e: KeyboardEvent) {
 		return;
 	}
 
-	if (accountMenuOpen && e.key === 'Escape') {
+	if (shellState.accountMenuOpen && e.key === 'Escape') {
 		e.preventDefault();
 		closeAccountMenu();
 		return;
 	}
 
-	if (paletteOpen) {
+	if (shellState.paletteOpen) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			closePalette();
@@ -547,9 +483,17 @@ function handleGlobalKey(e: KeyboardEvent) {
 		history.back();
 	}
 }
+
+function handleLanguageChange() {
+	refreshLocaleFromPlatform();
+}
 </script>
 
-<svelte:window onkeydown={handleGlobalKey} onmousedown={handleWindowPointerDown} />
+<svelte:window
+	onkeydown={handleGlobalKey}
+	onmousedown={handleWindowPointerDown}
+	onlanguagechange={handleLanguageChange}
+/>
 
 <div class="grid h-[100dvh] max-w-[100vw] grid-rows-[auto_1fr_auto] overflow-hidden bg-bg-primary text-text-primary">
 	<nav class="relative z-30 flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-bg-secondary px-2 py-2 sm:px-4">
@@ -557,6 +501,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 			<a href="/" class="text-sm font-bold tracking-tight text-text-primary sm:text-base">
 				opensession<span class="text-accent">.io</span>
 			</a>
+			<LanguageModePicker compact />
 			<ThemeToggle />
 		</div>
 		<div class="flex min-w-0 flex-1 items-center justify-end gap-0.5 pb-1 sm:pb-0">
@@ -572,36 +517,51 @@ function handleGlobalKey(e: KeyboardEvent) {
 				{/each}
 			</div>
 
-			{#if hasLocalAuth}
+			{#if shellState.hasLocalAuth}
 				<div class="relative shrink-0" bind:this={accountMenuRoot}>
 					<button
 						type="button"
 						data-testid="account-menu-trigger"
-						aria-expanded={accountMenuOpen}
+						aria-expanded={shellState.accountMenuOpen}
 						aria-haspopup="menu"
 						onclick={toggleAccountMenu}
 						class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
 					>
-						[{navAccountHandle(user)}]
+						[{navAccountHandle(shellState.user)}]
 					</button>
 
-						{#if accountMenuOpen}
+						{#if shellState.accountMenuOpen}
 							<div
 								role="menu"
-								aria-label="Account menu"
+								aria-label={translate($appLocale, 'account.menu')}
 								data-testid="account-menu"
 								class="absolute right-0 z-40 mt-1 w-[min(18rem,calc(100vw-1rem))] border border-border bg-bg-primary shadow-2xl"
 							>
 							<div class="border-b border-border px-3 py-2">
-								<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">Account</p>
-								<p class="mt-1 text-sm font-medium text-text-primary">{user?.nickname}</p>
-								<p class="text-xs text-text-secondary">{user?.email ?? 'email not linked'}</p>
+								<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">
+									{translate($appLocale, 'account.title')}
+								</p>
+								<p class="mt-1 text-sm font-medium text-text-primary">{shellState.user?.nickname}</p>
+								<p class="text-xs text-text-secondary">
+									{shellState.user?.email ?? translate($appLocale, 'account.emailMissing')}
+								</p>
 							</div>
 
 							<div class="border-b border-border px-3 py-2 text-xs text-text-secondary">
-								<p>User ID: <span class="text-text-primary">{user?.user_id}</span></p>
-								<p>Joined: <span class="text-text-primary">{shortDate(user?.created_at)}</span></p>
-								<p>Providers: <span class="text-text-primary">{linkedProvidersLabel(user)}</span></p>
+								<p>
+									{translate($appLocale, 'account.userId')}:
+									<span class="text-text-primary">{shellState.user?.user_id}</span>
+								</p>
+								<p>
+									{translate($appLocale, 'account.joined')}:
+									<span class="text-text-primary">{shortDate(shellState.user?.created_at)}</span>
+								</p>
+								<p>
+									{translate($appLocale, 'account.providers')}:
+									<span class="text-text-primary">
+										{linkedProvidersLabel(shellState.user, translate($appLocale, 'common.none'))}
+									</span>
+								</p>
 							</div>
 
 								<div class="border-b border-border px-2 py-1">
@@ -610,21 +570,21 @@ function handleGlobalKey(e: KeyboardEvent) {
 										class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
 										onclick={() => handleAccountMenuNavigate('/settings')}
 									>
-										Settings
+										{translate($appLocale, 'nav.settings')}
 									</button>
 									<button
 										type="button"
-										class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-									onclick={() => handleAccountMenuNavigate('/sessions')}
-								>
-									Session Home
+									class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+								onclick={() => handleAccountMenuNavigate('/sessions')}
+							>
+									{translate($appLocale, 'account.sessionHome')}
 								</button>
 								<button
 									type="button"
 									class="block w-full px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
 									onclick={() => handleAccountMenuNavigate('/docs')}
 								>
-									Docs
+									{translate($appLocale, 'nav.docs')}
 								</button>
 							</div>
 
@@ -635,7 +595,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 									onclick={handleSignOut}
 									class="block w-full px-2 py-1 text-left text-xs text-error transition-colors hover:bg-error/10"
 								>
-									Logout
+									{translate($appLocale, 'account.logout')}
 								</button>
 							</div>
 						</div>
@@ -646,7 +606,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 					href="/login"
 					class="px-1.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:px-3 sm:text-sm"
 				>
-					Login
+					{translate($appLocale, 'nav.login')}
 				</a>
 			{/if}
 		</div>
@@ -661,7 +621,7 @@ function handleGlobalKey(e: KeyboardEvent) {
 		class="shrink-0 flex items-center gap-2 border-t border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-muted sm:gap-3 sm:px-4 sm:text-xs"
 	>
 		<span class="font-semibold tracking-[0.06em] text-accent/90">
-			Shortcuts
+			{translate($appLocale, 'footer.shortcuts')}
 		</span>
 		<span class="sm:hidden inline-flex items-center gap-1 text-text-secondary">
 			<kbd class="font-mono text-[10px] font-semibold text-accent">
@@ -680,25 +640,38 @@ function handleGlobalKey(e: KeyboardEvent) {
 			</span>
 		{/each}
 		<span class="hidden sm:inline-flex items-center gap-1 text-text-secondary">
-			<kbd class="font-mono text-[10px] font-semibold text-accent">?</kbd>
-			<span>help</span>
+			<kbd class="font-mono text-[10px] font-semibold text-accent">h</kbd>
+			<span>{translate($appLocale, 'footer.help')}</span>
 		</span>
-		<span class="ml-auto">opensession.io</span>
+		<span class="ml-auto inline-flex items-center gap-2 whitespace-nowrap">
+			<a
+				href={OPENSESSION_GITHUB_URL}
+				target="_blank"
+				rel="noreferrer"
+				aria-label={translate($appLocale, 'footer.githubAria')}
+				data-testid="footer-github-link"
+				class="text-text-secondary transition-colors hover:text-text-primary"
+			>
+				{translate($appLocale, 'footer.github')}
+			</a>
+			<span aria-hidden="true" class="text-border">/</span>
+			<span>opensession.io</span>
+		</span>
 	</footer>
 </div>
 
-{#if paletteOpen}
+{#if shellState.paletteOpen}
 	<div class="fixed inset-0 z-50 p-4">
 		<button
 			type="button"
 			class="absolute inset-0 bg-black/60"
-			aria-label="Close command palette"
+			aria-label={translate($appLocale, 'help.commandPaletteClose')}
 			onclick={closePalette}
 		></button>
 		<div
 			role="dialog"
 			aria-modal="true"
-			aria-label="Command Palette"
+			aria-label={translate($appLocale, 'help.commandPalette')}
 			tabindex="-1"
 			data-testid="command-palette"
 			class="relative mx-auto mt-14 w-full max-w-2xl border border-border bg-bg-primary shadow-2xl"
@@ -706,24 +679,26 @@ function handleGlobalKey(e: KeyboardEvent) {
 			<div class="border-b border-border px-3 py-2">
 				<input
 					bind:this={paletteInput}
-					bind:value={paletteQuery}
+					bind:value={shellState.paletteQuery}
 					onkeydown={handlePaletteInputKeydown}
 					data-testid="command-palette-input"
 					type="text"
-					placeholder="Type a command or page name..."
+					placeholder={translate($appLocale, 'palette.placeholder')}
 					class="w-full border border-border bg-bg-secondary px-2 py-1 text-sm text-text-primary outline-none focus:border-accent"
 				/>
 			</div>
 			<div class="max-h-[24rem] overflow-y-auto">
 				{#if visiblePaletteCommands.length === 0}
-					<p class="px-3 py-3 text-xs text-text-muted">No commands matched your query.</p>
+					<p class="px-3 py-3 text-xs text-text-muted">
+						{translate($appLocale, 'palette.noMatches')}
+					</p>
 				{:else}
 					{#each visiblePaletteCommands as command, idx (command.id)}
 						<button
 							type="button"
 							class="flex w-full items-start justify-between gap-3 border-b border-border/60 px-3 py-2 text-left"
-							class:bg-bg-secondary={idx === paletteSelectionIndex}
-							class:hover:bg-bg-secondary={idx !== paletteSelectionIndex}
+							class:bg-bg-secondary={idx === shellState.paletteSelectionIndex}
+							class:hover:bg-bg-secondary={idx !== shellState.paletteSelectionIndex}
 							onclick={() => executePaletteCommand(command)}
 						>
 							<span>
@@ -736,25 +711,27 @@ function handleGlobalKey(e: KeyboardEvent) {
 				{/if}
 			</div>
 			<div class="flex items-center justify-between border-t border-border px-3 py-1.5 text-[11px] text-text-muted">
-				<span>{visiblePaletteCommands.length} command{visiblePaletteCommands.length === 1 ? '' : 's'}</span>
-				<span>Up/Down navigate · Enter run · Esc close</span>
+				<span>
+					{translate($appLocale, 'palette.commandCount', { count: visiblePaletteCommands.length })}
+				</span>
+				<span>{translate($appLocale, 'palette.footer')}</span>
 			</div>
 		</div>
 	</div>
 {/if}
 
-{#if helpOpen}
+{#if shellState.helpOpen}
 	<div class="fixed inset-0 z-50 p-4">
 		<button
 			type="button"
 			class="absolute inset-0 bg-black/65"
-			aria-label="Close help modal"
+			aria-label={translate($appLocale, 'help.overlayClose')}
 			onclick={closeHelp}
 		></button>
 		<div
 			role="dialog"
 			aria-modal="true"
-			aria-label="Keyboard Help"
+			aria-label={translate($appLocale, 'help.quickHelp')}
 			tabindex="-1"
 			data-testid="keyboard-help-modal"
 			bind:this={helpDialog}
@@ -762,46 +739,56 @@ function handleGlobalKey(e: KeyboardEvent) {
 		>
 			<div class="flex items-center justify-between border-b border-border px-4 py-3">
 				<div>
-					<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">Quick Help</p>
-					<h2 class="text-sm font-semibold text-text-primary">Session Runtime Guide</h2>
+					<p class="text-[11px] uppercase tracking-[0.1em] text-text-muted">
+						{translate($appLocale, 'help.quickHelp')}
+					</p>
+					<h2 class="text-sm font-semibold text-text-primary">
+						{translate($appLocale, 'help.sessionRuntimeGuide')}
+					</h2>
 				</div>
 				<button
 					type="button"
 					onclick={closeHelp}
 					class="border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
 				>
-					Close
+					{translate($appLocale, 'common.close')}
 				</button>
 			</div>
 			<div class="grid gap-3 p-4 sm:grid-cols-3">
 				<section class="rounded border border-border/70 bg-bg-secondary/60 p-3">
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Runtime Summary</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+						{translate($appLocale, 'help.runtimeSummary')}
+					</h3>
 					<ul class="mt-2 space-y-1 text-xs text-text-secondary">
-						<li>Provider: summary model/transport selection</li>
-						<li>Output Shape: layered/file_list/security_first</li>
-						<li>Prompt Reset: restore default template instantly</li>
+						<li>{translate($appLocale, 'help.runtimeProvider')}</li>
+						<li>{translate($appLocale, 'help.runtimeShape')}</li>
+						<li>{translate($appLocale, 'help.runtimePrompt')}</li>
 					</ul>
 				</section>
 				<section class="rounded border border-border/70 bg-bg-secondary/60 p-3">
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Vector</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+						{translate($appLocale, 'help.vector')}
+					</h3>
 					<ul class="mt-2 space-y-1 text-xs text-text-secondary">
-						<li>Auto chunking uses session size best-practice profile</li>
-						<li>Manual chunking unlocks chunk size/overlap fields</li>
-						<li>Fix unreachable provider: start `ollama serve`</li>
+						<li>{translate($appLocale, 'help.vectorAutoChunk')}</li>
+						<li>{translate($appLocale, 'help.vectorManual')}</li>
+						<li>{translate($appLocale, 'help.vectorFix')}</li>
 					</ul>
 				</section>
 				<section class="rounded border border-border/70 bg-bg-secondary/60 p-3">
-					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Change Reader</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+						{translate($appLocale, 'help.changeReader')}
+					</h3>
 					<ul class="mt-2 space-y-1 text-xs text-text-secondary">
-						<li>Text mode: read and ask from local context</li>
-						<li>Voice mode: OpenAI TTS playback for narrative/answer</li>
-						<li>Set API key in Runtime Summary {'>'} Change Reader</li>
+						<li>{translate($appLocale, 'help.changeReaderText')}</li>
+						<li>{translate($appLocale, 'help.changeReaderVoice')}</li>
+						<li>{translate($appLocale, 'help.changeReaderApiKey')}</li>
 					</ul>
 				</section>
 			</div>
 			<div class="flex items-center justify-between border-t border-border px-4 py-2 text-[11px] text-text-muted">
-				<span>Shift+/ opens help · Esc closes dialog</span>
-				<span>Tab focus is trapped inside this dialog</span>
+				<span>{translate($appLocale, 'help.footerShortcuts')}</span>
+				<span>{translate($appLocale, 'help.footerFocus')}</span>
 			</div>
 		</div>
 	</div>

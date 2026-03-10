@@ -9,15 +9,15 @@ pub mod url;
 #[cfg(test)]
 pub(crate) mod test_utils;
 
-pub use context::{extract_git_context, normalize_repo_name, GitContext};
+pub use context::{GitContext, extract_git_context, normalize_repo_name};
 pub use error::{GitStorageError, Result};
 pub use handoff_artifact_store::{
     artifact_ref_name, list_handoff_artifact_refs, load_handoff_artifact, store_handoff_artifact,
 };
 pub use refs::{branch_ledger_ref, encode_branch_component, resolve_ledger_branch};
 pub use store::{
-    store_blob_at_ref, NativeGitStorage, PruneStats, SessionSummaryLedgerRecord,
-    StoredSummaryRecord,
+    NativeGitStorage, PruneStats, SessionSummaryLedgerRecord, StoredSummaryRecord,
+    store_blob_at_ref,
 };
 pub use url::generate_raw_url;
 

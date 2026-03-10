@@ -1,9 +1,9 @@
 use crate::handoff_v1::{load_artifact_by_hash, resolve_artifact_hash};
 use anyhow::{Context, Result};
 use clap::Args;
-use opensession_core::object_store::read_local_object_from_uri;
-use opensession_core::source_uri::SourceUri;
 use opensession_core::Session;
+use opensession_core::source_uri::SourceUri;
+use opensession_local_store::read_local_object_from_uri;
 
 #[derive(Debug, Clone, Args)]
 pub struct InspectArgs {

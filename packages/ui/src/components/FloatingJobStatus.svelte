@@ -1,4 +1,6 @@
 <script lang="ts">
+import { appLocale, translate } from '../i18n';
+
 type FloatingJob = {
 	id: string;
 	label: string;
@@ -21,10 +23,18 @@ const {
 			>
 				<div class="flex items-center gap-2">
 					<span class="h-2 w-2 animate-pulse rounded-full bg-accent"></span>
-					<p class="text-xs font-semibold text-text-primary">{job.label}</p>
+					<p class="text-xs font-semibold text-text-primary">
+						{job.id === 'session-refresh'
+							? translate($appLocale, 'sessionList.refreshJobLabel')
+							: job.label}
+					</p>
 				</div>
 				{#if job.detail}
-					<p class="mt-1 text-[11px] text-text-secondary">{job.detail}</p>
+					<p class="mt-1 text-[11px] text-text-secondary">
+						{job.id === 'session-refresh'
+							? translate($appLocale, 'sessionList.refreshJobDetail')
+							: job.detail}
+					</p>
 				{/if}
 			</div>
 		{/each}

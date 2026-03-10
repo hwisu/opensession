@@ -30,11 +30,10 @@ fn parse_real_cursor_database() {
         return;
     }
 
-    let parsers = opensession_parsers::all_parsers();
-    let cursor_parser = parsers
-        .iter()
-        .find(|p| p.name() == "cursor")
-        .expect("CursorParser not found in all_parsers()");
+    let registry = opensession_parsers::ParserRegistry::default();
+    let cursor_parser = registry
+        .parser_for_path(path)
+        .expect("Cursor parser not found in ParserRegistry");
 
     assert!(
         cursor_parser.can_parse(path),

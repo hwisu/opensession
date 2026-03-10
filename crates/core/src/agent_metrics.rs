@@ -23,18 +23,18 @@ pub fn max_active_agents(session: &Session) -> usize {
     for event in &session.events {
         let task_id = normalize_task_id(event);
 
-        if matches!(event.event_type, EventType::TaskStart { .. }) {
-            if let Some(task_id) = task_id {
-                active_task_ids.insert(task_id);
-            }
+        if matches!(event.event_type, EventType::TaskStart { .. })
+            && let Some(task_id) = task_id
+        {
+            active_task_ids.insert(task_id);
         }
 
         max_subagents = max_subagents.max(active_task_ids.len());
 
-        if matches!(event.event_type, EventType::TaskEnd { .. }) {
-            if let Some(task_id) = task_id {
-                active_task_ids.remove(task_id);
-            }
+        if matches!(event.event_type, EventType::TaskEnd { .. })
+            && let Some(task_id) = task_id
+        {
+            active_task_ids.remove(task_id);
         }
     }
 

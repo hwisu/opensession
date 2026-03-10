@@ -5,7 +5,7 @@ use opensession_api::{ChangePasswordRequest, CreateGitCredentialRequest, OkRespo
 use opensession_e2e::client::TestContext;
 use serde_json::json;
 
-fn get_ctx() -> TestContext {
+fn get_ctx() -> Option<TestContext> {
     test_context_from_env("OPENSESSION_E2E_SERVER_BASE_URL")
 }
 
@@ -13,7 +13,9 @@ macro_rules! e2e_test {
     ($module:ident :: $name:ident) => {
         #[tokio::test]
         async fn $name() {
-            let ctx = get_ctx();
+            let Some(ctx) = get_ctx() else {
+                return;
+            };
             opensession_e2e::specs::$module::$name(&ctx).await.unwrap();
         }
     };
@@ -23,7 +25,9 @@ opensession_e2e::for_each_spec!(e2e_test);
 
 #[tokio::test]
 async fn server_sessions_repos_list() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let response = ctx.get("/sessions/repos").await.expect("request failed");
     assert_eq!(
         response.status().as_u16(),
@@ -42,7 +46,9 @@ async fn server_sessions_repos_list() {
 
 #[tokio::test]
 async fn server_auth_password_change_success() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let user = register_user(&ctx, "server-password", "old-pass-123").await;
 
     let client = reqwest::Client::new();
@@ -86,7 +92,9 @@ async fn server_auth_password_change_success() {
 
 #[tokio::test]
 async fn server_auth_git_credentials_crud() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let user = register_user(&ctx, "server-git-cred", "test-pass-123").await;
 
     let client = reqwest::Client::new();
@@ -179,7 +187,9 @@ async fn server_auth_git_credentials_crud() {
 
 #[tokio::test]
 async fn server_admin_delete_session_authz() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let response = reqwest::Client::new()
         .delete(ctx.url(&format!(
             "/admin/sessions/{}",
@@ -198,7 +208,9 @@ async fn server_admin_delete_session_authz() {
 
 #[tokio::test]
 async fn removed_team_and_sync_endpoints_are_unavailable() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let client = reqwest::Client::new();
     for path in ["/teams", "/invitations", "/sync/pull"] {
         let response = client

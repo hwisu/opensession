@@ -160,7 +160,7 @@ opensession doctor --fix --yes --profile local --fanout-mode hidden_ref --open-t
 - Does **not** modify `remote.<name>.push`.
 - Hook fanout push is best-effort and warning-only.
 - Set `OPENSESSION_STRICT=1` to fail push when fanout helper is unavailable or fanout push fails.
-- PR automation currently targets same-repo PRs only.
+- PR automation currently targets same-repo non-bot PRs only.
 - Merge/branch-delete cleanup removes ledger refs immediately; physical object removal follows remote GC policy.
 
 `share --web` rules:
@@ -194,6 +194,9 @@ opensession cleanup run
 
 # Apply deletions
 opensession cleanup run --apply
+
+# Keep review snapshots permanently on a dedicated branch
+opensession cleanup init --provider auto --session-archive-branch pr/sessions --yes
 ```
 
 Defaults:
@@ -209,8 +212,8 @@ opensession cleanup init --provider auto --hidden-ttl-days 0 --artifact-ttl-days
 
 Provider matrix:
 
-- GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. PR updates publish/refresh `opensession/pr-<number>-sessions` and upsert a PR comment.
-- GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note.
+- GitHub: `.github/workflows/opensession-cleanup.yml` plus `.github/workflows/opensession-session-review.yml` are generated. By default PR updates publish ephemeral `opensession/pr-<number>-sessions` branches and delete them when the PR closes; set `--session-archive-branch <branch>` to keep immutable review snapshots on a dedicated archive branch such as `pr/sessions`.
+- GitLab: `.gitlab/opensession-cleanup.yml` plus `.gitlab/opensession-session-review.yml` are generated; `.gitlab-ci.yml` is updated only when an OpenSession managed marker block exists (or file is newly created). MR pipelines publish/refresh `opensession/mr-<iid>-sessions` and post an MR note, or use the configured archive branch when `--session-archive-branch` is set.
 - Generic git: `.opensession/cleanup/cron.example` is generated for cron/system scheduler wiring.
 - Session-review comments include `Reviewer Quick Digest` with Q&A excerpts (`Question | Answer` rows), modified file summary, and added/updated tests.
 
@@ -227,9 +230,14 @@ Quick local gate commands:
 ./.githooks/pre-push
 ```
 
+GitHub CI split:
+
+- `.github/workflows/ci.yml` keeps fast PR/main gates only.
+- `.github/workflows/ci-deep.yml` owns long-running audit/E2E/desktop validation on schedule or manual trigger.
+
 Desktop build policy:
 
-- Linux desktop bundle build verification is required in CI (`desktop-bundle-verify`).
+- Linux desktop bundle build verification is required in deep CI (`desktop-bundle-verify`).
 - macOS desktop release target is `universal-apple-darwin` only.
 - Universal architecture is validated by `lipo -archs` and must include both `x86_64` and `arm64`.
 - A scheduled/manual `Desktop Dry Run` workflow validates no-sign desktop bundling and uploads diagnostics/metrics artifacts.

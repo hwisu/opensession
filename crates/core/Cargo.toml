@@ -2,6 +2,7 @@
 name = "opensession-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "HAIL (Human AI Interaction Log) core types and validation"
@@ -25,7 +26,3 @@ thiserror = { workspace = true }
 regex = { workspace = true }
 base64 = { workspace = true }
 urlencoding = { workspace = true }
-sha2 = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

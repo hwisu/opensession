@@ -1,8 +1,8 @@
-use crate::common::{
-    build_tool_result_content, canonical_tool_name, extract_tag_content, set_first,
-    strip_system_reminders, ToolUseInfo, INTERACTIVE_USER_INPUT_TOOL,
-};
 use crate::SessionParser;
+use crate::common::{
+    INTERACTIVE_USER_INPUT_TOOL, ToolUseInfo, build_tool_result_content, canonical_tool_name,
+    extract_tag_content, set_first, strip_system_reminders,
+};
 use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 use opensession_core::trace::{

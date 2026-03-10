@@ -1,5 +1,6 @@
 <script lang="ts">
 import { ApiError, authLogin, authRegister, getAuthProviders, getOAuthUrl } from '../api';
+import { appLocale, translate } from '../i18n';
 import type { OAuthProviderInfo } from '../types';
 
 const {
@@ -55,14 +56,17 @@ async function handleSubmit() {
 				return;
 			} catch (registerError) {
 				if (registerError instanceof ApiError && registerError.status === 409) {
-					error = 'Invalid email or password';
+					error = translate($appLocale, 'login.invalid');
 				} else {
-					error = registerError instanceof Error ? registerError.message : 'Authentication failed';
+					error =
+						registerError instanceof Error
+							? registerError.message
+							: translate($appLocale, 'login.failed');
 				}
 				return;
 			}
 		}
-		error = e instanceof Error ? e.message : 'Authentication failed';
+		error = e instanceof Error ? e.message : translate($appLocale, 'login.failed');
 	} finally {
 		loading = false;
 	}
@@ -70,41 +74,49 @@ async function handleSubmit() {
 </script>
 
 <svelte:head>
-	<title>Sign In - opensession.io</title>
+	<title>{translate($appLocale, 'login.title')}</title>
 </svelte:head>
 
 <div class="mx-auto w-full max-w-sm px-3 py-10 sm:px-0">
-	<h1 class="mb-6 text-center text-lg font-bold text-text-primary">Sign In</h1>
-	<p class="mb-4 text-center text-xs text-text-muted">New accounts are created automatically on first sign in.</p>
+	<h1 class="mb-6 text-center text-lg font-bold text-text-primary">
+		{translate($appLocale, 'login.heading')}
+	</h1>
+	<p class="mb-4 text-center text-xs text-text-muted">
+		{translate($appLocale, 'login.subheading')}
+	</p>
 
 	{#if emailPasswordEnabled}
 		<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="space-y-3">
 			<div>
-				<label for="login-email" class="sr-only">Email</label>
+				<label for="login-email" class="sr-only">{translate($appLocale, 'login.email')}</label>
 				<input
 					id="login-email"
 					type="email"
-					placeholder="Email"
+					placeholder={translate($appLocale, 'login.email')}
 					bind:value={email}
 					class="w-full border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
 				/>
 			</div>
 			<div>
-				<label for="login-password" class="sr-only">Password</label>
+				<label for="login-password" class="sr-only">
+					{translate($appLocale, 'login.password')}
+				</label>
 				<input
 					id="login-password"
 					type="password"
-					placeholder="Password"
+					placeholder={translate($appLocale, 'login.password')}
 					bind:value={password}
 					class="w-full border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
 				/>
 			</div>
 			<div>
-				<label for="login-nickname" class="sr-only">Nickname (optional)</label>
+				<label for="login-nickname" class="sr-only">
+					{translate($appLocale, 'login.nickname')}
+				</label>
 				<input
 					id="login-nickname"
 					type="text"
-					placeholder="Nickname (optional, first sign in only)"
+					placeholder={translate($appLocale, 'login.nicknamePlaceholder')}
 					bind:value={nickname}
 					class="w-full border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent"
 				/>
@@ -119,7 +131,7 @@ async function handleSubmit() {
 				disabled={loading || !email.trim() || !password}
 				class="w-full bg-accent px-3 py-2 text-xs font-medium text-white hover:bg-accent/80 disabled:opacity-50"
 			>
-				{loading ? 'Signing in...' : 'Continue'}
+				{loading ? translate($appLocale, 'login.signingIn') : translate($appLocale, 'login.continue')}
 			</button>
 		</form>
 	{/if}
@@ -127,7 +139,7 @@ async function handleSubmit() {
 	{#if emailPasswordEnabled && oauthProviders.length > 0}
 		<div class="my-4 flex items-center gap-3">
 			<div class="flex-1 border-t border-border"></div>
-			<span class="text-xs text-text-muted">or</span>
+			<span class="text-xs text-text-muted">{translate($appLocale, 'login.or')}</span>
 			<div class="flex-1 border-t border-border"></div>
 		</div>
 	{/if}
@@ -137,13 +149,13 @@ async function handleSubmit() {
 			href={getOAuthUrl(provider.id)}
 			class="mb-2 block w-full border border-border bg-bg-secondary px-3 py-2 text-center text-xs text-text-primary hover:bg-bg-hover"
 		>
-			Continue with {provider.display_name}
+			{translate($appLocale, 'login.continueWith', { provider: provider.display_name })}
 		</a>
 	{/each}
 
 	{#if authUnavailable}
 		<p data-testid="auth-unavailable" class="mb-3 text-xs text-text-muted">
-			Authentication is not available in this deployment.
+			{translate($appLocale, 'login.unavailable')}
 		</p>
 	{/if}
 </div>

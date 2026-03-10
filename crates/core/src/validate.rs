@@ -188,9 +188,10 @@ mod tests {
     fn test_empty_session() {
         let session = make_session_with_events(vec![]);
         let errs = validate_session(&session).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|e| matches!(e, ValidationError::EmptySession)));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::EmptySession))
+        );
     }
 
     #[test]
@@ -206,9 +207,10 @@ mod tests {
         }]);
         session.version = "bad-version".to_string();
         let errs = validate_session(&session).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|e| matches!(e, ValidationError::InvalidVersion { .. })));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::InvalidVersion { .. }))
+        );
     }
 
     #[test]
@@ -235,9 +237,10 @@ mod tests {
             },
         ]);
         let errs = validate_session(&session).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|e| matches!(e, ValidationError::DuplicateEventId { .. })));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::DuplicateEventId { .. }))
+        );
     }
 
     fn make_event(id: &str, event_type: EventType) -> Event {
@@ -321,9 +324,10 @@ mod tests {
             },
         ]);
         let errs = validate_session(&session).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|e| matches!(e, ValidationError::EventsOutOfOrder { index: 1 })));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::EventsOutOfOrder { index: 1 }))
+        );
     }
 
     #[test]

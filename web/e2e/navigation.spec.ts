@@ -23,7 +23,7 @@ test.describe('Navigation', () => {
 		await expect(page.getByRole('tab', { name: 'List' })).toHaveCount(0);
 		await expect(page.getByRole('tab', { name: 'Agents' })).toHaveCount(0);
 		await expect(page.locator('[data-testid="session-layout-summary"]')).toContainText(
-			'single chronological feed',
+			'single session feed',
 		);
 		await expect(page.locator('[data-testid="session-layout-summary"]')).not.toContainText('grouped by max active agents');
 		await expect(page.locator('[data-testid="list-shortcut-legend"]')).not.toContainText('layout');
@@ -56,7 +56,9 @@ test.describe('Navigation', () => {
 		await expect(footer.getByText('t tool')).toBeVisible();
 		await expect(footer.getByText('r range')).toBeVisible();
 		await expect(footer.getByText('g repo')).toBeVisible();
-		await expect(footer.getByText('? help')).toBeVisible();
+		await expect(footer.getByText('h help')).toBeVisible();
+		await expect(footer.getByText('Shift+R refresh')).toHaveCount(0);
+		await expect(page.locator('[data-testid="list-shortcut-legend"]').getByText('Shift+R')).toBeVisible();
 		await expect(footer.getByText('opensession.io')).toBeVisible();
 	});
 
@@ -93,6 +95,15 @@ test.describe('Navigation', () => {
 		await expect(footer.getByText('Cmd/Ctrl+K palette')).toBeVisible();
 		await expect(footer.getByText('/ search')).toBeVisible();
 		await expect(footer.getByText('n/p match')).toBeVisible();
+	});
+
+	test('h opens keyboard help without shifted punctuation', async ({ page }) => {
+		await page.goto('/sessions');
+		await page.locator('body').click();
+		await page.keyboard.press('h');
+		await expect(page.locator('[data-testid="keyboard-help-modal"]')).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(page.locator('[data-testid="keyboard-help-modal"]')).toHaveCount(0);
 	});
 
 	test('authenticated nav shows account dropdown actions', async ({ page }) => {

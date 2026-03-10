@@ -4,698 +4,38 @@
 //! using these types. Runtime-specific logic (watch-path resolution, project
 //! config merging, UI/IPC adapters) lives in each runtime crate.
 
-use serde::{Deserialize, Serialize};
+mod change_reader;
+mod daemon;
+mod defaults;
+mod git_storage;
+mod identity_privacy;
+mod lifecycle;
+mod server;
+mod summary;
+mod vector;
+mod watcher;
 
-/// Canonical config file name used by daemon/desktop/cli.
-pub const CONFIG_FILE_NAME: &str = "opensession.toml";
-
-/// Top-level daemon configuration (persisted as `opensession.toml`).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DaemonConfig {
-    #[serde(default)]
-    pub daemon: DaemonSettings,
-    #[serde(default)]
-    pub server: ServerSettings,
-    #[serde(default)]
-    pub identity: IdentitySettings,
-    #[serde(default)]
-    pub privacy: PrivacySettings,
-    #[serde(default)]
-    pub watchers: WatcherSettings,
-    #[serde(default)]
-    pub git_storage: GitStorageSettings,
-    #[serde(default)]
-    pub summary: SummarySettings,
-    #[serde(default)]
-    pub vector_search: VectorSearchSettings,
-    #[serde(default)]
-    pub change_reader: ChangeReaderSettings,
-    #[serde(default)]
-    pub lifecycle: LifecycleSettings,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonSettings {
-    #[serde(default = "default_false")]
-    pub auto_publish: bool,
-    #[serde(default = "default_debounce")]
-    pub debounce_secs: u64,
-    #[serde(default = "default_publish_on")]
-    pub publish_on: PublishMode,
-    #[serde(default = "default_max_retries")]
-    pub max_retries: u32,
-    #[serde(default = "default_health_check_interval")]
-    pub health_check_interval_secs: u64,
-    #[serde(default = "default_realtime_debounce_ms")]
-    pub realtime_debounce_ms: u64,
-    /// Enable realtime file preview refresh in TUI session detail.
-    #[serde(default = "default_detail_realtime_preview_enabled")]
-    pub detail_realtime_preview_enabled: bool,
-    /// Expand selected timeline event detail rows by default in TUI session detail.
-    #[serde(default = "default_detail_auto_expand_selected_event")]
-    pub detail_auto_expand_selected_event: bool,
-    /// Default detail view mode for session timeline rendering.
-    #[serde(default = "default_session_default_view")]
-    pub session_default_view: SessionDefaultView,
-}
-
-impl Default for DaemonSettings {
-    fn default() -> Self {
-        Self {
-            auto_publish: false,
-            debounce_secs: 5,
-            publish_on: PublishMode::Manual,
-            max_retries: 3,
-            health_check_interval_secs: 300,
-            realtime_debounce_ms: 500,
-            detail_realtime_preview_enabled: false,
-            detail_auto_expand_selected_event: true,
-            session_default_view: SessionDefaultView::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum PublishMode {
-    SessionEnd,
-    Realtime,
-    Manual,
-}
-
-impl PublishMode {
-    pub fn cycle(&self) -> Self {
-        match self {
-            Self::SessionEnd => Self::Realtime,
-            Self::Realtime => Self::Manual,
-            Self::Manual => Self::SessionEnd,
-        }
-    }
-
-    pub fn display(&self) -> &'static str {
-        match self {
-            Self::SessionEnd => "Session End",
-            Self::Realtime => "Realtime",
-            Self::Manual => "Manual",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CalendarDisplayMode {
-    Smart,
-    Relative,
-    Absolute,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionDefaultView {
-    #[default]
-    Full,
-    Compressed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerSettings {
-    #[serde(default = "default_server_url")]
-    pub url: String,
-    #[serde(default)]
-    pub api_key: String,
-}
-
-impl Default for ServerSettings {
-    fn default() -> Self {
-        Self {
-            url: default_server_url(),
-            api_key: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdentitySettings {
-    #[serde(default = "default_nickname")]
-    pub nickname: String,
-}
-
-impl Default for IdentitySettings {
-    fn default() -> Self {
-        Self {
-            nickname: default_nickname(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrivacySettings {
-    #[serde(default = "default_true")]
-    pub strip_paths: bool,
-    #[serde(default = "default_true")]
-    pub strip_env_vars: bool,
-    #[serde(default = "default_exclude_patterns")]
-    pub exclude_patterns: Vec<String>,
-    #[serde(default)]
-    pub exclude_tools: Vec<String>,
-}
-
-impl Default for PrivacySettings {
-    fn default() -> Self {
-        Self {
-            strip_paths: true,
-            strip_env_vars: true,
-            exclude_patterns: default_exclude_patterns(),
-            exclude_tools: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WatcherSettings {
-    #[serde(default = "default_watch_paths")]
-    pub custom_paths: Vec<String>,
-}
-
-impl Default for WatcherSettings {
-    fn default() -> Self {
-        Self {
-            custom_paths: default_watch_paths(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitStorageSettings {
-    #[serde(default)]
-    pub method: GitStorageMethod,
-    #[serde(default)]
-    pub token: String,
-    #[serde(default)]
-    pub retention: GitRetentionSettings,
-}
-
-impl Default for GitStorageSettings {
-    fn default() -> Self {
-        Self {
-            method: GitStorageMethod::Native,
-            token: String::new(),
-            retention: GitRetentionSettings::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SummarySettings {
-    #[serde(default)]
-    pub provider: SummaryProviderSettings,
-    #[serde(default)]
-    pub prompt: SummaryPromptSettings,
-    #[serde(default)]
-    pub response: SummaryResponseSettings,
-    #[serde(default)]
-    pub storage: SummaryStorageSettings,
-    /// Kept for CLI/CI and non-desktop runtimes.
-    #[serde(default)]
-    pub source_mode: SummarySourceMode,
-    #[serde(default)]
-    pub batch: SummaryBatchSettings,
-}
-
-impl SummarySettings {
-    pub fn is_configured(&self) -> bool {
-        match self.provider.id {
-            SummaryProvider::Disabled => false,
-            SummaryProvider::Ollama => !self.provider.model.trim().is_empty(),
-            SummaryProvider::CodexExec | SummaryProvider::ClaudeCli => true,
-        }
-    }
-
-    pub fn provider_transport(&self) -> SummaryProviderTransport {
-        self.provider.id.transport()
-    }
-
-    pub fn allows_git_changes_fallback(&self) -> bool {
-        matches!(self.source_mode, SummarySourceMode::SessionOrGitChanges)
-    }
-
-    pub fn should_generate_on_session_save(&self) -> bool {
-        matches!(self.storage.trigger, SummaryTriggerMode::OnSessionSave)
-    }
-
-    pub fn persists_to_local_db(&self) -> bool {
-        matches!(self.storage.backend, SummaryStorageBackend::LocalDb)
-    }
-
-    pub fn persists_to_hidden_ref(&self) -> bool {
-        matches!(self.storage.backend, SummaryStorageBackend::HiddenRef)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SummaryProviderSettings {
-    #[serde(default)]
-    pub id: SummaryProvider,
-    #[serde(default = "default_summary_endpoint")]
-    pub endpoint: String,
-    #[serde(default)]
-    pub model: String,
-}
-
-impl Default for SummaryProviderSettings {
-    fn default() -> Self {
-        Self {
-            id: SummaryProvider::default(),
-            endpoint: default_summary_endpoint(),
-            model: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SummaryPromptSettings {
-    #[serde(default)]
-    pub template: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SummaryResponseSettings {
-    #[serde(default)]
-    pub style: SummaryResponseStyle,
-    #[serde(default)]
-    pub shape: SummaryOutputShape,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SummaryStorageSettings {
-    #[serde(default)]
-    pub trigger: SummaryTriggerMode,
-    #[serde(default)]
-    pub backend: SummaryStorageBackend,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SummaryBatchSettings {
-    #[serde(default)]
-    pub execution_mode: SummaryBatchExecutionMode,
-    #[serde(default)]
-    pub scope: SummaryBatchScope,
-    #[serde(default = "default_summary_batch_recent_days")]
-    pub recent_days: u16,
-}
-
-impl Default for SummaryBatchSettings {
-    fn default() -> Self {
-        Self {
-            execution_mode: SummaryBatchExecutionMode::default(),
-            scope: SummaryBatchScope::default(),
-            recent_days: default_summary_batch_recent_days(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VectorSearchSettings {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub provider: VectorSearchProvider,
-    #[serde(default = "default_vector_model")]
-    pub model: String,
-    #[serde(default = "default_vector_endpoint")]
-    pub endpoint: String,
-    #[serde(default)]
-    pub granularity: VectorSearchGranularity,
-    #[serde(default)]
-    pub chunking_mode: VectorChunkingMode,
-    #[serde(default = "default_vector_chunk_size_lines")]
-    pub chunk_size_lines: u16,
-    #[serde(default = "default_vector_chunk_overlap_lines")]
-    pub chunk_overlap_lines: u16,
-    #[serde(default = "default_vector_top_k_chunks")]
-    pub top_k_chunks: u16,
-    #[serde(default = "default_vector_top_k_sessions")]
-    pub top_k_sessions: u16,
-}
-
-impl Default for VectorSearchSettings {
-    fn default() -> Self {
-        Self {
-            enabled: default_false(),
-            provider: VectorSearchProvider::default(),
-            model: default_vector_model(),
-            endpoint: default_vector_endpoint(),
-            granularity: VectorSearchGranularity::default(),
-            chunking_mode: VectorChunkingMode::default(),
-            chunk_size_lines: default_vector_chunk_size_lines(),
-            chunk_overlap_lines: default_vector_chunk_overlap_lines(),
-            top_k_chunks: default_vector_top_k_chunks(),
-            top_k_sessions: default_vector_top_k_sessions(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChangeReaderSettings {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub scope: ChangeReaderScope,
-    #[serde(default = "default_true")]
-    pub qa_enabled: bool,
-    #[serde(default = "default_change_reader_max_context_chars")]
-    pub max_context_chars: u32,
-    #[serde(default)]
-    pub voice: ChangeReaderVoiceSettings,
-}
-
-impl Default for ChangeReaderSettings {
-    fn default() -> Self {
-        Self {
-            enabled: default_false(),
-            scope: ChangeReaderScope::default(),
-            qa_enabled: default_true(),
-            max_context_chars: default_change_reader_max_context_chars(),
-            voice: ChangeReaderVoiceSettings::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChangeReaderVoiceSettings {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub provider: ChangeReaderVoiceProvider,
-    #[serde(default = "default_change_reader_voice_model")]
-    pub model: String,
-    #[serde(default = "default_change_reader_voice_name")]
-    pub voice: String,
-    #[serde(default)]
-    pub api_key: String,
-}
-
-impl Default for ChangeReaderVoiceSettings {
-    fn default() -> Self {
-        Self {
-            enabled: default_false(),
-            provider: ChangeReaderVoiceProvider::default(),
-            model: default_change_reader_voice_model(),
-            voice: default_change_reader_voice_name(),
-            api_key: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LifecycleSettings {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_lifecycle_session_ttl_days")]
-    pub session_ttl_days: u32,
-    #[serde(default = "default_lifecycle_summary_ttl_days")]
-    pub summary_ttl_days: u32,
-    #[serde(default = "default_lifecycle_cleanup_interval_secs")]
-    pub cleanup_interval_secs: u64,
-}
-
-impl Default for LifecycleSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            session_ttl_days: default_lifecycle_session_ttl_days(),
-            summary_ttl_days: default_lifecycle_summary_ttl_days(),
-            cleanup_interval_secs: default_lifecycle_cleanup_interval_secs(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ChangeReaderScope {
-    #[default]
-    SummaryOnly,
-    FullContext,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum VectorSearchProvider {
-    #[default]
-    Ollama,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum VectorSearchGranularity {
-    #[default]
-    EventLineChunk,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum VectorChunkingMode {
-    #[default]
-    Auto,
-    Manual,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ChangeReaderVoiceProvider {
-    #[default]
-    Openai,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryProvider {
-    #[default]
-    Disabled,
-    Ollama,
-    CodexExec,
-    ClaudeCli,
-}
-
-impl SummaryProvider {
-    pub fn transport(&self) -> SummaryProviderTransport {
-        match self {
-            Self::Disabled => SummaryProviderTransport::None,
-            Self::Ollama => SummaryProviderTransport::Http,
-            Self::CodexExec | Self::ClaudeCli => SummaryProviderTransport::Cli,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryProviderTransport {
-    #[default]
-    None,
-    Cli,
-    Http,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryResponseStyle {
-    Compact,
-    #[default]
-    Standard,
-    Detailed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummarySourceMode {
-    #[default]
-    SessionOnly,
-    SessionOrGitChanges,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryOutputShape {
-    #[default]
-    Layered,
-    FileList,
-    SecurityFirst,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryTriggerMode {
-    Manual,
-    #[default]
-    OnSessionSave,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryStorageBackend {
-    None,
-    #[default]
-    HiddenRef,
-    LocalDb,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryBatchExecutionMode {
-    Manual,
-    #[default]
-    OnAppStart,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryBatchScope {
-    #[default]
-    RecentDays,
-    All,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitRetentionSettings {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-    #[serde(default = "default_git_retention_keep_days")]
-    pub keep_days: u32,
-    #[serde(default = "default_git_retention_interval_secs")]
-    pub interval_secs: u64,
-}
-
-impl Default for GitRetentionSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            keep_days: default_git_retention_keep_days(),
-            interval_secs: default_git_retention_interval_secs(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum GitStorageMethod {
-    /// Store sessions as git objects on hidden refs (git-native).
-    #[default]
-    Native,
-    /// Store session bodies in SQLite-backed storage.
-    Sqlite,
-}
-
-// ── Serde default functions ─────────────────────────────────────────────
-
-fn default_true() -> bool {
-    true
-}
-fn default_false() -> bool {
-    false
-}
-fn default_debounce() -> u64 {
-    5
-}
-fn default_max_retries() -> u32 {
-    3
-}
-fn default_health_check_interval() -> u64 {
-    300
-}
-fn default_realtime_debounce_ms() -> u64 {
-    500
-}
-fn default_detail_realtime_preview_enabled() -> bool {
-    false
-}
-fn default_detail_auto_expand_selected_event() -> bool {
-    true
-}
-fn default_session_default_view() -> SessionDefaultView {
-    SessionDefaultView::Full
-}
-fn default_publish_on() -> PublishMode {
-    PublishMode::Manual
-}
-fn default_git_retention_keep_days() -> u32 {
-    30
-}
-fn default_git_retention_interval_secs() -> u64 {
-    86_400
-}
-fn default_summary_endpoint() -> String {
-    "http://127.0.0.1:11434".to_string()
-}
-fn default_vector_endpoint() -> String {
-    "http://127.0.0.1:11434".to_string()
-}
-fn default_vector_model() -> String {
-    "bge-m3".to_string()
-}
-fn default_vector_chunk_size_lines() -> u16 {
-    12
-}
-fn default_vector_chunk_overlap_lines() -> u16 {
-    3
-}
-fn default_vector_top_k_chunks() -> u16 {
-    30
-}
-fn default_vector_top_k_sessions() -> u16 {
-    20
-}
-fn default_change_reader_max_context_chars() -> u32 {
-    12_000
-}
-fn default_change_reader_voice_model() -> String {
-    "gpt-4o-mini-tts".to_string()
-}
-fn default_change_reader_voice_name() -> String {
-    "alloy".to_string()
-}
-fn default_summary_batch_recent_days() -> u16 {
-    30
-}
-fn default_lifecycle_session_ttl_days() -> u32 {
-    30
-}
-fn default_lifecycle_summary_ttl_days() -> u32 {
-    30
-}
-fn default_lifecycle_cleanup_interval_secs() -> u64 {
-    3_600
-}
-fn default_server_url() -> String {
-    "https://opensession.io".to_string()
-}
-fn default_nickname() -> String {
-    "user".to_string()
-}
-fn default_exclude_patterns() -> Vec<String> {
-    vec![
-        "*.env".to_string(),
-        "*secret*".to_string(),
-        "*credential*".to_string(),
-    ]
-}
-
-pub const DEFAULT_WATCH_PATHS: &[&str] = &[
-    "~/.claude/projects",
-    "~/.codex/sessions",
-    "~/.local/share/opencode/storage/session",
-    "~/.cline/data/tasks",
-    "~/.local/share/amp/threads",
-    "~/.gemini/tmp",
-    "~/Library/Application Support/Cursor/User",
-    "~/.config/Cursor/User",
-];
-
-pub fn default_watch_paths() -> Vec<String> {
-    DEFAULT_WATCH_PATHS
-        .iter()
-        .map(|path| (*path).to_string())
-        .collect()
-}
+pub use change_reader::{
+    ChangeReaderScope, ChangeReaderSettings, ChangeReaderVoiceProvider, ChangeReaderVoiceSettings,
+};
+pub use daemon::{
+    CalendarDisplayMode, DaemonConfig, DaemonSettings, PublishMode, SessionDefaultView,
+};
+pub use defaults::{CONFIG_FILE_NAME, DEFAULT_WATCH_PATHS, default_watch_paths};
+pub use git_storage::{GitRetentionSettings, GitStorageMethod, GitStorageSettings};
+pub use identity_privacy::{IdentitySettings, PrivacySettings};
+pub use lifecycle::LifecycleSettings;
+pub use server::ServerSettings;
+pub use summary::{
+    SummaryBatchExecutionMode, SummaryBatchScope, SummaryBatchSettings, SummaryOutputShape,
+    SummaryPromptSettings, SummaryProvider, SummaryProviderSettings, SummaryProviderTransport,
+    SummaryResponseSettings, SummaryResponseStyle, SummarySettings, SummarySourceMode,
+    SummaryStorageBackend, SummaryStorageSettings, SummaryTriggerMode,
+};
+pub use vector::{
+    VectorChunkingMode, VectorSearchGranularity, VectorSearchProvider, VectorSearchSettings,
+};
+pub use watcher::WatcherSettings;
 
 #[cfg(test)]
 mod tests {
@@ -763,9 +103,8 @@ keep_days = 14
 interval_secs = 43200
 "#,
         )
-        .expect("parse retention config");
+        .expect("parse config");
 
-        assert_eq!(cfg.git_storage.method, GitStorageMethod::Native);
         assert!(cfg.git_storage.retention.enabled);
         assert_eq!(cfg.git_storage.retention.keep_days, 14);
         assert_eq!(cfg.git_storage.retention.interval_secs, 43_200);
@@ -1268,5 +607,30 @@ session_default_view = "compact"
             parsed.is_err(),
             "unsupported session_default_view must fail"
         );
+    }
+
+    #[test]
+    fn summary_storage_helpers_reflect_selected_modes() {
+        let mut settings = SummarySettings::default();
+
+        settings.source_mode = SummarySourceMode::SessionOnly;
+        assert!(!settings.allows_git_changes_fallback());
+
+        settings.source_mode = SummarySourceMode::SessionOrGitChanges;
+        assert!(settings.allows_git_changes_fallback());
+
+        settings.storage.trigger = SummaryTriggerMode::Manual;
+        assert!(!settings.should_generate_on_session_save());
+
+        settings.storage.trigger = SummaryTriggerMode::OnSessionSave;
+        assert!(settings.should_generate_on_session_save());
+
+        settings.storage.backend = SummaryStorageBackend::LocalDb;
+        assert!(settings.persists_to_local_db());
+        assert!(!settings.persists_to_hidden_ref());
+
+        settings.storage.backend = SummaryStorageBackend::HiddenRef;
+        assert!(!settings.persists_to_local_db());
+        assert!(settings.persists_to_hidden_ref());
     }
 }

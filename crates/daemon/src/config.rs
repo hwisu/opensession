@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use opensession_paths::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -6,20 +7,16 @@ use std::path::{Path, PathBuf};
 // Re-export shared runtime config types
 pub use opensession_runtime_config::{
     DaemonConfig, DaemonSettings, GitStorageMethod, PublishMode, SessionDefaultView,
-    CONFIG_FILE_NAME,
 };
 
 /// Get the config directory path
 pub fn config_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("Could not determine home directory")?;
-    Ok(PathBuf::from(home).join(".config").join("opensession"))
+    opensession_paths::config_dir().context("Could not determine home directory")
 }
 
 /// Get the daemon config file path
 pub fn config_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join(CONFIG_FILE_NAME))
+    opensession_paths::runtime_config_path().context("Could not determine config file path")
 }
 
 /// Get the PID file path
@@ -53,10 +50,7 @@ fn normalize_fixed_runtime_tuning(config: &mut DaemonConfig) {
 
 /// Resolve watch paths based on watcher config
 pub fn resolve_watch_paths(config: &DaemonConfig) -> Vec<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
+    let home = home_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     let raw_paths = config.watchers.custom_paths.clone();
 
@@ -328,6 +322,22 @@ mod tests {
             defaults.daemon.health_check_interval_secs
         );
         assert_eq!(cfg.daemon.max_retries, defaults.daemon.max_retries);
+    }
+
+    #[test]
+    fn daemon_config_dir_uses_centralized_path() {
+        assert_eq!(
+            config_dir().expect("config dir"),
+            opensession_paths::config_dir().expect("central config dir")
+        );
+    }
+
+    #[test]
+    fn daemon_config_path_uses_centralized_runtime_path() {
+        assert_eq!(
+            config_path().expect("config path"),
+            opensession_paths::runtime_config_path().expect("central runtime config path")
+        );
     }
 
     #[test]

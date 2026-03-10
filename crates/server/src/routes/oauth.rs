@@ -1,20 +1,19 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue},
-    response::{IntoResponse, Redirect, Response},
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, header},
+    response::{IntoResponse, Redirect, Response},
 };
 use uuid::Uuid;
 
 use opensession_api::{
-    crypto, db as dbq,
+    OAuthLinkResponse, crypto,
     oauth::{self, AuthProvidersResponse, OAuthProviderConfig, OAuthProviderInfo},
-    OAuthLinkResponse,
 };
 
 use super::auth::AuthUser;
 use crate::error::ApiErr;
-use crate::storage::{sq_execute, sq_query_row, Db};
+use crate::storage::Db;
 use crate::{AppConfig, AppState};
 
 // ---------------------------------------------------------------------------
@@ -67,7 +66,7 @@ fn resolve_base_url(headers: &HeaderMap, fallback: &str, prefer_request_host: bo
     }
 }
 
-fn maybe_store_provider_access_token(
+async fn maybe_store_provider_access_token(
     db: &Db,
     config: &AppConfig,
     user_id: &str,
@@ -80,18 +79,14 @@ fn maybe_store_provider_access_token(
     let provider_host = oauth_provider_host(provider)?;
     let encrypted = keyring.encrypt(access_token).map_err(ApiErr::from)?;
     let token_id = Uuid::new_v4().to_string();
-    let conn = db.conn();
-    sq_execute(
-        &conn,
-        dbq::oauth_provider_tokens::upsert_access_token(
-            &token_id,
-            user_id,
-            &provider.id,
-            &provider_host,
-            &encrypted,
-            None,
-        ),
+    db.upsert_oauth_provider_access_token(
+        &token_id,
+        user_id,
+        &provider.id,
+        &provider_host,
+        &encrypted,
     )
+    .await
     .map_err(ApiErr::from_db("oauth provider token upsert"))?;
     Ok(())
 }
@@ -146,12 +141,9 @@ pub async fn redirect(
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
-    let conn = db.conn();
-    sq_execute(
-        &conn,
-        dbq::oauth::insert_state(&state, &provider_id, &expires_at, None),
-    )
-    .map_err(ApiErr::from_db("oauth state insert"))?;
+    db.insert_oauth_state(&state, &provider_id, &expires_at, None)
+        .await
+        .map_err(ApiErr::from_db("oauth state insert"))?;
 
     let base_url = resolve_base_url(&headers, &config.base_url, config.oauth_use_request_host);
     let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
@@ -184,32 +176,19 @@ pub async fn callback(
         .ok_or_else(|| ApiErr::bad_request("missing state parameter"))?;
 
     // Validate state (scope the MutexGuard so it's dropped before await)
-    let (_state_provider, linking_user_id) = {
-        let conn = db.conn();
-        let state_row = sq_query_row(&conn, dbq::oauth::validate_state(state_param), |row| {
-            Ok((
-                row.get::<_, String>(1)?,         // provider
-                row.get::<_, String>(2)?,         // expires_at
-                row.get::<_, Option<String>>(3)?, // user_id
-            ))
-        })
+    let state_row = db
+        .validate_oauth_state(state_param)
+        .await
         .map_err(|_| ApiErr::bad_request("invalid OAuth state"))?;
-
-        let (sp, expires_at, lu) = state_row;
-
-        if sp != provider_id {
-            return Err(ApiErr::bad_request("OAuth state provider mismatch"));
-        }
-
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        if expires_at < now {
-            return Err(ApiErr::bad_request("OAuth state expired"));
-        }
-
-        // Delete used state
-        sq_execute(&conn, dbq::oauth::delete_state(state_param)).ok();
-        (sp, lu)
-    }; // conn dropped here, before any .await
+    if state_row.provider != provider_id {
+        return Err(ApiErr::bad_request("OAuth state provider mismatch"));
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if state_row.expires_at < now {
+        return Err(ApiErr::bad_request("OAuth state expired"));
+    }
+    db.delete_oauth_state(state_param).await.ok();
+    let linking_user_id = state_row.user_id;
 
     // Exchange code for access token
     let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
@@ -281,17 +260,13 @@ pub async fn callback(
     let user_info =
         oauth::extract_user_info(provider, &userinfo, emails.as_deref()).map_err(ApiErr::from)?;
 
-    let conn = db.conn();
-
     // ── Linking mode ──
     if let Some(ref link_uid) = linking_user_id {
         // Check if this provider identity is already linked to another account
-        let existing_user: Option<String> = sq_query_row(
-            &conn,
-            dbq::oauth::find_by_provider(&provider_id, &user_info.provider_user_id),
-            |row| row.get(0),
-        )
-        .ok();
+        let existing_user = db
+            .find_oauth_user_id_by_provider(&provider_id, &user_info.provider_user_id)
+            .await
+            .map_err(ApiErr::from_db("oauth link lookup"))?;
 
         if let Some(ref existing) = existing_user {
             if existing != link_uid {
@@ -303,19 +278,16 @@ pub async fn callback(
             }
         }
 
-        sq_execute(
-            &conn,
-            dbq::oauth::upsert_identity(
-                link_uid,
-                &provider_id,
-                &user_info.provider_user_id,
-                Some(&user_info.username),
-                user_info.avatar_url.as_deref(),
-                None,
-            ),
+        db.upsert_oauth_identity(
+            link_uid,
+            &provider_id,
+            &user_info.provider_user_id,
+            Some(&user_info.username),
+            user_info.avatar_url.as_deref(),
         )
+        .await
         .map_err(ApiErr::from_db("oauth link upsert"))?;
-        maybe_store_provider_access_token(&db, &config, link_uid, provider, &access_token)?;
+        maybe_store_provider_access_token(&db, &config, link_uid, provider, &access_token).await?;
 
         return Ok(
             Redirect::temporary(&format!("{}/settings?oauth_linked=true", base_url))
@@ -326,57 +298,45 @@ pub async fn callback(
     // ── Normal login/register flow ──
 
     // Check if OAuth identity already exists
-    let existing_user_id: Option<String> = sq_query_row(
-        &conn,
-        dbq::oauth::find_by_provider(&provider_id, &user_info.provider_user_id),
-        |row| row.get(0),
-    )
-    .ok();
+    let existing_user_id = db
+        .find_oauth_user_id_by_provider(&provider_id, &user_info.provider_user_id)
+        .await
+        .map_err(ApiErr::from_db("oauth identity lookup"))?;
 
     let (user_id, nickname) = if let Some(uid) = existing_user_id {
         // Update provider info
-        sq_execute(
-            &conn,
-            dbq::oauth::upsert_identity(
+        db.upsert_oauth_identity(
+            &uid,
+            &provider_id,
+            &user_info.provider_user_id,
+            Some(&user_info.username),
+            user_info.avatar_url.as_deref(),
+        )
+        .await
+        .ok();
+
+        let nick = db
+            .get_user_nickname(&uid)
+            .await
+            .unwrap_or_else(|_| user_info.username.clone());
+
+        (uid, nick)
+    } else {
+        // Check if email matches existing user (auto-link)
+        let by_email = match user_info.email.as_deref() {
+            Some(email) => db.get_user_id_and_nickname_by_email(email).await.ok(),
+            None => None,
+        };
+
+        if let Some((uid, nick)) = by_email {
+            db.upsert_oauth_identity(
                 &uid,
                 &provider_id,
                 &user_info.provider_user_id,
                 Some(&user_info.username),
                 user_info.avatar_url.as_deref(),
-                None,
-            ),
-        )
-        .ok();
-
-        let nick: String = sq_query_row(
-            &conn,
-            dbq::users::get_by_id(&uid),
-            |row| row.get(1), // col 1 = nickname
-        )
-        .unwrap_or_else(|_| user_info.username.clone());
-
-        (uid, nick)
-    } else {
-        // Check if email matches existing user (auto-link)
-        let by_email = user_info.email.as_ref().and_then(|email| {
-            sq_query_row(&conn, dbq::users::get_by_email_for_login(email), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .ok()
-        });
-
-        if let Some((uid, nick)) = by_email {
-            sq_execute(
-                &conn,
-                dbq::oauth::upsert_identity(
-                    &uid,
-                    &provider_id,
-                    &user_info.provider_user_id,
-                    Some(&user_info.username),
-                    user_info.avatar_url.as_deref(),
-                    None,
-                ),
             )
+            .await
             .ok();
             (uid, nick)
         } else {
@@ -385,33 +345,28 @@ pub async fn callback(
             let username = user_info.username.clone();
 
             // OAuth users have no password — insert with email but empty hash/salt
-            sq_execute(
-                &conn,
-                dbq::users::insert_oauth(&user_id, &username, user_info.email.as_deref()),
-            )
-            .map_err(ApiErr::from_db("create user from oauth"))?;
+            db.insert_oauth_user(&user_id, &username, user_info.email.as_deref())
+                .await
+                .map_err(ApiErr::from_db("create user from oauth"))?;
 
-            sq_execute(
-                &conn,
-                dbq::oauth::upsert_identity(
-                    &user_id,
-                    &provider_id,
-                    &user_info.provider_user_id,
-                    Some(&user_info.username),
-                    user_info.avatar_url.as_deref(),
-                    None,
-                ),
+            db.upsert_oauth_identity(
+                &user_id,
+                &provider_id,
+                &user_info.provider_user_id,
+                Some(&user_info.username),
+                user_info.avatar_url.as_deref(),
             )
+            .await
             .map_err(ApiErr::from_db("oauth identity insert"))?;
 
             (user_id, username)
         }
     };
-    drop(conn);
-    maybe_store_provider_access_token(&db, &config, &user_id, provider, &access_token)?;
+    maybe_store_provider_access_token(&db, &config, &user_id, provider, &access_token).await?;
 
     // Issue tokens
-    let tokens = super::auth::issue_tokens_pub(&db, &config.jwt_secret, &user_id, &nickname)?;
+    let tokens =
+        super::auth::issue_tokens_pub(&db, &config.jwt_secret, &user_id, &nickname).await?;
 
     // Redirect to frontend without exposing tokens in URL fragments.
     let redirect_url = format!("{}/auth/callback", base_url);
@@ -445,14 +400,10 @@ pub async fn link(
     }
 
     // Check if already linked
-    let conn = db.conn();
-    let count: i64 = sq_query_row(
-        &conn,
-        dbq::oauth::has_provider(&user.user_id, &provider_id),
-        |row| row.get(0),
-    )
-    .unwrap_or(0);
-    let already = count > 0;
+    let already = db
+        .user_has_oauth_provider(&user.user_id, &provider_id)
+        .await
+        .unwrap_or(false);
     if already {
         return Err(ApiErr::conflict(format!(
             "{} account already linked",
@@ -465,11 +416,9 @@ pub async fn link(
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
-    sq_execute(
-        &conn,
-        dbq::oauth::insert_state(&state, &provider_id, &expires_at, Some(&user.user_id)),
-    )
-    .map_err(ApiErr::from_db("oauth state insert for link"))?;
+    db.insert_oauth_state(&state, &provider_id, &expires_at, Some(&user.user_id))
+        .await
+        .map_err(ApiErr::from_db("oauth state insert for link"))?;
 
     let base_url = resolve_base_url(&headers, &config.base_url, config.oauth_use_request_host);
     let redirect_uri = format!("{}/api/auth/oauth/{}/callback", base_url, provider_id);
@@ -480,7 +429,7 @@ pub async fn link(
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{header, HeaderMap, HeaderValue};
+    use axum::http::{HeaderMap, HeaderValue, header};
 
     use super::resolve_base_url;
 

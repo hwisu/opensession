@@ -28,6 +28,39 @@ run_with_stable_rustc() {
     "$@"
 }
 
+stable_target_dir_name() {
+    if command -v rustup >/dev/null 2>&1; then
+        RUSTC_BIN=$(rustup which --toolchain stable rustc 2>/dev/null || true)
+        if [ -n "$RUSTC_BIN" ]; then
+            RELEASE=$("$RUSTC_BIN" -Vv 2>/dev/null | awk '/^release:/ { print $2; exit }')
+            if [ -n "$RELEASE" ]; then
+                printf 'target-rustup-%s\n' "$(printf '%s' "$RELEASE" | tr '.' '_')"
+                return
+            fi
+        fi
+    fi
+}
+
+prune_rust_build_artifacts() {
+    rm -rf target/debug/incremental
+
+    for path in target-rustup-*/debug/incremental; do
+        [ -d "$path" ] || continue
+        rm -rf "$path"
+    done
+
+    current_target_dir=$(stable_target_dir_name)
+    for path in target-rustup-*; do
+        [ -d "$path" ] || continue
+        if [ -n "$current_target_dir" ] && [ "$(basename "$path")" = "$current_target_dir" ]; then
+            continue
+        fi
+        rm -rf "$path"
+    done
+}
+
+prune_rust_build_artifacts
+
 # Frontend
 cd packages/ui && npm install && cd ../..
 cd web && npm install && npm run build && cd ..

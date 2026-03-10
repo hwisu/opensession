@@ -2,6 +2,7 @@
 name = "opensession-daemon"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -11,14 +12,20 @@ keywords = ["ai", "session", "daemon", "opensession"]
 categories = ["command-line-utilities", "development-tools"]
 include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 
 [dependencies]
 opensession-core = { workspace = true }
+opensession-paths = { workspace = true }
 opensession-runtime-config = { workspace = true }
 opensession-summary = { workspace = true }
+opensession-summary-runtime = { workspace = true }
 opensession-parsers = { workspace = true }
+opensession-parser-discovery = { workspace = true }
 opensession-api = { workspace = true, default-features = false }
 opensession-api-client = { workspace = true }
 opensession-local-db = { workspace = true }

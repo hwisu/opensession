@@ -635,9 +635,9 @@ fn collect_auth_security_signals(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_summary_prompt, classify_arch_layer, collect_file_changes, collect_timeline_snippets,
+        DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2, SummaryPromptConfig, build_summary_prompt,
+        classify_arch_layer, collect_file_changes, collect_timeline_snippets,
         contains_auth_security_keyword, count_diff_stats, validate_summary_prompt_template,
-        SummaryPromptConfig, DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2,
     };
     use crate::types::HailCompactFileChange;
     use chrono::Utc;

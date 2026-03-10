@@ -1,0 +1,20 @@
+[package]
+name = "opensession-parser-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Session discovery adapters for OpenSession parsers"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+opensession-paths = { workspace = true }
+glob = { workspace = true }
+shellexpand = { workspace = true }
+rusqlite = { workspace = true }

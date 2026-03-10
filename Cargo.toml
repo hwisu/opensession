@@ -1,10 +1,14 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/core",
+    "crates/paths",
+    "crates/local-store",
     "crates/runtime-config",
     "crates/summary",
+    "crates/summary-runtime",
     "crates/parsers",
+    "crates/parser-discovery",
     "crates/api",
     "crates/api-client",
     "crates/local-db",
@@ -16,9 +20,13 @@ members = [
 ]
 default-members = [
     "crates/core",
+    "crates/paths",
+    "crates/local-store",
     "crates/runtime-config",
     "crates/summary",
+    "crates/summary-runtime",
     "crates/parsers",
+    "crates/parser-discovery",
     "crates/api",
     "crates/api-client",
     "crates/local-db",
@@ -29,17 +37,24 @@ default-members = [
 ]
 exclude = ["crates/worker"]
 
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-collapsible_if = "warn"
+collapsible_else_if = "allow"
+collapsible_if = "allow"
 empty_line_after_doc_comments = "warn"
+field_reassign_with_default = "allow"
 needless_return = "warn"
 redundant_closure = "warn"
 single_match = "warn"
+undocumented_unsafe_blocks = "warn"
 
 [workspace.package]
 version = "0.2.34"
-edition = "2021"
+edition = "2024"
+rust-version = "1.93"
 license = "MIT"
 repository = "https://github.com/hwisu/opensession"
 homepage = "https://opensession.io"
@@ -47,9 +62,13 @@ authors = ["opensession.io contributors"]
 
 [workspace.dependencies]
 opensession-core = { version = "0.2.34", path = "crates/core" }
+opensession-paths = { version = "0.2.34", path = "crates/paths" }
+opensession-local-store = { version = "0.2.34", path = "crates/local-store" }
 opensession-runtime-config = { version = "0.2.34", path = "crates/runtime-config" }
 opensession-summary = { version = "0.2.34", path = "crates/summary" }
+opensession-summary-runtime = { version = "0.2.34", path = "crates/summary-runtime" }
 opensession-parsers = { version = "0.2.34", path = "crates/parsers" }
+opensession-parser-discovery = { version = "0.2.34", path = "crates/parser-discovery" }
 opensession-api = { version = "0.2.34", path = "crates/api", default-features = false }
 opensession-api-client = { version = "0.2.34", path = "crates/api-client" }
 opensession-local-db = { version = "0.2.34", path = "crates/local-db" }
@@ -82,9 +101,16 @@ urlencoding = "2"
 tempfile = "3"
 gix = "0.79"
 sea-query = { version = "0.32", features = ["backend-sqlite", "derive"] }
+directories = "5"
+
+[profile.dev]
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 1
+
+[profile.test]
+incremental = false
 
 [profile.release]
 lto = "thin"

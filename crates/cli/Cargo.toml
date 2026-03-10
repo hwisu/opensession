@@ -2,6 +2,7 @@
 name = "opensession"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "CLI for opensession.io - discover, upload, and manage AI coding sessions"
@@ -26,9 +27,13 @@ workspace = true
 
 [dependencies]
 opensession-core = { workspace = true }
+opensession-paths = { workspace = true }
+opensession-local-store = { workspace = true }
 opensession-runtime-config = { workspace = true }
 opensession-summary = { workspace = true }
+opensession-summary-runtime = { workspace = true }
 opensession-parsers = { workspace = true }
+opensession-parser-discovery = { workspace = true }
 opensession-api = { workspace = true, default-features = false }
 opensession-api-client = { workspace = true }
 opensession-local-db = { workspace = true }

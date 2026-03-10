@@ -3,8 +3,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use base64::Engine;
 use opensession_api::{
-    db as dbq, ParseCandidate, ParsePreviewErrorResponse, ParsePreviewRequest,
-    ParsePreviewResponse, ParseSource, Session,
+    ParseCandidate, ParsePreviewErrorResponse, ParsePreviewRequest, ParsePreviewResponse,
+    ParseSource, Session, db as dbq,
 };
 use serde::Deserialize;
 use worker::*;
@@ -894,9 +894,8 @@ async fn d1_first<T: for<'de> Deserialize<'de>>(
         .prepare(&sql)
         .bind(&values_to_js(&values))
         .map_err(|_| PreviewRouteError::fetch_failed(context))?;
-    stmt.first(None)
-        .await
-        .map_err(|_| PreviewRouteError::fetch_failed(context))
+    let result = stmt.first(None).await;
+    result.map_err(|_| PreviewRouteError::fetch_failed(context))
 }
 
 async fn d1_all<T: for<'de> Deserialize<'de>>(
@@ -1188,10 +1187,12 @@ mod tests {
             preview_parse_bytes("session.hail.jsonl", minimal_hail_jsonl().as_bytes(), None)
                 .expect("hail jsonl should parse");
         assert_eq!(result.parser_used, "hail");
-        assert!(result
-            .parser_candidates
-            .iter()
-            .any(|candidate| candidate.id == "hail"));
+        assert!(
+            result
+                .parser_candidates
+                .iter()
+                .any(|candidate| candidate.id == "hail")
+        );
     }
 
     #[test]

@@ -31,3 +31,10 @@ test('renderMarkdown removes inline event handler attributes', () => {
 	assert.equal(html.includes('<img'), false);
 	assert.equal(html.includes('&lt;img'), true);
 });
+
+test('renderMarkdown escapes attribute values emitted by markdown renderer', () => {
+	const html = renderMarkdown('![x" onerror="alert(1)](https://example.com/a.png)');
+	assert.equal(html.includes('" onerror='), false);
+	assert.equal(html.includes('&quot; onerror=&quot;alert(1)'), true);
+	assert.equal(html.includes('alt="x&quot; onerror=&quot;alert(1)"'), true);
+});

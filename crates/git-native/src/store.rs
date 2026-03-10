@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
-use gix::object::tree::EntryKind;
 use gix::ObjectId;
+use gix::object::tree::EntryKind;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info};
@@ -81,11 +81,7 @@ impl NativeGitStorage {
     fn session_id_from_commit_message(message: &str) -> Option<&str> {
         let first = message.lines().next()?.trim();
         let id = first.strip_prefix("session: ")?.trim();
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
+        if id.is_empty() { None } else { Some(id) }
     }
 
     fn commit_index_path(commit_sha: &str, session_id: &str) -> String {
@@ -121,11 +117,7 @@ impl NativeGitStorage {
     fn summary_session_id_from_commit_message(message: &str) -> Option<&str> {
         let first = message.lines().next()?.trim();
         let id = first.strip_prefix("summary: ")?.trim();
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
+        if id.is_empty() { None } else { Some(id) }
     }
 }
 
@@ -817,10 +809,12 @@ mod tests {
             .delete_summary_at_ref(tmp.path(), ref_name, "session-delete")
             .expect("delete summary");
         assert!(rewritten);
-        assert!(storage
-            .load_summary_at_ref(tmp.path(), ref_name, "session-delete")
-            .expect("load after delete")
-            .is_none());
+        assert!(
+            storage
+                .load_summary_at_ref(tmp.path(), ref_name, "session-delete")
+                .expect("load after delete")
+                .is_none()
+        );
     }
 
     #[test]
@@ -868,14 +862,18 @@ mod tests {
             .expect("prune summaries");
         assert!(stats.rewritten);
         assert_eq!(stats.expired_sessions, 2);
-        assert!(storage
-            .load_summary_at_ref(tmp.path(), ref_name, "summary-a")
-            .expect("load summary a")
-            .is_none());
-        assert!(storage
-            .load_summary_at_ref(tmp.path(), ref_name, "summary-b")
-            .expect("load summary b")
-            .is_none());
+        assert!(
+            storage
+                .load_summary_at_ref(tmp.path(), ref_name, "summary-a")
+                .expect("load summary a")
+                .is_none()
+        );
+        assert!(
+            storage
+                .load_summary_at_ref(tmp.path(), ref_name, "summary-b")
+                .expect("load summary b")
+                .is_none()
+        );
     }
 
     #[test]

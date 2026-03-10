@@ -1,7 +1,8 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use tracing::warn;
+
+use crate::client::{ApiClientError, Result};
 
 /// Configuration for retry behaviour on upload-style POST requests.
 pub struct RetryConfig {
@@ -65,7 +66,7 @@ pub async fn retry_post(
                     );
                     tokio::time::sleep(Duration::from_secs(config.delays[attempt])).await;
                 } else {
-                    return Err(e).context("Failed to connect after retries");
+                    return Err(ApiClientError::Transport(e));
                 }
             }
         }

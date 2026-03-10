@@ -2,23 +2,25 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
+use opensession_core::Session;
 use opensession_core::handoff::{
-    generate_handoff_markdown_v2, generate_merged_handoff_markdown_v2, merge_summaries,
-    validate_handoff_summaries, HandoffSummary, HandoffValidationReport,
+    HandoffSummary, HandoffValidationReport, generate_handoff_markdown_v2,
+    generate_merged_handoff_markdown_v2, merge_summaries, validate_handoff_summaries,
 };
 use opensession_core::handoff_artifact::{
-    sort_sessions_time_asc, source_from_session, HandoffArtifact, HandoffPayloadFormat,
-    HANDOFF_ARTIFACT_VERSION, HANDOFF_MERGE_POLICY_TIME_ASC,
+    HANDOFF_ARTIFACT_VERSION, HANDOFF_MERGE_POLICY_TIME_ASC, HandoffArtifact,
+    HandoffArtifactSource, HandoffPayloadFormat, HandoffSourceStaleReason, SourceFingerprint,
+    sort_sessions_time_asc, source_from_session,
 };
-use opensession_core::Session;
 use opensession_git_native::{
     artifact_ref_name, list_handoff_artifact_refs, load_handoff_artifact, ops,
     store_handoff_artifact,
 };
-use opensession_parsers::discover::discover_sessions;
-use opensession_parsers::{all_parsers, SessionParser};
+use opensession_parsers::ParserRegistry;
+use opensession_parser_discovery::discover_sessions;
 use std::io::{IsTerminal, Write};
+use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone)]
 struct ResolvedSession {
@@ -122,7 +124,7 @@ pub async fn run_handoff_save(
             "artifact_id": artifact.artifact_id,
             "ref": ref_name,
             "source_count": artifact.sources.len(),
-            "stale": artifact.is_stale(),
+            "stale": artifact_is_stale(&artifact),
         }))?
     );
     Ok(())
@@ -140,7 +142,7 @@ pub async fn run_handoff_artifact_list() -> Result<()> {
             "created_at": artifact.created_at,
             "payload_format": artifact.payload_format,
             "source_count": artifact.sources.len(),
-            "stale": artifact.is_stale(),
+            "stale": artifact_is_stale(&artifact),
         }));
     }
     println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -150,7 +152,7 @@ pub async fn run_handoff_artifact_list() -> Result<()> {
 pub async fn run_handoff_artifact_show(id_or_ref: &str) -> Result<()> {
     let repo_root = resolve_repo_root()?;
     let artifact = load_artifact(&repo_root, id_or_ref)?;
-    let stale_reasons = artifact.stale_reasons();
+    let stale_reasons = stale_reasons(&artifact);
     let output = serde_json::json!({
         "artifact": artifact,
         "stale": !stale_reasons.is_empty(),
@@ -167,7 +169,7 @@ pub async fn run_handoff_artifact_refresh(id_or_ref: &str) -> Result<()> {
         bail!("Artifact has no source files to refresh.");
     }
 
-    let stale_reasons = artifact.stale_reasons();
+    let stale_reasons = stale_reasons(&artifact);
     if stale_reasons.is_empty() {
         println!(
             "{}",
@@ -182,13 +184,13 @@ pub async fn run_handoff_artifact_refresh(id_or_ref: &str) -> Result<()> {
     }
 
     let mut resolved = Vec::new();
-    let parsers = all_parsers();
+    let registry = ParserRegistry::default();
     for source in &artifact.sources {
         let path = PathBuf::from(&source.source_path);
         if !path.exists() {
             continue;
         }
-        let session = parse_file(&parsers, &path)?;
+        let session = parse_file(&registry, &path)?;
         resolved.push(ResolvedSession {
             session,
             source_path: Some(path),
@@ -218,7 +220,7 @@ pub async fn run_handoff_artifact_refresh(id_or_ref: &str) -> Result<()> {
             "ref": ref_name,
             "refreshed": true,
             "stale_before": stale_reasons.len(),
-            "stale_after": artifact.is_stale(),
+            "stale_after": artifact_is_stale(&artifact),
         }))?
     );
     Ok(())
@@ -262,6 +264,61 @@ fn load_artifact(repo_root: &Path, id_or_ref: &str) -> Result<HandoffArtifact> {
     let bytes = load_handoff_artifact(repo_root, id_or_ref)?;
     let artifact: HandoffArtifact = serde_json::from_slice(&bytes)?;
     Ok(artifact)
+}
+
+fn artifact_is_stale(artifact: &HandoffArtifact) -> bool {
+    !stale_reasons(artifact).is_empty()
+}
+
+fn stale_reasons(artifact: &HandoffArtifact) -> Vec<HandoffSourceStaleReason> {
+    let mut reasons = Vec::new();
+    for source in &artifact.sources {
+        let path = Path::new(&source.source_path);
+        let current = match source_fingerprint(path) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                reasons.push(HandoffSourceStaleReason {
+                    session_id: source.session_id.clone(),
+                    source_path: source.source_path.clone(),
+                    reason: "missing_source_file".to_string(),
+                });
+                continue;
+            }
+            Err(_) => {
+                reasons.push(HandoffSourceStaleReason {
+                    session_id: source.session_id.clone(),
+                    source_path: source.source_path.clone(),
+                    reason: "unreadable_source_file".to_string(),
+                });
+                continue;
+            }
+        };
+
+        if current.mtime_ms != source.source_mtime_ms || current.size != source.source_size {
+            reasons.push(HandoffSourceStaleReason {
+                session_id: source.session_id.clone(),
+                source_path: source.source_path.clone(),
+                reason: "source_fingerprint_changed".to_string(),
+            });
+        }
+    }
+
+    reasons
+}
+
+fn source_fingerprint(path: &Path) -> std::io::Result<SourceFingerprint> {
+    let metadata = std::fs::metadata(path)?;
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+
+    Ok(SourceFingerprint {
+        mtime_ms,
+        size: metadata.len(),
+    })
 }
 
 fn build_artifact_from_resolved(
@@ -311,7 +368,9 @@ fn build_artifact_from_resolved(
         if !path.exists() {
             continue;
         }
-        if let Ok(source) = source_from_session(&item.session, &path) {
+        if let Ok(fingerprint) = source_fingerprint(&path) {
+            let source =
+                source_from_session(&item.session, path.to_string_lossy().into_owned(), fingerprint);
             sources.push(source);
         }
     }
@@ -527,9 +586,9 @@ fn resolve_sessions_with_sources(
     gemini: Option<&str>,
     tool_refs: &[String],
 ) -> Result<Vec<ResolvedSession>> {
-    use crate::session_ref::{tool_flag_to_name, SessionRef};
+    use crate::session_ref::{SessionRef, tool_flag_to_name};
 
-    let parsers = all_parsers();
+    let registry = ParserRegistry::default();
 
     // If explicit files are given, parse them all
     if !files.is_empty() {
@@ -538,7 +597,7 @@ fn resolve_sessions_with_sources(
             if !file.exists() {
                 bail!("File not found: {}", file.display());
             }
-            let session = parse_file(&parsers, file)?;
+            let session = parse_file(&registry, file)?;
             sessions.push(ResolvedSession {
                 session,
                 source_path: Some(file.clone()),
@@ -575,7 +634,7 @@ fn resolve_sessions_with_sources(
             match sref {
                 SessionRef::File(path) => {
                     sessions.push(ResolvedSession {
-                        session: parse_file(&parsers, path)?,
+                        session: parse_file(&registry, path)?,
                         source_path: Some(path.clone()),
                     });
                 }
@@ -588,7 +647,7 @@ fn resolve_sessions_with_sources(
                             .with_context(|| format!("Session {} has no source_path", row.id))?;
                         let path = PathBuf::from(source);
                         sessions.push(ResolvedSession {
-                            session: parse_file(&parsers, &path)?,
+                            session: parse_file(&registry, &path)?,
                             source_path: Some(path),
                         });
                     }
@@ -604,20 +663,15 @@ fn resolve_sessions_with_sources(
     let mut sessions = Vec::new();
     for path in resolved {
         sessions.push(ResolvedSession {
-            session: parse_file(&parsers, &path)?,
+            session: parse_file(&registry, &path)?,
             source_path: Some(path),
         });
     }
     Ok(sessions)
 }
 
-fn parse_file(parsers: &[Box<dyn SessionParser>], file: &Path) -> Result<Session> {
-    let parser: Option<&dyn SessionParser> = parsers
-        .iter()
-        .find(|p| p.can_parse(file))
-        .map(|p| p.as_ref());
-
-    let parser = match parser {
+fn parse_file(registry: &ParserRegistry, file: &Path) -> Result<Session> {
+    let parser = match registry.parser_for_path(file) {
         Some(p) => p,
         None => bail!(
             "No parser found for file: {}\nSupported formats: Claude Code (.jsonl), Codex (.jsonl), OpenCode (.json), Cline, Amp, Cursor, Gemini",
@@ -771,10 +825,12 @@ fn collect_all_session_paths() -> Result<Vec<(PathBuf, String)>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_error_findings, parse_last_count, populate_prompt, select_existing_session_paths,
-        write_handoff_to_writer, PopulateProvider, PopulateSpec,
+        HandoffArtifact, HandoffArtifactSource, HandoffPayloadFormat, HandoffSourceStaleReason,
+        PopulateProvider, PopulateSpec, SourceFingerprint, artifact_is_stale, has_error_findings,
+        parse_last_count, populate_prompt, select_existing_session_paths, source_fingerprint,
+        stale_reasons, write_handoff_to_writer,
     };
-    use opensession_core::handoff::{format_duration, generate_handoff_markdown, HandoffSummary};
+    use opensession_core::handoff::{HandoffSummary, format_duration, generate_handoff_markdown};
     use opensession_core::handoff::{HandoffValidationReport, ValidationFinding};
     use opensession_core::testing;
     use opensession_core::{Agent, Event, EventType, Session, Stats};
@@ -1009,5 +1065,88 @@ mod tests {
         assert_eq!(selected.len(), 2);
         assert_eq!(selected[0], path_a);
         assert_eq!(selected[1], path_b);
+    }
+
+    fn make_artifact(source: HandoffArtifactSource) -> HandoffArtifact {
+        HandoffArtifact {
+            version: "1".to_string(),
+            artifact_id: "artifact-1".to_string(),
+            created_at: chrono::Utc::now(),
+            merge_policy: "time_asc".to_string(),
+            sources: vec![source],
+            payload_format: HandoffPayloadFormat::Json,
+            payload: serde_json::json!([]),
+            derived_markdown: None,
+        }
+    }
+
+    #[test]
+    fn test_stale_reasons_detects_missing_source_file() {
+        let artifact = make_artifact(HandoffArtifactSource {
+            session_id: "s1".to_string(),
+            tool: "codex".to_string(),
+            model: "gpt-5".to_string(),
+            source_path: "/definitely/missing/session.jsonl".to_string(),
+            source_mtime_ms: 0,
+            source_size: 0,
+        });
+
+        let reasons = stale_reasons(&artifact);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(
+            reasons[0],
+            HandoffSourceStaleReason {
+                session_id: "s1".to_string(),
+                source_path: "/definitely/missing/session.jsonl".to_string(),
+                reason: "missing_source_file".to_string(),
+            }
+        );
+        assert!(artifact_is_stale(&artifact));
+    }
+
+    #[test]
+    fn test_stale_reasons_detects_fingerprint_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, b"before").unwrap();
+        let fingerprint = source_fingerprint(&path).unwrap();
+        let artifact = make_artifact(HandoffArtifactSource {
+            session_id: "s1".to_string(),
+            tool: "codex".to_string(),
+            model: "gpt-5".to_string(),
+            source_path: path.to_string_lossy().into_owned(),
+            source_mtime_ms: fingerprint.mtime_ms,
+            source_size: fingerprint.size,
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&path, b"after-after").unwrap();
+
+        let reasons = stale_reasons(&artifact);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].reason, "source_fingerprint_changed");
+        assert!(artifact_is_stale(&artifact));
+    }
+
+    #[test]
+    fn test_source_fingerprint_and_source_from_session_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, b"payload").unwrap();
+
+        let fingerprint = source_fingerprint(&path).unwrap();
+        let session = Session::new("session-1".to_string(), make_agent());
+        let source = opensession_core::handoff_artifact::source_from_session(
+            &session,
+            path.to_string_lossy().into_owned(),
+            SourceFingerprint {
+                mtime_ms: fingerprint.mtime_ms,
+                size: fingerprint.size,
+            },
+        );
+
+        assert_eq!(source.session_id, "session-1");
+        assert_eq!(source.source_size, fingerprint.size);
+        assert_eq!(source.source_mtime_ms, fingerprint.mtime_ms);
     }
 }

@@ -1,5 +1,7 @@
 # OpenSession Web
 
+[한국어](README.ko.md)
+
 This package contains the Svelte web app for OpenSession.
 
 ## Run
@@ -30,5 +32,7 @@ npm run test:e2e:live -- --reporter=list
 For product-level usage and install-and-forget flow, see the root docs:
 
 - `../README.md`
+- `../README.ko.md`
 - `../docs.md`
+- `../docs.ko.md`
 - `../docs/development-validation-flow.md`

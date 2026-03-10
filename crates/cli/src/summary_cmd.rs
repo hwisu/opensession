@@ -1,13 +1,14 @@
 use crate::runtime_settings::load_runtime_config;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand};
 use opensession_core::session::working_directory;
 use opensession_git_native::extract_git_context;
 use opensession_local_db::{LocalDb, SessionSemanticSummaryUpsert};
-use opensession_parsers::parse_with_default_parsers;
-use opensession_summary::{
-    summarize_git_commit, summarize_git_working_tree, summarize_session, GitSummaryRequest,
-    SemanticSummaryArtifact,
+use opensession_local_store::find_repo_root;
+use opensession_parsers::ParserRegistry;
+use opensession_summary::{GitSummaryRequest, SemanticSummaryArtifact};
+use opensession_summary_runtime::{
+    summarize_git_commit, summarize_git_working_tree, summarize_session,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -109,13 +110,15 @@ fn run_show(session_id: &str) -> Result<()> {
 async fn run_generate(args: SummaryRunArgs) -> Result<()> {
     let runtime = load_runtime_config().context("load runtime config")?;
     let settings = &runtime.summary;
+    let parser_registry = ParserRegistry::default();
 
     if let Some(file) = args.file.as_deref() {
         let artifact = run_from_file(file, settings).await?;
         println!("{}", serde_json::to_string_pretty(&artifact)?);
 
         if !args.no_store && settings.persists_to_local_db() {
-            let session = parse_with_default_parsers(file)
+            let session = parser_registry
+                .parse_path(file)
                 .with_context(|| format!("parse session file {}", file.display()))?
                 .ok_or_else(|| anyhow!("unsupported session source format"))?;
             let db = LocalDb::open().context("open local db")?;
@@ -148,13 +151,14 @@ async fn run_from_file(
     path: &Path,
     settings: &opensession_runtime_config::SummarySettings,
 ) -> Result<SemanticSummaryArtifact> {
-    let session = parse_with_default_parsers(path)
+    let session = ParserRegistry::default()
+        .parse_path(path)
         .with_context(|| format!("parse session file {}", path.display()))?
         .ok_or_else(|| anyhow!("unsupported session source format"))?;
 
     let git_request = if settings.allows_git_changes_fallback() {
         working_directory(&session)
-            .and_then(|cwd| opensession_core::object_store::find_repo_root(Path::new(cwd)))
+            .and_then(|cwd| find_repo_root(Path::new(cwd)))
             .map(|repo_root| GitSummaryRequest {
                 repo_root,
                 commit: working_directory(&session).and_then(|cwd| extract_git_context(cwd).commit),

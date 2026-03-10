@@ -1,7 +1,5 @@
 pub mod claude_code;
-pub mod discover;
 pub mod incremental;
-pub mod ingest;
 
 mod amp;
 mod cline;
@@ -10,11 +8,14 @@ pub(crate) mod common;
 mod cursor;
 pub mod external;
 mod gemini;
+mod ingest;
 mod opencode;
 
 use anyhow::Result;
 use opensession_core::trace::Session;
 use std::path::Path;
+
+pub use ingest::{ParseCandidate, ParseError, ParsePreview};
 
 /// Trait for parsing AI tool session data into HAIL format
 pub trait SessionParser: Send + Sync {
@@ -28,40 +29,50 @@ pub trait SessionParser: Send + Sync {
     fn parse(&self, path: &std::path::Path) -> Result<Session>;
 }
 
-/// Get all available parsers
-pub fn all_parsers() -> Vec<Box<dyn SessionParser>> {
-    vec![
-        Box::new(codex::CodexParser),
-        Box::new(opencode::OpenCodeParser),
-        Box::new(cline::ClineParser),
-        Box::new(amp::AmpParser),
-        Box::new(cursor::CursorParser),
-        Box::new(gemini::GeminiParser),
-        Box::new(claude_code::ClaudeCodeParser),
-    ]
+pub struct ParserRegistry {
+    parsers: Vec<Box<dyn SessionParser>>,
 }
 
-/// Return the first parser that can parse the given path.
-pub fn parser_for_path<'a>(
-    parsers: &'a [Box<dyn SessionParser>],
-    path: &Path,
-) -> Option<&'a dyn SessionParser> {
-    parsers
-        .iter()
-        .find(|parser| parser.can_parse(path))
-        .map(|parser| parser.as_ref())
+impl Default for ParserRegistry {
+    fn default() -> Self {
+        Self {
+            parsers: vec![
+                Box::new(codex::CodexParser),
+                Box::new(opencode::OpenCodeParser),
+                Box::new(cline::ClineParser),
+                Box::new(amp::AmpParser),
+                Box::new(cursor::CursorParser),
+                Box::new(gemini::GeminiParser),
+                Box::new(claude_code::ClaudeCodeParser),
+            ],
+        }
+    }
 }
 
-/// Parse one path with the default parser set.
-///
-/// Returns `Ok(None)` when no parser matches the input path.
-pub fn parse_with_default_parsers(path: &Path) -> Result<Option<Session>> {
-    let parsers = all_parsers();
-    let Some(parser) = parser_for_path(&parsers, path) else {
-        return Ok(None);
-    };
-    let session = parser.parse(path)?;
-    Ok(Some(session))
+impl ParserRegistry {
+    pub fn parser_for_path(&self, path: &Path) -> Option<&dyn SessionParser> {
+        self.parsers
+            .iter()
+            .find(|parser| parser.can_parse(path))
+            .map(|parser| parser.as_ref())
+    }
+
+    pub fn parse_path(&self, path: &Path) -> Result<Option<Session>> {
+        let Some(parser) = self.parser_for_path(path) else {
+            return Ok(None);
+        };
+        let session = parser.parse(path)?;
+        Ok(Some(session))
+    }
+
+    pub fn preview_bytes(
+        &self,
+        filename: &str,
+        content_bytes: &[u8],
+        parser_hint: Option<&str>,
+    ) -> Result<ParsePreview, ParseError> {
+        ingest::preview_parse_bytes(filename, content_bytes, parser_hint)
+    }
 }
 
 /// Returns true when the path points to an auxiliary child/sub-agent session log.
@@ -84,5 +95,52 @@ mod tests {
         assert!(!is_auxiliary_session_path(Path::new(
             "/Users/test/.claude/projects/foo/session.jsonl"
         )));
+    }
+
+    #[test]
+    fn parser_registry_exposes_default_parsers() {
+        let registry = ParserRegistry::default();
+        assert!(
+            registry
+                .parser_for_path(Path::new("/tmp/.codex/sessions/session.jsonl"))
+                .is_some()
+        );
+        assert!(
+            registry
+                .parser_for_path(Path::new("/tmp/.claude/projects/demo/session.jsonl"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parser_registry_parses_known_fixture_paths() {
+        let registry = ParserRegistry::default();
+        let fixture_src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/codex/rollout-desktop.jsonl");
+        let fixture_dir = std::env::temp_dir().join(format!(
+            "opensession-parser-registry-{}",
+            std::process::id()
+        ));
+        let fixture = fixture_dir.join(".codex/sessions/rollout-desktop.jsonl");
+        std::fs::create_dir_all(
+            fixture
+                .parent()
+                .expect("fixture path should include a parent directory"),
+        )
+        .expect("temp codex fixture directory should exist");
+        std::fs::copy(&fixture_src, &fixture).expect("fixture should copy to codex temp path");
+
+        let parser = registry
+            .parser_for_path(&fixture)
+            .expect("fixture should resolve to a parser");
+        assert_eq!(parser.name(), "codex");
+
+        let session = registry
+            .parse_path(&fixture)
+            .expect("fixture parse should succeed")
+            .expect("fixture should produce a session");
+        assert_eq!(session.agent.tool, "codex");
+
+        std::fs::remove_dir_all(fixture_dir).expect("temp fixture directory should be removable");
     }
 }

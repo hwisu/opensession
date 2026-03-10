@@ -66,7 +66,12 @@ export function computeFileStats(events: Event[]): FileStats {
 /** Format timestamp as a full localized date string */
 export function formatFullDate(ts: string): string {
 	const date = new Date(ts);
-	return date.toLocaleDateString(undefined, {
+	const locale =
+		typeof document !== 'undefined' &&
+		document.documentElement?.lang?.trim().toLowerCase().startsWith('ko')
+			? 'ko-KR'
+			: 'en-US';
+	return date.toLocaleDateString(locale, {
 		year: 'numeric',
 		month: 'short',
 		day: 'numeric',

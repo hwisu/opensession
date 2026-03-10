@@ -55,6 +55,12 @@ export {
 } from './event-helpers';
 // HAIL parser helpers
 export { parseHailInput, parseHailJsonl } from './hail-parse';
+export {
+	buildStateUrl as buildSourceStateUrl,
+	buildRouteBase as buildSourceRouteBase,
+	parseSourceRoute,
+	type SourceRouteState,
+} from './source-route';
 // Highlight & Markdown utilities
 export { highlightCode } from './highlight';
 export { isLongContent, lineCount, renderMarkdown } from './markdown';
@@ -98,6 +104,39 @@ export type {
 	ToolConfig,
 } from './types';
 export { formatDuration, formatTimestamp, getToolConfig, TOOL_CONFIGS } from './types';
+export { formatClockTime } from './types';
 // Shared utilities
 export type { FileStats } from './utils';
 export { computeFileStats, formatFullDate, getDisplayTitle, stripTags } from './utils';
+export {
+	appLocale,
+	cycleLanguageMode,
+	initializeLocalization,
+	languageMode,
+	refreshLocaleFromPlatform,
+	resolveLocale,
+	setLanguagePreference,
+	translate,
+	type AppLocale,
+	type LanguageMode,
+} from './i18n';
+export {
+	createShellModel,
+	createShellModelState,
+	type ShellModelState,
+} from './models/app-shell-model';
+export {
+	createSourcePreviewModel,
+	createSourcePreviewModelState,
+	type SourcePreviewLocation,
+	type SourcePreviewModelState,
+} from './models/source-preview-model';
+export {
+	copyTextSurface,
+	loadGitCredentialsState,
+	loadRuntimeSettingsState,
+	loadSettingsPageState,
+	nextSettingsBackgroundPollDelay,
+	type RuntimeSettingsLoadResult,
+	type SettingsPageLoadResult,
+} from './models/settings-model';

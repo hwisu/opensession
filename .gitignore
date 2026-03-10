@@ -1,11 +1,15 @@
 # Build artifacts
+/node_modules/
 /target/
 /target-*/
 /crates/worker/target/
+/crates/worker/build/
+/build/
 
 # Local cargo overrides (dev only)
 .cargo/config.toml
 web/node_modules/
+packages/ui/node_modules/
 web/build/
 web/.svelte-kit/
 desktop/node_modules/

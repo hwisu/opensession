@@ -1,14 +1,16 @@
+use opensession_parsers::SessionParser;
 /// Integration test: parse a real Claude Code team session with subagents.
 /// Run with: cargo test -p opensession-parsers --test claude_code_team -- --ignored --nocapture
 use opensession_parsers::claude_code::ClaudeCodeParser;
-use opensession_parsers::SessionParser;
 use std::path::Path;
 
 #[test]
 #[ignore] // requires real session file
 fn test_parse_team_session_with_subagents() {
     let parser = ClaudeCodeParser;
-    let path = Path::new("/Users/hwisookim/.claude/projects/-Users-hwisookim-opensession/b7655a2e-2241-46cb-8f31-d116dbdfcbce.jsonl");
+    let path = Path::new(
+        "/Users/hwisookim/.claude/projects/-Users-hwisookim-opensession/b7655a2e-2241-46cb-8f31-d116dbdfcbce.jsonl",
+    );
 
     if !path.exists() {
         eprintln!("Skipping: test file not found");

@@ -1,19 +1,18 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::IntoResponse,
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::IntoResponse,
 };
 
 use opensession_api::{
-    db, LinkType, SessionDetail, SessionLink, SessionListQuery, SessionListResponse,
-    SessionRepoListResponse, SessionSummary,
+    SessionDetail, SessionListQuery, SessionListResponse, SessionRepoListResponse,
 };
 
+use crate::AppConfig;
 use crate::error::ApiErr;
 use crate::routes::auth::AuthUser;
-use crate::storage::{session_from_row, sq_query_map, sq_query_row, Db};
-use crate::AppConfig;
+use crate::storage::Db;
 
 const PUBLIC_LIST_CACHE_CONTROL: &str = "public, max-age=30, stale-while-revalidate=60";
 
@@ -61,24 +60,12 @@ pub async fn list_sessions(
         ));
     }
 
-    let built = db::sessions::list(&q);
-    let conn = db.conn();
-
-    // Count total
-    let total: i64 = sq_query_row(&conn, built.count_query, |row| row.get(0))
-        .map_err(ApiErr::from_db("count sessions"))?;
-
-    // Fetch page
-    let sessions: Vec<SessionSummary> = sq_query_map(&conn, built.select_query, session_from_row)
+    let payload: SessionListResponse = db
+        .list_sessions(&q)
+        .await
         .map_err(ApiErr::from_db("list sessions"))?;
 
-    let mut resp = Json(SessionListResponse {
-        sessions,
-        total,
-        page: built.page,
-        per_page: built.per_page,
-    })
-    .into_response();
+    let mut resp = Json(payload).into_response();
 
     let has_session_cookie = headers
         .get(header::COOKIE)
@@ -111,8 +98,9 @@ pub async fn list_session_repos(
         ));
     }
 
-    let conn = db.conn();
-    let repos: Vec<String> = sq_query_map(&conn, db::sessions::list_repo_names(), |row| row.get(0))
+    let repos = db
+        .list_session_repos()
+        .await
         .map_err(ApiErr::from_db("list session repos"))?;
 
     Ok(Json(SessionRepoListResponse { repos }))
@@ -127,34 +115,12 @@ pub async fn get_session(
     State(db): State<Db>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionDetail>, ApiErr> {
-    let conn = db.conn();
+    let detail: SessionDetail = db
+        .get_session_detail(&id)
+        .await
+        .map_err(|_| ApiErr::not_found("session not found"))?;
 
-    let summary: SessionSummary =
-        sq_query_row(&conn, db::sessions::get_by_id(&id), session_from_row)
-            .map_err(|_| ApiErr::not_found("session not found"))?;
-
-    // Fetch linked sessions
-    let linked_sessions: Vec<SessionLink> =
-        sq_query_map(&conn, db::sessions::links_by_session(&id), |row| {
-            let lt: String = row.get(2)?;
-            Ok(SessionLink {
-                session_id: row.get(0)?,
-                linked_session_id: row.get(1)?,
-                link_type: match lt.as_str() {
-                    "related" => LinkType::Related,
-                    "parent" => LinkType::Parent,
-                    "child" => LinkType::Child,
-                    _ => LinkType::Handoff,
-                },
-                created_at: row.get(3)?,
-            })
-        })
-        .map_err(ApiErr::from_db("query session_links"))?;
-
-    Ok(Json(SessionDetail {
-        summary,
-        linked_sessions,
-    }))
+    Ok(Json(detail))
 }
 
 // ---------------------------------------------------------------------------
@@ -166,17 +132,12 @@ pub async fn get_session_raw(
     State(db): State<Db>,
     Path(id): Path<String>,
 ) -> Result<axum::response::Response, ApiErr> {
-    let conn = db.conn();
-
-    let (body_storage_key, body_url): (String, Option<String>) =
-        sq_query_row(&conn, db::sessions::get_storage_info(&id), |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
+    let info = db
+        .get_session_storage_info(&id)
+        .await
         .map_err(|_| ApiErr::not_found("session not found"))?;
 
-    drop(conn);
-
-    match resolve_raw_body_source(body_storage_key, body_url)? {
+    match resolve_raw_body_source(info.body_storage_key, info.body_url)? {
         RawBodySource::RedirectUrl(url) => {
             let location = HeaderValue::from_str(&url)
                 .map_err(|_| ApiErr::internal("invalid session body URL"))?;
@@ -185,7 +146,7 @@ pub async fn get_session_raw(
             Ok(response)
         }
         RawBodySource::LocalStorage(storage_key) => {
-            let body = db.read_body(&storage_key).map_err(|e| {
+            let body = db.read_body(&storage_key).await.map_err(|e| {
                 tracing::error!("read body: {e}");
                 ApiErr::internal("failed to read session body")
             })?;
@@ -208,7 +169,7 @@ pub async fn get_session_raw(
 
 #[cfg(test)]
 mod tests {
-    use super::{can_access_session_list, resolve_raw_body_source, RawBodySource};
+    use super::{RawBodySource, can_access_session_list, resolve_raw_body_source};
 
     #[test]
     fn session_list_access_rules_follow_public_feed_flag() {

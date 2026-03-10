@@ -18,6 +18,8 @@
 4. For web/runtime-web changes, validate at least one real user path with `wrangler dev` + Playwright live suite.
 5. API route changes: update the endpoint table in README.
 
+PR CI is intentionally lean; heavy E2E/desktop jobs are reserved for local validation first and the scheduled/manual `.github/workflows/ci-deep.yml` workflow.
+
 Validation details (local + CI parity) live in `docs/development-validation-flow.md`.
 
 ## Project Structure
@@ -61,6 +63,9 @@ crates/
 ## Code Style
 
 - Follow existing patterns in the codebase.
+- Rust code targets Edition 2024 and the repo pins Rust 1.93.0 via `mise.toml`.
+- New workspace crates should inherit `edition.workspace = true` and `rust-version.workspace = true`.
+- Keep `unsafe` in the smallest possible helper and include a `SAFETY:` comment for each block.
 - Workspace clippy lints apply (see root `Cargo.toml`).
 
 ## License

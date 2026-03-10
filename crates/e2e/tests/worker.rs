@@ -6,7 +6,7 @@ use opensession_api::{ParsePreviewRequest, ParseSource};
 use opensession_e2e::client::TestContext;
 use serde_json::json;
 
-fn get_ctx() -> TestContext {
+fn get_ctx() -> Option<TestContext> {
     test_context_from_env("OPENSESSION_E2E_WORKER_BASE_URL")
 }
 
@@ -14,7 +14,9 @@ macro_rules! e2e_test {
     ($module:ident :: $name:ident) => {
         #[tokio::test]
         async fn $name() {
-            let ctx = get_ctx();
+            let Some(ctx) = get_ctx() else {
+                return;
+            };
             opensession_e2e::specs::$module::$name(&ctx).await.unwrap();
         }
     };
@@ -24,7 +26,9 @@ opensession_e2e::for_each_spec!(e2e_test);
 
 #[tokio::test]
 async fn auth_providers_endpoint_is_available_in_worker() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let response = ctx.get("/auth/providers").await.expect("request failed");
     assert_eq!(
         response.status().as_u16(),
@@ -42,7 +46,9 @@ async fn auth_providers_endpoint_is_available_in_worker() {
 
 #[tokio::test]
 async fn worker_auth_register_login_me_refresh_logout_flow() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let user = register_user(&ctx, "worker-auth-flow", "testpass-12345").await;
     let access_token = user.tokens.access_token;
     let refresh_token = user.tokens.refresh_token;
@@ -126,7 +132,9 @@ async fn worker_auth_register_login_me_refresh_logout_flow() {
 
 #[tokio::test]
 async fn worker_auth_oauth_redirect_callback_routes_are_exposed() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let providers_response = ctx.get("/auth/providers").await.expect("request failed");
     assert_eq!(providers_response.status().as_u16(), 200);
     let providers: serde_json::Value = providers_response
@@ -188,7 +196,9 @@ async fn worker_auth_oauth_redirect_callback_routes_are_exposed() {
 
 #[tokio::test]
 async fn worker_parse_preview_inline_success() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let session = opensession_e2e::fixtures::minimal_session();
     let source_body = session.to_jsonl().expect("serialize fixture session");
     let encoded = base64::engine::general_purpose::STANDARD.encode(source_body);
@@ -230,7 +240,9 @@ async fn worker_parse_preview_inline_success() {
 
 #[tokio::test]
 async fn worker_parse_preview_git_credential_required() {
-    let ctx = get_ctx();
+    let Some(ctx) = get_ctx() else {
+        return;
+    };
     let user = register_user(&ctx, "worker-git-credential", "testpass-12345").await;
     let access_token = user.tokens.access_token;
 

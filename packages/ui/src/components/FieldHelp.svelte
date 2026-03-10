@@ -1,4 +1,6 @@
 <script lang="ts">
+import { appLocale } from '../i18n';
+
 const {
 	label,
 	help,
@@ -26,6 +28,8 @@ function showHelp() {
 function hideHelp() {
 	open = false;
 }
+
+const isKorean = $derived($appLocale === 'ko');
 </script>
 
 {#if inline}
@@ -42,7 +46,7 @@ function hideHelp() {
 				onkeydown={(event) => {
 					if (event.key === 'Escape') hideHelp();
 				}}
-				aria-label={`${label} help`}
+				aria-label={isKorean ? `${label} 도움말` : `${label} help`}
 				aria-expanded={open}
 				aria-describedby={open ? tooltipId() : undefined}
 				data-testid={testId}
@@ -72,7 +76,7 @@ function hideHelp() {
 				onkeydown={(event) => {
 					if (event.key === 'Escape') hideHelp();
 				}}
-				aria-label={`${label} help`}
+				aria-label={isKorean ? `${label} 도움말` : `${label} help`}
 				aria-expanded={open}
 				aria-describedby={open ? tooltipId() : undefined}
 				data-testid={testId}

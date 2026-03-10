@@ -252,7 +252,7 @@ pub fn extract_user_info(
             return Err(ServiceError::Internal(format!(
                 "OAuth userinfo missing '{}' field",
                 config.field_map.id
-            )))
+            )));
         }
     };
 

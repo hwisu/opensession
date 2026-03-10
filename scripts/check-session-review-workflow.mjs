@@ -43,17 +43,20 @@ function main() {
   if (!reportScript.includes("'<!-- opensession-session-review-final -->'")) {
     fail('Final marker is missing in scripts/pr_session_report.mjs.');
   }
-  if (!reportScript.includes('Quick links: [Files changed]')) {
+  if (!reportScript.includes('| Metric | Value |')) {
+    fail('Report must include an overview metric table.');
+  }
+  if (!reportScript.includes('Files changed](') || !reportScript.includes('Commits](')) {
     fail('Report must include PR quick links to files/commits.');
   }
-  if (!reportScript.includes('Local review: [Open in UI]')) {
+  if (!reportScript.includes('Open in UI') || !reportScript.includes('ops review')) {
     fail('Report must include local review deep-link.');
   }
-  if (!reportScript.includes('Artifact branch:')) {
+  if (!reportScript.includes('Artifact branch |')) {
     fail('Report must include artifact branch summary link.');
   }
-  if (!reportScript.includes('| Session ID | Commits | Open | OpenSession | JSONL | Meta |')) {
-    fail('Report must include Open/OpenSession/JSONL/Meta columns for per-session navigation.');
+  if (!reportScript.includes('| Session ID | Tool | Files | Commits | Open | OpenSession | JSONL | Meta | Title |')) {
+    fail('Report must include session metadata columns for per-session navigation.');
   }
   if (!reportScript.includes('opensessionSourceLink(')) {
     fail('Report must build opensession.io source links for web review.');
@@ -76,23 +79,32 @@ function main() {
   if (!reportScript.includes('tryRunRaw(`git show ${ledgerRef}:${session.hail_path}`)')) {
     fail('Report script must read hail artifact payload via raw git show path.');
   }
-  if (!reportScript.includes('#### Commit trail')) {
+  if (!reportScript.includes('Commit trail (')) {
     fail('Report must include commit trail for direct change navigation.');
   }
   if (!reportScript.includes('#### Reviewer Quick Digest')) {
     fail('Report must include Reviewer Quick Digest block for high-signal review context.');
   }
-  if (!reportScript.includes('Q&A excerpts:')) {
-    fail('Report must summarize interactive Q&A excerpts.');
+  if (!reportScript.includes('| Q&A | Areas | Files | Tests | Sessions / Commit |')) {
+    fail('Report must summarize review KPIs in a digest table.');
   }
-  if (!reportScript.includes('Added/updated test files:')) {
-    fail('Report must summarize added/updated test file coverage.');
+  if (!reportScript.includes('#### Area Summary')) {
+    fail('Report must summarize changed areas.');
   }
-  if (!reportScript.includes('| Question | Answer |')) {
-    fail('Report must render Q&A digest as a question/answer table.');
+  if (!reportScript.includes('| Session | Commit | Question | Answer |')) {
+    fail('Report must render Q&A digest with session and commit context.');
+  }
+  if (!reportScript.includes('primary only (auxiliary filtered)')) {
+    fail('Report must describe primary-session filtering.');
+  }
+  if (!reportScript.includes('<details>')) {
+    fail('Report must use collapsible detail sections for long lists.');
   }
   if (!reportScript.includes('collectQaDigestFromSessions')) {
     fail('Report script must derive Q&A digest rows from session payloads.');
+  }
+  if (!reportScript.includes('collectAreaSummary')) {
+    fail('Report script must derive area summary rows from changed files.');
   }
   if (!reportScript.includes('Updated at (UTC)')) {
     fail('Report must include update timestamp for per-run freshness.');
@@ -125,20 +137,32 @@ function main() {
   if (!workflow.includes('--publish-artifacts true')) {
     fail('workflow must request artifact publication for review reports.');
   }
+  if (!workflow.includes('--artifact-branch "$ARTIFACT_BRANCH"')) {
+    fail('workflow must pass resolved artifact branch context to report builder.');
+  }
+  if (!workflow.includes('--preserve-existing-artifacts "$PERSIST_ARTIFACTS"')) {
+    fail('workflow must preserve existing archive branch contents when persistent storage is enabled.');
+  }
   if (!workflow.includes('Configure git author for artifact branch')) {
     fail('workflow must configure git author before publishing artifact branch.');
   }
-  if (!workflow.includes('Apply artifact retention policy (merged PR only)')) {
-    fail('cleanup must apply artifact retention policy for merged PRs.');
+  if (!workflow.includes('Resolve artifact storage')) {
+    fail('workflow must resolve artifact storage from cleanup config.');
   }
-  if (!workflow.includes('OPENSESSION_ARTIFACT_RETENTION')) {
-    fail('cleanup must support repository-level OPENSESSION_ARTIFACT_RETENTION variable.');
+  if (!workflow.includes("github.event.pull_request.user.type != 'Bot'")) {
+    fail('workflow must skip session review automation for bot-authored PRs.');
   }
-  if (!workflow.includes("vars.OPENSESSION_ARTIFACT_RETENTION || 'next_commit'")) {
-    fail('artifact retention must default to next_commit when repo variable is unset.');
+  if (!workflow.includes('session_archive_branch')) {
+    fail('workflow must support repo-local session_archive_branch setting.');
+  }
+  if (!workflow.includes("steps.storage.outputs.persistent != 'true'")) {
+    fail('cleanup must delete ephemeral artifact branches only when no archive branch is configured.');
+  }
+  if (!workflow.includes('Delete ephemeral artifact branch on PR close')) {
+    fail('cleanup must delete ephemeral artifact branches on PR close.');
   }
   if (!workflow.includes('--publish-artifacts "$publish_artifacts"')) {
-    fail('final report builder must toggle artifact publishing based on retention mode.');
+    fail('final report builder must toggle artifact publishing based on archive policy.');
   }
   if (!workflow.includes('github.rest.issues.deleteComment')) {
     fail('sticky comment upsert must dedupe stale marker comments.');

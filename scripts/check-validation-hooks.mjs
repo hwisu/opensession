@@ -12,9 +12,12 @@ const checks = [
 			'ERROR: mise is required for pre-commit validation.',
 			'scripts/validate/desktop-build-preflight.mjs --mode local',
 			'run_node_check()',
+			'scripts/check-ci-workflow.mjs',
+			'scripts/check-rust-artifact-guardrails.mjs',
 			'scripts/check-validation-hooks.mjs',
 			'scripts/check-doc-portability.mjs',
 			'scripts/verify-content-contract.mjs',
+			'scripts/tests/*.test.mjs',
 		],
 	},
 	{

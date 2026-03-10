@@ -1,3 +1,6 @@
+import { get } from 'svelte/store';
+import { appLocale } from './i18n';
+
 // ─── HAIL core types (mirrors crates/core/src/trace.rs) ──────────────────────
 // These represent the full session trace format used by /api/sessions/:id/raw
 
@@ -250,23 +253,38 @@ export function getToolConfig(tool: string): ToolConfig {
 }
 
 export function formatDuration(seconds: number): string {
-	if (seconds < 60) return `${seconds}s`;
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+	const locale = get(appLocale);
+	if (seconds < 60) return locale === 'ko' ? `${seconds}초` : `${seconds}s`;
+	if (seconds < 3600) {
+		const minutes = Math.floor(seconds / 60);
+		const remainder = seconds % 60;
+		return locale === 'ko' ? `${minutes}분 ${remainder}초` : `${minutes}m ${remainder}s`;
+	}
 	const h = Math.floor(seconds / 3600);
 	const m = Math.floor((seconds % 3600) / 60);
-	return `${h}h ${m}m`;
+	return locale === 'ko' ? `${h}시간 ${m}분` : `${h}h ${m}m`;
 }
 
 export function formatTimestamp(ts: string): string {
 	const date = new Date(ts);
 	const now = new Date();
+	const locale = get(appLocale);
 	const diff = now.getTime() - date.getTime();
 	const minutes = Math.floor(diff / 60000);
-	if (minutes < 1) return 'just now';
-	if (minutes < 60) return `${minutes}m ago`;
+	if (minutes < 1) return locale === 'ko' ? '방금 전' : 'just now';
+	if (minutes < 60) return locale === 'ko' ? `${minutes}분 전` : `${minutes}m ago`;
 	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `${hours}h ago`;
+	if (hours < 24) return locale === 'ko' ? `${hours}시간 전` : `${hours}h ago`;
 	const days = Math.floor(hours / 24);
-	if (days < 30) return `${days}d ago`;
-	return date.toLocaleDateString();
+	if (days < 30) return locale === 'ko' ? `${days}일 전` : `${days}d ago`;
+	return date.toLocaleDateString(locale === 'ko' ? 'ko-KR' : undefined);
+}
+
+export function formatClockTime(ts: string): string {
+	const locale = get(appLocale);
+	return new Date(ts).toLocaleTimeString(locale === 'ko' ? 'ko-KR' : 'en-US', {
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	});
 }

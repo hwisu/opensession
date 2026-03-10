@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount } from 'svelte';
+import { appLocale, translate } from '../i18n';
 import { moonIcon, sunIcon } from './icons';
 
 let isDark = $state(true);
@@ -24,8 +25,8 @@ function toggle() {
 <button
 	onclick={toggle}
 	class="flex items-center justify-center text-sm text-text-secondary transition-colors hover:text-text-primary"
-	title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-	aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+	title={isDark ? translate($appLocale, 'theme.switchLight') : translate($appLocale, 'theme.switchDark')}
+	aria-label={isDark ? translate($appLocale, 'theme.switchLight') : translate($appLocale, 'theme.switchDark')}
 >
 	{#if isDark}
 		<span>{@html sunIcon}</span>

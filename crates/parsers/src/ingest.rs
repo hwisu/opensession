@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use opensession_core::trace::Session;
 use std::fmt;
 use std::io::Write;
@@ -63,7 +63,7 @@ const SUPPORTED_PARSER_IDS: &[&str] = &[
 ];
 
 /// Detect parser candidates from filename and content text.
-pub fn detect_candidates(filename: &str, content: &str) -> Vec<ParseCandidate> {
+pub(crate) fn detect_candidates(filename: &str, content: &str) -> Vec<ParseCandidate> {
     let mut candidates: Vec<ParseCandidate> = Vec::new();
     let lower_name = filename.to_ascii_lowercase();
     let trimmed = content.trim();
@@ -141,7 +141,7 @@ pub fn detect_candidates(filename: &str, content: &str) -> Vec<ParseCandidate> {
 }
 
 /// Parse content bytes with hint + detector fallback.
-pub fn preview_parse_bytes(
+pub(crate) fn preview_parse_bytes(
     filename: &str,
     content_bytes: &[u8],
     parser_hint: Option<&str>,
@@ -394,10 +394,12 @@ mod tests {
         )
         .expect("fallback should parse as hail");
         assert_eq!(preview.parser_used, "hail");
-        assert!(preview
-            .warnings
-            .iter()
-            .any(|w| w.contains("parser_hint 'cursor' failed")));
+        assert!(
+            preview
+                .warnings
+                .iter()
+                .any(|w| w.contains("parser_hint 'cursor' failed"))
+        );
     }
 
     #[test]

@@ -273,7 +273,8 @@ pub async fn get_raw(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
     }
 
     // Fetch from R2
-    match storage::get_session_body(&ctx.env, &row.body_storage_key).await? {
+    let body = storage::get_session_body(&ctx.env, &row.body_storage_key).await?;
+    match body {
         Some(bytes) => {
             let headers = Headers::new();
             headers.set("Content-Type", "application/jsonl")?;

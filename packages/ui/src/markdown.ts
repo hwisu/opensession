@@ -1,4 +1,3 @@
-import DOMPurify from 'isomorphic-dompurify';
 import { Marked, type RendererThis, type Token, type Tokens } from 'marked';
 import { LONG_CONTENT_CHAR_THRESHOLD, LONG_TEXT_LINE_THRESHOLD } from './constants';
 import { highlightCode } from './highlight';
@@ -7,42 +6,6 @@ const MARKDOWN_CACHE_MAX_ENTRIES = 256;
 const MARKDOWN_CACHE_MAX_CHARS = 150_000;
 const markdownCache = new Map<string, string>();
 const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
-
-const MARKDOWN_SANITIZE_CONFIG = {
-	ALLOWED_TAGS: [
-		'a',
-		'b',
-		'blockquote',
-		'br',
-		'code',
-		'div',
-		'em',
-		'h1',
-		'h2',
-		'h3',
-		'h4',
-		'h5',
-		'h6',
-		'hr',
-		'i',
-		'img',
-		'li',
-		'ol',
-		'p',
-		'pre',
-		'span',
-		'strong',
-		'table',
-		'tbody',
-		'td',
-		'th',
-		'thead',
-		'tr',
-		'ul',
-	],
-	ALLOWED_ATTR: ['class', 'href', 'src', 'alt', 'target', 'rel'],
-	ALLOW_DATA_ATTR: false,
-};
 
 function parseInlineText(ctx: RendererThis, token: { text: string; tokens?: Token[] }): string {
 	if (token.tokens && ctx.parser?.parseInline) {
@@ -87,10 +50,9 @@ function sanitizeUrl(raw: string | null | undefined): string | null {
 	}
 }
 
-function sanitizeRenderedHtml(rendered: string): string {
-	const clean = DOMPurify.sanitize(rendered, MARKDOWN_SANITIZE_CONFIG) as string;
+function finalizeRenderedHtml(rendered: string): string {
 	// Preserve opener isolation for all explicit new-tab links.
-	return clean.replace(
+	return rendered.replace(
 		/<a([^>]*?)target="_blank"([^>]*?)rel="([^"]*)"([^>]*)>/gi,
 		(_, before: string, mid: string, relValue: string, after: string) => {
 			const relTokens = new Set(
@@ -151,7 +113,7 @@ const marked = new Marked({
 			if (!safeHref) {
 				return `<span class="md-link">${label}</span>`;
 			}
-			return `<a href="${escapeHtml(safeHref)}" class="md-link" target="_blank" rel="noopener noreferrer">${label}</a>`;
+			return `<a href="${escapeHtmlAttr(safeHref)}" class="md-link" target="_blank" rel="noopener noreferrer">${label}</a>`;
 		},
 		table(this: RendererThis, token: Tokens.Table) {
 			const headerCells = token.header
@@ -173,7 +135,7 @@ const marked = new Marked({
 			if (!safeSrc || safeSrc.startsWith('mailto:')) {
 				return '';
 			}
-			return `<img src="${escapeHtml(safeSrc)}" alt="${escapeHtml(text ?? '')}" class="md-img" />`;
+			return `<img src="${escapeHtmlAttr(safeSrc)}" alt="${escapeHtmlAttr(text ?? '')}" class="md-img" />`;
 		},
 		html({ text }: Tokens.HTML | Tokens.Tag) {
 			return escapeHtml(text);
@@ -204,7 +166,7 @@ export function renderMarkdown(text: string): string {
 	} catch {
 		rendered = escapeHtml(text);
 	}
-	const sanitized = sanitizeRenderedHtml(rendered);
+	const sanitized = finalizeRenderedHtml(rendered);
 
 	if (cacheable) {
 		if (markdownCache.size >= MARKDOWN_CACHE_MAX_ENTRIES) {
@@ -242,7 +204,16 @@ export function extractStandaloneFencedCode(
 }
 
 function escapeHtml(text: string): string {
-	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	return text
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
+
+function escapeHtmlAttr(text: string): string {
+	return escapeHtml(text);
 }
 
 /** Count approximate lines in text */

@@ -1,5 +1,7 @@
 # OpenSession Desktop (Preview)
 
+[한국어](README.ko.md)
+
 This is a desktop shell that reuses the existing Svelte web UI from `../web`.
 
 ## Run (dev)

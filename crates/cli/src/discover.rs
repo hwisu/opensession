@@ -1,5 +1,5 @@
 use anyhow::Result;
-use opensession_parsers::discover::discover_sessions;
+use opensession_parser_discovery::discover_sessions;
 
 /// List all locally discovered AI sessions
 pub fn run_discover() -> Result<()> {

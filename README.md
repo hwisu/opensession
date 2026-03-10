@@ -13,6 +13,7 @@ Docs: [opensession.io/docs](https://opensession.io/docs)
 ## Documentation Map
 
 - Product contract and command model: [`docs.md`](docs.md)
+- Korean product contract: [`docs.ko.md`](docs.ko.md)
 - Development and validation runbook: [`docs/development-validation-flow.md`](docs/development-validation-flow.md)
 - Harness loop policy: [`docs/harness-auto-improve-loop.md`](docs/harness-auto-improve-loop.md)
 - Parser source/reuse matrix: [`docs/parser-source-matrix.md`](docs/parser-source-matrix.md)
@@ -231,13 +232,17 @@ opensession cleanup run
 
 # apply cleanup deletions
 opensession cleanup run --apply
+
+# keep review snapshots permanently on a dedicated branch
+opensession cleanup init --provider auto --session-archive-branch pr/sessions --yes
 ```
 
 Defaults:
 
 - hidden ref TTL: 30 days
 - artifact branch TTL: 30 days
-- GitHub/GitLab setup also writes PR/MR session-review automation that updates an artifact branch and posts a review comment on PR/MR updates.
+- GitHub/GitLab setup also writes PR/MR session-review automation that updates a session artifact branch and posts a review comment on PR/MR updates.
+- By default PR/MR artifact branches are ephemeral and are deleted when the review closes; set `--session-archive-branch <branch>` to keep immutable review snapshots on a dedicated archive branch such as `pr/sessions`.
 - Session review comments now include a `Reviewer Quick Digest` block with Q&A excerpts (question/answer rows), modified files, and added/updated tests.
 
 Sensitive repositories can force immediate cleanup:
@@ -344,6 +349,8 @@ opensession share os://src/local/<sha256> --quick
 ./.githooks/pre-commit
 ./.githooks/pre-push
 ```
+
+PR CI is intentionally lean: `.github/workflows/ci.yml` keeps only fast baseline gates, while heavy GitHub-hosted E2E/desktop validation lives in `.github/workflows/ci-deep.yml` and should be exercised locally first.
 
 ```bash
 # Runtime web validation (after starting wrangler + opensession-server)

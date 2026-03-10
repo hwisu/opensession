@@ -1,11 +1,11 @@
-use crate::common::{build_tool_result_content, ToolUseInfo};
+use crate::common::{ToolUseInfo, build_tool_result_content};
 use opensession_core::trace::{Content, ContentBlock, EventType};
 
 // ── Content transformation helpers ──────────────────────────────────────────
 
 /// Extract raw text from ToolResult content
-pub(super) fn tool_result_content_to_string(content: &super::parse::ToolResultContent) -> String {
-    use super::parse::{ToolResultBlock, ToolResultContent};
+pub(super) fn tool_result_content_to_string(content: &super::raw::ToolResultContent) -> String {
+    use super::raw::{ToolResultBlock, ToolResultContent};
     match content {
         ToolResultContent::Text(text) => text.clone(),
         ToolResultContent::Blocks(blocks) => {
@@ -23,7 +23,7 @@ pub(super) fn tool_result_content_to_string(content: &super::parse::ToolResultCo
 
 /// Build structured Content for a ToolResult event (delegates to common helper).
 pub(super) fn build_cc_tool_result_content(
-    raw_content: &super::parse::ToolResultContent,
+    raw_content: &super::raw::ToolResultContent,
     tool_info: &ToolUseInfo,
 ) -> Content {
     let raw_text = tool_result_content_to_string(raw_content);
@@ -231,7 +231,7 @@ pub(super) fn tool_use_content(name: &str, input: &serde_json::Value) -> Content
 
 #[cfg(test)]
 mod tests {
-    use super::super::parse::ToolResultContent;
+    use super::super::raw::ToolResultContent;
     use super::*;
     use crate::common::ToolUseInfo;
 
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_content_blocks() {
-        use super::super::parse::ToolResultBlock;
+        use super::super::raw::ToolResultBlock;
         let content = ToolResultContent::Blocks(vec![ToolResultBlock::Text {
             text: "line1".to_string(),
         }]);

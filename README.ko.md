@@ -8,11 +8,13 @@
 OpenSession은 AI 세션 로그를 로컬 우선(local-first)으로 기록/등록/공유/검토하는 워크플로입니다.
 
 웹: [opensession.io](https://opensession.io)  
-문서: [opensession.io/docs](https://opensession.io/docs)
+문서: [opensession.io/docs](https://opensession.io/docs)  
+한국어 제품 문서: [`docs.ko.md`](docs.ko.md)
 
 ## 문서 맵
 
-- 제품 계약/명령 모델: [`docs.md`](docs.md)
+- 제품 계약/명령 모델: [`docs.ko.md`](docs.ko.md)
+- 영문 원본 계약 문서: [`docs.md`](docs.md)
 - 개발/검증 런북: [`docs/development-validation-flow.md`](docs/development-validation-flow.md)
 - 하네스 루프 정책: [`docs/harness-auto-improve-loop.md`](docs/harness-auto-improve-loop.md)
 - 파서 소스/재사용 매트릭스: [`docs/parser-source-matrix.md`](docs/parser-source-matrix.md)
@@ -53,6 +55,19 @@ cargo install opensession
 
 사용자 표면은 `opensession` CLI입니다. 자동 세션 수집(auto-capture)을 쓰려면 daemon 프로세스가 추가로 실행 중이어야 합니다.
 
+CLI 로컬 전용 경로(backup/summary/handoff):
+
+```bash
+opensession doctor
+opensession doctor --fix --profile local
+```
+
+데스크톱 앱 경로(app + CLI + app-first 기본값):
+
+```bash
+opensession doctor --fix --profile app --open-target app
+```
+
 ## 개발 툴체인 (레포 작업 필수)
 
 로컬 환경 편차를 줄이기 위해 레포 훅/검증은 `mise` 관리 툴체인을 필수로 사용합니다.
@@ -75,16 +90,16 @@ cargo install opensession
 opensession doctor
 
 # 3) 권장 설치값 적용 (변경 전 동의 프롬프트)
-opensession doctor --fix
+opensession doctor --fix --profile local
 
 # 선택: fanout 모드를 명시적으로 지정
-opensession doctor --fix --fanout-mode hidden_ref
+opensession doctor --fix --profile local --fanout-mode hidden_ref
 
 # 선택: view/review 오프너를 명시적으로 지정
-opensession doctor --fix --open-target app
+opensession doctor --fix --profile app --open-target app
 
 # 자동화/비대화형(non-TTY)
-opensession doctor --fix --yes --fanout-mode hidden_ref --open-target app
+opensession doctor --fix --yes --profile local --fanout-mode hidden_ref --open-target web
 ```
 
 `doctor`는 내부적으로 기존 setup 파이프라인을 재사용합니다.
@@ -92,7 +107,7 @@ opensession doctor --fix --yes --fanout-mode hidden_ref --open-target app
 첫 interactive 적용 시 fanout 저장 모드(`hidden_ref` 또는 `git_notes`)를 선택하며, 선택값은 로컬 git 설정(`.git/config`)의 `opensession.fanout-mode`에 저장됩니다.
 같은 설정 흐름에서 `opensession view/review` 오프너(`app` 또는 `web`)도 선택하며 `opensession.open-target`으로 저장됩니다.
 비대화형 환경에서는 `--fix`에 `--yes`가 필요하고, 저장된 fanout 모드가 없으면 `--fanout-mode`를 명시해야 합니다.
-`--open-target`은 선택사항이며 기본값은 `app`입니다.
+`--open-target`은 선택사항이며 기본값이 profile을 따릅니다(`local -> web`, `app -> app`).
 
 자동 수집을 위한 daemon 실행:
 
@@ -179,11 +194,17 @@ opensession inspect os://src/local/<sha256>
 ## 공유(share)
 
 ```bash
-# local URI -> git 공유 가능 Source URI
-opensession share os://src/local/<sha256> --git --remote origin
+# 원클릭 git 공유 (첫 push만 한 번 확인, 이후 quick 모드에서 자동 push)
+opensession share os://src/local/<sha256> --quick
 
 # 선택적 네트워크 변경
 opensession share os://src/local/<sha256> --git --remote origin --push
+
+# OpenSession pre-push 훅 설치/업데이트
+opensession doctor
+opensession doctor --fix --profile local
+# 선택: fanout 실패 시 push 자체를 실패시키고 싶다면
+OPENSESSION_STRICT=1 git push
 
 # remote-resolvable URI -> 웹 URL
 opensession config init --base-url https://opensession.io
@@ -191,6 +212,8 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 ```
 
 `share --web`는 `.opensession/config.toml`이 반드시 필요합니다.
+Git-native write는 이제 hidden ledger ref(`refs/opensession/branches/<branch_b64url>`)를 사용하며, 새 write에 레거시 고정 ref는 쓰지 않습니다.
+`opensession doctor --fix`는 훅 안정성을 위해 `~/.local/share/opensession/bin/opensession` shim도 설치합니다.
 
 ## Cleanup 자동화
 
@@ -217,13 +240,17 @@ opensession cleanup run --apply
 
 - hidden ref TTL: 30일
 - artifact branch TTL: 30일
-- GitHub/GitLab 설정 시 PR/MR 갱신마다 artifact branch를 갱신하고 리뷰 코멘트를 남기는 session-review 자동화 템플릿도 함께 생성됩니다.
+- GitHub/GitLab 설정 시 PR/MR 갱신마다 session artifact branch를 갱신하고 리뷰 코멘트를 남기는 session-review 자동화 템플릿도 함께 생성됩니다.
+- 기본값은 ephemeral PR/MR artifact branch이며 리뷰가 닫히면 삭제됩니다. `--session-archive-branch <branch>`를 설정하면 `pr/sessions` 같은 전용 archive branch에 immutable snapshot을 계속 보관합니다.
 - session-review 코멘트에는 `Reviewer Quick Digest` 블록이 포함되며, Q&A 발췌(질문/응답), 수정 파일, 추가/수정 테스트가 함께 표시됩니다.
 
 민감한 저장소는 즉시 정리 모드를 권장합니다.
 
 ```bash
 opensession cleanup init --provider auto --hidden-ttl-days 0 --artifact-ttl-days 0 --yes
+
+# 전용 브랜치에 리뷰 스냅샷 영구 보관
+opensession cleanup init --provider auto --session-archive-branch pr/sessions --yes
 ```
 
 ## handoff
@@ -274,12 +301,12 @@ opensession share os://src/git/<remote_b64>/ref/<ref_enc>/path/<path...> --web
 ```
 2. `share --git`에서 remote 누락:
 ```bash
-opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/local/<sha256> --quick
 ```
 3. git 저장소 밖에서 `share --git` 실행:
 ```bash
 cd <your-repo>
-opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/local/<sha256> --quick
 ```
 4. `.opensession/config.toml` 없이 `share --web` 실행:
 ```bash
@@ -311,10 +338,10 @@ opensession cleanup run
 처음 사용자 5분 복귀 경로:
 ```bash
 opensession doctor
-opensession doctor --fix
+opensession doctor --fix --profile local
 opensession parse --profile codex ./raw-session.jsonl --out ./session.hail.jsonl
 opensession register ./session.hail.jsonl
-opensession share os://src/local/<sha256> --git --remote origin
+opensession share os://src/local/<sha256> --quick
 ```
 
 ## 로컬 개발 검증
@@ -324,6 +351,8 @@ opensession share os://src/local/<sha256> --git --remote origin
 ./.githooks/pre-commit
 ./.githooks/pre-push
 ```
+
+PR CI는 의도적으로 가볍게 유지합니다. `.github/workflows/ci.yml`에는 빠른 기본 게이트만 남기고, 무거운 GitHub-hosted E2E/desktop 검증은 `.github/workflows/ci-deep.yml`로 분리해 로컬에서 먼저 검증하는 흐름을 기준으로 둡니다.
 
 ```bash
 # 웹 런타임 검증 (wrangler + opensession-server 기동 이후)

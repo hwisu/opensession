@@ -1,9 +1,12 @@
 use axum::{
-    http::{header, HeaderMap, StatusCode},
+    extract::Query,
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use serde::Deserialize;
 
-const DOCS_MD: &str = include_str!("../../../../docs.md");
+const DOCS_MD_EN: &str = include_str!("../../../../docs.md");
+const DOCS_MD_KO: &str = include_str!("../../../../docs.ko.md");
 
 const LLMS_TXT: &str = "\
 # OpenSession
@@ -35,7 +38,26 @@ Base URL: `/api`
 - CLI: `cargo install opensession`
 ";
 
-pub async fn handle(headers: HeaderMap) -> Response {
+#[derive(Debug, Default, Deserialize)]
+pub struct DocsQuery {
+    lang: Option<String>,
+}
+
+fn is_korean_locale(locale: Option<&str>) -> bool {
+    locale.map(str::trim).is_some_and(|value| {
+        value.eq_ignore_ascii_case("ko") || value.to_ascii_lowercase().starts_with("ko-")
+    })
+}
+
+fn docs_markdown_for_locale(locale: Option<&str>) -> &'static str {
+    if is_korean_locale(locale) {
+        DOCS_MD_KO
+    } else {
+        DOCS_MD_EN
+    }
+}
+
+pub async fn handle(Query(query): Query<DocsQuery>, headers: HeaderMap) -> Response {
     let accept = headers
         .get("accept")
         .and_then(|v| v.to_str().ok())
@@ -48,7 +70,7 @@ pub async fn handle(headers: HeaderMap) -> Response {
                 (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
                 (header::CACHE_CONTROL, "public, max-age=3600"),
             ],
-            DOCS_MD,
+            docs_markdown_for_locale(query.lang.as_deref()),
         )
             .into_response();
     }
@@ -65,6 +87,23 @@ pub async fn handle(headers: HeaderMap) -> Response {
         )
             .into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::docs_markdown_for_locale;
+
+    #[test]
+    fn selects_korean_docs_for_korean_locale() {
+        let selected = docs_markdown_for_locale(Some("ko-KR"));
+        assert!(selected.starts_with("# 문서"));
+    }
+
+    #[test]
+    fn defaults_to_english_docs() {
+        let selected = docs_markdown_for_locale(Some("en-US"));
+        assert!(selected.starts_with("# Documentation"));
     }
 }
 

@@ -1,6 +1,4 @@
 use std::cmp::Ordering;
-use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -49,16 +47,6 @@ pub struct HandoffArtifact {
     pub derived_markdown: Option<String>,
 }
 
-impl HandoffArtifact {
-    pub fn stale_reasons(&self) -> Vec<HandoffSourceStaleReason> {
-        stale_reasons(&self.sources)
-    }
-
-    pub fn is_stale(&self) -> bool {
-        !self.stale_reasons().is_empty()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandoffSourceStaleReason {
     pub session_id: String,
@@ -94,76 +82,19 @@ pub fn sort_sessions_time_asc(sessions: &mut [Session]) {
     });
 }
 
-pub fn source_fingerprint(path: &Path) -> std::io::Result<SourceFingerprint> {
-    let metadata = std::fs::metadata(path)?;
-    let mtime_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0);
-    Ok(SourceFingerprint {
-        mtime_ms,
-        size: metadata.len(),
-    })
-}
-
 pub fn source_from_session(
     session: &Session,
-    source_path: &Path,
-) -> std::io::Result<HandoffArtifactSource> {
-    let fp = source_fingerprint(source_path)?;
-    Ok(HandoffArtifactSource {
+    source_path: impl Into<String>,
+    fingerprint: SourceFingerprint,
+) -> HandoffArtifactSource {
+    HandoffArtifactSource {
         session_id: session.session_id.clone(),
         tool: session.agent.tool.clone(),
         model: session.agent.model.clone(),
-        source_path: source_path.to_string_lossy().into_owned(),
-        source_mtime_ms: fp.mtime_ms,
-        source_size: fp.size,
-    })
-}
-
-pub fn stale_reasons(sources: &[HandoffArtifactSource]) -> Vec<HandoffSourceStaleReason> {
-    let mut reasons = Vec::new();
-    for source in sources {
-        let path = Path::new(&source.source_path);
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                reasons.push(HandoffSourceStaleReason {
-                    session_id: source.session_id.clone(),
-                    source_path: source.source_path.clone(),
-                    reason: "missing_source_file".to_string(),
-                });
-                continue;
-            }
-            Err(_) => {
-                reasons.push(HandoffSourceStaleReason {
-                    session_id: source.session_id.clone(),
-                    source_path: source.source_path.clone(),
-                    reason: "unreadable_source_file".to_string(),
-                });
-                continue;
-            }
-        };
-
-        let current_mtime_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or(0);
-        let current_size = metadata.len();
-
-        if current_mtime_ms != source.source_mtime_ms || current_size != source.source_size {
-            reasons.push(HandoffSourceStaleReason {
-                session_id: source.session_id.clone(),
-                source_path: source.source_path.clone(),
-                reason: "source_fingerprint_changed".to_string(),
-            });
-        }
+        source_path: source_path.into(),
+        source_mtime_ms: fingerprint.mtime_ms,
+        source_size: fingerprint.size,
     }
-    reasons
 }
 
 #[cfg(test)]
@@ -202,23 +133,21 @@ mod tests {
     }
 
     #[test]
-    fn stale_reasons_detects_fingerprint_changes() {
-        let temp_path = std::env::temp_dir().join(format!(
-            "opensession-handoff-artifact-{}.jsonl",
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        std::fs::write(&temp_path, b"before").expect("write temp file");
-
+    fn source_from_session_preserves_supplied_fingerprint() {
         let mut session = Session::new("session-1".to_string(), testing::agent());
         session.context.created_at = Utc::now();
-        let source = source_from_session(&session, &temp_path).expect("source fingerprint");
-        assert!(stale_reasons(std::slice::from_ref(&source)).is_empty());
+        let source = source_from_session(
+            &session,
+            "/tmp/session.jsonl",
+            SourceFingerprint {
+                mtime_ms: 42,
+                size: 128,
+            },
+        );
 
-        std::fs::write(&temp_path, b"after-after").expect("rewrite temp file");
-        let reasons = stale_reasons(&[source]);
-        assert_eq!(reasons.len(), 1);
-        assert_eq!(reasons[0].reason, "source_fingerprint_changed");
-
-        let _ = std::fs::remove_file(&temp_path);
+        assert_eq!(source.session_id, "session-1");
+        assert_eq!(source.source_path, "/tmp/session.jsonl");
+        assert_eq!(source.source_mtime_ms, 42);
+        assert_eq!(source.source_size, 128);
     }
 }

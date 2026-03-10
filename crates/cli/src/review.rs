@@ -1,14 +1,16 @@
 use crate::url_opener::open_url_for_repo;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 use opensession_api::{
     LocalReviewBundle, LocalReviewCommit, LocalReviewLayerFileChange, LocalReviewPrMeta,
     LocalReviewReviewerDigest, LocalReviewReviewerQa, LocalReviewSemanticSummary,
     LocalReviewSession,
 };
+use opensession_core::session::is_auxiliary_session;
 use opensession_core::{ContentBlock, EventType, Session};
 use opensession_runtime_config::SummarySettings;
-use opensession_summary::{summarize_git_commit, SemanticSummaryArtifact};
+use opensession_summary::SemanticSummaryArtifact;
+use opensession_summary_runtime::summarize_git_commit;
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -771,6 +773,9 @@ async fn build_review_bundle(input: BuildReviewBundleInput<'_>) -> Result<LocalR
                             index_entry.hail_path
                         )
                     })?;
+                    if is_auxiliary_session(&session) {
+                        continue;
+                    }
                     session_rows.push(LocalReviewSession {
                         session_id: index_entry.session_id.clone(),
                         ledger_ref: ledger_ref.clone(),
@@ -1008,7 +1013,8 @@ async fn endpoint_ok(url: &str) -> bool {
         Err(_) => return false,
     };
 
-    match client.get(url).send().await {
+    let response = client.get(url).send().await;
+    match response {
         Ok(response) => response.status().is_success(),
         Err(_) => false,
     }
@@ -1082,9 +1088,9 @@ fn run_git(repo_root: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_review_id, build_reviewer_digest_for_commit, parse_github_pr_url,
-        parse_remote_repo_triplet, refresh_remote_head_fetch_args, resolve_view_mode,
-        sanitize_path_component, sanitize_review_id_component, GithubPrSpec, ReviewView,
+        GithubPrSpec, ReviewView, build_review_id, build_reviewer_digest_for_commit,
+        parse_github_pr_url, parse_remote_repo_triplet, refresh_remote_head_fetch_args,
+        resolve_view_mode, sanitize_path_component, sanitize_review_id_component,
     };
     use opensession_api::LocalReviewSession;
     use opensession_core::{Agent, Content, Event, EventType, Session};

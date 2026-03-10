@@ -1,4 +1,4 @@
-use crate::{extract::extract_file_metadata, EventType, Session};
+use crate::{EventType, Session, extract::extract_file_metadata};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -233,7 +233,7 @@ fn count_recoveries(session: &Session) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{testing, Session};
+    use crate::{Session, testing};
 
     fn build_session(events: Vec<crate::Event>) -> Session {
         let mut session = Session::new("score-test".to_string(), testing::agent());

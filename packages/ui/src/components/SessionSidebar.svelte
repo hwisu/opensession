@@ -1,4 +1,5 @@
 <script lang="ts">
+import { appLocale } from '../i18n';
 import type { Session, SessionDetail } from '../types';
 import { formatDuration, formatTimestamp, getToolConfig } from '../types';
 import type { FileStats } from '../utils';
@@ -29,6 +30,11 @@ const {
 } = $props();
 
 const tool = $derived(getToolConfig(session.agent.tool));
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 </script>
 
 {#snippet glyph(icon: string)}
@@ -58,7 +64,9 @@ const tool = $derived(getToolConfig(session.agent.tool));
 			</div>
 		{/if}
 
-		<h3 class="text-xs font-semibold uppercase tracking-wider text-text-muted">Session</h3>
+		<h3 class="text-xs font-semibold uppercase tracking-wider text-text-muted">
+			{localize('Session', '세션')}
+		</h3>
 
 		<div class="space-y-2 rounded border border-border/70 bg-bg-primary/55 p-2 text-xs">
 			<!-- Date -->
@@ -73,34 +81,34 @@ const tool = $derived(getToolConfig(session.agent.tool));
 				</div>
 			</div>
 
-			{@render statRow(botIcon, 'Model:', session.agent.model)}
+			{@render statRow(botIcon, localize('Model:', '모델:'), session.agent.model)}
 
 			<!-- Tool (with optional version) -->
 			<div class="flex items-center gap-2">
 				{@render glyph(lightningIcon)}
-				<span class="text-text-muted">Tool:</span>
+				<span class="text-text-muted">{localize('Tool:', '도구:')}</span>
 				<span class="text-text-secondary">{tool.label}</span>
 				{#if session.agent.tool_version}
 					<span class="text-text-muted">v{session.agent.tool_version}</span>
 				{/if}
 			</div>
 
-			{@render statRow(globeIcon, 'Provider:', session.agent.provider)}
+			{@render statRow(globeIcon, localize('Provider:', '제공자:'), session.agent.provider)}
 
 			<hr class="border-border/60" />
 
-			{@render statRow(listIcon, 'Messages:', `${session.stats.message_count}`)}
-			{@render statRow(terminalIcon, 'Tools:', `${session.stats.tool_call_count}`)}
-			{@render statRow(clockIcon, 'Duration:', formatDuration(session.stats.duration_seconds))}
+			{@render statRow(listIcon, localize('Messages:', '메시지:'), `${session.stats.message_count}`)}
+			{@render statRow(terminalIcon, localize('Tool calls:', '도구 호출:'), `${session.stats.tool_call_count}`)}
+			{@render statRow(clockIcon, localize('Duration:', '소요 시간:'), formatDuration(session.stats.duration_seconds))}
 
 			{#if fileStats.filesChanged > 0}
-				{@render statRow(fileIcon, 'Files:', `${fileStats.filesChanged} changed`)}
+				{@render statRow(fileIcon, localize('Files:', '파일:'), isKorean ? `${fileStats.filesChanged}개 변경` : `${fileStats.filesChanged} changed`)}
 			{/if}
 
 			{#if fileStats.linesAdded > 0 || fileStats.linesRemoved > 0}
 				<div class="flex items-center gap-2">
 					{@render glyph(fileEditIcon)}
-					<span class="text-text-muted">Lines:</span>
+					<span class="text-text-muted">{localize('Lines:', '라인:')}</span>
 					<span>
 						<span class="text-success">+{fileStats.linesAdded}</span>
 						<span class="text-error">-{fileStats.linesRemoved}</span>
@@ -109,7 +117,7 @@ const tool = $derived(getToolConfig(session.agent.tool));
 			{/if}
 
 			{#if session.stats.task_count > 0}
-				{@render statRow(taskEndIcon, 'Tasks:', `${session.stats.task_count}`)}
+				{@render statRow(taskEndIcon, localize('Tasks:', '작업:'), `${session.stats.task_count}`)}
 			{/if}
 		</div>
 

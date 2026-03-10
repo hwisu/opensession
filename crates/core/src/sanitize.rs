@@ -95,10 +95,10 @@ fn sanitize_content_block(block: &mut ContentBlock, config: &SanitizeConfig) {
             if config.strip_paths {
                 *path = strip_home_dir(path);
             }
-            if let Some(c) = content {
-                if config.strip_env_vars {
-                    *c = strip_env_vars(c);
-                }
+            if let Some(c) = content
+                && config.strip_env_vars
+            {
+                *c = strip_env_vars(c);
             }
         }
         _ => {}

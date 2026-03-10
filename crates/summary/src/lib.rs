@@ -3,14 +3,16 @@ pub mod prompt;
 pub mod provider;
 pub mod text;
 pub mod types;
-pub use prompt::{validate_summary_prompt_template, DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2};
-
-use crate::git::{GitSummaryContext, GitSummaryService, ShellGitCommandRunner};
-use crate::prompt::{
-    build_summary_prompt, classify_arch_layer, collect_file_changes, collect_timeline_snippets,
-    contains_auth_security_keyword, SummaryPromptConfig,
+pub use prompt::{
+    DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2, classify_arch_layer, validate_summary_prompt_template,
 };
-use crate::provider::{generate_summary, SemanticSummary};
+pub use provider::{LayerFileChange, SemanticSummary, parse_semantic_summary_or_fallback};
+
+use crate::git::GitSummaryContext;
+use crate::prompt::{
+    SummaryPromptConfig, build_summary_prompt, collect_file_changes, collect_timeline_snippets,
+    contains_auth_security_keyword,
+};
 use crate::text::compact_summary_snippet;
 use crate::types::HailCompactFileChange;
 use opensession_core::trace::{Agent, ContentBlock, Event, EventType, Session};
@@ -18,10 +20,12 @@ use opensession_runtime_config::{SummaryProvider, SummarySettings};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
 
 const MAX_TIMELINE_SNIPPETS: usize = 32;
-const MAX_FILE_CHANGE_ENTRIES: usize = 200;
+pub const MAX_FILE_CHANGE_ENTRIES: usize = 200;
 const MAX_DIFF_HUNKS_PER_FILE: usize = 10;
 const MAX_DIFF_LINES_PER_HUNK: usize = 40;
 const MAX_DIFF_FILES_PER_LAYER: usize = 80;
@@ -113,15 +117,18 @@ impl GitSummaryRequest {
     }
 }
 
-pub fn detect_summary_provider() -> Option<provider::LocalSummaryProfile> {
-    provider::detect_local_summary_profile()
-}
+pub type SummaryGenerateFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<SemanticSummary, String>> + Send + 'a>>;
 
-pub async fn summarize_session(
+pub async fn summarize_session_with_provider<Generate>(
     session: &Session,
     settings: &SummarySettings,
-    git_request: Option<&GitSummaryRequest>,
-) -> Result<SemanticSummaryArtifact, String> {
+    git_context: Option<GitSummaryContext>,
+    generate_summary: Generate,
+) -> Result<SemanticSummaryArtifact, String>
+where
+    Generate: for<'a> Fn(&'a SummarySettings, &'a str) -> SummaryGenerateFuture<'a>,
+{
     let timeline = collect_timeline_snippets(session, MAX_TIMELINE_SNIPPETS, default_event_snippet);
     let files = collect_file_changes(session, MAX_FILE_CHANGE_ENTRIES);
 
@@ -135,35 +142,28 @@ pub async fn summarize_session(
     };
 
     if signals.is_empty() && settings.allows_git_changes_fallback() {
-        if let Some(request) = git_request {
-            if let Some(git_ctx) = collect_git_context(request) {
-                signals = summary_signals_from_git(git_ctx)?;
-            }
+        if let Some(git_ctx) = git_context {
+            signals = summary_signals_from_git(git_ctx)?;
         }
     }
 
-    summarize_from_signals(signals, settings).await
+    summarize_from_signals(signals, settings, generate_summary).await
 }
 
-pub async fn summarize_git_commit(
-    repo_root: &Path,
-    commit: &str,
+pub async fn classify_and_summarize_git_context<Generate>(
+    context: GitSummaryContext,
     settings: &SummarySettings,
-) -> Result<SemanticSummaryArtifact, String> {
-    let request = GitSummaryRequest::from_commit(repo_root.to_path_buf(), commit.to_string());
-    let context = collect_git_context(&request)
-        .ok_or_else(|| format!("unable to collect git summary context for commit `{commit}`"))?;
-    summarize_from_signals(summary_signals_from_git(context)?, settings).await
-}
-
-pub async fn summarize_git_working_tree(
-    repo_root: &Path,
-    settings: &SummarySettings,
-) -> Result<SemanticSummaryArtifact, String> {
-    let request = GitSummaryRequest::working_tree(repo_root.to_path_buf());
-    let context = collect_git_context(&request)
-        .ok_or_else(|| "unable to collect git summary context for working tree".to_string())?;
-    summarize_from_signals(summary_signals_from_git(context)?, settings).await
+    generate_summary: Generate,
+) -> Result<SemanticSummaryArtifact, String>
+where
+    Generate: for<'a> Fn(&'a SummarySettings, &'a str) -> SummaryGenerateFuture<'a>,
+{
+    summarize_from_signals(
+        summary_signals_from_git(context)?,
+        settings,
+        generate_summary,
+    )
+    .await
 }
 
 #[derive(Debug, Clone)]
@@ -182,10 +182,14 @@ impl SummarySignals {
     }
 }
 
-async fn summarize_from_signals(
+async fn summarize_from_signals<Generate>(
     signals: SummarySignals,
     settings: &SummarySettings,
-) -> Result<SemanticSummaryArtifact, String> {
+    generate_summary: Generate,
+) -> Result<SemanticSummaryArtifact, String>
+where
+    Generate: for<'a> Fn(&'a SummarySettings, &'a str) -> SummaryGenerateFuture<'a>,
+{
     let prompt_template = if settings.prompt.template.trim().is_empty() {
         DEFAULT_SUMMARY_PROMPT_TEMPLATE_V2
     } else {
@@ -279,24 +283,6 @@ async fn summarize_from_signals(
             error: Some(error),
         }),
     }
-}
-
-fn collect_git_context(request: &GitSummaryRequest) -> Option<GitSummaryContext> {
-    let service = GitSummaryService::new(ShellGitCommandRunner);
-    if let Some(commit) = request.commit.as_deref() {
-        return service.collect_commit_context(
-            &request.repo_root,
-            commit,
-            MAX_FILE_CHANGE_ENTRIES,
-            classify_arch_layer,
-        );
-    }
-
-    service.collect_working_tree_context(
-        &request.repo_root,
-        MAX_FILE_CHANGE_ENTRIES,
-        classify_arch_layer,
-    )
 }
 
 fn summary_signals_from_git(context: GitSummaryContext) -> Result<SummarySignals, String> {
@@ -596,10 +582,11 @@ fn parse_diff_hunks(diff: &str) -> Vec<DiffHunkNode> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_diff_tree, default_event_snippet, heuristic_summary, parse_diff_hunks,
-        summarize_session, DiffLayerNode, GitSummaryRequest, SummaryGenerationKind,
-        SummarySourceKind,
+        DiffLayerNode, SummaryGenerationKind, SummarySourceKind, build_diff_tree,
+        default_event_snippet, heuristic_summary, parse_diff_hunks,
+        summarize_session_with_provider,
     };
+    use crate::git::GitSummaryContext;
     use crate::types::HailCompactFileChange;
     use chrono::Utc;
     use opensession_core::trace::{Agent, Content, Event, EventType, Session};
@@ -712,9 +699,13 @@ mod tests {
         let session = session_with_file_edit("src/auth.rs", "@@ -1 +1 @@\n-a\n+b\n");
         let settings = SummarySettings::default();
 
-        let artifact = summarize_session(&session, &settings, None)
-            .await
-            .expect("summarize");
+        let artifact = summarize_session_with_provider(&session, &settings, None, |_, _| {
+            Box::pin(async {
+                unreachable!("provider should not run when summary settings are disabled")
+            })
+        })
+        .await
+        .expect("summarize");
         assert_eq!(
             artifact.generation_kind,
             SummaryGenerationKind::HeuristicFallback
@@ -726,7 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summarize_session_uses_git_fallback_when_session_has_low_signal() {
+    async fn summarize_session_uses_git_context_when_session_has_low_signal() {
         let mut session = Session::new(
             "s-empty".to_string(),
             Agent {
@@ -740,19 +731,57 @@ mod tests {
 
         let mut settings = SummarySettings::default();
         settings.source_mode = opensession_runtime_config::SummarySourceMode::SessionOrGitChanges;
+        settings.provider.id = SummaryProvider::CodexExec;
 
-        let artifact = summarize_session(
+        let artifact = summarize_session_with_provider(
             &session,
             &settings,
-            Some(&GitSummaryRequest::working_tree(std::env::temp_dir())),
+            Some(GitSummaryContext {
+                source: "git_working_tree".to_string(),
+                repo_root: std::env::temp_dir(),
+                commit: None,
+                timeline_signals: vec!["working_tree: 1 files changed".to_string()],
+                file_changes: vec![HailCompactFileChange {
+                    path: "src/lib.rs".to_string(),
+                    layer: "application".to_string(),
+                    operation: "edit".to_string(),
+                    lines_added: 3,
+                    lines_removed: 1,
+                }],
+            }),
+            |_, _| {
+                Box::pin(async {
+                    Ok(crate::provider::SemanticSummary {
+                        changes: "Updated working tree".to_string(),
+                        auth_security: "none detected".to_string(),
+                        layer_file_changes: Vec::new(),
+                    })
+                })
+            },
         )
         .await
         .expect("summarize");
 
-        // temp dir is typically not a git repo, so fallback remains heuristic/session.
-        assert!(matches!(
-            artifact.source_kind,
-            SummarySourceKind::SessionSignals | SummarySourceKind::Heuristic
-        ));
+        assert_eq!(artifact.source_kind, SummarySourceKind::GitWorkingTree);
+        assert_eq!(artifact.generation_kind, SummaryGenerationKind::Provider);
+    }
+
+    #[tokio::test]
+    async fn summarize_session_records_provider_errors_as_heuristic_fallback() {
+        let session = session_with_file_edit("src/auth.rs", "@@ -1 +1 @@\n-a\n+b\n");
+        let mut settings = SummarySettings::default();
+        settings.provider.id = SummaryProvider::CodexExec;
+
+        let artifact = summarize_session_with_provider(&session, &settings, None, |_, _| {
+            Box::pin(async { Err("codex exec failed".to_string()) })
+        })
+        .await
+        .expect("summarize");
+
+        assert_eq!(
+            artifact.generation_kind,
+            SummaryGenerationKind::HeuristicFallback
+        );
+        assert_eq!(artifact.error.as_deref(), Some("codex exec failed"));
     }
 }

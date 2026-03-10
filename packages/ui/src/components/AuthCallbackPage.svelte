@@ -1,5 +1,6 @@
 <script lang="ts">
 import { handleAuthCallback } from '../api';
+import { appLocale } from '../i18n';
 
 const {
 	onSuccess = () => {},
@@ -10,6 +11,11 @@ const {
 } = $props();
 
 let status = $state<'loading' | 'error'>('loading');
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 
 $effect(() => {
 	handleAuthCallback()
@@ -30,8 +36,10 @@ $effect(() => {
 
 <div class="flex items-center justify-center pt-24">
 	{#if status === 'loading'}
-		<p class="text-xs text-text-muted">Completing sign in...</p>
+		<p class="text-xs text-text-muted">{localize('Completing sign in...', '로그인을 마무리하는 중...')}</p>
 	{:else}
-		<p class="text-xs text-error">Authentication failed. Please try again.</p>
+		<p class="text-xs text-error">
+			{localize('Authentication failed. Please try again.', '인증에 실패했습니다. 다시 시도해 주세요.')}
+		</p>
 	{/if}
 </div>

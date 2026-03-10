@@ -1,4 +1,5 @@
 <script lang="ts">
+import { appLocale } from '../i18n';
 import type { ParseSource } from '../types';
 
 const {
@@ -20,16 +21,22 @@ const sourceLabel = $derived.by(() => {
 	}
 	return source.filename;
 });
+
+const isKorean = $derived($appLocale === 'ko');
+
+function localize(en: string, ko: string): string {
+	return isKorean ? ko : en;
+}
 </script>
 
 <section class="mb-2 border border-border bg-bg-secondary px-3 py-2 text-xs">
 	<div class="flex flex-wrap items-center gap-2 text-text-secondary">
-		<span class="font-semibold text-text-primary">Source</span>
+		<span class="font-semibold text-text-primary">{localize('Source', '소스')}</span>
 		<span>{source.kind}</span>
 		<span>&middot;</span>
 		<span class="break-all">{sourceLabel}</span>
 		<span>&middot;</span>
-		<span>parser: <span class="text-text-primary">{parserUsed}</span></span>
+		<span>{localize('parser:', '파서:')} <span class="text-text-primary">{parserUsed}</span></span>
 	</div>
 
 	{#if warnings.length > 0}

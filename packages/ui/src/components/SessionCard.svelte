@@ -1,5 +1,6 @@
 <script lang="ts">
 import { truncate } from '../event-helpers';
+import { appLocale, translate } from '../i18n';
 import { getSessionActorLabel, getSessionModelLabel } from '../session-presentation';
 import type { SessionSummary } from '../types';
 import { formatDuration, formatTimestamp, getToolConfig } from '../types';
@@ -69,18 +70,18 @@ const modelLabel = $derived(getSessionModelLabel(session));
 
 	{#if compact}
 		<span class="hidden shrink-0 text-text-muted lg:inline">
-			{session.message_count} msgs
+			{translate($appLocale, 'sessionList.messagesShort', { count: session.message_count })}
 		</span>
 		<span class="hidden shrink-0 text-text-muted xl:inline">
-			{session.event_count} events
+			{translate($appLocale, 'sessionList.events', { count: session.event_count })}
 		</span>
 	{:else}
 		<!-- Stats -->
 		<span class="hidden shrink-0 text-text-muted lg:inline">
-			{session.message_count} messages
+			{translate($appLocale, 'sessionList.messagesLong', { count: session.message_count })}
 		</span>
 		<span class="hidden shrink-0 text-text-muted lg:inline">
-			{session.event_count} events
+			{translate($appLocale, 'sessionList.events', { count: session.event_count })}
 		</span>
 	{/if}
 	<span class="shrink-0 text-text-muted">

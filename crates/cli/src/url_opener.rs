@@ -1,6 +1,6 @@
-use crate::open_target::{read_repo_open_target, OpenTarget};
-use anyhow::{anyhow, bail, Context, Result};
-use opensession_core::object_store::global_store_root;
+use crate::open_target::{OpenTarget, read_repo_open_target};
+use anyhow::{Context, Result, anyhow, bail};
+use opensession_local_store::global_store_root;
 use reqwest::Url;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,7 +133,15 @@ impl UrlAdapter for SystemBrowserAdapter {
             }
         }
 
-        bail!("failed to open browser automatically")
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            bail!("failed to open browser automatically");
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            bail!("failed to open browser automatically");
+        }
     }
 }
 

@@ -29,20 +29,20 @@
 		"svelte": "^5.0.0"
 	},
 	"dependencies": {
+		"effect": "3.19.19",
 		"highlight.js": "^11.11.1",
-		"isomorphic-dompurify": "^2.28.0",
-		"marked": "^17.0.1"
+		"marked": "^17.0.4"
 	},
 	"scripts": {
 		"lint": "biome check src/",
 		"lint:fix": "biome check --write src/",
 		"format": "biome format --write src/",
-		"test": "tsx --test src/**/*.test.ts"
+		"test": "tsx --test src/*.test.ts src/**/*.test.ts"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.3.15",
+		"@biomejs/biome": "^2.4.6",
 		"jsdom": "^28.1.0",
-		"svelte": "^5.51.5",
+		"svelte": "^5.53.7",
 		"tsx": "^4.20.5",
 		"turndown": "^7.2.0",
 		"typescript": "^5.9.3"

@@ -17,11 +17,18 @@ fn write_file(path: &Path, body: &str) {
 }
 
 fn run(home: &Path, cwd: &Path, args: &[&str]) -> Output {
+    run_with_env(home, cwd, args, &[])
+}
+
+fn run_with_env(home: &Path, cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_opensession"));
     cmd.args(args)
         .current_dir(cwd)
         .env("HOME", home)
         .env("NO_COLOR", "1");
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
     cmd.output().expect("run opensession")
 }
 

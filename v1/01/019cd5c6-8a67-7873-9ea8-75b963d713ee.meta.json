@@ -1,0 +1,31 @@
+{
+  "git": {
+    "branch": "codex/symphony-local-review-ledger",
+    "commits": [
+      "fe3446b96ffff2bc88a5f2afa8b115ed081d27bd",
+      "f2576aff9413a0c0d6f277a8d3513abc331d55db"
+    ],
+    "head": "f2576aff9413a0c0d6f277a8d3513abc331d55db",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cd5c6-8a67-7873-9ea8-75b963d713ee",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 8929,
+    "event_count": 1547,
+    "files_changed": 38,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 101,
+    "task_count": 10,
+    "tool_call_count": 55,
+    "total_input_tokens": 47761862,
+    "total_output_tokens": 161710,
+    "user_message_count": 12
+  },
+  "title": "이걸 openai-sympony와 함께사용한다고 했을때, 어떤 점에서 엣지있게 활용할수 있을까? 개선/적용 계획을 세워줘",
+  "tool": "codex"
+}

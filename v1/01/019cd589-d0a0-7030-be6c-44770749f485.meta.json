@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "fe3446b96ffff2bc88a5f2afa8b115ed081d27bd"
+    ],
+    "head": "fe3446b96ffff2bc88a5f2afa8b115ed081d27bd",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cd589-d0a0-7030-be6c-44770749f485",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 1600,
+    "event_count": 700,
+    "files_changed": 4,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 89,
+    "task_count": 6,
+    "tool_call_count": 77,
+    "total_input_tokens": 16517992,
+    "total_output_tokens": 56190,
+    "user_message_count": 6
+  },
+  "title": "main을 최신화 해주고, 현재 코드의 상태에 대해서 논해줘.",
+  "tool": "codex"
+}

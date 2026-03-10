@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use opensession_api::db;
 use opensession_api::{
-    ServiceError, SessionDetail, SessionLink, SessionListQuery, SessionListResponse,
-    SessionRepoListResponse, SessionSummary,
+    JobContext, JobProtocol, JobReviewKind, JobStage, JobStatus, ServiceError, SessionDetail,
+    SessionLink, SessionListQuery, SessionListResponse, SessionRepoListResponse, SessionSummary,
 };
 
 use crate::db_helpers::values_to_js;
@@ -25,6 +25,7 @@ fn parse_query_enum<T: serde::de::DeserializeOwned>(
 
 impl From<storage::SessionRow> for SessionSummary {
     fn from(s: storage::SessionRow) -> Self {
+        let job_context = job_context_from_row(&s);
         Self {
             id: s.id,
             user_id: s.user_id,
@@ -54,10 +55,31 @@ impl From<storage::SessionRow> for SessionSummary {
             files_read: s.files_read,
             has_errors: s.has_errors,
             max_active_agents: s.max_active_agents,
+            job_context,
             session_score: s.session_score,
             score_plugin: s.score_plugin,
         }
     }
+}
+
+fn parse_job_enum<T: serde::de::DeserializeOwned>(value: Option<&String>) -> Option<T> {
+    value.and_then(|raw| serde_json::from_value(serde_json::Value::String(raw.clone())).ok())
+}
+
+fn job_context_from_row(s: &storage::SessionRow) -> Option<JobContext> {
+    Some(JobContext {
+        protocol: parse_job_enum::<JobProtocol>(s.job_protocol.as_ref())?,
+        system: s.job_system.clone().unwrap_or_default(),
+        job_id: s.job_id.clone().unwrap_or_default(),
+        job_title: s.job_title.clone().unwrap_or_default(),
+        run_id: s.job_run_id.clone().unwrap_or_default(),
+        attempt: s.job_attempt.unwrap_or_default(),
+        stage: parse_job_enum::<JobStage>(s.job_stage.as_ref()).unwrap_or(JobStage::Planning),
+        review_kind: parse_job_enum::<JobReviewKind>(s.job_review_kind.as_ref()),
+        status: parse_job_enum::<JobStatus>(s.job_status.as_ref()).unwrap_or(JobStatus::Pending),
+        thread_id: s.job_thread_id.clone(),
+        artifact_count: s.job_artifact_count,
+    })
 }
 
 fn parse_session_list_query(query_pairs: &[(String, String)]) -> SessionListQuery {
@@ -75,6 +97,12 @@ fn parse_session_list_query(query_pairs: &[(String, String)]) -> SessionListQuer
         search: params.get("search").map(|v| (*v).to_string()),
         tool: params.get("tool").map(|v| (*v).to_string()),
         git_repo_name: params.get("git_repo_name").map(|v| (*v).to_string()),
+        protocol: parse_query_enum(&params, "protocol"),
+        job_id: params.get("job_id").map(|v| (*v).to_string()),
+        run_id: params.get("run_id").map(|v| (*v).to_string()),
+        stage: parse_query_enum(&params, "stage"),
+        review_kind: parse_query_enum(&params, "review_kind"),
+        status: parse_query_enum(&params, "status"),
         sort: parse_query_enum(&params, "sort"),
         time_range: parse_query_enum(&params, "time_range"),
     }

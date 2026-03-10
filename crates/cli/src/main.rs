@@ -1,3 +1,4 @@
+mod capture_cmd;
 mod cat_cmd;
 mod cleanup_cmd;
 mod cli_args;

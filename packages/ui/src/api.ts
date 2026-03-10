@@ -19,6 +19,7 @@ import type {
 	DesktopVectorPreflightResponse,
 	DesktopVectorSearchResponse,
 	GitCredentialSummary,
+	JobReviewBundle,
 	IssueApiKeyResponse,
 	LocalReviewBundle,
 	ParsePreviewErrorResponse,
@@ -222,6 +223,22 @@ export async function searchSessionsVector(
 
 export async function getLocalReviewBundle(reviewId: string): Promise<LocalReviewBundle> {
 	return runUiEffect(requestEffect<LocalReviewBundle>(`/api/review/local/${encodeURIComponent(reviewId)}`));
+}
+
+export async function getJobReviewBundle(
+	jobId: string,
+	kind: 'todo' | 'done',
+	runId?: string | null,
+): Promise<JobReviewBundle> {
+	const params = new URLSearchParams();
+	params.set('kind', kind);
+	if (runId) params.set('run_id', runId);
+	const suffix = params.toString();
+	return runUiEffect(
+		requestEffect<JobReviewBundle>(
+			`/api/review/job/${encodeURIComponent(jobId)}${suffix ? `?${suffix}` : ''}`,
+		),
+	);
 }
 
 export async function getSettings(): Promise<UserSettings> {

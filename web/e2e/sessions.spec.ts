@@ -175,6 +175,83 @@ test.describe('Sessions', () => {
 		expect(requestedRepo).toBe('org/repo-a');
 	});
 
+	test('session list applies job filters on initial load', async ({ page }) => {
+		const fixture = createSessionFixture({
+			title: `PW Job Filter ${crypto.randomUUID().slice(0, 8)}`,
+		});
+		fixture.summary.job_context = {
+			protocol: 'agent_communication_protocol',
+			system: 'symphony',
+			job_id: 'AUTH-123',
+			job_title: 'Fix auth bug',
+			run_id: 'run-42',
+			attempt: 1,
+			stage: 'review',
+			review_kind: 'todo',
+			status: 'pending',
+			thread_id: 'thread-9',
+			artifact_count: 1,
+		};
+
+		const requested = {
+			protocol: null as string | null,
+			job_id: null as string | null,
+			run_id: null as string | null,
+			stage: null as string | null,
+			review_kind: null as string | null,
+			status: null as string | null,
+		};
+		const sessionsListPattern = /\/api\/sessions(?:\?.*)?$/;
+		const sessionsReposPattern = /\/api\/sessions\/repos(?:\?.*)?$/;
+		await page.route(sessionsReposPattern, async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ repos: [] }),
+			});
+		});
+		await page.route(sessionsListPattern, async (route) => {
+			const url = new URL(route.request().url());
+			requested.protocol = url.searchParams.get('protocol');
+			requested.job_id = url.searchParams.get('job_id');
+			requested.run_id = url.searchParams.get('run_id');
+			requested.stage = url.searchParams.get('stage');
+			requested.review_kind = url.searchParams.get('review_kind');
+			requested.status = url.searchParams.get('status');
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					sessions: [fixture.summary],
+					total: 1,
+					page: 1,
+					per_page: 20,
+				}),
+			});
+		});
+
+		await page.goto(
+			'/sessions?protocol=agent_communication_protocol&job_id=AUTH-123&run_id=run-42&stage=review&review_kind=todo&status=pending',
+		);
+		await expect(page.getByText(fixture.title)).toBeVisible({ timeout: 10000 });
+		await expect(page.locator('#session-protocol-filter')).toHaveValue(
+			'agent_communication_protocol',
+		);
+		await expect(page.locator('#session-job-id-filter')).toHaveValue('AUTH-123');
+		await expect(page.locator('#session-run-id-filter')).toHaveValue('run-42');
+		await expect(page.locator('#session-stage-filter')).toHaveValue('review');
+		await expect(page.locator('#session-review-kind-filter')).toHaveValue('todo');
+		await expect(page.locator('#session-status-filter')).toHaveValue('pending');
+		expect(requested).toEqual({
+			protocol: 'agent_communication_protocol',
+			job_id: 'AUTH-123',
+			run_id: 'run-42',
+			stage: 'review',
+			review_kind: 'todo',
+			status: 'pending',
+		});
+	});
+
 	test('session list copy shortcut copies selected session title', async ({ page }) => {
 		const fixture = createSessionFixture({
 			title: `PW Copy Target ${crypto.randomUUID().slice(0, 8)}`,

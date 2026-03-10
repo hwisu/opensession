@@ -7,6 +7,20 @@ export type TimeRange = "24h" | "7d" | "30d" | "all"
 
 export type LinkType = "handoff" | "related" | "parent" | "child"
 
+export type JobProtocol = "opensession" | "agent_client_protocol" | "agent_communication_protocol"
+
+export type JobStage = "planning" | "review" | "execution" | "handoff"
+
+export type JobReviewKind = "todo" | "done"
+
+export type JobStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled"
+
+export interface JobArtifactRef { kind: string, label: string, uri: string, mime_type?: string | null, metadata?: Record<string, any>, }
+
+export interface JobContext { protocol: JobProtocol, system: string, job_id: string, job_title: string, run_id: string, attempt: number, stage: JobStage, review_kind?: JobReviewKind | null, status: JobStatus, thread_id?: string | null, artifact_count: number, }
+
+export interface JobManifest { protocol: JobProtocol, system: string, job_id: string, job_title: string, run_id: string, attempt: number, stage: JobStage, review_kind?: JobReviewKind | null, status: JobStatus, thread_id?: string | null, artifacts: Array<JobArtifactRef>, }
+
 export interface AuthRegisterRequest { email: string, password: string, nickname: string, }
 
 export interface LoginRequest { email: string, password: string, }
@@ -37,13 +51,13 @@ export interface OAuthLinkResponse { url: string, }
 
 export interface UploadResponse { id: string, url: string, session_score: number, score_plugin: string, }
 
-export interface SessionSummary { id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
+export interface SessionSummary { id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, job_context?: JobContext | null, }
 
 export interface SessionListResponse { sessions: Array<SessionSummary>, total: number, page: number, per_page: number, }
 
-export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, git_repo_name: string | null, sort: SortOrder | null, time_range: TimeRange | null, }
+export interface SessionListQuery { page: number, per_page: number, search: string | null, tool: string | null, git_repo_name: string | null, protocol: JobProtocol | null, job_id: string | null, run_id: string | null, stage: JobStage | null, review_kind: JobReviewKind | null, status: JobStatus | null, sort: SortOrder | null, time_range: TimeRange | null, }
 
-export interface DesktopSessionListQuery { page: string | null, per_page: string | null, search: string | null, tool: string | null, git_repo_name: string | null, sort: string | null, time_range: string | null, force_refresh: boolean | null, }
+export interface DesktopSessionListQuery { page: string | null, per_page: string | null, search: string | null, tool: string | null, git_repo_name: string | null, protocol: string | null, job_id: string | null, run_id: string | null, stage: string | null, review_kind: string | null, status: string | null, sort: string | null, time_range: string | null, force_refresh: boolean | null, }
 
 export interface SessionRepoListResponse { repos: Array<string>, }
 
@@ -171,7 +185,7 @@ export interface DesktopChangeQuestionResponse { session_id: string, question: s
 
 export interface DesktopApiError { code: string, status: number, message: string, details?: Record<string, any> | null, }
 
-export interface SessionDetail { linked_sessions?: Array<SessionLink>, id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, }
+export interface SessionDetail { linked_sessions?: Array<SessionLink>, id: string, user_id: string | null, nickname: string | null, tool: string, agent_provider: string | null, agent_model: string | null, title: string | null, description: string | null, tags: string | null, created_at: string, uploaded_at: string, message_count: number, task_count: number, event_count: number, duration_seconds: number, total_input_tokens: number, total_output_tokens: number, git_remote?: string | null, git_branch?: string | null, git_commit?: string | null, git_repo_name?: string | null, pr_number?: number | null, pr_url?: string | null, working_directory?: string | null, files_modified?: string | null, files_read?: string | null, has_errors: boolean, max_active_agents: number, session_score: number, score_plugin: string, job_context?: JobContext | null, }
 
 export interface SessionLink { session_id: string, linked_session_id: string, link_type: LinkType, created_at: string, }
 
@@ -184,6 +198,14 @@ export interface ParsePreviewRequest { source: ParseSource, parser_hint?: string
 export interface ParsePreviewResponse { parser_used: string, parser_candidates: Array<ParseCandidate>, session: any, source: ParseSource, warnings: Array<string>, native_adapter?: string | null, }
 
 export interface ParsePreviewErrorResponse { code: string, message: string, parser_candidates?: Array<ParseCandidate>, }
+
+export interface JobReviewBundleJob { protocol: JobProtocol, system: string, job_id: string, job_title: string, }
+
+export interface JobReviewSelectedReview { session_id: string, run_id: string, attempt: number, kind: JobReviewKind, status: JobStatus, created_at: string, }
+
+export interface JobReviewRun { run_id: string, attempt: number, status: JobStatus, sessions: Array<LocalReviewSession>, artifacts: Array<JobArtifactRef>, }
+
+export interface JobReviewBundle { job: JobReviewBundleJob, selected_review: JobReviewSelectedReview, runs: Array<JobReviewRun>, review_digest: LocalReviewReviewerDigest, semantic_summary?: LocalReviewSemanticSummary | null, handoff_artifact_uri?: string | null, }
 
 export interface LocalReviewBundle { review_id: string, generated_at: string, pr: LocalReviewPrMeta, commits: Array<LocalReviewCommit>, sessions: Array<LocalReviewSession>, }
 

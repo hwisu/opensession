@@ -1,5 +1,5 @@
 use crate::{
-    cat_cmd, cleanup_cmd,
+    capture_cmd, cat_cmd, cleanup_cmd,
     cli_args::{Commands, parse_cli},
     config_cmd, docs_cmd, doctor_cmd, handoff_v1, inspect,
     locale::localize,
@@ -11,6 +11,7 @@ pub(crate) async fn run_process() {
 
     let result = match cli.command {
         Commands::Register(args) => register::run(args),
+        Commands::Capture(args) => capture_cmd::run(args),
         Commands::Cat(args) => cat_cmd::run(args),
         Commands::Inspect(args) => inspect::run(args),
         Commands::Share(args) => share::run(args),

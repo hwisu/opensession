@@ -225,6 +225,24 @@ impl ApiClient {
         if let Some(ref t) = query.tool {
             params.push(format!("tool={t}"));
         }
+        if let Some(protocol) = query.protocol {
+            params.push(format!("protocol={protocol}"));
+        }
+        if let Some(ref job_id) = query.job_id {
+            params.push(format!("job_id={job_id}"));
+        }
+        if let Some(ref run_id) = query.run_id {
+            params.push(format!("run_id={run_id}"));
+        }
+        if let Some(stage) = query.stage {
+            params.push(format!("stage={stage}"));
+        }
+        if let Some(review_kind) = query.review_kind {
+            params.push(format!("review_kind={review_kind}"));
+        }
+        if let Some(status) = query.status {
+            params.push(format!("status={status}"));
+        }
         if let Some(ref s) = query.sort {
             params.push(format!("sort={s}"));
         }

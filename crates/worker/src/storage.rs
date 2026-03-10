@@ -95,6 +95,28 @@ pub struct SessionRow {
     #[serde(default = "default_max_active_agents")]
     pub max_active_agents: i64,
     #[serde(default)]
+    pub job_protocol: Option<String>,
+    #[serde(default)]
+    pub job_system: Option<String>,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub job_title: Option<String>,
+    #[serde(default)]
+    pub job_run_id: Option<String>,
+    #[serde(default)]
+    pub job_attempt: Option<i64>,
+    #[serde(default)]
+    pub job_stage: Option<String>,
+    #[serde(default)]
+    pub job_review_kind: Option<String>,
+    #[serde(default)]
+    pub job_status: Option<String>,
+    #[serde(default)]
+    pub job_thread_id: Option<String>,
+    #[serde(default)]
+    pub job_artifact_count: i64,
+    #[serde(default)]
     pub session_score: i64,
     #[serde(default = "default_score_plugin")]
     pub score_plugin: String,
@@ -166,6 +188,22 @@ pub async fn ensure_d1_schema(env: &Env) -> Result<()> {
             .await?;
 
         if existing.is_some() {
+            continue;
+        }
+
+        if name == opensession_api::db::migrations::JOB_CONTEXT_MIGRATION_NAME
+            && d1_table_has_column(
+                &d1,
+                "sessions",
+                opensession_api::db::migrations::JOB_CONTEXT_GUARD_COLUMN,
+            )
+            .await?
+        {
+            let insert_bind_name = worker::wasm_bindgen::JsValue::from_str(name);
+            d1.prepare("INSERT INTO _migrations (name) VALUES (?1)")
+                .bind(&[insert_bind_name])?
+                .run()
+                .await?;
             continue;
         }
 
@@ -248,6 +286,15 @@ ON oauth_provider_tokens(user_id, provider, provider_host);
     }
 
     Ok(())
+}
+
+async fn d1_table_has_column(d1: &D1Database, table: &str, column: &str) -> Result<bool> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let table_info = d1.prepare(&pragma).all().await?;
+    let rows = table_info.results::<TableInfoRow>().unwrap_or_default();
+    Ok(rows
+        .iter()
+        .any(|row| row.name.eq_ignore_ascii_case(column)))
 }
 
 // ── R2 accessor ─────────────────────────────────────────────────────────────

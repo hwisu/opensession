@@ -1,3 +1,4 @@
+use crate::job_types::{JobContext, JobProtocol, JobReviewKind, JobStage, JobStatus};
 use crate::shared_types::{LinkType, SortOrder, TimeRange};
 use opensession_core::trace::{Agent, Event, Session, SessionContext};
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,8 @@ pub struct SessionSummary {
     pub session_score: i64,
     #[serde(default = "default_score_plugin")]
     pub score_plugin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_context: Option<JobContext>,
 }
 
 /// Paginated session listing returned by `GET /api/sessions`.
@@ -112,6 +115,12 @@ pub struct SessionListQuery {
     pub search: Option<String>,
     pub tool: Option<String>,
     pub git_repo_name: Option<String>,
+    pub protocol: Option<JobProtocol>,
+    pub job_id: Option<String>,
+    pub run_id: Option<String>,
+    pub stage: Option<JobStage>,
+    pub review_kind: Option<JobReviewKind>,
+    pub status: Option<JobStatus>,
     pub sort: Option<SortOrder>,
     pub time_range: Option<TimeRange>,
 }
@@ -126,6 +135,12 @@ pub struct DesktopSessionListQuery {
     pub search: Option<String>,
     pub tool: Option<String>,
     pub git_repo_name: Option<String>,
+    pub protocol: Option<String>,
+    pub job_id: Option<String>,
+    pub run_id: Option<String>,
+    pub stage: Option<String>,
+    pub review_kind: Option<String>,
+    pub status: Option<String>,
     pub sort: Option<String>,
     pub time_range: Option<String>,
     pub force_refresh: Option<bool>,
@@ -238,6 +253,18 @@ impl SessionListQuery {
                 .git_repo_name
                 .as_deref()
                 .is_none_or(|repo| repo.trim().is_empty())
+            && self
+                .job_id
+                .as_deref()
+                .is_none_or(|job_id| job_id.trim().is_empty())
+            && self
+                .run_id
+                .as_deref()
+                .is_none_or(|run_id| run_id.trim().is_empty())
+            && self.protocol.is_none()
+            && self.stage.is_none()
+            && self.review_kind.is_none()
+            && self.status.is_none()
             && self.page <= 10
             && self.per_page <= 50
     }
@@ -270,6 +297,12 @@ mod tests {
             search: None,
             tool: None,
             git_repo_name: None,
+            protocol: None,
+            job_id: None,
+            run_id: None,
+            stage: None,
+            review_kind: None,
+            status: None,
             sort: None,
             time_range: None,
         }

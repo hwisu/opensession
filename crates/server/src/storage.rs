@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use opensession_api::{
-    GitCredentialSummary, LinkType, SessionDetail, SessionLink, SessionListQuery,
-    SessionListResponse, SessionSummary, db, oauth,
+    GitCredentialSummary, JobContext, JobProtocol, JobReviewKind, JobStage, JobStatus, LinkType,
+    SessionDetail, SessionLink, SessionListQuery, SessionListResponse, SessionSummary, db, oauth,
 };
 
 /// Shared database state.
@@ -175,6 +175,12 @@ impl Db {
             search: query.search.clone(),
             tool: query.tool.clone(),
             git_repo_name: query.git_repo_name.clone(),
+            protocol: query.protocol,
+            job_id: query.job_id.clone(),
+            run_id: query.run_id.clone(),
+            stage: query.stage,
+            review_kind: query.review_kind,
+            status: query.status,
             sort: query.sort.clone(),
             time_range: query.time_range.clone(),
         };
@@ -936,6 +942,7 @@ fn sq_query_map<T>(
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> {
+    let job_context = job_context_from_row(row, 28)?;
     Ok(SessionSummary {
         id: row.get(0)?,
         user_id: row.get(1)?,
@@ -965,11 +972,90 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary>
         files_read: row.get(25)?,
         has_errors: row.get::<_, i64>(26).unwrap_or(0) != 0,
         max_active_agents: row.get(27).unwrap_or(1),
-        session_score: row.get(28).unwrap_or(0),
+        job_context,
+        session_score: row.get(39).unwrap_or(0),
         score_plugin: row
-            .get::<_, String>(29)
+            .get::<_, String>(40)
             .unwrap_or_else(|_| opensession_core::scoring::DEFAULT_SCORE_PLUGIN.to_string()),
     })
+}
+
+fn job_context_from_row(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<Option<JobContext>> {
+    let protocol_raw: Option<String> = row.get(offset)?;
+    let system: Option<String> = row.get(offset + 1)?;
+    let job_id: Option<String> = row.get(offset + 2)?;
+    let job_title: Option<String> = row.get(offset + 3)?;
+    let run_id: Option<String> = row.get(offset + 4)?;
+    let attempt: Option<i64> = row.get(offset + 5)?;
+    let stage_raw: Option<String> = row.get(offset + 6)?;
+    let review_kind_raw: Option<String> = row.get(offset + 7)?;
+    let status_raw: Option<String> = row.get(offset + 8)?;
+    let thread_id: Option<String> = row.get(offset + 9)?;
+    let artifact_count: i64 = row.get(offset + 10).unwrap_or(0);
+
+    let Some(protocol_raw) = protocol_raw else {
+        return Ok(None);
+    };
+
+    let protocol = serde_json::from_value::<JobProtocol>(serde_json::Value::String(protocol_raw))
+        .map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            offset,
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    let stage = serde_json::from_value::<JobStage>(serde_json::Value::String(
+        stage_raw.unwrap_or_else(|| "planning".to_string()),
+    ))
+    .map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            offset + 6,
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    let status = serde_json::from_value::<JobStatus>(serde_json::Value::String(
+        status_raw.unwrap_or_else(|| "pending".to_string()),
+    ))
+    .map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            offset + 8,
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    let review_kind = match review_kind_raw {
+        Some(value) => Some(
+            serde_json::from_value::<JobReviewKind>(serde_json::Value::String(value)).map_err(
+                |err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        offset + 7,
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                },
+            )?,
+        ),
+        None => None,
+    };
+
+    Ok(Some(JobContext {
+        protocol,
+        system: system.unwrap_or_default(),
+        job_id: job_id.unwrap_or_default(),
+        job_title: job_title.unwrap_or_default(),
+        run_id: run_id.unwrap_or_default(),
+        attempt: attempt.unwrap_or_default(),
+        stage,
+        review_kind,
+        status,
+        thread_id,
+        artifact_count,
+    }))
 }
 
 // ── Database init ─────────────────────────────────────────────────────────
@@ -1009,12 +1095,24 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             )
             .unwrap_or(false);
 
-        if !already_applied {
-            conn.execute_batch(sql)
-                .with_context(|| format!("running migration {name}"))?;
-            conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
-            tracing::info!("Applied migration: {name}");
+        if already_applied {
+            continue;
         }
+
+        if *name == db::migrations::JOB_CONTEXT_MIGRATION_NAME
+            && sqlite_table_has_column(conn, "sessions", db::migrations::JOB_CONTEXT_GUARD_COLUMN)?
+        {
+            conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
+            tracing::info!(
+                "Skipped migration {name}; bootstrap schema already includes job columns"
+            );
+            continue;
+        }
+
+        conn.execute_batch(sql)
+            .with_context(|| format!("running migration {name}"))?;
+        conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
+        tracing::info!("Applied migration: {name}");
     }
 
     if !oauth_provider_tokens_has_provider_host(conn)? {
@@ -1060,6 +1158,20 @@ ON oauth_provider_tokens(user_id, provider, provider_host);
     )?;
 
     Ok(())
+}
+
+fn sqlite_table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn
+        .prepare(&pragma)
+        .with_context(|| format!("prepare table info query for {table}"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row?.eq_ignore_ascii_case(column) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn oauth_provider_tokens_has_provider_host(conn: &Connection) -> Result<bool> {
@@ -1158,6 +1270,17 @@ mod tests {
             files_read: Some("src/main.rs"),
             has_errors: false,
             max_active_agents: 1,
+            job_protocol: None,
+            job_system: None,
+            job_id: None,
+            job_title: None,
+            job_run_id: None,
+            job_attempt: None,
+            job_stage: None,
+            job_review_kind: None,
+            job_status: None,
+            job_thread_id: None,
+            job_artifact_count: 0,
             session_score: 42,
             score_plugin: "default",
         };
@@ -1194,6 +1317,12 @@ mod tests {
             search: None,
             tool: None,
             git_repo_name: None,
+            protocol: None,
+            job_id: None,
+            run_id: None,
+            stage: None,
+            review_kind: None,
+            status: None,
             sort: None,
             time_range: None,
         };

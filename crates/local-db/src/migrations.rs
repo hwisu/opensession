@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use opensession_api::db::migrations::{LOCAL_MIGRATIONS, MIGRATIONS};
+use opensession_api::db::migrations::{
+    JOB_CONTEXT_GUARD_COLUMN, JOB_CONTEXT_MIGRATION_NAME, LOCAL_MIGRATIONS, MIGRATIONS,
+};
 use rusqlite::{Connection, params};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -31,6 +33,17 @@ pub(crate) fn apply_local_migrations(conn: &Connection) -> Result<()> {
             continue;
         }
 
+        if *name == JOB_CONTEXT_MIGRATION_NAME
+            && sqlite_table_has_column(conn, "sessions", JOB_CONTEXT_GUARD_COLUMN)?
+        {
+            conn.execute(
+                "INSERT OR IGNORE INTO _migrations (name) VALUES (?1)",
+                [name],
+            )
+            .with_context(|| format!("record skipped local migration {name}"))?;
+            continue;
+        }
+
         conn.execute_batch(sql)
             .with_context(|| format!("apply local migration {name}"))?;
 
@@ -42,6 +55,20 @@ pub(crate) fn apply_local_migrations(conn: &Connection) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn sqlite_table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn
+        .prepare(&pragma)
+        .with_context(|| format!("prepare table info query for {table}"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row?.eq_ignore_ascii_case(column) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn validate_local_schema(conn: &Connection) -> Result<()> {

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use opensession_api::{JobContext, job_context_from_session, job_manifest_from_session};
 use opensession_core::session::{is_auxiliary_session, working_directory};
 use opensession_core::trace::Session;
 use rusqlite::params;
@@ -15,6 +16,7 @@ pub(crate) const SUMMARY_WORKER_TITLE_PREFIX_LOWER: &str =
 #[derive(Debug, Clone)]
 pub struct LocalSessionRow {
     pub id: String,
+    pub body_storage_key: Option<String>,
     pub source_path: Option<String>,
     pub sync_status: String,
     pub last_synced_at: Option<String>,
@@ -47,6 +49,7 @@ pub struct LocalSessionRow {
     pub files_read: Option<String>,
     pub has_errors: bool,
     pub max_active_agents: i64,
+    pub job_context: Option<JobContext>,
     pub is_auxiliary: bool,
 }
 
@@ -176,6 +179,12 @@ pub struct LocalSessionFilter {
     pub team_id: Option<String>,
     pub sync_status: Option<String>,
     pub git_repo_name: Option<String>,
+    pub protocol: Option<String>,
+    pub job_id: Option<String>,
+    pub run_id: Option<String>,
+    pub stage: Option<String>,
+    pub review_kind: Option<String>,
+    pub status: Option<String>,
     pub search: Option<String>,
     pub exclude_low_signal: bool,
     pub tool: Option<String>,
@@ -191,6 +200,12 @@ impl Default for LocalSessionFilter {
             team_id: None,
             sync_status: None,
             git_repo_name: None,
+            protocol: None,
+            job_id: None,
+            run_id: None,
+            stage: None,
+            review_kind: None,
+            status: None,
             search: None,
             exclude_low_signal: false,
             tool: None,
@@ -253,6 +268,7 @@ pub struct RemoteSessionSummary {
     pub files_read: Option<String>,
     pub has_errors: bool,
     pub max_active_agents: i64,
+    pub job_context: Option<JobContext>,
 }
 
 /// Extended filter for the `log` command.
@@ -289,56 +305,136 @@ LEFT JOIN session_sync ss ON ss.session_id = s.id \
 LEFT JOIN users u ON u.id = s.user_id";
 
 pub(crate) const LOCAL_SESSION_COLUMNS: &str = "\
-s.id, ss.source_path, COALESCE(ss.sync_status, 'unknown') AS sync_status, ss.last_synced_at, \
+s.id, s.body_storage_key, ss.source_path, COALESCE(ss.sync_status, 'unknown') AS sync_status, ss.last_synced_at, \
 s.user_id, u.nickname, s.team_id, s.tool, s.agent_provider, s.agent_model, \
 s.title, s.description, s.tags, s.created_at, s.uploaded_at, \
 s.message_count, COALESCE(s.user_message_count, 0), s.task_count, s.event_count, s.duration_seconds, \
 s.total_input_tokens, s.total_output_tokens, \
 s.git_remote, s.git_branch, s.git_commit, s.git_repo_name, \
 s.pr_number, s.pr_url, s.working_directory, \
-s.files_modified, s.files_read, s.has_errors, COALESCE(s.max_active_agents, 1), COALESCE(s.is_auxiliary, 0)";
+s.files_modified, s.files_read, s.has_errors, COALESCE(s.max_active_agents, 1), \
+s.job_protocol, s.job_system, s.job_id, s.job_title, s.job_run_id, s.job_attempt, \
+s.job_stage, s.job_review_kind, s.job_status, s.job_thread_id, COALESCE(s.job_artifact_count, 0), \
+COALESCE(s.is_auxiliary, 0)";
 
 pub(crate) fn row_to_local_session(row: &rusqlite::Row) -> rusqlite::Result<LocalSessionRow> {
-    let source_path: Option<String> = row.get(1)?;
-    let tool: String = row.get(7)?;
+    let source_path: Option<String> = row.get(2)?;
+    let tool: String = row.get(8)?;
     let normalized_tool = normalize_tool_for_source_path(&tool, source_path.as_deref());
+    let job_context = local_job_context_from_row(row, 34)?;
 
     Ok(LocalSessionRow {
         id: row.get(0)?,
+        body_storage_key: normalize_non_empty(row.get::<_, Option<String>>(1)?.as_deref()),
         source_path,
-        sync_status: row.get(2)?,
-        last_synced_at: row.get(3)?,
-        user_id: row.get(4)?,
-        nickname: row.get(5)?,
-        team_id: row.get(6)?,
+        sync_status: row.get(3)?,
+        last_synced_at: row.get(4)?,
+        user_id: row.get(5)?,
+        nickname: row.get(6)?,
+        team_id: row.get(7)?,
         tool: normalized_tool,
-        agent_provider: row.get(8)?,
-        agent_model: row.get(9)?,
-        title: row.get(10)?,
-        description: row.get(11)?,
-        tags: row.get(12)?,
-        created_at: row.get(13)?,
-        uploaded_at: row.get(14)?,
-        message_count: row.get(15)?,
-        user_message_count: row.get(16)?,
-        task_count: row.get(17)?,
-        event_count: row.get(18)?,
-        duration_seconds: row.get(19)?,
-        total_input_tokens: row.get(20)?,
-        total_output_tokens: row.get(21)?,
-        git_remote: row.get(22)?,
-        git_branch: row.get(23)?,
-        git_commit: row.get(24)?,
-        git_repo_name: row.get(25)?,
-        pr_number: row.get(26)?,
-        pr_url: row.get(27)?,
-        working_directory: row.get(28)?,
-        files_modified: row.get(29)?,
-        files_read: row.get(30)?,
-        has_errors: row.get::<_, i64>(31).unwrap_or(0) != 0,
-        max_active_agents: row.get(32).unwrap_or(1),
-        is_auxiliary: row.get::<_, i64>(33).unwrap_or(0) != 0,
+        agent_provider: row.get(9)?,
+        agent_model: row.get(10)?,
+        title: row.get(11)?,
+        description: row.get(12)?,
+        tags: row.get(13)?,
+        created_at: row.get(14)?,
+        uploaded_at: row.get(15)?,
+        message_count: row.get(16)?,
+        user_message_count: row.get(17)?,
+        task_count: row.get(18)?,
+        event_count: row.get(19)?,
+        duration_seconds: row.get(20)?,
+        total_input_tokens: row.get(21)?,
+        total_output_tokens: row.get(22)?,
+        git_remote: row.get(23)?,
+        git_branch: row.get(24)?,
+        git_commit: row.get(25)?,
+        git_repo_name: row.get(26)?,
+        pr_number: row.get(27)?,
+        pr_url: row.get(28)?,
+        working_directory: row.get(29)?,
+        files_modified: row.get(30)?,
+        files_read: row.get(31)?,
+        has_errors: row.get::<_, i64>(32).unwrap_or(0) != 0,
+        max_active_agents: row.get(33).unwrap_or(1),
+        job_context,
+        is_auxiliary: row.get::<_, i64>(44).unwrap_or(0) != 0,
     })
+}
+
+fn local_job_context_from_row(
+    row: &rusqlite::Row,
+    offset: usize,
+) -> rusqlite::Result<Option<JobContext>> {
+    let protocol_raw: Option<String> = row.get(offset)?;
+    let Some(protocol_raw) = protocol_raw else {
+        return Ok(None);
+    };
+
+    let protocol =
+        serde_json::from_value(serde_json::Value::String(protocol_raw)).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                offset,
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        })?;
+    let system = row.get(offset + 1).unwrap_or_default();
+    let job_id = row.get(offset + 2).unwrap_or_default();
+    let job_title = row.get(offset + 3).unwrap_or_default();
+    let run_id = row.get(offset + 4).unwrap_or_default();
+    let attempt = row.get(offset + 5).unwrap_or(0);
+    let stage = serde_json::from_value(serde_json::Value::String(
+        row.get::<_, Option<String>>(offset + 6)?
+            .unwrap_or_else(|| "planning".to_string()),
+    ))
+    .map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            offset + 6,
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    let review_kind = match row.get::<_, Option<String>>(offset + 7)? {
+        Some(value) => Some(
+            serde_json::from_value(serde_json::Value::String(value)).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    offset + 7,
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?,
+        ),
+        None => None,
+    };
+    let status = serde_json::from_value(serde_json::Value::String(
+        row.get::<_, Option<String>>(offset + 8)?
+            .unwrap_or_else(|| "pending".to_string()),
+    ))
+    .map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            offset + 8,
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    let thread_id = row.get(offset + 9)?;
+    let artifact_count = row.get(offset + 10).unwrap_or(0);
+
+    Ok(Some(JobContext {
+        protocol,
+        system,
+        job_id,
+        job_title,
+        run_id,
+        attempt,
+        stage,
+        review_kind,
+        status,
+        thread_id,
+        artifact_count,
+    }))
 }
 
 impl LocalDb {
@@ -372,6 +468,42 @@ impl LocalDb {
         if let Some(ref repo) = filter.git_repo_name {
             where_clauses.push(format!("s.git_repo_name = ?{idx}"));
             param_values.push(Box::new(repo.clone()));
+            idx += 1;
+        }
+
+        if let Some(ref protocol) = filter.protocol {
+            where_clauses.push(format!("s.job_protocol = ?{idx}"));
+            param_values.push(Box::new(protocol.clone()));
+            idx += 1;
+        }
+
+        if let Some(ref job_id) = filter.job_id {
+            where_clauses.push(format!("s.job_id = ?{idx}"));
+            param_values.push(Box::new(job_id.clone()));
+            idx += 1;
+        }
+
+        if let Some(ref run_id) = filter.run_id {
+            where_clauses.push(format!("s.job_run_id = ?{idx}"));
+            param_values.push(Box::new(run_id.clone()));
+            idx += 1;
+        }
+
+        if let Some(ref stage) = filter.stage {
+            where_clauses.push(format!("s.job_stage = ?{idx}"));
+            param_values.push(Box::new(stage.clone()));
+            idx += 1;
+        }
+
+        if let Some(ref review_kind) = filter.review_kind {
+            where_clauses.push(format!("s.job_review_kind = ?{idx}"));
+            param_values.push(Box::new(review_kind.clone()));
+            idx += 1;
+        }
+
+        if let Some(ref status) = filter.status {
+            where_clauses.push(format!("s.job_status = ?{idx}"));
+            param_values.push(Box::new(status.clone()));
             idx += 1;
         }
 
@@ -426,6 +558,16 @@ impl LocalDb {
         source_path: &str,
         git: &GitContext,
     ) -> Result<()> {
+        self.upsert_local_session_with_storage_key(session, source_path, git, None)
+    }
+
+    pub fn upsert_local_session_with_storage_key(
+        &self,
+        session: &Session,
+        source_path: &str,
+        git: &GitContext,
+        body_storage_key: Option<&str>,
+    ) -> Result<()> {
         let is_empty_signal = session.stats.event_count == 0
             && session.stats.message_count == 0
             && session.stats.user_message_count == 0
@@ -454,6 +596,9 @@ impl LocalDb {
         let git_from_session = git_context_from_session_attributes(session);
         let has_session_git = git_context_has_any_field(&git_from_session);
         let merged_git = merge_git_context(&git_from_session, git);
+        let job_context = job_context_from_session(session);
+        let job_manifest = job_manifest_from_session(session);
+        let persisted_body_storage_key = body_storage_key.unwrap_or_default().to_string();
 
         let conn = self.conn();
         conn.execute(
@@ -463,8 +608,10 @@ impl LocalDb {
              message_count, user_message_count, task_count, event_count, duration_seconds, \
               total_input_tokens, total_output_tokens, body_storage_key, \
               git_remote, git_branch, git_commit, git_repo_name, working_directory, \
-              files_modified, files_read, has_errors, max_active_agents, is_auxiliary) \
-             VALUES (?1,'personal',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'',?16,?17,?18,?19,?20,?21,?22,?23,?24,?25) \
+              files_modified, files_read, has_errors, max_active_agents, \
+              job_protocol, job_system, job_id, job_title, job_run_id, job_attempt, \
+              job_stage, job_review_kind, job_status, job_thread_id, job_artifact_count, is_auxiliary) \
+             VALUES (?1,'personal',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37) \
              ON CONFLICT(id) DO UPDATE SET \
               tool=excluded.tool, agent_provider=excluded.agent_provider, \
               agent_model=excluded.agent_model, \
@@ -475,14 +622,26 @@ impl LocalDb {
               event_count=excluded.event_count, duration_seconds=excluded.duration_seconds, \
               total_input_tokens=excluded.total_input_tokens, \
               total_output_tokens=excluded.total_output_tokens, \
-              git_remote=CASE WHEN ?26=1 THEN excluded.git_remote ELSE COALESCE(git_remote, excluded.git_remote) END, \
-              git_branch=CASE WHEN ?26=1 THEN excluded.git_branch ELSE COALESCE(git_branch, excluded.git_branch) END, \
-              git_commit=CASE WHEN ?26=1 THEN excluded.git_commit ELSE COALESCE(git_commit, excluded.git_commit) END, \
-              git_repo_name=CASE WHEN ?26=1 THEN excluded.git_repo_name ELSE COALESCE(git_repo_name, excluded.git_repo_name) END, \
+              body_storage_key=COALESCE(NULLIF(excluded.body_storage_key, ''), body_storage_key), \
+              git_remote=CASE WHEN ?38=1 THEN excluded.git_remote ELSE COALESCE(git_remote, excluded.git_remote) END, \
+              git_branch=CASE WHEN ?38=1 THEN excluded.git_branch ELSE COALESCE(git_branch, excluded.git_branch) END, \
+              git_commit=CASE WHEN ?38=1 THEN excluded.git_commit ELSE COALESCE(git_commit, excluded.git_commit) END, \
+              git_repo_name=CASE WHEN ?38=1 THEN excluded.git_repo_name ELSE COALESCE(git_repo_name, excluded.git_repo_name) END, \
               working_directory=excluded.working_directory, \
               files_modified=excluded.files_modified, files_read=excluded.files_read, \
               has_errors=excluded.has_errors, \
               max_active_agents=excluded.max_active_agents, \
+              job_protocol=excluded.job_protocol, \
+              job_system=excluded.job_system, \
+              job_id=excluded.job_id, \
+              job_title=excluded.job_title, \
+              job_run_id=excluded.job_run_id, \
+              job_attempt=excluded.job_attempt, \
+              job_stage=excluded.job_stage, \
+              job_review_kind=excluded.job_review_kind, \
+              job_status=excluded.job_status, \
+              job_thread_id=excluded.job_thread_id, \
+              job_artifact_count=excluded.job_artifact_count, \
               is_auxiliary=excluded.is_auxiliary",
             params![
                 &session.session_id,
@@ -500,6 +659,7 @@ impl LocalDb {
                 session.stats.duration_seconds as i64,
                 session.stats.total_input_tokens as i64,
                 session.stats.total_output_tokens as i64,
+                &persisted_body_storage_key,
                 &merged_git.remote,
                 &merged_git.branch,
                 &merged_git.commit,
@@ -509,6 +669,25 @@ impl LocalDb {
                 &files_read,
                 has_errors,
                 max_active_agents,
+                job_context.as_ref().map(|ctx| ctx.protocol.to_string()),
+                job_context.as_ref().map(|ctx| ctx.system.clone()),
+                job_context.as_ref().map(|ctx| ctx.job_id.clone()),
+                job_context.as_ref().map(|ctx| ctx.job_title.clone()),
+                job_context.as_ref().map(|ctx| ctx.run_id.clone()),
+                job_context.as_ref().map(|ctx| ctx.attempt),
+                job_context.as_ref().map(|ctx| ctx.stage.to_string()),
+                job_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.review_kind.map(|kind| kind.to_string())),
+                job_context.as_ref().map(|ctx| ctx.status.to_string()),
+                job_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.thread_id.clone())
+                    .or_else(|| job_manifest.as_ref().and_then(|manifest| manifest.thread_id.clone())),
+                job_context
+                    .as_ref()
+                    .map(|ctx| ctx.artifact_count)
+                    .unwrap_or_default(),
                 is_auxiliary as i64,
                 has_session_git as i64,
             ],
@@ -533,8 +712,10 @@ impl LocalDb {
               total_input_tokens, total_output_tokens, body_storage_key, \
               git_remote, git_branch, git_commit, git_repo_name, \
               pr_number, pr_url, working_directory, \
-              files_modified, files_read, has_errors, max_active_agents, is_auxiliary) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'',?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,0) \
+              files_modified, files_read, has_errors, max_active_agents, \
+              job_protocol, job_system, job_id, job_title, job_run_id, job_attempt, \
+              job_stage, job_review_kind, job_status, job_thread_id, job_artifact_count, is_auxiliary) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'',?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39,0) \
              ON CONFLICT(id) DO UPDATE SET \
               title=excluded.title, description=excluded.description, \
               tags=excluded.tags, uploaded_at=excluded.uploaded_at, \
@@ -549,6 +730,17 @@ impl LocalDb {
               files_modified=excluded.files_modified, files_read=excluded.files_read, \
               has_errors=excluded.has_errors, \
               max_active_agents=excluded.max_active_agents, \
+              job_protocol=excluded.job_protocol, \
+              job_system=excluded.job_system, \
+              job_id=excluded.job_id, \
+              job_title=excluded.job_title, \
+              job_run_id=excluded.job_run_id, \
+              job_attempt=excluded.job_attempt, \
+              job_stage=excluded.job_stage, \
+              job_review_kind=excluded.job_review_kind, \
+              job_status=excluded.job_status, \
+              job_thread_id=excluded.job_thread_id, \
+              job_artifact_count=excluded.job_artifact_count, \
               is_auxiliary=excluded.is_auxiliary",
             params![
                 &summary.id,
@@ -579,6 +771,36 @@ impl LocalDb {
                 &summary.files_read,
                 summary.has_errors,
                 summary.max_active_agents,
+                summary
+                    .job_context
+                    .as_ref()
+                    .map(|ctx| ctx.protocol.to_string()),
+                summary.job_context.as_ref().map(|ctx| ctx.system.clone()),
+                summary.job_context.as_ref().map(|ctx| ctx.job_id.clone()),
+                summary.job_context.as_ref().map(|ctx| ctx.job_title.clone()),
+                summary.job_context.as_ref().map(|ctx| ctx.run_id.clone()),
+                summary.job_context.as_ref().map(|ctx| ctx.attempt),
+                summary
+                    .job_context
+                    .as_ref()
+                    .map(|ctx| ctx.stage.to_string()),
+                summary
+                    .job_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.review_kind.map(|kind| kind.to_string())),
+                summary
+                    .job_context
+                    .as_ref()
+                    .map(|ctx| ctx.status.to_string()),
+                summary
+                    .job_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.thread_id.clone()),
+                summary
+                    .job_context
+                    .as_ref()
+                    .map(|ctx| ctx.artifact_count)
+                    .unwrap_or_default(),
             ],
         )?;
 
@@ -857,6 +1079,23 @@ impl LocalDb {
             .next()
             .transpose()?;
         Ok(row)
+    }
+
+    pub fn list_sessions_for_job(&self, job_id: &str) -> Result<Vec<LocalSessionRow>> {
+        let sql = format!(
+            "SELECT {LOCAL_SESSION_COLUMNS} \
+             {FROM_CLAUSE} \
+             WHERE COALESCE(s.is_auxiliary, 0) = 0 AND s.job_id = ?1 \
+             ORDER BY COALESCE(s.job_attempt, 0) DESC, s.created_at DESC"
+        );
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![job_id], row_to_local_session)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
     }
 
     pub fn list_session_links(&self, session_id: &str) -> Result<Vec<LocalSessionLink>> {

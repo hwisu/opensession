@@ -51,6 +51,7 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 dialoguer = { workspace = true }
 regex = { workspace = true }
+urlencoding = { workspace = true }
 
 [dev-dependencies]
 opensession-core = { workspace = true, features = ["testing"] }

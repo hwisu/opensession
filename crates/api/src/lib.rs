@@ -19,6 +19,7 @@ pub mod service;
 mod auth_types;
 mod desktop_runtime_types;
 mod errors;
+mod job_types;
 mod local_review_types;
 mod parse_preview_types;
 mod session_types;
@@ -60,10 +61,17 @@ pub use desktop_runtime_types::{
     DesktopVectorSessionMatch,
 };
 pub use errors::{ApiError, DesktopApiError, ServiceError};
+pub use job_types::{
+    ATTR_JOB_ARTIFACTS, ATTR_JOB_ATTEMPT, ATTR_JOB_ID, ATTR_JOB_PROTOCOL, ATTR_JOB_REVIEW_KIND,
+    ATTR_JOB_RUN_ID, ATTR_JOB_STAGE, ATTR_JOB_STATUS, ATTR_JOB_SYSTEM, ATTR_JOB_THREAD_ID,
+    ATTR_JOB_TITLE, JobArtifactRef, JobContext, JobManifest, JobProtocol, JobReviewKind, JobStage,
+    JobStatus, apply_job_manifest, job_context_from_session, job_manifest_from_attributes,
+    job_manifest_from_session,
+};
 pub use local_review_types::{
-    LocalReviewBundle, LocalReviewCommit, LocalReviewLayerFileChange, LocalReviewPrMeta,
-    LocalReviewReviewerDigest, LocalReviewReviewerQa, LocalReviewSemanticSummary,
-    LocalReviewSession,
+    JobReviewBundle, JobReviewBundleJob, JobReviewRun, JobReviewSelectedReview, LocalReviewBundle,
+    LocalReviewCommit, LocalReviewLayerFileChange, LocalReviewPrMeta, LocalReviewReviewerDigest,
+    LocalReviewReviewerQa, LocalReviewSemanticSummary, LocalReviewSession,
 };
 pub use opensession_core::trace::{
     Agent, Content, ContentBlock, Event, EventType, Session, SessionContext, Stats,
@@ -324,6 +332,13 @@ mod tests {
             SortOrder,
             TimeRange,
             LinkType,
+            JobProtocol,
+            JobStage,
+            JobReviewKind,
+            JobStatus,
+            JobArtifactRef,
+            JobContext,
+            JobManifest,
             AuthRegisterRequest,
             LoginRequest,
             AuthTokenResponse,
@@ -413,6 +428,10 @@ mod tests {
             ParsePreviewRequest,
             ParsePreviewResponse,
             ParsePreviewErrorResponse,
+            JobReviewBundleJob,
+            JobReviewSelectedReview,
+            JobReviewRun,
+            JobReviewBundle,
             LocalReviewBundle,
             LocalReviewPrMeta,
             LocalReviewReviewerQa,

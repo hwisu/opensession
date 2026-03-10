@@ -23,6 +23,12 @@ export interface SessionListModelState {
 	toolFilter: string;
 	repoFilter: string;
 	repoInput: string;
+	protocolFilter: string;
+	jobIdFilter: string;
+	runIdFilter: string;
+	stageFilter: string;
+	reviewKindFilter: string;
+	statusFilter: string;
 	timeRange: TimeRange;
 	currentPage: number;
 	selectedIndex: number;
@@ -37,6 +43,12 @@ export interface SessionListModelDeps {
 		search?: string;
 		tool?: string;
 		git_repo_name?: string;
+		protocol?: string;
+		job_id?: string;
+		run_id?: string;
+		stage?: string;
+		review_kind?: string;
+		status?: string;
 		time_range?: string;
 		page?: number;
 		per_page?: number;
@@ -63,6 +75,12 @@ export function createSessionListModelState(): SessionListModelState {
 		toolFilter: '',
 		repoFilter: '',
 		repoInput: '',
+		protocolFilter: '',
+		jobIdFilter: '',
+		runIdFilter: '',
+		stageFilter: '',
+		reviewKindFilter: '',
+		statusFilter: '',
 		timeRange: 'all',
 		currentPage: 1,
 		selectedIndex: 0,
@@ -140,6 +158,12 @@ export function createSessionListModel(
 			search: state.searchQuery || '',
 			tool: state.toolFilter || '',
 			git_repo_name: state.repoFilter,
+			protocol: state.protocolFilter || '',
+			job_id: state.jobIdFilter || '',
+			run_id: state.runIdFilter || '',
+			stage: state.stageFilter || '',
+			review_kind: state.reviewKindFilter || '',
+			status: state.statusFilter || '',
 			time_range: state.timeRange,
 			page,
 			per_page: perPage,
@@ -152,6 +176,12 @@ export function createSessionListModel(
 			state.searchQuery.trim().length === 0 &&
 			state.toolFilter.length === 0 &&
 			state.repoFilter.length === 0 &&
+			state.protocolFilter.length === 0 &&
+			state.jobIdFilter.length === 0 &&
+			state.runIdFilter.length === 0 &&
+			state.stageFilter.length === 0 &&
+			state.reviewKindFilter.length === 0 &&
+			state.statusFilter.length === 0 &&
 			state.timeRange === 'all'
 		);
 	}
@@ -174,6 +204,24 @@ export function createSessionListModel(
 		if (toolFromQuery && deps.validToolValues.includes(toolFromQuery)) {
 			state.toolFilter = toolFromQuery;
 		}
+
+		const protocolFromQuery = params.get('protocol')?.trim();
+		if (protocolFromQuery) state.protocolFilter = protocolFromQuery;
+
+		const jobIdFromQuery = params.get('job_id')?.trim();
+		if (jobIdFromQuery) state.jobIdFilter = jobIdFromQuery;
+
+		const runIdFromQuery = params.get('run_id')?.trim();
+		if (runIdFromQuery) state.runIdFilter = runIdFromQuery;
+
+		const stageFromQuery = params.get('stage')?.trim();
+		if (stageFromQuery) state.stageFilter = stageFromQuery;
+
+		const reviewKindFromQuery = params.get('review_kind')?.trim();
+		if (reviewKindFromQuery) state.reviewKindFilter = reviewKindFromQuery;
+
+		const statusFromQuery = params.get('status')?.trim();
+		if (statusFromQuery) state.statusFilter = statusFromQuery;
 
 		const rangeFromQuery = params.get('time_range')?.trim() as TimeRange | undefined;
 		if (rangeFromQuery && deps.validTimeRanges.has(rangeFromQuery)) {
@@ -224,6 +272,12 @@ export function createSessionListModel(
 				search: state.searchQuery || undefined,
 				tool: state.toolFilter || undefined,
 				git_repo_name: state.repoFilter || undefined,
+				protocol: state.protocolFilter || undefined,
+				job_id: state.jobIdFilter || undefined,
+				run_id: state.runIdFilter || undefined,
+				stage: state.stageFilter || undefined,
+				review_kind: state.reviewKindFilter || undefined,
+				status: state.statusFilter || undefined,
 				time_range: state.timeRange !== 'all' ? state.timeRange : undefined,
 				page: targetPage,
 				per_page: perPage,

@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     files_read          TEXT,
     has_errors          BOOLEAN DEFAULT 0,
     max_active_agents   INTEGER NOT NULL DEFAULT 1,
+    job_protocol        TEXT,
+    job_system          TEXT,
+    job_id              TEXT,
+    job_title           TEXT,
+    job_run_id          TEXT,
+    job_attempt         INTEGER,
+    job_stage           TEXT,
+    job_review_kind     TEXT,
+    job_status          TEXT,
+    job_thread_id       TEXT,
+    job_artifact_count  INTEGER NOT NULL DEFAULT 0,
     session_score       INTEGER NOT NULL DEFAULT 0,
     score_plugin        TEXT NOT NULL DEFAULT 'heuristic_v1'
 );
@@ -62,6 +73,18 @@ WHERE event_count > 0 OR message_count > 0;
 CREATE INDEX IF NOT EXISTS idx_sessions_visible_longest
 ON sessions(duration_seconds DESC, created_at DESC)
 WHERE event_count > 0 OR message_count > 0;
+CREATE INDEX IF NOT EXISTS idx_sessions_job_id_created_at
+ON sessions(job_id, created_at DESC)
+WHERE job_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_job_run_id_created_at
+ON sessions(job_run_id, created_at DESC)
+WHERE job_run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_job_review_lookup
+ON sessions(job_id, job_review_kind, created_at DESC)
+WHERE job_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_job_stage_status_created_at
+ON sessions(job_stage, job_status, created_at DESC)
+WHERE job_stage IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_score ON sessions(session_score DESC);
 
 -- Session links (handoff chains, etc.)

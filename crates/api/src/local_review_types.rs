@@ -1,3 +1,4 @@
+use crate::{JobArtifactRef, JobProtocol, JobReviewKind, JobStatus};
 use opensession_core::trace::Session;
 use serde::{Deserialize, Serialize};
 
@@ -114,4 +115,54 @@ pub struct LocalReviewSession {
     pub commit_shas: Vec<String>,
     #[cfg_attr(feature = "ts", ts(type = "any"))]
     pub session: Session,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct JobReviewBundleJob {
+    pub protocol: JobProtocol,
+    pub system: String,
+    pub job_id: String,
+    pub job_title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct JobReviewSelectedReview {
+    pub session_id: String,
+    pub run_id: String,
+    pub attempt: i64,
+    pub kind: JobReviewKind,
+    pub status: JobStatus,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct JobReviewRun {
+    pub run_id: String,
+    pub attempt: i64,
+    pub status: JobStatus,
+    #[serde(default)]
+    pub sessions: Vec<LocalReviewSession>,
+    #[serde(default)]
+    pub artifacts: Vec<JobArtifactRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
+pub struct JobReviewBundle {
+    pub job: JobReviewBundleJob,
+    pub selected_review: JobReviewSelectedReview,
+    #[serde(default)]
+    pub runs: Vec<JobReviewRun>,
+    pub review_digest: LocalReviewReviewerDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_summary: Option<LocalReviewSemanticSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_artifact_uri: Option<String>,
 }

@@ -48,6 +48,17 @@ fn session_columns(q: &mut sea_query::SelectStatement) -> &mut sea_query::Select
         .column((Sessions::Table, Sessions::FilesRead))
         .column((Sessions::Table, Sessions::HasErrors))
         .column((Sessions::Table, Sessions::MaxActiveAgents))
+        .column((Sessions::Table, Sessions::JobProtocol))
+        .column((Sessions::Table, Sessions::JobSystem))
+        .column((Sessions::Table, Sessions::JobId))
+        .column((Sessions::Table, Sessions::JobTitle))
+        .column((Sessions::Table, Sessions::JobRunId))
+        .column((Sessions::Table, Sessions::JobAttempt))
+        .column((Sessions::Table, Sessions::JobStage))
+        .column((Sessions::Table, Sessions::JobReviewKind))
+        .column((Sessions::Table, Sessions::JobStatus))
+        .column((Sessions::Table, Sessions::JobThreadId))
+        .column((Sessions::Table, Sessions::JobArtifactCount))
         .column((Sessions::Table, Sessions::SessionScore))
         .column((Sessions::Table, Sessions::ScorePlugin))
 }
@@ -97,6 +108,17 @@ pub struct InsertParams<'a> {
     pub files_read: Option<&'a str>,
     pub has_errors: bool,
     pub max_active_agents: i64,
+    pub job_protocol: Option<&'a str>,
+    pub job_system: Option<&'a str>,
+    pub job_id: Option<&'a str>,
+    pub job_title: Option<&'a str>,
+    pub job_run_id: Option<&'a str>,
+    pub job_attempt: Option<i64>,
+    pub job_stage: Option<&'a str>,
+    pub job_review_kind: Option<&'a str>,
+    pub job_status: Option<&'a str>,
+    pub job_thread_id: Option<&'a str>,
+    pub job_artifact_count: i64,
     pub session_score: i64,
     pub score_plugin: &'a str,
 }
@@ -135,6 +157,17 @@ pub fn insert(p: &InsertParams<'_>) -> Built {
             Sessions::FilesRead,
             Sessions::HasErrors,
             Sessions::MaxActiveAgents,
+            Sessions::JobProtocol,
+            Sessions::JobSystem,
+            Sessions::JobId,
+            Sessions::JobTitle,
+            Sessions::JobRunId,
+            Sessions::JobAttempt,
+            Sessions::JobStage,
+            Sessions::JobReviewKind,
+            Sessions::JobStatus,
+            Sessions::JobThreadId,
+            Sessions::JobArtifactCount,
             Sessions::SessionScore,
             Sessions::ScorePlugin,
         ])
@@ -168,6 +201,17 @@ pub fn insert(p: &InsertParams<'_>) -> Built {
             p.files_read.map(|s| s.to_string()).into(),
             p.has_errors.into(),
             p.max_active_agents.into(),
+            p.job_protocol.map(|s| s.to_string()).into(),
+            p.job_system.map(|s| s.to_string()).into(),
+            p.job_id.map(|s| s.to_string()).into(),
+            p.job_title.map(|s| s.to_string()).into(),
+            p.job_run_id.map(|s| s.to_string()).into(),
+            p.job_attempt.into(),
+            p.job_stage.map(|s| s.to_string()).into(),
+            p.job_review_kind.map(|s| s.to_string()).into(),
+            p.job_status.map(|s| s.to_string()).into(),
+            p.job_thread_id.map(|s| s.to_string()).into(),
+            p.job_artifact_count.into(),
             p.session_score.into(),
             p.score_plugin.into(),
         ])
@@ -233,6 +277,17 @@ pub fn list(q: &SessionListQuery) -> BuiltSessionListQuery {
         .column((Alias::new("s"), Sessions::FilesRead))
         .column((Alias::new("s"), Sessions::HasErrors))
         .column((Alias::new("s"), Sessions::MaxActiveAgents))
+        .column((Alias::new("s"), Sessions::JobProtocol))
+        .column((Alias::new("s"), Sessions::JobSystem))
+        .column((Alias::new("s"), Sessions::JobId))
+        .column((Alias::new("s"), Sessions::JobTitle))
+        .column((Alias::new("s"), Sessions::JobRunId))
+        .column((Alias::new("s"), Sessions::JobAttempt))
+        .column((Alias::new("s"), Sessions::JobStage))
+        .column((Alias::new("s"), Sessions::JobReviewKind))
+        .column((Alias::new("s"), Sessions::JobStatus))
+        .column((Alias::new("s"), Sessions::JobThreadId))
+        .column((Alias::new("s"), Sessions::JobArtifactCount))
         .column((Alias::new("s"), Sessions::SessionScore))
         .column((Alias::new("s"), Sessions::ScorePlugin))
         .from_as(Sessions::Table, Alias::new("s"))
@@ -258,6 +313,43 @@ pub fn list(q: &SessionListQuery) -> BuiltSessionListQuery {
 
     if let Some(ref repo) = q.git_repo_name {
         let cond = Expr::col((Alias::new("s"), Sessions::GitRepoName)).eq(repo.as_str());
+        count_q.and_where(cond.clone());
+        select_q.and_where(cond);
+    }
+
+    if let Some(protocol) = q.protocol {
+        let cond = Expr::col((Alias::new("s"), Sessions::JobProtocol)).eq(protocol.to_string());
+        count_q.and_where(cond.clone());
+        select_q.and_where(cond);
+    }
+
+    if let Some(ref job_id) = q.job_id {
+        let cond = Expr::col((Alias::new("s"), Sessions::JobId)).eq(job_id.as_str());
+        count_q.and_where(cond.clone());
+        select_q.and_where(cond);
+    }
+
+    if let Some(ref run_id) = q.run_id {
+        let cond = Expr::col((Alias::new("s"), Sessions::JobRunId)).eq(run_id.as_str());
+        count_q.and_where(cond.clone());
+        select_q.and_where(cond);
+    }
+
+    if let Some(stage) = q.stage {
+        let cond = Expr::col((Alias::new("s"), Sessions::JobStage)).eq(stage.to_string());
+        count_q.and_where(cond.clone());
+        select_q.and_where(cond);
+    }
+
+    if let Some(review_kind) = q.review_kind {
+        let cond =
+            Expr::col((Alias::new("s"), Sessions::JobReviewKind)).eq(review_kind.to_string());
+        count_q.and_where(cond.clone());
+        select_q.and_where(cond);
+    }
+
+    if let Some(status) = q.status {
+        let cond = Expr::col((Alias::new("s"), Sessions::JobStatus)).eq(status.to_string());
         count_q.and_where(cond.clone());
         select_q.and_where(cond);
     }

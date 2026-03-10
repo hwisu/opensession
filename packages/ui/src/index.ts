@@ -10,6 +10,7 @@ export {
 	detectSummaryProvider,
 	getApiCapabilities,
 	getAuthProviders,
+	getJobReviewBundle,
 	getLocalReviewBundle,
 	getOAuthUrl,
 	getParsePreviewError,

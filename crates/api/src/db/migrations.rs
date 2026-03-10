@@ -6,11 +6,20 @@
 /// A named migration: `(name, sql)`.
 pub type Migration = (&'static str, &'static str);
 
+pub const JOB_CONTEXT_MIGRATION_NAME: &str = "0002_job_context";
+pub const JOB_CONTEXT_GUARD_COLUMN: &str = "job_protocol";
+
 /// Remote-schema migrations (server + worker).
-pub const MIGRATIONS: &[Migration] = &[(
-    "0001_schema",
-    include_str!("../../migrations/0001_schema.sql"),
-)];
+pub const MIGRATIONS: &[Migration] = &[
+    (
+        "0001_schema",
+        include_str!("../../migrations/0001_schema.sql"),
+    ),
+    (
+        JOB_CONTEXT_MIGRATION_NAME,
+        include_str!("../../migrations/0002_job_context.sql"),
+    ),
+];
 
 /// Local-only migrations (TUI + Daemon).
 /// These run AFTER the shared MIGRATIONS to add sync-tracking tables.
@@ -39,12 +48,15 @@ pub const LOCAL_MIGRATIONS: &[Migration] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{LOCAL_MIGRATIONS, MIGRATIONS};
+    use super::{
+        JOB_CONTEXT_GUARD_COLUMN, JOB_CONTEXT_MIGRATION_NAME, LOCAL_MIGRATIONS, MIGRATIONS,
+    };
 
     #[test]
     fn schema_migration_set_is_minimal() {
-        assert_eq!(MIGRATIONS.len(), 1);
+        assert_eq!(MIGRATIONS.len(), 2);
         assert_eq!(MIGRATIONS[0].0, "0001_schema");
+        assert_eq!(MIGRATIONS[1].0, JOB_CONTEXT_MIGRATION_NAME);
         assert_eq!(LOCAL_MIGRATIONS.len(), 5);
         assert_eq!(LOCAL_MIGRATIONS[0].0, "local_0001_schema");
         assert_eq!(LOCAL_MIGRATIONS[1].0, "local_0002_session_summaries");
@@ -64,5 +76,15 @@ mod tests {
             !sql.contains("avatar_url    TEXT"),
             "users.avatar_url legacy column must not be present in bootstrap schema"
         );
+    }
+
+    #[test]
+    fn bootstrap_and_follow_up_migration_include_job_columns() {
+        assert!(MIGRATIONS[0].1.contains("job_protocol"));
+        assert!(MIGRATIONS[0].1.contains("job_artifact_count"));
+        assert!(MIGRATIONS[1].1.contains(&format!(
+            "ALTER TABLE sessions ADD COLUMN {JOB_CONTEXT_GUARD_COLUMN}"
+        )));
+        assert!(MIGRATIONS[1].1.contains("idx_sessions_job_review_lookup"));
     }
 }

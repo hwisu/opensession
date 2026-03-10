@@ -30,6 +30,12 @@ import type {
 export type SessionListParams = {
 	tool?: string;
 	git_repo_name?: string;
+	protocol?: string;
+	job_id?: string;
+	run_id?: string;
+	stage?: string;
+	review_kind?: string;
+	status?: string;
 	search?: string;
 	page?: number;
 	per_page?: number;
@@ -117,6 +123,12 @@ function toSessionListQuery(params?: SessionListParams): DesktopSessionListQuery
 		search: params?.search ?? null,
 		tool: params?.tool ?? null,
 		git_repo_name: params?.git_repo_name ?? null,
+		protocol: params?.protocol ?? null,
+		job_id: params?.job_id ?? null,
+		run_id: params?.run_id ?? null,
+		stage: params?.stage ?? null,
+		review_kind: params?.review_kind ?? null,
+		status: params?.status ?? null,
 		sort: params?.sort ?? null,
 		time_range: params?.time_range ?? null,
 		force_refresh: params?.force_refresh ?? null,

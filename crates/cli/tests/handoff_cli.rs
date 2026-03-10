@@ -320,6 +320,8 @@ fn setup_review_fixture_with_auxiliary(
     setup_review_fixture_with_options(tmp, fetch_hidden_refs, true)
 }
 
+#[path = "handoff_cli/capture_cli.rs"]
+mod capture_cli;
 #[path = "handoff_cli/cleanup_cli.rs"]
 mod cleanup_cli;
 #[path = "handoff_cli/handoff_cases.rs"]

@@ -111,6 +111,10 @@ fn build_api_router() -> Router<AppState> {
             "/review/local/{review_id}",
             get(routes::review::get_local_review_bundle),
         )
+        .route(
+            "/review/job/{job_id}",
+            get(routes::review::get_job_review_bundle),
+        )
         .route("/auth/verify", post(routes::auth::verify))
         .route("/auth/me", get(routes::auth::me))
         .route("/auth/api-keys/issue", post(routes::auth::issue_api_key))

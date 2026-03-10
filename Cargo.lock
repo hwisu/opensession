@@ -2208,6 +2208,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
 ]
 
 [[package]]
@@ -2408,12 +2409,15 @@ dependencies = [
  "chrono",
  "opensession-api",
  "opensession-core",
+ "opensession-local-db",
+ "opensession-local-store",
  "opensession-parsers",
  "reqwest",
  "rusqlite",
  "sea-query",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tower-http",
  "tracing",

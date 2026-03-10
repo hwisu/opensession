@@ -657,6 +657,7 @@ mod tests {
     fn make_test_row() -> opensession_local_db::LocalSessionRow {
         opensession_local_db::LocalSessionRow {
             id: "abc-123".to_string(),
+            body_storage_key: None,
             source_path: Some("/tmp/session.jsonl".to_string()),
             sync_status: "pending".to_string(),
             last_synced_at: None,
@@ -689,6 +690,7 @@ mod tests {
             files_read: Some("README.md".to_string()),
             has_errors: false,
             max_active_agents: 1,
+            job_context: None,
             is_auxiliary: false,
         }
     }

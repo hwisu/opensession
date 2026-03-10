@@ -27,6 +27,12 @@ let searchQuery = $state('');
 let toolFilter = $state('');
 let repoFilter = $state('');
 let repoInput = $state('');
+let protocolFilter = $state('');
+let jobIdFilter = $state('');
+let runIdFilter = $state('');
+let stageFilter = $state('');
+let reviewKindFilter = $state('');
+let statusFilter = $state('');
 let timeRange = $state<TimeRange>('all');
 let currentPage = $state(1);
 let selectedIndex = $state(0);
@@ -82,6 +88,32 @@ const tools = $derived.by(() => [
 	{ value: '', label: translate($appLocale, 'sessionList.allTools') },
 	...Object.values(TOOL_CONFIGS).map((t) => ({ value: t.name, label: t.label })),
 ]);
+const jobProtocols = [
+	{ value: '', label: 'All protocols' },
+	{ value: 'opensession', label: 'OpenSession' },
+	{ value: 'agent_client_protocol', label: 'Agent Client Protocol' },
+	{ value: 'agent_communication_protocol', label: 'Agent Communication Protocol' },
+];
+const jobStages = [
+	{ value: '', label: 'All stages' },
+	{ value: 'planning', label: 'planning' },
+	{ value: 'review', label: 'review' },
+	{ value: 'execution', label: 'execution' },
+	{ value: 'handoff', label: 'handoff' },
+];
+const reviewKinds = [
+	{ value: '', label: 'All review kinds' },
+	{ value: 'todo', label: 'todo' },
+	{ value: 'done', label: 'done' },
+];
+const jobStatuses = [
+	{ value: '', label: 'All statuses' },
+	{ value: 'pending', label: 'pending' },
+	{ value: 'in_progress', label: 'in_progress' },
+	{ value: 'completed', label: 'completed' },
+	{ value: 'failed', label: 'failed' },
+	{ value: 'cancelled', label: 'cancelled' },
+];
 const validToolValues = ['', ...Object.values(TOOL_CONFIGS).map((tool) => tool.name)];
 const validTimeRanges = new Set<TimeRange>(['all', '24h', '7d', '30d']);
 const sessionListModel = createSessionListModel(
@@ -139,6 +171,42 @@ const sessionListModel = createSessionListModel(
 		},
 		set repoInput(value) {
 			repoInput = value;
+		},
+		get protocolFilter() {
+			return protocolFilter;
+		},
+		set protocolFilter(value) {
+			protocolFilter = value;
+		},
+		get jobIdFilter() {
+			return jobIdFilter;
+		},
+		set jobIdFilter(value) {
+			jobIdFilter = value;
+		},
+		get runIdFilter() {
+			return runIdFilter;
+		},
+		set runIdFilter(value) {
+			runIdFilter = value;
+		},
+		get stageFilter() {
+			return stageFilter;
+		},
+		set stageFilter(value) {
+			stageFilter = value;
+		},
+		get reviewKindFilter() {
+			return reviewKindFilter;
+		},
+		set reviewKindFilter(value) {
+			reviewKindFilter = value;
+		},
+		get statusFilter() {
+			return statusFilter;
+		},
+		set statusFilter(value) {
+			statusFilter = value;
 		},
 		get timeRange() {
 			return timeRange;
@@ -542,6 +610,66 @@ $effect(() => {
 					{translate($appLocale, 'common.clear')}
 				</button>
 			{/if}
+		</div>
+		<div class="grid w-full gap-1 sm:grid-cols-2 xl:grid-cols-6">
+			<select
+				id="session-protocol-filter"
+				bind:value={protocolFilter}
+				onchange={() => void sessionListModel.fetchSessions(true)}
+				class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			>
+				{#each jobProtocols as option}
+					<option value={option.value}>{option.label}</option>
+				{/each}
+			</select>
+			<input
+				id="session-job-id-filter"
+				type="text"
+				placeholder="job_id"
+				bind:value={jobIdFilter}
+				onkeydown={(e) => e.key === 'Enter' && void sessionListModel.fetchSessions(true)}
+				onblur={() => void sessionListModel.fetchSessions(true)}
+				class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			/>
+			<input
+				id="session-run-id-filter"
+				type="text"
+				placeholder="run_id"
+				bind:value={runIdFilter}
+				onkeydown={(e) => e.key === 'Enter' && void sessionListModel.fetchSessions(true)}
+				onblur={() => void sessionListModel.fetchSessions(true)}
+				class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			/>
+			<select
+				id="session-stage-filter"
+				bind:value={stageFilter}
+				onchange={() => void sessionListModel.fetchSessions(true)}
+				class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			>
+				{#each jobStages as option}
+					<option value={option.value}>{option.label}</option>
+				{/each}
+			</select>
+			<select
+				id="session-review-kind-filter"
+				bind:value={reviewKindFilter}
+				onchange={() => void sessionListModel.fetchSessions(true)}
+				class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			>
+				{#each reviewKinds as option}
+					<option value={option.value}>{option.label}</option>
+				{/each}
+			</select>
+			<select
+				id="session-status-filter"
+				bind:value={statusFilter}
+				onchange={() => void sessionListModel.fetchSessions(true)}
+				class="border border-border bg-bg-secondary px-2 py-0.5 text-xs text-text-secondary outline-none focus:border-accent"
+			>
+				{#each jobStatuses as option}
+					<option value={option.value}>{option.label}</option>
+				{/each}
+			</select>
 		</div>
 		<div
 			data-testid="list-shortcut-legend"

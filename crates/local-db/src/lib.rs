@@ -35,6 +35,9 @@ use vector_store::build_fts_query;
 mod tests {
     use super::*;
 
+    use opensession_api::{
+        JobManifest, JobProtocol, JobReviewKind, JobStage, JobStatus, apply_job_manifest,
+    };
     use std::fs::{create_dir_all, write};
     use tempfile::tempdir;
 
@@ -202,6 +205,62 @@ mod tests {
             .find(|row| row.id == "rollout-upsert")
             .expect("upserted row");
         assert_eq!(row.tool, "codex");
+    }
+
+    #[test]
+    fn test_upsert_local_session_indexes_job_context() {
+        let db = test_db();
+        let mut session = Session::new(
+            "job-indexed".to_string(),
+            opensession_core::trace::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.stats.event_count = 1;
+        apply_job_manifest(
+            &mut session,
+            &JobManifest {
+                protocol: JobProtocol::AgentCommunicationProtocol,
+                system: "symphony".to_string(),
+                job_id: "AUTH-777".to_string(),
+                job_title: "Index job context".to_string(),
+                run_id: "run-7".to_string(),
+                attempt: 7,
+                stage: JobStage::Review,
+                review_kind: Some(JobReviewKind::Todo),
+                status: JobStatus::Pending,
+                thread_id: Some("thread-7".to_string()),
+                artifacts: vec![],
+            },
+        );
+
+        db.upsert_local_session_with_storage_key(
+            &session,
+            "/Users/test/.codex/sessions/2026/03/10/job-indexed.jsonl",
+            &crate::git::GitContext::default(),
+            Some("os://src/local/test-job-indexed"),
+        )
+        .unwrap();
+
+        let rows = db.list_sessions_for_job("AUTH-777").unwrap();
+        assert_eq!(rows.len(), 1);
+        let job_context = rows[0].job_context.clone().expect("job context");
+        assert_eq!(job_context.system, "symphony");
+        assert_eq!(job_context.job_id, "AUTH-777");
+        assert_eq!(job_context.job_title, "Index job context");
+        assert_eq!(job_context.run_id, "run-7");
+        assert_eq!(job_context.attempt, 7);
+        assert_eq!(job_context.stage, JobStage::Review);
+        assert_eq!(job_context.review_kind, Some(JobReviewKind::Todo));
+        assert_eq!(job_context.status, JobStatus::Pending);
+        assert_eq!(job_context.thread_id.as_deref(), Some("thread-7"));
+        assert_eq!(
+            rows[0].body_storage_key.as_deref(),
+            Some("os://src/local/test-job-indexed")
+        );
     }
 
     #[test]
@@ -734,6 +793,7 @@ mod tests {
             files_read: None,
             has_errors: false,
             max_active_agents: 1,
+            job_context: None,
         };
         db.upsert_remote_session(&summary).unwrap();
 
@@ -779,6 +839,7 @@ mod tests {
             files_read: None,
             has_errors: false,
             max_active_agents: 1,
+            job_context: None,
         };
         db.upsert_remote_session(&summary1).unwrap();
 
@@ -829,6 +890,7 @@ mod tests {
             files_read: None,
             has_errors: false,
             max_active_agents: 1,
+            job_context: None,
         }
     }
 

@@ -26,6 +26,8 @@ pub(crate) struct Cli {
 pub(crate) enum Commands {
     /// Register canonical HAIL JSONL into local object store.
     Register(crate::register::RegisterArgs),
+    /// Import native logs plus job metadata into the local review ledger.
+    Capture(crate::capture_cmd::CaptureArgs),
     /// Print canonical JSONL for a local source URI.
     Cat(crate::cat_cmd::CatArgs),
     /// Inspect summary metadata for source/artifact URIs.
@@ -129,6 +131,15 @@ fn localize_command(command: &mut Command) {
                 localize(
                     "Register canonical HAIL JSONL into local object store.",
                     "canonical HAIL JSONL을 로컬 객체 저장소에 등록합니다.",
+                ),
+            );
+        }
+        "capture" => {
+            set_about(
+                command,
+                localize(
+                    "Import native logs plus job metadata into the local review ledger.",
+                    "native 로그와 job 메타데이터를 로컬 review ledger로 가져옵니다.",
                 ),
             );
         }

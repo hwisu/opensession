@@ -26,7 +26,7 @@ use opensession_api::{
     DesktopSummaryBatchStatusResponse, DesktopSummaryOutputShape, DesktopSummaryProviderId,
     DesktopSummaryResponseStyle, DesktopSummarySourceMode, DesktopSummaryStorageBackend,
     DesktopSummaryTriggerMode, DesktopVectorInstallState, DesktopVectorPreflightResponse,
-    DesktopVectorSearchProvider,
+    DesktopVectorSearchProvider, JobContext, JobProtocol, JobReviewKind, JobStage, JobStatus,
 };
 use opensession_core::handoff::HandoffSummary;
 use opensession_core::trace::{Agent, Content, Event, EventType, Session as HailSession};
@@ -179,6 +179,7 @@ fn manual_summary_batch_settings(
 fn sample_row() -> opensession_local_db::LocalSessionRow {
     opensession_local_db::LocalSessionRow {
         id: "s1".to_string(),
+        body_storage_key: Some("os://src/local/s1".to_string()),
         source_path: Some("/tmp/s1.hail.jsonl".to_string()),
         sync_status: "local_only".to_string(),
         last_synced_at: None,
@@ -211,6 +212,19 @@ fn sample_row() -> opensession_local_db::LocalSessionRow {
         files_read: None,
         has_errors: false,
         max_active_agents: 1,
+        job_context: Some(JobContext {
+            protocol: JobProtocol::AgentCommunicationProtocol,
+            system: "symphony".to_string(),
+            job_id: "AUTH-123".to_string(),
+            job_title: "Fix auth bug".to_string(),
+            run_id: "run-42".to_string(),
+            attempt: 2,
+            stage: JobStage::Review,
+            review_kind: Some(JobReviewKind::Todo),
+            status: JobStatus::InProgress,
+            thread_id: Some("thread-9".to_string()),
+            artifact_count: 1,
+        }),
         is_auxiliary: false,
     }
 }

@@ -23,6 +23,7 @@ fn list_filter_parses_sort_and_range_values() {
         sort: Some("popular".to_string()),
         time_range: Some("7d".to_string()),
         force_refresh: None,
+        ..DesktopSessionListQuery::default()
     });
     assert_eq!(page, 2);
     assert_eq!(per_page, 30);
@@ -199,6 +200,12 @@ fn normalize_launch_route_rejects_invalid_values() {
 fn local_row_uses_created_at_when_uploaded_at_missing() {
     let summary = session_summary_from_local_row(sample_row());
     assert_eq!(summary.uploaded_at, "2026-03-03T00:00:00Z");
+    let job_context = summary.job_context.expect("job context should map through");
+    assert_eq!(job_context.job_id, "AUTH-123");
+    assert!(matches!(
+        job_context.review_kind,
+        Some(opensession_api::JobReviewKind::Todo)
+    ));
     assert_eq!(
         summary.score_plugin,
         opensession_core::scoring::DEFAULT_SCORE_PLUGIN

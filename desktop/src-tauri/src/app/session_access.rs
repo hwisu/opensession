@@ -155,6 +155,7 @@ pub(crate) fn session_summary_from_local_row_with_score(
         files_read: row.files_read,
         has_errors: row.has_errors,
         max_active_agents: row.max_active_agents,
+        job_context: row.job_context,
         session_score,
         score_plugin: score_plugin.to_string(),
     }
@@ -216,13 +217,13 @@ pub(crate) fn normalize_session_body_to_hail_jsonl(
     let preview = ParserRegistry::default()
         .preview_bytes(filename, body.as_bytes(), None)
         .map_err(|error| {
-        desktop_error(
-            "desktop.session_parse_failed",
-            422,
-            "failed to parse source session into HAIL format",
-            Some(json!({ "cause": error.to_string(), "filename": filename })),
-        )
-    })?;
+            desktop_error(
+                "desktop.session_parse_failed",
+                422,
+                "failed to parse source session into HAIL format",
+                Some(json!({ "cause": error.to_string(), "filename": filename })),
+            )
+        })?;
 
     session_to_hail_jsonl(preview.session)
 }

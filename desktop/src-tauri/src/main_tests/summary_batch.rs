@@ -13,7 +13,9 @@ fn desktop_summary_batch_run_and_status_complete_when_no_sessions() {
 
     desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
         session_default_view: None,
-        summary: Some(manual_summary_batch_settings(DesktopSummaryStorageBackend::None)),
+        summary: Some(manual_summary_batch_settings(
+            DesktopSummaryStorageBackend::None,
+        )),
         vector_search: None,
         change_reader: None,
         lifecycle: None,
@@ -52,7 +54,9 @@ fn desktop_summary_batch_skips_sessions_with_missing_source_files() {
 
     desktop_update_runtime_settings(DesktopRuntimeSettingsUpdateRequest {
         session_default_view: None,
-        summary: Some(manual_summary_batch_settings(DesktopSummaryStorageBackend::None)),
+        summary: Some(manual_summary_batch_settings(
+            DesktopSummaryStorageBackend::None,
+        )),
         vector_search: None,
         change_reader: None,
         lifecycle: None,

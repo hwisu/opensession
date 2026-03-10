@@ -121,7 +121,11 @@ fn desktop_runtime_settings_allows_voice_playback_with_existing_api_key() {
         session_default_view: None,
         summary: None,
         vector_search: None,
-        change_reader: Some(change_reader_update(true, false, Some("sk-existing-voice-key"))),
+        change_reader: Some(change_reader_update(
+            true,
+            false,
+            Some("sk-existing-voice-key"),
+        )),
         lifecycle: None,
     })
     .expect("store existing voice api key");

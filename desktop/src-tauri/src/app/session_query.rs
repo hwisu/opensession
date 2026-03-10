@@ -65,6 +65,12 @@ pub(crate) fn build_local_filter_with_mode(
         search: search_query,
         tool: normalize_non_empty(query.tool),
         git_repo_name: normalize_non_empty(query.git_repo_name),
+        protocol: normalize_non_empty(query.protocol),
+        job_id: normalize_non_empty(query.job_id),
+        run_id: normalize_non_empty(query.run_id),
+        stage: normalize_non_empty(query.stage),
+        review_kind: normalize_non_empty(query.review_kind),
+        status: normalize_non_empty(query.status),
         exclude_low_signal: true,
         sort: map_sort_order(query.sort.as_deref()),
         time_range: map_time_range(query.time_range.as_deref()),
@@ -91,6 +97,12 @@ mod tests {
                 search: Some("  fix auth  ".to_string()),
                 tool: Some(" codex ".to_string()),
                 git_repo_name: Some(" org/repo ".to_string()),
+                protocol: Some("agent_communication_protocol".to_string()),
+                job_id: Some(" AUTH-123 ".to_string()),
+                run_id: Some(" run-42 ".to_string()),
+                stage: Some("review".to_string()),
+                review_kind: Some("todo".to_string()),
+                status: Some("in_progress".to_string()),
                 sort: Some("longest".to_string()),
                 time_range: Some("30d".to_string()),
                 force_refresh: None,
@@ -102,6 +114,15 @@ mod tests {
         assert_eq!(filter.search.as_deref(), Some("fix auth"));
         assert_eq!(filter.tool.as_deref(), Some("codex"));
         assert_eq!(filter.git_repo_name.as_deref(), Some("org/repo"));
+        assert_eq!(
+            filter.protocol.as_deref(),
+            Some("agent_communication_protocol")
+        );
+        assert_eq!(filter.job_id.as_deref(), Some("AUTH-123"));
+        assert_eq!(filter.run_id.as_deref(), Some("run-42"));
+        assert_eq!(filter.stage.as_deref(), Some("review"));
+        assert_eq!(filter.review_kind.as_deref(), Some("todo"));
+        assert_eq!(filter.status.as_deref(), Some("in_progress"));
         assert_eq!(filter.sort, LocalSortOrder::Longest);
         assert_eq!(filter.time_range, LocalTimeRange::Days30);
         assert_eq!(filter.offset, Some(0));

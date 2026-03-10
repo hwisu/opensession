@@ -244,9 +244,11 @@ fn looks_like_hail_jsonl(content: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(first_line) else {
         return false;
     };
-    value.get("type").and_then(|v| v.as_str()) == Some("header")
-        && value.get("version").is_some()
-        && value.get("session_id").is_some()
+    match value.get("type").and_then(|v| v.as_str()) {
+        Some("header") => value.get("version").is_some() && value.get("session_id").is_some(),
+        Some("session.new") => value.get("sessionId").is_some(),
+        _ => false,
+    }
 }
 
 fn looks_like_hail_json(content: &str) -> bool {
@@ -377,9 +379,44 @@ mod tests {
         .join("\n")
     }
 
+    fn minimal_acp_semantic_jsonl() -> String {
+        let mut session = Session::new(
+            "s1".to_string(),
+            opensession_core::Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.context.title = Some("t".to_string());
+        session.context.description = Some("d".to_string());
+        session.events.push(opensession_core::Event {
+            event_id: "e1".to_string(),
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-02-01T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&chrono::Utc),
+            event_type: opensession_core::EventType::UserMessage,
+            task_id: None,
+            content: opensession_core::Content::text("hello"),
+            duration_ms: None,
+            attributes: Default::default(),
+        });
+        session.recompute_stats();
+        session.to_jsonl().expect("serialize ACP semantic JSONL")
+    }
+
     #[test]
     fn detect_hail_from_header_line() {
         let candidates = detect_candidates("sample.jsonl", &minimal_hail_jsonl());
+        assert!(!candidates.is_empty());
+        assert_eq!(candidates[0].id, "hail");
+        assert_eq!(candidates[0].confidence, 100);
+    }
+
+    #[test]
+    fn detect_hail_from_acp_session_new_line() {
+        let candidates = detect_candidates("sample.jsonl", &minimal_acp_semantic_jsonl());
         assert!(!candidates.is_empty());
         assert_eq!(candidates[0].id, "hail");
         assert_eq!(candidates[0].confidence, 100);

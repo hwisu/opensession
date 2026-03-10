@@ -406,9 +406,11 @@ fn looks_like_hail_jsonl(content: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(first_line) else {
         return false;
     };
-    value.get("type").and_then(|v| v.as_str()) == Some("header")
-        && value.get("version").is_some()
-        && value.get("session_id").is_some()
+    match value.get("type").and_then(|v| v.as_str()) {
+        Some("header") => value.get("version").is_some() && value.get("session_id").is_some(),
+        Some("session.new") => value.get("sessionId").is_some(),
+        _ => false,
+    }
 }
 
 fn looks_like_hail_json(content: &str) -> bool {
@@ -1171,6 +1173,7 @@ fn is_valid_ref(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opensession_core::{Agent, Content, Event, EventType, Session};
 
     fn minimal_hail_jsonl() -> String {
         [
@@ -1181,11 +1184,55 @@ mod tests {
         .join("\n")
     }
 
+    fn minimal_acp_semantic_jsonl() -> String {
+        let mut session = Session::new(
+            "s1".to_string(),
+            Agent {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                tool: "codex".to_string(),
+                tool_version: None,
+            },
+        );
+        session.context.title = Some("t".to_string());
+        session.context.description = Some("d".to_string());
+        session.events.push(Event {
+            event_id: "e1".to_string(),
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-02-01T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&chrono::Utc),
+            event_type: EventType::UserMessage,
+            task_id: None,
+            content: Content::text("hello"),
+            duration_ms: None,
+            attributes: Default::default(),
+        });
+        session.recompute_stats();
+        session.to_jsonl().expect("serialize ACP semantic JSONL")
+    }
+
     #[test]
     fn parse_hail_preview_from_jsonl() {
         let result =
             preview_parse_bytes("session.hail.jsonl", minimal_hail_jsonl().as_bytes(), None)
                 .expect("hail jsonl should parse");
+        assert_eq!(result.parser_used, "hail");
+        assert!(
+            result
+                .parser_candidates
+                .iter()
+                .any(|candidate| candidate.id == "hail")
+        );
+    }
+
+    #[test]
+    fn parse_hail_preview_from_acp_semantic_jsonl() {
+        let result = preview_parse_bytes(
+            "session.hail.jsonl",
+            minimal_acp_semantic_jsonl().as_bytes(),
+            None,
+        )
+        .expect("ACP semantic jsonl should parse");
         assert_eq!(result.parser_used, "hail");
         assert!(
             result

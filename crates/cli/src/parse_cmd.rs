@@ -18,7 +18,7 @@ pub struct ParseArgs {
     /// Print parser/warning preview to stderr.
     #[arg(long)]
     pub preview: bool,
-    /// Validate parsed HAIL before output.
+    /// Validate the parsed session before output.
     #[arg(long)]
     pub validate: bool,
     /// Optional output file path (default stdout).
@@ -92,7 +92,7 @@ pub fn run(args: ParseArgs) -> Result<()> {
 
     let canonical = session
         .to_jsonl()
-        .context("serialize canonical HAIL JSONL")?;
+        .context("serialize canonical session JSONL")?;
     if let Some(path) = args.out {
         std::fs::write(&path, canonical).map_err(|err| {
             guided_error(

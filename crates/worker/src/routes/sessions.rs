@@ -270,7 +270,7 @@ pub async fn get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
     }
 }
 
-/// GET /api/sessions/:id/raw — get the full HAIL JSONL from R2 or redirect to body_url
+/// GET /api/sessions/:id/raw — get the full session JSONL from R2 or redirect to body_url
 pub async fn get_raw(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let id = ctx.param("id").ok_or_else(|| Error::from("Missing id"))?;
 

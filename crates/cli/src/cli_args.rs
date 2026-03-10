@@ -24,7 +24,7 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Register canonical HAIL JSONL into local object store.
+    /// Register canonical session JSONL into local object store.
     Register(crate::register::RegisterArgs),
     /// Import native logs plus job metadata into the local review ledger.
     Capture(crate::capture_cmd::CaptureArgs),
@@ -40,7 +40,7 @@ pub(crate) enum Commands {
     Review(crate::review::ReviewArgs),
     /// Build and manage immutable handoff artifacts.
     Handoff(crate::handoff_v1::HandoffArgs),
-    /// Parse agent-native logs into canonical HAIL JSONL.
+    /// Parse agent-native logs into canonical session JSONL.
     Parse(crate::parse_cmd::ParseArgs),
     /// Generate/show local semantic summaries.
     Summary(crate::summary_cmd::SummaryArgs),
@@ -129,8 +129,8 @@ fn localize_command(command: &mut Command) {
             set_about(
                 command,
                 localize(
-                    "Register canonical HAIL JSONL into local object store.",
-                    "canonical HAIL JSONL을 로컬 객체 저장소에 등록합니다.",
+                    "Register canonical session JSONL into local object store.",
+                    "canonical session JSONL을 로컬 객체 저장소에 등록합니다.",
                 ),
             );
         }
@@ -208,8 +208,8 @@ fn localize_command(command: &mut Command) {
             set_about(
                 command,
                 localize(
-                    "Parse agent-native logs into canonical HAIL JSONL.",
-                    "agent-native 로그를 canonical HAIL JSONL로 변환합니다.",
+                    "Parse agent-native logs into canonical session JSONL.",
+                    "agent-native 로그를 canonical session JSONL로 변환합니다.",
                 ),
             );
             set_after_help(

@@ -28,7 +28,7 @@ Base URL: `/api`
 - `GET /api/review/local/:review_id` — Load local PR review bundle (local mode)
 - `GET /api/sessions` — List sessions
 - `GET /api/sessions/:id` — Get session detail
-- `GET /api/sessions/:id/raw` — Download raw HAIL JSONL
+- `GET /api/sessions/:id/raw` — Download raw session JSONL
 - `DELETE /api/admin/sessions/:id` — Delete session (admin key)
 
 ## Open Source

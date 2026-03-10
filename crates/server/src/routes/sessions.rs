@@ -127,7 +127,7 @@ pub async fn get_session(
 // Get raw session body
 // ---------------------------------------------------------------------------
 
-/// GET /api/sessions/:id/raw — download the full HAIL JSONL body.
+/// GET /api/sessions/:id/raw — download the full session JSONL body.
 pub async fn get_session_raw(
     State(db): State<Db>,
     Path(id): Path<String>,

@@ -99,6 +99,10 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .get_async("/api/sessions/repos", routes::sessions::list_repos)
         .get_async("/api/sessions/:id", routes::sessions::get)
         .get_async("/api/sessions/:id/raw", routes::sessions::get_raw)
+        .get_async(
+            "/api/review/job/:job_id",
+            routes::review::get_job_review_bundle,
+        )
         // Auth
         .get_async("/api/auth/providers", routes::auth::providers)
         .post_async("/api/auth/register", routes::auth::auth_register)

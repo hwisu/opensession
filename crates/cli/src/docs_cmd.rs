@@ -53,8 +53,8 @@ fn print_quickstart(
     println!(
         "{}",
         localize(
-            "# 2) Parse raw logs into canonical HAIL JSONL",
-            "# 2) raw 로그를 canonical HAIL JSONL로 변환",
+            "# 2) Parse raw logs into canonical session JSONL",
+            "# 2) raw 로그를 canonical session JSONL로 변환",
         )
     );
     println!(

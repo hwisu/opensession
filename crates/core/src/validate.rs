@@ -6,7 +6,7 @@ use thiserror::Error;
 pub enum ValidationError {
     #[error("missing required field: {field}")]
     MissingField { field: String },
-    #[error("invalid version: {version}, expected prefix 'hail-'")]
+    #[error("invalid version: {version}, expected prefix 'hail-' or 'acp-semantic-'")]
     InvalidVersion { version: String },
     #[error("empty session: no events")]
     EmptySession,
@@ -37,7 +37,7 @@ pub fn validate_session(session: &Session) -> Result<(), Vec<ValidationError>> {
 }
 
 fn validate_version(session: &Session) -> Vec<ValidationError> {
-    if session.version.starts_with("hail-") {
+    if session.version.starts_with("hail-") || session.version.starts_with("acp-semantic-") {
         vec![]
     } else {
         vec![ValidationError::InvalidVersion {

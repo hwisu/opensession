@@ -38,7 +38,7 @@ pub struct CaptureImportArgs {
     /// Job manifest path.
     #[arg(long)]
     pub manifest: PathBuf,
-    /// Optional canonical HAIL output path.
+    /// Optional canonical session output path.
     #[arg(long)]
     pub out: Option<PathBuf>,
     /// Skip local object-store registration and local DB upsert.
@@ -135,12 +135,15 @@ fn run_import(args: CaptureImportArgs) -> Result<()> {
     ensure_valid_session(&session)?;
     let canonical = session
         .to_jsonl()
-        .context("serialize canonical HAIL JSONL for capture import")?;
+        .context("serialize canonical session JSONL for capture import")?;
 
     if let Some(path) = args.out.as_ref() {
         std::fs::write(path, &canonical).map_err(|err| {
             guided_error(
-                format!("failed to write canonical HAIL `{}`: {err}", path.display()),
+                format!(
+                    "failed to write canonical session JSONL `{}`: {err}",
+                    path.display()
+                ),
                 [format!("check output path permissions: {}", path.display())],
             )
         })?;

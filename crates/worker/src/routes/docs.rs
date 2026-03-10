@@ -21,7 +21,8 @@ Base URL: `https://opensession.io/api`
 
 - `GET /api/sessions` — List sessions
 - `GET /api/sessions/:id` — Get session detail
-- `GET /api/sessions/:id/raw` — Download raw HAIL JSONL
+- `GET /api/sessions/:id/raw` — Download raw session JSONL
+- `GET /api/review/job/:job_id?kind=todo|done` — Load a job review bundle
 
 ## Open Source
 
@@ -55,10 +56,9 @@ pub async fn llms_txt(_req: Request, _ctx: RouteContext<()>) -> Result<Response>
 }
 
 fn docs_markdown_for_locale(locale: Option<&str>) -> &'static str {
-    if locale
-        .map(str::trim)
-        .is_some_and(|value| value.eq_ignore_ascii_case("ko") || value.to_ascii_lowercase().starts_with("ko-"))
-    {
+    if locale.map(str::trim).is_some_and(|value| {
+        value.eq_ignore_ascii_case("ko") || value.to_ascii_lowercase().starts_with("ko-")
+    }) {
         DOCS_MD_KO
     } else {
         DOCS_MD_EN

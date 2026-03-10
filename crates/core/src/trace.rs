@@ -13,10 +13,10 @@ pub const ATTR_SEMANTIC_CALL_ID: &str = "semantic.call_id";
 /// Canonical event attribute key for semantic tool kind classification.
 pub const ATTR_SEMANTIC_TOOL_KIND: &str = "semantic.tool_kind";
 
-/// Top-level session - the root of a HAIL (Human AI Interaction Log) trace
+/// Top-level session - the normalized OpenSession trace model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
-    /// Format version, e.g. "hail-1.0.0"
+    /// Canonical persistence format version, e.g. "acp-semantic-1.0.0"
     pub version: String,
     /// Unique session identifier (UUID)
     pub session_id: String,
@@ -137,7 +137,7 @@ impl StatsAcc {
 }
 
 impl Session {
-    pub const CURRENT_VERSION: &'static str = "hail-1.0.0";
+    pub const CURRENT_VERSION: &'static str = "acp-semantic-1.0.0";
 
     pub fn new(session_id: String, agent: Agent) -> Self {
         Self {
@@ -150,14 +150,34 @@ impl Session {
         }
     }
 
-    /// Serialize to HAIL JSONL string
+    /// Serialize to the canonical ACP semantic JSONL string.
     pub fn to_jsonl(&self) -> Result<String, crate::jsonl::JsonlError> {
         crate::jsonl::to_jsonl_string(self)
     }
 
-    /// Deserialize from HAIL JSONL string
+    /// Deserialize from either ACP semantic JSONL or legacy HAIL v1 JSONL.
     pub fn from_jsonl(s: &str) -> Result<Self, crate::jsonl::JsonlError> {
         crate::jsonl::from_jsonl_str(s)
+    }
+
+    /// Serialize to the canonical ACP semantic JSONL string explicitly.
+    pub fn to_acp_semantic_jsonl(&self) -> Result<String, crate::jsonl::JsonlError> {
+        crate::jsonl::to_acp_semantic_jsonl_string(self)
+    }
+
+    /// Deserialize from ACP semantic JSONL explicitly.
+    pub fn from_acp_semantic_jsonl(s: &str) -> Result<Self, crate::jsonl::JsonlError> {
+        crate::jsonl::from_acp_semantic_jsonl_str(s)
+    }
+
+    /// Serialize to the legacy HAIL v1 header/event/stats JSONL format explicitly.
+    pub fn to_hail_v1_jsonl(&self) -> Result<String, crate::jsonl::JsonlError> {
+        crate::jsonl::to_hail_v1_jsonl_string(self)
+    }
+
+    /// Deserialize from the legacy HAIL v1 header/event/stats JSONL format explicitly.
+    pub fn from_hail_v1_jsonl(s: &str) -> Result<Self, crate::jsonl::JsonlError> {
+        crate::jsonl::from_hail_v1_jsonl_str(s)
     }
 
     /// Recompute stats from events
@@ -487,7 +507,7 @@ mod tests {
 
         let json = serde_json::to_string_pretty(&session).unwrap();
         let parsed: Session = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.version, "hail-1.0.0");
+        assert_eq!(parsed.version, Session::CURRENT_VERSION);
         assert_eq!(parsed.session_id, "test-session-id");
         assert_eq!(parsed.agent.provider, "anthropic");
     }

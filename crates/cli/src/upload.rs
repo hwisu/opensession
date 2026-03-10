@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn git_upload_body_uses_hail_jsonl_lines() {
+    fn git_upload_body_uses_acp_semantic_jsonl_lines() {
         let mut session = Session::new(
             "s-cli-upload".to_string(),
             Agent {
@@ -241,17 +241,20 @@ mod tests {
         });
         session.recompute_stats();
 
-        let body = session_to_hail_jsonl_bytes(&session).expect("serialize session as HAIL JSONL");
-        let text = String::from_utf8(body).expect("HAIL JSONL body should be UTF-8");
+        let body =
+            session_to_hail_jsonl_bytes(&session).expect("serialize session as canonical JSONL");
+        let text = String::from_utf8(body).expect("canonical JSONL body should be UTF-8");
         let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
-        assert_eq!(lines.len(), 3, "expected header/event/stats JSONL lines");
+        assert_eq!(lines.len(), 3, "expected session.new/update/end JSONL lines");
 
-        let header: serde_json::Value = serde_json::from_str(lines[0]).expect("valid header JSON");
-        assert_eq!(header["type"], "header");
-        let event: serde_json::Value = serde_json::from_str(lines[1]).expect("valid event JSON");
-        assert_eq!(event["type"], "event");
-        let stats: serde_json::Value = serde_json::from_str(lines[2]).expect("valid stats JSON");
-        assert_eq!(stats["type"], "stats");
+        let start: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("valid session.new JSON");
+        assert_eq!(start["type"], "session.new");
+        let update: serde_json::Value =
+            serde_json::from_str(lines[1]).expect("valid session.update JSON");
+        assert_eq!(update["type"], "session.update");
+        let end: serde_json::Value = serde_json::from_str(lines[2]).expect("valid session.end JSON");
+        assert_eq!(end["type"], "session.end");
     }
 
     #[test]

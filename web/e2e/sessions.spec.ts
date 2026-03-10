@@ -421,7 +421,7 @@ test.describe('Sessions', () => {
 		await expect(page.locator('[data-timeline-idx]')).toHaveCount(9);
 		await expect(page.locator('[data-filter-key="all"]')).toHaveAttribute('aria-pressed', 'true');
 
-		await page.locator('body').click();
+		await page.locator('#session-event-search').blur();
 		await page.keyboard.press('2');
 		await expect(page.locator('[data-filter-key="all"]')).toHaveAttribute('aria-pressed', 'false');
 		await expect(page.locator('[data-filter-key="user"]')).toHaveAttribute('aria-pressed', 'true');
@@ -561,7 +561,7 @@ test.describe('Sessions', () => {
 		await expect(page.locator('[data-timeline-idx]')).toHaveCount(6);
 		await expect(page.getByText('branch file read')).toHaveCount(0);
 
-		await page.locator('body').click();
+		await page.locator('#session-event-search').blur();
 		await page.keyboard.press('2');
 		await expect(page.locator('[data-filter-key="question"]')).toHaveAttribute('aria-pressed', 'true');
 		await expect(page.locator('[data-filter-key="all"]')).toHaveAttribute('aria-pressed', 'false');

@@ -234,6 +234,40 @@ fn normalize_session_body_preserves_hail_jsonl() {
 }
 
 #[test]
+fn normalize_session_body_preserves_acp_semantic_jsonl() {
+    let mut session = HailSession::new(
+        "acp-1".to_string(),
+        Agent {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            tool: "codex".to_string(),
+            tool_version: None,
+        },
+    );
+    session.context.title = Some("Title".to_string());
+    session.context.description = Some("Desc".to_string());
+    session.events.push(opensession_core::Event {
+        event_id: "e1".to_string(),
+        timestamp: chrono::DateTime::parse_from_rfc3339("2026-03-03T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc),
+        event_type: opensession_core::EventType::UserMessage,
+        task_id: None,
+        content: opensession_core::Content::text("hello"),
+        duration_ms: None,
+        attributes: Default::default(),
+    });
+    session.recompute_stats();
+    let acp_jsonl = session.to_jsonl().expect("serialize ACP semantic jsonl");
+
+    let normalized = normalize_session_body_to_hail_jsonl(&acp_jsonl, None)
+        .expect("ACP semantic JSONL should normalize");
+    let parsed = HailSession::from_jsonl(&normalized).expect("must remain valid hail");
+    assert_eq!(parsed.session_id, "acp-1");
+    assert_eq!(parsed.version, opensession_core::Session::CURRENT_VERSION);
+}
+
+#[test]
 fn normalize_session_body_converts_claude_jsonl() {
     let claude_jsonl = r#"{"type":"user","uuid":"u1","sessionId":"claude-1","timestamp":"2026-03-03T00:00:00Z","message":{"role":"user","content":"hello from claude"},"cwd":"/tmp/project","gitBranch":"main"}"#;
 
@@ -327,9 +361,13 @@ fn desktop_list_detail_raw_flow_uses_isolated_db() {
     assert_eq!(detail.summary.id, session.session_id);
 
     let raw = desktop_get_session_raw(detail.summary.id.clone()).expect("get raw session");
+    let parsed = HailSession::from_jsonl(&raw).expect("raw session should parse");
+    assert_eq!(parsed.session_id, "desktop-flow-session");
     assert!(
-        raw.contains("\"session_id\":\"desktop-flow-session\""),
-        "raw session output should include the normalized session id",
+        raw.lines()
+            .find(|line| !line.trim().is_empty())
+            .is_some_and(|line| line.contains("\"type\":\"session.new\"")),
+        "raw session output should use ACP semantic JSONL",
     );
 
     drop(db);

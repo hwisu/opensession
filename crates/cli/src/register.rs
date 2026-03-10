@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Args)]
 pub struct RegisterArgs {
-    /// Canonical HAIL JSONL file path.
+    /// Canonical session JSONL file path.
     pub file: PathBuf,
     /// Print only URI.
     #[arg(long)]
@@ -30,7 +30,7 @@ pub fn run(args: RegisterArgs) -> Result<()> {
 
     let mut session = Session::from_jsonl(&raw).map_err(|err| {
         guided_error_with_doc(
-            format!("register expects canonical HAIL JSONL: {err}"),
+            format!("register expects canonical session JSONL: {err}"),
             [
                 format!(
                     "convert source logs first: `opensession parse --profile codex {} --out ./session.hail.jsonl`",
@@ -45,7 +45,7 @@ pub fn run(args: RegisterArgs) -> Result<()> {
     session.recompute_stats();
     let canonical = session
         .to_jsonl()
-        .context("serialize canonical HAIL JSONL")?;
+        .context("serialize canonical session JSONL")?;
 
     let cwd = std::env::current_dir().context("read current directory")?;
     let stored = store_local_object(canonical.as_bytes(), &cwd)?;

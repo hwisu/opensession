@@ -16,7 +16,7 @@ fn register_rejects_non_hail_with_next_steps() {
     );
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("register expects canonical HAIL JSONL"));
+    assert!(stderr.contains("register expects canonical session JSONL"));
     assert!(stderr.contains("next:"));
     assert!(stderr.contains("opensession parse --profile codex"));
 }

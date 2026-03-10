@@ -181,7 +181,7 @@ fn test_build_session_meta_json_includes_git_block() {
 }
 
 #[test]
-fn test_session_to_hail_jsonl_bytes_uses_header_event_stats_lines() {
+fn test_session_to_hail_jsonl_bytes_uses_acp_semantic_jsonl_lines() {
     let mut session = make_session_with_attrs(HashMap::new());
     session.events.push(opensession_core::Event {
         event_id: "e1".into(),
@@ -194,17 +194,17 @@ fn test_session_to_hail_jsonl_bytes_uses_header_event_stats_lines() {
     });
     session.recompute_stats();
 
-    let body = session_to_hail_jsonl_bytes(&session).expect("serialize HAIL JSONL");
+    let body = session_to_hail_jsonl_bytes(&session).expect("serialize canonical JSONL");
     let text = String::from_utf8(body).expect("jsonl must be utf-8");
     let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
-    assert_eq!(lines.len(), 3, "expected header/event/stats lines");
+    assert_eq!(lines.len(), 3, "expected session.new/update/end lines");
 
-    let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(header["type"], "header");
-    let event: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-    assert_eq!(event["type"], "event");
-    let stats: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
-    assert_eq!(stats["type"], "stats");
+    let start: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(start["type"], "session.new");
+    let update: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(update["type"], "session.update");
+    let end: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+    assert_eq!(end["type"], "session.end");
 }
 
 #[test]

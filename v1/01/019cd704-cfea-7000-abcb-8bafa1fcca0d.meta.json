@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "codex/symphony-local-review-ledger",
+    "commits": [
+      "b17530b55a2a66b05f13341111829fe5448bdc11"
+    ],
+    "head": "b17530b55a2a66b05f13341111829fe5448bdc11",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cd704-cfea-7000-abcb-8bafa1fcca0d",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 8933,
+    "event_count": 523,
+    "files_changed": 3,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 33,
+    "task_count": 2,
+    "tool_call_count": 62,
+    "total_input_tokens": 21490869,
+    "total_output_tokens": 49966,
+    "user_message_count": 2
+  },
+  "title": "설정페이지가 아직 너무 잡다해. 현재 세팅이 기본값이 늘어난거 에 맞춰서 세팅을 줄여주면 좋겠어. 테스트는 E2E를 통해서 검증해줘.",
+  "tool": "codex"
+}

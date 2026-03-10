@@ -1,0 +1,39 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "85f5674d6c4b64645f49abf9eb0983a747422811",
+      "901a74b0dd83779c34f6d9f99f792d1cd77786ca",
+      "3477e10f73d22d6e25b14f3000cb262d897e6d4c",
+      "33296b87878d83cb593457b10307339f12cd5f97",
+      "49ceb944410077662cc9f9d9cbf12b5838e28dfc",
+      "db033dd40c6fbb5bc89ef25d8999ed27344b4b09",
+      "081e7be88778397672ce68447ae846c936239439",
+      "3f0ed8b69fba974a7b14115ce286196bcd7f1498",
+      "ddf51237693251b64c82eaa03b63f72c90b58803",
+      "fe3446b96ffff2bc88a5f2afa8b115ed081d27bd"
+    ],
+    "head": "fe3446b96ffff2bc88a5f2afa8b115ed081d27bd",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cd1fd-7baa-7b81-802f-137782dbf422",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 59453,
+    "event_count": 2324,
+    "files_changed": 27,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 272,
+    "task_count": 12,
+    "tool_call_count": 267,
+    "total_input_tokens": 61592062,
+    "total_output_tokens": 175971,
+    "user_message_count": 14
+  },
+  "title": "OpenSession Review\nLedger ref: refs/opensession/branches/Y29kZXgvZWZmZWN0LXNy...",
+  "tool": "codex"
+}

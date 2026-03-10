@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "codex/symphony-local-review-ledger",
+    "commits": [
+      "ecffd839f62830f213e4857f2c46c99d393bf05b"
+    ],
+    "head": "ecffd839f62830f213e4857f2c46c99d393bf05b",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019cd6b3-a984-76c2-9749-7687dd7c0eb0",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 59,
+    "event_count": 68,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 7,
+    "task_count": 1,
+    "tool_call_count": 1,
+    "total_input_tokens": 535792,
+    "total_output_tokens": 2969,
+    "user_message_count": 1
+  },
+  "title": "직접 건드려야 하는 값은 이제 env backdoor로 뺐습니다. 필요하면 OPENSESSION_CAPTURE_PROFILE, OPENSE...",
+  "tool": "codex"
+}

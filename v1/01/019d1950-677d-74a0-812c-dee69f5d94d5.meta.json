@@ -1,0 +1,30 @@
+{
+  "git": {
+    "branch": "main",
+    "commits": [
+      "9d33eb891a731bb315e506671ada3d4a61b2ef02"
+    ],
+    "head": "9d33eb891a731bb315e506671ada3d4a61b2ef02",
+    "remote": "https://github.com/hwisu/opensession.git",
+    "repo_name": "hwisu/opensession"
+  },
+  "model": "gpt-5.4",
+  "schema_version": 2,
+  "session_id": "019d1950-677d-74a0-812c-dee69f5d94d5",
+  "session_role": "primary",
+  "stats": {
+    "duration_seconds": 1784,
+    "event_count": 463,
+    "files_changed": 0,
+    "lines_added": 0,
+    "lines_removed": 0,
+    "message_count": 29,
+    "task_count": 1,
+    "tool_call_count": 19,
+    "total_input_tokens": 4366948,
+    "total_output_tokens": 21532,
+    "user_message_count": 2
+  },
+  "title": "여기 레포에 대해서 PR에 있는 디펜던시를 포함해서, 디펜던시에 관해서 업데이트해줘.",
+  "tool": "codex"
+}

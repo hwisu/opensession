@@ -29,9 +29,9 @@
 		"svelte": "^5.0.0"
 	},
 	"dependencies": {
-		"effect": "3.19.19",
+		"effect": "^3.21.0",
 		"highlight.js": "^11.11.1",
-		"marked": "^17.0.4"
+		"marked": "^17.0.5"
 	},
 	"scripts": {
 		"lint": "biome check src/",
@@ -40,9 +40,9 @@
 		"test": "tsx --test src/*.test.ts src/**/*.test.ts"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.4.6",
-		"jsdom": "^28.1.0",
-		"svelte": "^5.53.7",
+		"@biomejs/biome": "^2.4.8",
+		"jsdom": "^29.0.1",
+		"svelte": "^5.54.1",
 		"tsx": "^4.20.5",
 		"turndown": "^7.2.0",
 		"typescript": "^5.9.3"

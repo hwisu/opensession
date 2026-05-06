@@ -99,7 +99,7 @@ base64 = "0.22"
 sha2 = "0.10"
 urlencoding = "2"
 tempfile = "3"
-gix = "0.79"
+gix = "0.83"
 sea-query = { version = "0.32", features = ["backend-sqlite", "derive"] }
 directories = "5"
 

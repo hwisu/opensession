@@ -14,7 +14,7 @@ include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
 workspace = true
 
 [dependencies]
-gix = { version = "0.79", default-features = false, features = [
+gix = { version = "0.83", default-features = false, features = [
     "basic",
     "tree-editor",
 ] }
